@@ -4,6 +4,8 @@ import field
 from scipy import optimize as opt
 import unstructured_grid
 reload(unstructured_grid)
+import exact_delaunay
+reload(exact_delaunay)
 import front
 reload(front)
 
@@ -222,9 +224,23 @@ def test_resample_neighbors():
         af.grid.plot_edges()
 
         af.grid.plot_nodes(color='g')
+        # hmm - some stray long edges, where it should be collinear
+        # ahh - somehow node 23 is 3.5e-15 above the others.
+        # not sure why it happened, but for the moment not a show stopper.
+        # in fact probably a good test of the robust predicates
+        af.cdt.plot_edges(values=af.cdt.edges['constrained'],lw=3,alpha=0.5)
+
         plt.axis( [34.91, 42.182, 7.300, 12.97] )
+    return af
         
-test_resample_neighbors()
+af=test_resample_neighbors()
+
+af.grid.plot_nodes(labeler=lambda n,nr: str(n))
+
+## 
+af.grid.modify_node(23,x=[af.grid.nodes['x'][23,0],20.0] )
+plt.clf()
+af.cdt.plot_edges(values=af.cdt.edges['constrained'],lw=3,alpha=0.5)
 
 ## 
 
@@ -480,9 +496,10 @@ optimize(af,edits)
 #   correctly.
 #   Need to think about how these pieces are going to work together
 #   And probably a good time to (a) move most of the code above into front.py
-#   and (b) start adding the rollback, graph search side of things.  Without
-#   a solid CDT, it's going to be a pita, but at least we can have the logic
-#   there.
+#   and (b) start adding the rollback, graph search side of things.
+#   CDT is included now, though without any real integration - no checks yet
+#   for colliding edges or collinear nodes.
+
 
 site3=af.choose_site()
 

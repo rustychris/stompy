@@ -6,6 +6,7 @@ Largely a port of paver.py.
 
 """
 import unstructured_grid
+import exact_delaunay
 import numpy as np
 import utils
 import logging
@@ -208,12 +209,52 @@ class TriangleSite(object):
         HERE
 
 
+class ShadowCDT(exact_delaunay.Triangulation):
+    """ Tracks modifications to an unstructured grid and
+    maintains a shadow representation with a constrained Delaunay
+    triangulation, which can be used for geometric queries and
+    predicates.
+    """
+    def __init__(self,g):
+        super(ShadowCDT,self).__init__(extra_node_fields=[('g_n','i4')])
+        self.g=g
+        
+        self.nodemap_g_to_local={}
+
+        g.subscribe_before('add_node',self.before_add_node)
+        g.subscribe_after('add_node',self.after_add_node)
+        g.subscribe_before('modify_node',self.before_modify_node)
+        g.subscribe_before('delete_node',self.before_delete_node)
+        
+        g.subscribe_before('add_edge',self.before_add_edge)
+        g.subscribe_before('delete_edge',self.before_delete_edge)
+    def before_add_node(self,g,func_name,**k):
+        pass # no checks quite yet
+    def after_add_node(self,g,func_name,return_value,**k):
+        n=return_value
+        self.nodemap_g_to_local[n]=self.add_node(x=k['x'],g_n=n)
+    def before_modify_node(self,g,func_name,n,**k):
+        if 'x' in k:
+            my_n=self.nodemap_g_to_local[n]
+            self.modify_node(my_n,x=k['x'])
+    def before_delete_node(self,g,func_name,n,**k):
+        self.delete_node(self.nodemap_g_to_local[n])
+        del self.nodemap_g_to_local[n]
+    def before_add_edge(self,g,func_name,**k):
+        nodes=k['nodes']
+        self.add_constraint(nodes[0],nodes[1])
+    def before_delete_edge(self,g,func_name,j,**k):
+        nodes=g.edges['nodes'][j]
+        self.remove_constraint(nodes[0],nodes[1])
+
+        
 class AdvancingFront(object):
     """
     Implementation of advancing front
     """
     scale=None
     grid=None
+    cdt=None
 
     # 'fixed' flags:
     #  in order of increasing degrees of freedom in its location.
@@ -244,11 +285,18 @@ class AdvancingFront(object):
         """
         Add fields to the given grid to support advancing front
         algorithm.  Modifies grid in place, and returns it.
+
+        Also creates a Triangulation which follows modifications to 
+        the grid, keeping a constrained Delaunay triangulation around.
         """
         g.add_node_field('oring',-1*np.ones(g.Nnodes(),'i4'),on_exists='pass')
         g.add_node_field('fixed',np.zeros(g.Nnodes(),'i4'),on_exists='pass')
         g.add_node_field('ring_f',-1*np.ones(g.Nnodes(),'f8'),on_exists='pass')
-        
+
+        # Subscribe to operations *before* they happen, so that the constrained
+        # DT can signal that an invariant would be broken
+        self.cdt=ShadowCDT(g)
+                          
         return g
     
     def initialize_boundaries(self):
