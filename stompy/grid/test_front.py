@@ -2,6 +2,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import field
 from scipy import optimize as opt
+import utils
+
 import unstructured_grid
 reload(unstructured_grid)
 import exact_delaunay
@@ -233,16 +235,7 @@ def test_resample_neighbors():
         plt.axis( [34.91, 42.182, 7.300, 12.97] )
     return af
         
-af=test_resample_neighbors()
-
-af.grid.plot_nodes(labeler=lambda n,nr: str(n))
-
-## 
-af.grid.modify_node(23,x=[af.grid.nodes['x'][23,0],20.0] )
-plt.clf()
-af.cdt.plot_edges(values=af.cdt.edges['constrained'],lw=3,alpha=0.5)
-
-## 
+# af=test_resample_neighbors()
 
 # enumerate the strategies for a site:
 # paver preemptively resamples the neighbors
@@ -255,251 +248,90 @@ af.cdt.plot_edges(values=af.cdt.edges['constrained'],lw=3,alpha=0.5)
 #  try this as a separate class for each strategy, but they are all singletons
 
 
-class Strategy(object):
-    def metric(self,site,scale_factor):
-        assert False
-    def execute(self,site):
-        """
-        Apply this strategy to the given Site.
-        Returns a dict with nodes,cells which were modified 
-        """
-        assert False
+def test_actions():
+    af=test_basic_setup()
 
-class WallStrategy(Strategy):
-    """ 
-    Add two edges and a new triangle to the forward side of the
-    site.
-    """
-    def metric(self,site):
-        # rough translation from paver
-        theta=site.internal_angle
-        scale_factor = site.edge_length / site.local_length
+    site=af.choose_site()
+    af.resample_neighbors(site)
+    actions=site.actions()
+    metrics=[a.metric(site) for a in actions]
+    best=np.argmin(metrics)
+    edits=actions[best].execute(site)
+    af.optimize_edits(edits)
 
-        # Wall can be applied in a wide variety of situations
-        return 1.0 * (theta > 60*pi/180.) 
-
-    def execute(self,site):
-        na,nb,nc= site.abc
-        grid=site.grid
-        b,c = grid.nodes['x'][ [nb,nc] ]
-        bc=c-b
-        new_x = b + utils.rot(np.pi/3,bc)
-        nd=grid.add_node(x=new_x,fixed=site.af.FREE)
-        new_c=grid.add_cell_and_edges( [nb,nc,nd] )
-
-        return {'nodes': [nd],
-                'cells': [new_c] }
-
-
-class CutoffStrategy(Strategy):
-    def metric(self,site):
-        theta=site.internal_angle
-        scale_factor = site.edge_length / site.local_length
-
-        # Cutoff wants a small-ish internal angle
-        # If the sites edges are long, scale_factor > 1
-        # and we'd like to be making smaller edges, so ideal angle gets smaller
-        # 
-        ideal=60 + (1-scale_factor)*30
-        return np.abs(theta - ideal*pi/180.)
-    def execute(self,site):
-        c=site.grid.add_cell_and_edges( site.abc )
-        return {'cells':[c] }
-
-# copied from paver verbatim
-def one_point_cost(pnt,edges,target_length=5.0):
-    # pnt is intended to complete a triangle with each
-    # pair of points in edges, and should be to the left
-    # of each edge
-    penalty = 0
-    
-    max_angle = 85.0*pi/180.
-
-    # all_edges[triangle_i,{ab,bc,ca},{x,y}]
-    all_edges = zeros( (edges.shape[0], 3 ,2), float64 )
-    
-    # get the edges:
-    all_edges[:,0,:] = edges[:,0] - pnt  # ab
-    all_edges[:,1,:] = edges[:,1] - edges[:,0] # bc
-    all_edges[:,2,:] = pnt - edges[:,1] # ca
-
-    i = arange(3)
-    im1 = (i-1)%3
-    
-    #--# cost based on angle:
-    abs_angles = arctan2( all_edges[:,:,1], all_edges[:,:,0] )
-    all_angles = (pi - (abs_angles[:,i] - abs_angles[:,im1]) % (2*pi)) % (2*pi)
-        
-    # a_angles = (pi - (ab_angles - ca_angles) % (2*pi)) % (2*pi)
-    # b_angles = (pi - (bc_angles - ab_angles) % (2*pi)) % (2*pi)
-    # c_angles = (pi - (ca_angles - bc_angles) % (2*pi)) % (2*pi)
-
-    if 1:
-        # 60 is what it's been for a while, but I think in one situation
-        # this put too much weight on small angles.
-        # tried considering just large angles, but that quickly blew up.
-        # even just changing this to 50 still blows up.
-        #  how about a small tweak - s/60/58/ ??
-        worst_angle = abs(all_angles - 60*pi/180.).max() 
-        alpha = worst_angle /(max_angle - 60*pi/180.0)
-
-        # 10**alpha: edges got very short...
-        # 5**alpha - 1: closer, but overall still short edges.
-        # alpha**5: angles look kind of bad
-        angle_penalty = 10*alpha**5
-
-        # Seems like it doesn't try hard enough to get rid of almost bad angles.
-        # in one case, there is a small angle of 33.86 degrees, and another angle
-        # of 84.26 degrees. so the cost function only cares about the small angle
-        # because it is slightly more deviant from 60deg, but we may be in a cell
-        # where the only freedom we have is to change the larger angles.
-
-        # so add this in:
-        if 1:
-            # extra exponential penalty for nearly bad triangles:
-            # These values mean that 3 degrees before the triangle is invalid
-            # the exponential cuts in and will add a factor of e by the time the
-            # triangles is invalid.
-
-            scale_rad = 3.0*pi/180. # radians - e-folding scale of the cost
-            # max_angle - 2.0*scale_rad works..
-            thresh = max_angle - 1.0*scale_rad # angle at which the exponential 'cuts in'
-            big_angle_penalty = exp( (all_angles.max() - thresh) / scale_rad)
-    else:
-        alphas = (all_angles - 60*pi/180.) / (max_angle - 60*pi/180.)
-        alphas = 10*alphas**4
-        angle_penalty = alphas.sum()
-    
-    penalty += angle_penalty + big_angle_penalty
-
-    #--# Length penalties:
-    ab_lens = (all_edges[:,0,:]**2).sum(axis=1)
-    ca_lens = (all_edges[:,2,:]**2).sum(axis=1)
-
-    if 1:  # the usual..
-        min_len = min(ab_lens.min(),ca_lens.min())
-        max_len = max(ab_lens.min(),ca_lens.min())
-
-        undershoot = target_length**2 / min_len
-        overshoot  = max_len / target_length**2
-
-        length_penalty = 0
-
-        length_factor = 2
-        length_penalty += length_factor*(max(undershoot,1) - 1)
-        length_penalty += length_factor*(max(overshoot,1) - 1)
-    elif 1:
-        # Try an exponential
-        rel_len_ab = ab_lens / target_length**2
-        rel_len_ca = ca_lens / target_length**2
-
-        # So we want to severely penalize things that are more than double
-        # the target length or less than half the target length.
-        # just a wild guess here, that maybe the threshold needs to be larger.
-        # well, how about the penalty kicks in at 3x
-        thresh = 9.0 # 2.5*2.5
-        length_penalty = exp( rel_len_ab - thresh ).sum() + exp( 1.0/rel_len_ab - thresh).sum()
-        length_penalty += exp( rel_len_ca - thresh ).sum() + exp( 1.0/rel_len_ca - thresh).sum()
-
-    else:
-        rel_errs_ab = (ab_lens - target_length**2) / target_length**2
-        rel_errs_ca = (ca_lens - target_length**2) / target_length**2
-
-        length_penalty = ( (rel_errs_ab**2).sum() + (rel_errs_ca**2).sum() )
-        
-    penalty += length_penalty
-
-    return penalty
-    
-Wall=WallStrategy()
-Cutoff=CutoffStrategy()
-
-def cost_function(self,n):
-    local_length = self.scale( self.grid.nodes['x'][n] )
-    my_cells = self.grid.node_to_cells(n)
-
-    if len(my_cells) == 0:
-        return None
-
-    cell_nodes = [self.grid.cell_to_nodes(c)
-                  for c in my_cells ]
-    
-    # for the moment, can only deal with triangles
-    cell_nodes=np.array(cell_nodes)
-    
-    # pack our neighbors from the cell list into an edge
-    # list that respects the CCW condition that pnt must be on the
-    # left of each segment
-    for j in range(len(cell_nodes)):
-        if cell_nodes[j,0] == n:
-            cell_nodes[j,:2] = cell_nodes[j,1:]
-        elif cell_nodes[j,1] == n:
-            cell_nodes[j,1] = cell_nodes[j,0]
-            cell_nodes[j,0] = cell_nodes[j,2]
-
-    edges = cell_nodes[:,:2]
-    edge_points = self.grid.nodes['x'][edges]
-
-    def cost(x):
-        return one_point_cost(x,edge_points,target_length=local_length)
-    
-    return cost
-
-
-def optimize(self,edits):
-    nodes = edits.get('nodes',[])
-    for c in edits.get('cells',[]):
-        for n in self.grid.cell_to_nodes(c):
-            if n not in nodes:
-                nodes.append(n)
-    for n in nodes:
-        relax_node(self,n)
-    
-def relax_node(self,n):
-    if self.grid.nodes['fixed'][n] == self.FREE:
-        relax_free_node(self,n)
-    else:
-        print "Not ready for relaxing non-free nodes"
-        
-def relax_free_node(self,n0):
-    cost=cost_function(self,n)
-    if cost is None:
-        return 
-    x0=self.grid.nodes['x'][n]
-    local_length=self.scale( x0 )
-    new_x = opt.fmin(cost,
-                     x0,
-                     xtol=local_length*1e-4,
-                     disp=0)
-    dx=utils.dist( new_x - x0 )
-    print dx
-    self.grid.modify_node(n,x=new_x)
-
+# #
 
 af=test_basic_setup()
+check0=af.grid.checkpoint()
 
-site=af.choose_site()
-af.resample_neighbors(site)
-edits = Wall.execute(site)
-optimize(af,edits)
-
-## 
-site2=af.choose_site()
-af.resample_neighbors(site2)
-edits=Cutoff.execute(site2)
-optimize(af,edits)
 
 ##
 
-# HERE:
-#   So it can do a wall, a cutoff, and optimize them
-#   correctly.
+# without profiling, it's 20s, 8.5 cells/s (with delaunay checks)
+# without delaunay checks, that becomes 11 cells/s.
+# if it had bisect, maybe we could get to 20 cells/s?
+# 
+
+
+import time
+af=test_basic_setup()
+af.cdt.post_check=False
+
+t_start=time.time()
+
+af.loop()
+elapsed=time.time() - t_start
+print "Elapsed: %.2fs, or %f cells/s"%(elapsed,af.grid.Ncells()/elapsed)
+    
+## 
+plt.figure(1).clf()
+fig,ax=plt.subplots(num=1)
+af.loop(count=1)
+af.plot_summary(label_nodes=False)
+# 205 cells in 31s: 6.5 cells/sec.
+
+# where is the bulk of the time?
+
+
+# Join could be smarter about finishing the triangulation.
+
+# if the edge has no cells (i.e. -1,-2 or -2,-2)
+# and at least one of the nodes can slide
+
+
+## 
+
+# so it can basically finish this very simple test case, though
+# the result is a bit unseemly.  seems to favor wall too much, tends
+# to go fine, unintentionally.
+
+# not great about planning ahead for sliding nodes - i.e.
+# splitting a short bit of ring into 2 cells.
+# it gets out of the bind, but doesn't look good doing it.
+# could add a join.
+
+# slow...
+# 37s for ~200 cells.
+# 11.6s in optimization (one_point_cost: 9s)
+# 23s in exact_delaunay:modify_node
+# so it's roughly 2/3 delaunay maintenance, 1/3 node optimization (not
+# counting the resulting edit)
+
+# node optimization is mostly evaluating cost
+# delaunay maintenance is over 40% double-checking the structure,
+# 30% propagating flip
+
+# to do much real tuning here, would need a line-by-line profiler.
+
+
+# I think the best plan of attack is to roughly replicate the way paver
+# worked, then extend with the graph search
+
 #   Need to think about how these pieces are going to work together
-#   And probably a good time to (a) move most of the code above into front.py
-#   and (b) start adding the rollback, graph search side of things.
+#   And probably a good time to (a) start adding the rollback, graph
+#   search side of things.
 #   CDT is included now, though without any real integration - no checks yet
 #   for colliding edges or collinear nodes.
-
 
 site3=af.choose_site()
 
@@ -511,3 +343,29 @@ if plt:
     coll.set_lw(0)
     coll.set_cmap('winter')
     site3.plot()
+
+
+###
+
+
+# 205 cells in 31s: 6.5 cells/sec.
+##
+
+
+af=test_basic_setup()
+af.zoom= (32.227882629771564, 42.939919477502656, 5.7123819361683283, 14.064748439519079)
+
+
+af.loop(count=1)
+site=af.choose_site()
+af.resample_neighbors(site)
+
+
+## 
+
+plt.figure(1).clf()
+fig,ax=plt.subplots(num=1)
+af.plot_summary()
+af.grid.plot_cells(facecolor='0.8',edgecolor='w',lw=8,zorder=-5)
+site.plot()
+
