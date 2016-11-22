@@ -50,3 +50,21 @@ ax.imshow(terrain[::-1,:],cmap='jet',origin='lower')
 ##
 
 ds=xr.open_dataset('raob_soundings25653.cdf',decode_times=0)
+
+##
+
+
+# quiver plot:
+x=np.arange(u_output.shape[1])
+y=np.arange(u_output.shape[0])[::-1]
+
+X,Y=np.meshgrid(x,y)
+
+plt.figure(1).clf()
+fig,ax=plt.subplots(num=1)
+#ax.imshow(v_output[::-1,:],origin='lower')
+ax.imshow(terrain[::-1,:],origin='lower',interpolation='nearest')
+
+slc=slice(None,None,5)
+ax.quiver(X[slc,slc],Y[slc,slc],
+          u_output[slc,slc],v_output[slc,slc])

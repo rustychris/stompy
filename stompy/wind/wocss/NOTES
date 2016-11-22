@@ -15,3 +15,20 @@ ds=xr.open_dataset('raob_soundings25653.cdf',decode_times=0)
 
 - nice! - it has twice daily sondes.  just picked a random period in spring 2013,
   and got 150 profiles.
+
+- plotting the wind vectors on top of the terrain, it looks pretty reasonable.
+
+Questions before this could be put into place for our runs:
+ - how much wind data can we get, starting with WY2013?
+ - assume that the sonde profiles can be interpolated in time without too much
+   trouble.
+ - would have to downsample the gridded wind for input to suntans.  probably
+   okay. going to be a big dataset.
+ - aim for 1h winds?  3h?  using the sample setup as an example, one realization
+   of the output wind field is 130kB.  So a year at 3h is 194 MB.  No sweat.
+   Possible that 1km is too coarse for a place like Carquinez, but do we
+   really need perfect wind there?
+   
+
+
+ 
