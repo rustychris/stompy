@@ -1,0 +1,27 @@
+**************Sn Francisco Bay area stuff*******************************
+1				* NSKIP ascii option writes every nskip grid pts in x & y.
+10                           		* NLVL:number of flow surfaces used for calculations
+0.0,0.05,0.1,0.2,0.3,0.4,0.5,0.6,0.8,1.0 * SIGMA(NLVL):sigma values of flow levels
+7                           		* NFLAT: # of horiz. sfcs for interpol. (includes anemom. lvl)
+10.,50.,100.,200.,400.,800.,1000.       * zchooz: heights (m, msl) of horiz sfcs
+200,1,1                                 * NUMNWS,NUMTMP,numdop: total # sta., # upper wind & t-sondes
+0.515,0.3048			* SPDCNV,HTCNV conv factors input spds to m/s and heights to m
+123,108                     		* MCRS,NCRS: # rows/cols 
+1.0                          		* DSCRS:dx -- grid spacing (km)
+524.5,4134.0                    	* UTMAPX,UTMAPY:utms of reference point  
+1,1                 		* kgridx,kgridy, indices of reference point 
+1500.                         	* AVTHK -- ht (m) of top sfc over low point 
+1.0                          		* SLFAC slope fact 1st guess top sfc (0=flat,1=terr follow)
+0.2                          		* CMPRES max compress of space bet sfcs smaller=less rise
+0.001                          	* DPOTMIN min. theta lapse rate (deg/m) -- low stab lim
+0.05,10.0                               * ZZERO,Z10 sfc roughness length (m) & anemometer ht. (m)
+0.1                          		* D2MIN: min. dist for interp. wts in grid units
+2.0                                     * DTWT: distance weight power -- wt=1/(Dist**DTWT)
+20                           		* NITer, iteration limit in subroutine bal5.
+0.2                          	          * ADJMAX: max adj fact near obs 0=no adj & 1=reg adj
+65,12                            	* lowix & lowiy -- ix & iy indices of a low pt. for t-sonde 1
+41,50                       	          * ditto -- each sonde requires specifying 5 more low pts.
+3,33                       		  * ditto -- there will be 5*numtmp pts
+32,99                            	  * ditto
+42,50                         		  * ditto
+1	                        	* NEND number of cases before stopping.
