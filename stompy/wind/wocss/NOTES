@@ -1,0 +1,17 @@
+How available are the necessary data?
+
+In winds.dat:
+
+surface wind inputs: 10 stations, fairly broadly distributed.
+
+then a sounding wind speed ( utm 569000  4173000 )
+a sounding at the same location, labeled JU230512.OAK, sounds a lot like
+oakland airport?  second sounding has temp, Td, and pressure
+And the wind data is repeated...
+
+ - http://www.esrl.noaa.gov/ might provide the sounding data
+
+ds=xr.open_dataset('raob_soundings25653.cdf',decode_times=0)
+
+- nice! - it has twice daily sondes.  just picked a random period in spring 2013,
+  and got 150 profiles.
