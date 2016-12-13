@@ -5,6 +5,7 @@ An advancing front grid generator for use with unstructured_grid
 Largely a port of paver.py.
 
 """
+import pdb
 import unstructured_grid
 import exact_delaunay
 import numpy as np
@@ -268,6 +269,8 @@ class WallStrategy(Strategy):
     Add two edges and a new triangle to the forward side of the
     site.
     """
+    def __str__(self):
+        return "<Wall>"
     def metric(self,site):
         # rough translation from paver
         theta=site.internal_angle * 180/np.pi
@@ -276,8 +279,12 @@ class WallStrategy(Strategy):
         # Wall can be applied in a wide variety of situations
         # angles greater than 90, Wall may be the only option
         # angles less than 60, and we can't do a wall.
-        return np.clip( (90 - theta) / 30,
-                        0,1)
+        
+        # np.clip( (120 - theta) / 30, 0,np.inf)
+        
+        # at 90, we can try, but a bisect would be better.
+        # at 180, this is the only option.
+        return (180-theta) / 180
 
     def execute(self,site):
         na,nb,nc= site.abc
@@ -300,7 +307,56 @@ class WallStrategy(Strategy):
         return {'nodes': [nd],
                 'cells': [new_c] }
 
+class BisectStrategy(Strategy):
+    """ 
+    Add three edges and two new triangles.  
+    """
+    def __str__(self):
+        return "<Bisect>"
+    def metric(self,site):
+        # rough translation from paver
+        theta=site.internal_angle * 180/np.pi
+        scale_factor = site.edge_length / site.local_length
+
+        # Ideal is 120 degrees for a bisect
+        # Can't bisect when it's nearing 180.
+        if theta> 2*89:
+            return np.inf # not allowed
+        else:
+            ideal=120 + (1-scale_factor)*30
+            return np.abs( (theta-ideal)/ 50 ).clip(0,1)
+
+    def execute(self,site):
+        na,nb,nc= site.abc
+        grid=site.grid
+        b,c = grid.nodes['x'][ [nb,nc] ]
+        bc=c-b
+        new_x = b + utils.rot(np.pi/3,bc)
+        nd=grid.add_node(x=new_x,fixed=site.af.FREE)
+
+        # new_c=grid.add_cell_and_edges( [nb,nc,nd] )
+        j_ab=grid.nodes_to_edge(na,nb)
+        j_bc=grid.nodes_to_edge(nb,nc)
+        
+        unmesh2=[grid.UNMESHED,grid.UNMESHED]
+        # the correct unmeshed will get overwritten in
+        # add cell.
+        j_cd=grid.add_edge(nodes=[nc,nd],cells=unmesh2)
+        j_bd=grid.add_edge(nodes=[nb,nd],cells=unmesh2)
+        j_ad=grid.add_edge(nodes=[na,nd],cells=unmesh2)
+        new_c1=grid.add_cell(nodes=[nb,nc,nd],
+                             edges=[j_bc,j_cd,j_bd])
+        new_c2=grid.add_cell(nodes=[na,nb,nd],
+                             edges=[j_ab,j_bd,j_ad])
+
+        return {'nodes': [nd],
+                'cells': [new_c1,new_c2],
+                'edges': [j_cd,j_bd,j_ad] }
+
+    
 class CutoffStrategy(Strategy):
+    def __str__(self):
+        return "<Cutoff>"
     def metric(self,site):
         theta=site.internal_angle
         scale_factor = site.edge_length / site.local_length
@@ -334,6 +390,9 @@ class JoinStrategy(Strategy):
     """ 
     Given an inside angle, merge the two edges
     """
+    def __str__(self):
+        return "<Join>"
+    
     def metric(self,site):
         theta=site.internal_angle
         scale_factor = site.edge_length / site.local_length
@@ -440,6 +499,7 @@ class JoinStrategy(Strategy):
 Wall=WallStrategy()
 Cutoff=CutoffStrategy()
 Join=JoinStrategy()
+Bisect=BisectStrategy()
 
 class Site(object):
     """
@@ -488,7 +548,7 @@ class TriangleSite(object):
         return ax.plot( points[:,0],points[:,1],'r-o' )[0]
     def actions(self):
         theta=self.internal_angle
-        return [Wall,Cutoff,Join]
+        return [Wall,Cutoff,Join,Bisect]
 
 
 class ShadowCDT(exact_delaunay.Triangulation):
@@ -820,7 +880,7 @@ class AdvancingFront(object):
                          xtol=local_length*1e-4,
                          disp=0)
         dx=utils.dist( new_x - x0 )
-        self.log.info('Relaxation moved node %f'%dx)
+        self.log.debug('Relaxation moved node %f'%dx)
         if dx !=0.0:
             self.grid.modify_node(n,x=new_x)
         return cost(new_x)
@@ -926,9 +986,22 @@ class AdvancingFront(object):
             self.resample_neighbors(site)
             actions=site.actions()
             metrics=[a.metric(site) for a in actions]
-            best=np.argmin(metrics)
-            edits=actions[best].execute(site)
-            self.optimize_edits(edits)
+            bests=np.argsort(metrics)
+            for best in bests:
+                try:
+                    cp=self.grid.checkpoint()
+                    self.log.info("Chose strategy %s"%( actions[best] ) )
+                    edits=actions[best].execute(site)
+                    self.optimize_edits(edits)
+                    # could commit?
+                except self.cdt.IntersectingConstraints as exc:
+                    self.log.error("Intersecting constraints - rolling back")
+                    self.grid.revert(cp)
+                    continue
+                break
+            else:
+                self.log.error("Exhausted the actions!")
+                return False
             count-=1
             if count==0:
                 break

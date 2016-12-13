@@ -1,3 +1,5 @@
+import time
+import logging
 import matplotlib.pyplot as plt
 import numpy as np
 import field
@@ -270,20 +272,44 @@ check0=af.grid.checkpoint()
 # without profiling, it's 20s, 8.5 cells/s (with delaunay checks)
 # without delaunay checks, that becomes 11 cells/s.
 # if it had bisect, maybe we could get to 20 cells/s?
-# 
 
 
-import time
 af=test_basic_setup()
+af.log.setLevel(logging.INFO)
+
 af.cdt.post_check=False
 
 t_start=time.time()
-
-af.loop()
+#-# 
+af.loop(count=94)  
 elapsed=time.time() - t_start
 print "Elapsed: %.2fs, or %f cells/s"%(elapsed,af.grid.Ncells()/elapsed)
-    
+
+plt.figure(1).clf()
+af.plot_summary(label_nodes=False)
+
+##
+self=af
+site=self.choose_site()
+site.plot() # the AB leg is short, on the boundary, and needs resampling help
+self.resample_neighbors(site) # but resample neighbors doesn't figure it out.
+
+# maybe the problem is that resample doesn't include the existing
+# edge?  because it's called with node a, not node b.
+# can we just start calling it with b?
+# resample is only called from resample_neighbors.
+# resample is already getting an anchor, though
+# it needs both in order to identify the half-edge, that's fine.
+# but the current calling convention is insufficient - it needs
+# to be able to return a different node
+
+
+
 ## 
+# The one right after 94 is having trouble
+# it should be able to bisect, but it does wall after failing
+# at bisect.
+
 plt.figure(1).clf()
 fig,ax=plt.subplots(num=1)
 af.loop(count=1)
@@ -323,15 +349,14 @@ af.plot_summary(label_nodes=False)
 
 # to do much real tuning here, would need a line-by-line profiler.
 
-
 # I think the best plan of attack is to roughly replicate the way paver
 # worked, then extend with the graph search
 
 #   Need to think about how these pieces are going to work together
 #   And probably a good time to (a) start adding the rollback, graph
 #   search side of things.
-#   CDT is included now, though without any real integration - no checks yet
-#   for colliding edges or collinear nodes.
+#   CDT is included now, and can trigger an alternate strategy when
+#   edges intersect.  No non-local connections, though.
 
 site3=af.choose_site()
 
