@@ -273,6 +273,9 @@ check0=af.grid.checkpoint()
 # without delaunay checks, that becomes 11 cells/s.
 # if it had bisect, maybe we could get to 20 cells/s?
 
+# getting there, but now we end up with a hole in the middle??
+# speed is up to 14.1 cells/s, tho.
+
 
 af=test_basic_setup()
 af.log.setLevel(logging.INFO)

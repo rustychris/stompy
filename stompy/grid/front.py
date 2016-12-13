@@ -699,6 +699,15 @@ class AdvancingFront(object):
             return None
         
     def free_span(self,he,max_span,direction):
+        """
+        returns the distance, and the nodes making up the 
+        span, starting from anchor (the rev node of he),
+        and going until either max_span distance is found, 
+        it wraps around, or encounters a non-SLIDE-able node.
+
+        the reason this works with halfedges is that we only
+        move along nodes which are simply connected (degree 2)
+        """
         span=0.0
         if direction==1:
             trav=he.node_fwd()
@@ -707,13 +716,16 @@ class AdvancingFront(object):
             trav=he.node_rev()
             last=anchor=he.node_fwd()
 
+        nodes=[last] # anchor is included
+
         def pred(n):
             return ( (self.grid.nodes['fixed'][n]== self.SLIDE) and
                      len(self.grid.node_to_edges(n))<=2 )
 
         while pred(trav) and (trav != anchor) and (span<max_span):
             span += utils.dist( self.grid.nodes['x'][last] -
-                                 self.grid.nodes['x'][trav] )
+                                self.grid.nodes['x'][trav] )
+            nodes.append(trav)
             if direction==1:
                 he=he.fwd()
                 last,trav = trav,he.node_fwd()
@@ -722,12 +734,22 @@ class AdvancingFront(object):
                 last,trav = trav,he.node_rev()
             else:
                 assert False
-        return span
+        # could use some loop retrofitting..
+        span += utils.dist( self.grid.nodes['x'][last] -
+                            self.grid.nodes['x'][trav] )
+        nodes.append(trav)
+        return span,nodes
     
     max_span_factor=4     
     def resample(self,n,anchor,scale,direction):
-        self.log.debug("resample %d to be  %g away from %d in the %s direction"%(n,scale,anchor,
-                                                                                 direction) )
+        """
+        move/replace n, such that from anchor to n/new_n the edge
+        length is close to scale.
+
+        assumes that n is SLIDE, and has only 2 neighbors.
+        """
+        self.log.debug("resample %d to be %g away from %d in the %s direction"%(n,scale,anchor,
+                                                                                direction) )
         if direction==1: # anchor to n is t
             he=self.grid.nodes_to_halfedge(anchor,n)
         elif direction==-1:
@@ -735,7 +757,9 @@ class AdvancingFront(object):
         else:
             assert False
 
-        span_length = self.free_span(he,self.max_span_factor*scale,direction)
+        span_length,span_nodes = self.free_span(he,self.max_span_factor*scale,direction)
+        # anchor-n distance should be in there, already.
+        
         self.log.debug("free span from the anchor is %g"%span_length)
 
         if span_length < self.max_span_factor*scale:
@@ -743,7 +767,9 @@ class AdvancingFront(object):
             target_span = span_length / n_segments
             if n_segments==1:
                 self.log.debug("Only one space for 1 segment")
-                return
+                for d in span_nodes[1:-1]:
+                    self.grid.merge_edges(node=d)
+                return span_nodes[-1]
         else:
             target_span=scale
 
@@ -787,7 +813,12 @@ class AdvancingFront(object):
 
         self.grid.modify_node(n,x=new_x,ring_f=new_f)
 
+        return n
+
     def resample_neighbors(self,site):
+        """ may update site! currently only works for TriangleSite
+        (maybe it would work for others..?)
+        """
         a,b,c = site.abc
         local_length = self.scale( site.points().mean(axis=0) )
 
@@ -795,7 +826,13 @@ class AdvancingFront(object):
                              (c,1) ]:
             if ( (self.grid.nodes['fixed'][n] == self.SLIDE) and
                  len(self.grid.node_to_edges(n))<=2 ):
-                self.resample(n=n,anchor=b,scale=local_length,direction=direction)
+                n_res=self.resample(n=n,anchor=b,scale=local_length,direction=direction)
+                if n!=n_res:
+                    self.log.info("resample_neighbors changed a node")
+                    if n==a:
+                        site.abc[0]=n_res
+                    else:
+                        site.abc[2]=n_res
 
     def cost_function(self,n):
         local_length = self.scale( self.grid.nodes['x'][n] )
@@ -983,6 +1020,7 @@ class AdvancingFront(object):
             site=self.choose_site()
             if site is None:
                 break
+            # This can modify site!
             self.resample_neighbors(site)
             actions=site.actions()
             metrics=[a.metric(site) for a in actions]
