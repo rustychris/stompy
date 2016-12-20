@@ -273,8 +273,8 @@ check0=af.grid.checkpoint()
 # without delaunay checks, that becomes 11 cells/s.
 # if it had bisect, maybe we could get to 20 cells/s?
 
-# getting there, but now we end up with a hole in the middle??
-# speed is up to 14.1 cells/s, tho.
+# okay - so with bisect, and the necessary other tweaks, it
+# can now finish, and do so at 14 cells/s.
 
 
 af=test_basic_setup()
@@ -283,8 +283,8 @@ af.log.setLevel(logging.INFO)
 af.cdt.post_check=False
 
 t_start=time.time()
-#-# 
-af.loop(count=94)  
+## 
+af.loop()  
 elapsed=time.time() - t_start
 print "Elapsed: %.2fs, or %f cells/s"%(elapsed,af.grid.Ncells()/elapsed)
 
@@ -292,66 +292,30 @@ plt.figure(1).clf()
 af.plot_summary(label_nodes=False)
 
 ##
-self=af
-site=self.choose_site()
-site.plot() # the AB leg is short, on the boundary, and needs resampling help
-self.resample_neighbors(site) # but resample neighbors doesn't figure it out.
 
-# maybe the problem is that resample doesn't include the existing
-# edge?  because it's called with node a, not node b.
-# can we just start calling it with b?
-# resample is only called from resample_neighbors.
-# resample is already getting an anchor, though
-# it needs both in order to identify the half-edge, that's fine.
-# but the current calling convention is insufficient - it needs
-# to be able to return a different node
-
-
-
-## 
-# The one right after 94 is having trouble
-# it should be able to bisect, but it does wall after failing
-# at bisect.
-
-plt.figure(1).clf()
-fig,ax=plt.subplots(num=1)
-af.loop(count=1)
-af.plot_summary(label_nodes=False)
-# 205 cells in 31s: 6.5 cells/sec.
-
+# having added bisect, a few fixes, tweaks, 
 # where is the bulk of the time?
+# 11.82 seconds for 144 cells
 
+# 4.8s for optimize - nelder-mead
+#   3.6 for 30k calls to one_point_cost
 
-# Join could be smarter about finishing the triangulation.
+# 1.3s for 305k calls to numpy.reduce??
 
-# if the edge has no cells (i.e. -1,-2 or -2,-2)
-# and at least one of the nodes can slide
+# 2.2s in topo_sort_adjacent_nodes
+# 3.3s in propagating_flip
+# 1.2s in nodes_to_halfedge
+# 5.5s in modify_node
+
+# something like 0.35s total for robust predicates
+
+# only 0.6s for locate - but this will get worse at scale
+#  until we include passing in a starting point
+
+# So making modify_node smarter could save up to 50%
 
 
 ## 
-
-# so it can basically finish this very simple test case, though
-# the result is a bit unseemly.  seems to favor wall too much, tends
-# to go fine, unintentionally.
-
-# not great about planning ahead for sliding nodes - i.e.
-# splitting a short bit of ring into 2 cells.
-# it gets out of the bind, but doesn't look good doing it.
-# could add a join.
-
-# slow...
-# 37s for ~200 cells.
-# 11.6s in optimization (one_point_cost: 9s)
-# 23s in exact_delaunay:modify_node
-# so it's roughly 2/3 delaunay maintenance, 1/3 node optimization (not
-# counting the resulting edit)
-
-# node optimization is mostly evaluating cost
-# delaunay maintenance is over 40% double-checking the structure,
-# 30% propagating flip
-
-# to do much real tuning here, would need a line-by-line profiler.
-
 # I think the best plan of attack is to roughly replicate the way paver
 # worked, then extend with the graph search
 
