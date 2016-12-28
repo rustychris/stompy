@@ -266,7 +266,6 @@ def test_actions():
 af=test_basic_setup()
 check0=af.grid.checkpoint()
 
-
 ##
 
 # without profiling, it's 20s, 8.5 cells/s (with delaunay checks)
@@ -276,6 +275,19 @@ check0=af.grid.checkpoint()
 # okay - so with bisect, and the necessary other tweaks, it
 # can now finish, and do so at 14 cells/s.
 
+# With the fast-moves in CDT, it fails around node 37, and the
+# looks like it is partway through moving 37, with the CDT and
+# the grid not in sync.  CDT itself looks valid.  But there was
+# a call to topo_sort_neighbors, asking for 6 as the reference
+# nbr, but 6 isn't a neighbor now?
+# this is from restore_delaunay_extra, line 990
+# Okay - this is fallout from the second propagating_flip in
+# restore_delaunay_extra, and would be fixed by avoiding the
+# repeated calls to topo_sort_neighbors.
+# Fixed by using a smarter approach for that loop in restore_delaunay_extra.
+# that gets us to 20 cells/s.
+# Fixing the same loop in the regular restore_delaunay (actually, just combining
+# their logic into a single function) - no big improvement, still 20 cells/s.
 
 af=test_basic_setup()
 af.log.setLevel(logging.INFO)
@@ -283,7 +295,7 @@ af.log.setLevel(logging.INFO)
 af.cdt.post_check=False
 
 t_start=time.time()
-## 
+# # 
 af.loop()  
 elapsed=time.time() - t_start
 print "Elapsed: %.2fs, or %f cells/s"%(elapsed,af.grid.Ncells()/elapsed)
@@ -293,26 +305,24 @@ af.plot_summary(label_nodes=False)
 
 ##
 
-# having added bisect, a few fixes, tweaks, 
-# where is the bulk of the time?
-# 11.82 seconds for 144 cells
+# What's the breakdown of time now?
+# 8.4s total
+#   4.5s fmin / _minimize_nelder_mead
+#     3.4s one_point_cost
+#   1.3s from_nodes (this could probably be sped up?)
+#   2.0 in topo_sort_adjacent_nodes
+#   2.8s restore_delaunay
+#     2.0 in propagating_flip
+# 6.9 relax_node - but this includes the move
 
-# 4.8s for optimize - nelder-mead
-#   3.6 for 30k calls to one_point_cost
+# the CDT costs are mostly covered by:
+# 2.5: modify_node 
+# 1.3: add_node
+# 0.2: delete_node
+# ----
+# 4.0s
 
-# 1.3s for 305k calls to numpy.reduce??
-
-# 2.2s in topo_sort_adjacent_nodes
-# 3.3s in propagating_flip
-# 1.2s in nodes_to_halfedge
-# 5.5s in modify_node
-
-# something like 0.35s total for robust predicates
-
-# only 0.6s for locate - but this will get worse at scale
-#  until we include passing in a starting point
-
-# So making modify_node smarter could save up to 50%
+# And the optimization 4.5s
 
 
 ## 
