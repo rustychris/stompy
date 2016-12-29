@@ -12,7 +12,7 @@ import exact_delaunay
 reload(exact_delaunay)
 import front
 reload(front)
-
+## 
 #-# Curve -
 
 def hex_curve():
@@ -268,26 +268,8 @@ check0=af.grid.checkpoint()
 
 ##
 
-# without profiling, it's 20s, 8.5 cells/s (with delaunay checks)
-# without delaunay checks, that becomes 11 cells/s.
-# if it had bisect, maybe we could get to 20 cells/s?
-
-# okay - so with bisect, and the necessary other tweaks, it
-# can now finish, and do so at 14 cells/s.
-
-# With the fast-moves in CDT, it fails around node 37, and the
-# looks like it is partway through moving 37, with the CDT and
-# the grid not in sync.  CDT itself looks valid.  But there was
-# a call to topo_sort_neighbors, asking for 6 as the reference
-# nbr, but 6 isn't a neighbor now?
-# this is from restore_delaunay_extra, line 990
-# Okay - this is fallout from the second propagating_flip in
-# restore_delaunay_extra, and would be fixed by avoiding the
-# repeated calls to topo_sort_neighbors.
-# Fixed by using a smarter approach for that loop in restore_delaunay_extra.
-# that gets us to 20 cells/s.
-# Fixing the same loop in the regular restore_delaunay (actually, just combining
-# their logic into a single function) - no big improvement, still 20 cells/s.
+# on sfei desktop, it's 41 cells/s.
+# any chance numba can help out here?
 
 af=test_basic_setup()
 af.log.setLevel(logging.INFO)
@@ -371,3 +353,13 @@ af.plot_summary()
 af.grid.plot_cells(facecolor='0.8',edgecolor='w',lw=8,zorder=-5)
 site.plot()
 
+## 
+
+# Does numba do anything now?
+# takes some work -
+# and it is having trouble with being called in the true context.
+# passing it basically the same values, but manually on the command
+# line appears to work just fine.
+# could be that this doesn't call it in quite the same way?
+# or that there is some nuance in the agruments, like not being
+# contiguous, C-style, etc.?

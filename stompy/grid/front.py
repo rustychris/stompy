@@ -22,8 +22,13 @@ except ImportError:
     plt=None
 
 
+from numba import jit, int32, float64
+
 # copied from paver verbatim, with edits to reference
 # numpy identifiers via np._
+# @jit(nopython=True)
+# @jit
+@jit(float64(float64[:],float64[:,:,:],float64),nopython=True)
 def one_point_cost(pnt,edges,target_length=5.0):
     # pnt is intended to complete a triangle with each
     # pair of points in edges, and should be to the left
@@ -90,12 +95,28 @@ def one_point_cost(pnt,edges,target_length=5.0):
     penalty += angle_penalty + big_angle_penalty
 
     #--# Length penalties:
-    ab_lens = (all_edges[:,0,:]**2).sum(axis=1)
-    ca_lens = (all_edges[:,2,:]**2).sum(axis=1)
+    if 0:
+        ab_lens = (all_edges[:,0,:]**2).sum(axis=1)
+        ca_lens = (all_edges[:,2,:]**2).sum(axis=1)
+        min_ab=min(ab_lens)
+        min_ca=min(ca_lens)
+    else:
+        min_ab=np.inf
+        min_ca=np.inf
+        for idx in range(edges.shape[0]):
+            l_ab=all_edges[idx,0,:].sum()
+            l_ca=all_edges[idx,2,:].sum()
+            if l_ab<min_ab:
+                min_ab=l_ab
+            if l_ca<min_ca:
+                min_ca=l_ca
 
-    # the usual..
-    min_len = min(ab_lens.min(),ca_lens.min())
-    max_len = max(ab_lens.min(),ca_lens.min())
+    # had been using ab_lens.min(), but numba didn't like that.
+    # okay - the problem is that numba doesn't understand the sum
+    # above, and thinks that ab_lens is a scalar.
+
+    min_len = min( min_ab,min_ca )
+    max_len = max( min_ab,min_ca )
 
     undershoot = target_length**2 / min_len
     overshoot  = max_len / target_length**2
@@ -933,16 +954,18 @@ class AdvancingFront(object):
         assert np.isfinite(f0)
         assert ring>=0
 
-        cost_slide=lambda f: cost_free( self.curves[ring](f) )
+        # used to just be f, but I think it's more appropriate to
+        # be f[0]
+        cost_slide=lambda f: cost_free( self.curves[ring](f[0]) )
 
         local_length=self.scale( x0 )
         new_f = opt.fmin(cost_slide,
                          [f0],
                          xtol=local_length*1e-4,
                          disp=0)
-        new_f=new_f[0]
-        if new_f!=f0:
-            self.slide_node(n,new_f-f0)
+        
+        if new_f[0]!=f0:
+            self.slide_node(n,new_f[0]-f0)
         return cost_slide(new_f)
 
     def find_slide_conflicts(self,n,delta_f):
