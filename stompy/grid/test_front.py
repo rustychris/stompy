@@ -268,8 +268,110 @@ check0=af.grid.checkpoint()
 
 ##
 
+# Back-tracking
+# The idea is that with sufficient roll-back, it can build a 
+# decision tree and optimize between strategies.
+# There are at least two ways in which this can be used:
+#   optimizing: try multiple strategies, possibly even multiple
+#     steps of each, evaluate the quality of the result, and then
+#     go with the best one.
+#   recovering: when a strategy fails, step back one or more steps
+#     and try other options.
+
+
+# This process should be managed in a decision tree, where each node
+# of the tree represents a state, any metrics associated with that
+# state, and the set of choices for what to do next.
+
+# The decisions are (i) which site to pursue, and (ii) which strategy
+# to apply at the site.
+
+# There has to be a way to "commit" parts of the tree, moving the root
+# of the tree down.
+
+# Assuming that we deal with only one copy of the grid, then at most one
+# node in the tree reflects the actual state of the grid.
+
+# As long as we're careful about how checkpoints store data (i.e. no
+# shared state), then chunks of the op_stack can be stored and used
+# for quicker fast-forwarding.
+
+# There is a distinction between decisions which have been tried (and
+# so they can have a metric for how it turned out, and some operations for
+# fast-forwarding the actions), versus decisions which have been posed
+# but not tried.
+# Maybe it's up to the parent node to hold the set of decisions, and as
+# they are tried, then we populate the child nodes.
+
+
+# the tree should be held by af.
+# 
+
+af=test_basic_setup()
+af.log.setLevel(logging.INFO)
+
+af.cdt.post_check=False
+# af.plot_summary()
+
+
+class DTNode(object):
+    parent=None 
+    af=None # AdvancingFront object
+    cp=None # checkpoint
+    ops_parent=None # chunk of op_stack to get from parent to here.
+    children=None # filled in by subclass
+    
+    def __init__(self,af,parent=None):
+        self.af=af
+        self.parent=parent
+        self.cp=af.grid.checkpoint()
+
+class DTChooseSite(DTNode):
+    def __init__(self,af,parent=None):
+        super(DTChooseSite,self).__init__(af=af,parent=parent)
+        self.sites=af.enumerate_sites()
+        self.children=[None]*len(self.sites)
+    def try_child(self,i):
+        """ Assumes that af state is currently at this node,
+        try the decision of the ith child, create the new DTNode
+        for that, and shift af state to be that child.
+        """
+        site=self.sites[i]
+        af.advance_at_site(site)
+        self.children[i] = DTChooseSite(af=self.af,parent=self)
+        af.current=self.children[i]
+    def revert_to_parent(self):
+        if self.parent is None:
+            return False
+        return self.parent.revert_to_here()
+    def revert_to_here(self):
+        self.af.grid.revert(self.cp)
+        self.af.current=self
+        
+
+class DTChooseStrategy(DTNode):
+    pass
+
+
+self=af
+af.root=DTChooseSite(self)
+af.current=af.root
+af.plot_summary() ; plt.pause(1.0)
+
+af.current.try_child(0)
+# Could then pull out some metrics on how well that decision went..
+af.plot_summary() ; plt.pause(1.0)
+
+af.current.revert_to_parent() # now back up
+af.plot_summary() ; plt.pause(1.0)
+
+af.current.try_child(1) # try a different child
+af.plot_summary()
+
+
+## 
 # on sfei desktop, it's 41 cells/s.
-# any chance numba can help out here?
+# any chance numba can help out here? too much of a pain for now.
 
 af=test_basic_setup()
 af.log.setLevel(logging.INFO)
@@ -287,27 +389,6 @@ af.plot_summary(label_nodes=False)
 
 ##
 
-# What's the breakdown of time now?
-# 8.4s total
-#   4.5s fmin / _minimize_nelder_mead
-#     3.4s one_point_cost
-#   1.3s from_nodes (this could probably be sped up?)
-#   2.0 in topo_sort_adjacent_nodes
-#   2.8s restore_delaunay
-#     2.0 in propagating_flip
-# 6.9 relax_node - but this includes the move
-
-# the CDT costs are mostly covered by:
-# 2.5: modify_node 
-# 1.3: add_node
-# 0.2: delete_node
-# ----
-# 4.0s
-
-# And the optimization 4.5s
-
-
-## 
 # I think the best plan of attack is to roughly replicate the way paver
 # worked, then extend with the graph search
 
@@ -330,30 +411,6 @@ if plt:
 
 
 ###
-
-
-# 205 cells in 31s: 6.5 cells/sec.
-##
-
-
-af=test_basic_setup()
-af.zoom= (32.227882629771564, 42.939919477502656, 5.7123819361683283, 14.064748439519079)
-
-
-af.loop(count=1)
-site=af.choose_site()
-af.resample_neighbors(site)
-
-
-## 
-
-plt.figure(1).clf()
-fig,ax=plt.subplots(num=1)
-af.plot_summary()
-af.grid.plot_cells(facecolor='0.8',edgecolor='w',lw=8,zorder=-5)
-site.plot()
-
-## 
 
 # Does numba do anything now?
 # takes some work -

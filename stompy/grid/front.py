@@ -22,13 +22,13 @@ except ImportError:
     plt=None
 
 
-from numba import jit, int32, float64
+# from numba import jit, int32, float64
 
 # copied from paver verbatim, with edits to reference
 # numpy identifiers via np._
 # @jit(nopython=True)
 # @jit
-@jit(float64(float64[:],float64[:,:,:],float64),nopython=True)
+# @jit(float64(float64[:],float64[:,:,:],float64),nopython=True)
 def one_point_cost(pnt,edges,target_length=5.0):
     # pnt is intended to complete a triangle with each
     # pair of points in edges, and should be to the left
@@ -694,8 +694,9 @@ class AdvancingFront(object):
                                     cells=[self.grid.UNMESHED,
                                            self.grid.UNDEFINED] )
 
-    def choose_site(self):
+    def enumerate_sites(self):
         sites=[]
+        # FIX: This doesn't scale!
         valid=(self.grid.edges['cells'][:,:]==self.grid.UNMESHED) 
         J,Orient = np.nonzero(valid)
 
@@ -711,6 +712,9 @@ class AdvancingFront(object):
             assert b==bb
 
             sites.append( TriangleSite(self,nodes=[a,b,c]) )
+        return sites
+    def choose_site(self):
+        sites=self.enumerate_sites()
         if len(sites):
             scores=[ site.metric()
                      for site in sites ]
@@ -1043,29 +1047,33 @@ class AdvancingFront(object):
             site=self.choose_site()
             if site is None:
                 break
-            # This can modify site!
-            self.resample_neighbors(site)
-            actions=site.actions()
-            metrics=[a.metric(site) for a in actions]
-            bests=np.argsort(metrics)
-            for best in bests:
-                try:
-                    cp=self.grid.checkpoint()
-                    self.log.info("Chose strategy %s"%( actions[best] ) )
-                    edits=actions[best].execute(site)
-                    self.optimize_edits(edits)
-                    # could commit?
-                except self.cdt.IntersectingConstraints as exc:
-                    self.log.error("Intersecting constraints - rolling back")
-                    self.grid.revert(cp)
-                    continue
-                break
-            else:
-                self.log.error("Exhausted the actions!")
-                return False
+            self.advance_at_site(site)
             count-=1
             if count==0:
                 break
+            
+    def advance_at_site(self,site):
+        # This can modify site!
+        self.resample_neighbors(site)
+        actions=site.actions()
+        metrics=[a.metric(site) for a in actions]
+        bests=np.argsort(metrics)
+        for best in bests:
+            try:
+                cp=self.grid.checkpoint()
+                self.log.info("Chose strategy %s"%( actions[best] ) )
+                edits=actions[best].execute(site)
+                self.optimize_edits(edits)
+                # could commit?
+            except self.cdt.IntersectingConstraints as exc:
+                self.log.error("Intersecting constraints - rolling back")
+                self.grid.revert(cp)
+                continue
+            break
+        else:
+            self.log.error("Exhausted the actions!")
+            return False
+        return True
         
     zoom=None
     def plot_summary(self,ax=None,
