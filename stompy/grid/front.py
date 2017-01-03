@@ -154,8 +154,12 @@ class Curve(object):
         if metric=='distance':
             if self.closed:
                 # wraps around
-                f=f % self.distances[-1]
+                # double mod in case f==-eps
+                f=(f % self.distances[-1]) % self.distances[-1]
             # side='right' ensures that f=0 works
+            # it's unfortunately possible to get f=-eps, which rounds in
+            # a way such that (f % distances[-1]) == distances[-1]
+            # the double mod above might solve that
             idxs=np.searchsorted(self.distances,f,side='right') - 1
             
             alphas = (f - self.distances[idxs]) / (self.distances[idxs+1]-self.distances[idxs])
@@ -515,6 +519,12 @@ class JoinStrategy(Strategy):
                     nodes[ni]=anchor
             cnew=grid.add_cell(nodes=nodes)
             edits['cells'].append(cnew)
+
+        # This check could also go in unstructured_grid, maybe optionally?
+        areas=grid.cells_area()
+        if np.any( areas[edits['cells']]<=0.0 ):
+            raise StrategyFailed("Join created non-positive area cells")
+
         return edits
     
 Wall=WallStrategy()
@@ -597,7 +607,11 @@ class ShadowCDT(exact_delaunay.Triangulation):
         pass # no checks quite yet
     def after_add_node(self,g,func_name,return_value,**k):
         n=return_value
-        self.nodemap_g_to_local[n]=self.add_node(x=k['x'],g_n=n)
+        my_k={}
+        # re: _index
+        # as long as there aren't Steiner vertices and the like, then
+        # it's safe to force node index here to match the parent
+        self.nodemap_g_to_local[n]=self.add_node(x=k['x'],g_n=n,_index=n)
     def before_modify_node(self,g,func_name,n,**k):
         if 'x' in k:
             my_n=self.nodemap_g_to_local[n]
@@ -633,7 +647,9 @@ class AdvancingFront(object):
     # don't use 0 here, so that it's easier to detect uninitialized values
     RIGID=1 # should not be moved at all
     SLIDE=2 # able to slide along a ring
-    FREE=3  # not constrained 
+    FREE=3  # not constrained
+
+    StrategyFailed=StrategyFailed
     
     def __init__(self,grid=None,scale=None):
         """

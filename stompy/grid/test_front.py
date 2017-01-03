@@ -3,6 +3,7 @@ import logging
 import matplotlib.pyplot as plt
 import numpy as np
 import field
+import pdb
 from scipy import optimize as opt
 import utils
 
@@ -100,7 +101,7 @@ def test_basic_setup():
     # create boundary edges based on scale and curves:
     af.initialize_boundaries()
 
-    if plt:
+    if 0 and plt:
         plt.clf()
         g=af.grid
         g.plot_edges()
@@ -307,39 +308,54 @@ check0=af.grid.checkpoint()
 # the tree should be held by af.
 # 
 
+##
+
+af2=test_basic_setup()
+af2.log.setLevel(logging.INFO)
+
+af2.cdt.post_check=False
+af2.loop()
+plt.figure(2).clf()
+fig,ax=plt.subplots(num=2)
+af2.plot_summary(ax=ax)
+ax.set_title('loop()')
+
+## 
+
+plt.figure(1).clf()
+fig,ax=plt.subplots(num=1)
 af=test_basic_setup()
 af.log.setLevel(logging.INFO)
 
 af.cdt.post_check=False
-# af.plot_summary()
-
 
 class DTNode(object):
     parent=None 
     af=None # AdvancingFront object
     cp=None # checkpoint
     ops_parent=None # chunk of op_stack to get from parent to here.
-    children=None # filled in by subclass
+    options=None # node-specific list of data for child options
+    
+    children=None # filled in by subclass [DTNode, ... ]
+    child_prior=None # est. cost for child
+    child_post =None # actual cost for child
     
     def __init__(self,af,parent=None):
         self.af=af
         self.parent=parent
-        self.cp=af.grid.checkpoint()
-
-class DTChooseSite(DTNode):
-    def __init__(self,af,parent=None):
-        super(DTChooseSite,self).__init__(af=af,parent=parent)
-        self.sites=af.enumerate_sites()
-        self.children=[None]*len(self.sites)
-    def try_child(self,i):
-        """ Assumes that af state is currently at this node,
-        try the decision of the ith child, create the new DTNode
-        for that, and shift af state to be that child.
-        """
-        site=self.sites[i]
-        af.advance_at_site(site)
-        self.children[i] = DTChooseSite(af=self.af,parent=self)
-        af.current=self.children[i]
+        # in cases where init of the node makes some changes,
+        # this should be updated
+        self.cp=af.grid.checkpoint() 
+        self.active_child=None
+    def set_options(self,options,priors):
+        self.options=options
+        self.child_prior=priors
+        
+        N=len(options)
+        self.children=[None] * N
+        self.child_post =[None]*N
+        self.child_order=np.argsort(self.child_prior) 
+        
     def revert_to_parent(self):
         if self.parent is None:
             return False
@@ -347,27 +363,222 @@ class DTChooseSite(DTNode):
     def revert_to_here(self):
         self.af.grid.revert(self.cp)
         self.af.current=self
-        
+        self.active_child=None
 
+    def try_child(self,i):
+        assert False # implemented by subclass
+        
+    def best_child(self,count=0,cb=None):
+        """
+        Try all, (or up to count) children, 
+        use the best one based on post scores.
+        If no children succeeded, return False, otherwise True
+        """
+        if count:
+            count=min(count,len(self.options))
+        else:
+            count=len(self.options)
+
+        best=None
+        for i in range(count):
+            print("best_child: trying %d / %d"%(i,count))
+            
+            if self.try_child(i):
+                if cb: cb()
+                if best is None:
+                    best=i
+                elif self.child_post[i] < self.child_post[best]:
+                    best=i
+                if i-1<count: 
+                    self.revert_to_here()
+            else:
+                print("best_child: option %d did not succeed"%i)
+        if best is None:
+            # no children worked out -
+            return False
+        
+        # wait to see if the best was the last, in which case
+        # can save an undo/redo
+        if best!=count-1:
+            self.revert_to_here()
+            self.try_child(best)
+        return True
+
+class DTChooseSite(DTNode):
+    def __init__(self,af,parent=None):
+        super(DTChooseSite,self).__init__(af=af,parent=parent)
+        sites=af.enumerate_sites()
+        
+        priors=[ site.metric()
+                 for site in sites ]
+        
+        self.set_options(sites,priors)
+        
+    def try_child(self,i):
+        """ 
+        Assumes that af state is currently at this node,
+        try the decision of the ith child, create the new DTNode
+        for that, and shift af state to be that child.
+
+        Returns true if successful.  On failure (topological violation?)
+        return false, and state should be unchanged.
+        """
+        assert self.af.current==self
+        
+        site=self.options[self.child_order[i]]
+
+        self.children[i] = DTChooseStrategy(af=self.af,parent=self,site=site)
+        # nothing to update for posterior
+        self.child_post[i] = self.child_prior[i]
+        
+        af.current=self.children[i]
+        self.active_child=i
+        return True
+    
+    def best_child(self,count=0,cb=None):
+        """
+        For choosing a site, prior is same as posterior
+        """
+        if count:
+            count=min(count,len(self.options))
+        else:
+            count=len(self.options)
+
+        best=None
+        for i in range(count):
+            print("best_child: trying %d / %d"%(i,count))
+            if self.try_child(i):
+                if cb: cb()
+                # no need to go further
+                return True
+        return False
+        
 class DTChooseStrategy(DTNode):
+    def __init__(self,af,parent,site):
+        super(DTChooseStrategy,self).__init__(af=af,parent=parent)
+        self.site=site
+
+        self.af.resample_neighbors(site)
+        self.cp=af.grid.checkpoint() 
+
+        actions=site.actions()
+        priors=[a.metric(site)
+                for a in actions]
+        self.set_options(actions,priors)
+
+    def try_child(self,i):
+        try:
+            edits=self.options[self.child_order[i]].execute(self.site)
+            self.af.optimize_edits(edits)
+            # could commit?
+        except self.af.cdt.IntersectingConstraints as exc:
+            self.af.log.error("Intersecting constraints - rolling back")
+            self.af.grid.revert(self.cp)
+            return False
+        except self.af.StrategyFailed as exc:
+            self.af.log.error("Strategy failed - rolling back")
+            self.af.grid.revert(self.cp)
+            return False
+        
+        self.children[i] = DTChooseSite(af=self.af,parent=self)
+        self.active_edits=edits # not sure this is the right place to store this
+        self.af.current=self.children[i]
+
+        nodes=[]
+        for c in edits['cells']:
+            nodes += list(self.af.grid.cell_to_nodes(c))
+        for n in edits.get('nodes',[]):
+            nodes.append(n)
+        nodes=list(set(nodes))
+        cost = np.max( [self.af.eval_cost(n)
+                        for n in nodes] )
+        self.child_post[i]=cost
+        return True
+
+if 0: # manual testing
+    af.root=DTChooseSite(af)
+    af.current=af.root
+    # af.plot_summary() ; plt.pause(1.0)
+
+    def cb():
+        print("tried...")
+        af.plot_summary()
+        fig.canvas.draw()
+    af.current.best_child()
+    af.current.best_child(cb=cb)
+    af.current.best_child()
+    # This is leaving things in a weird place
+    af.current.best_child(cb=cb)
+
+af.plot_summary()    
+
+
+##
+
+# This runs okay for a while, then catches an Edge has cell neighbors error
+# in the middle of merge_edges, which comes as part of a slide_node
+# looks like it just stepped over node 31 entirely?
+# it's a failed Join, and we're partway through relaxing nodes
+# site was 30,31,38
+# it's pretty clear that a Join is not the way to go, but where
+# exactly is it falling apart?
+# 
+
+# Single step lookahead:
+plt.figure(1).clf()
+fig,ax=plt.subplots(num=1)
+
+af=test_basic_setup()
+af.log.setLevel(logging.INFO)
+af.cdt.post_check=False
+af.current=af.root=DTChooseSite(af)
+## 
+while 1:
+    if not af.current.children:
+        break # we're done?
+
+    def cb():
+        af.plot_summary(label_nodes=False)
+        fig.canvas.draw()
+    
+    if not af.current.best_child(cb=cb):
+        assert False
+    # try: # DBG
+    #     if af.current.site.abc == [30,31,38]:
+    #         break
+    # except AttributeError:
+    #     pass
+    break # DBG
+af.plot_summary(ax=ax)
+try:
+    af.current.site.plot()
+except AttributeError:
     pass
 
+##
 
-self=af
-af.root=DTChooseSite(self)
-af.current=af.root
-af.plot_summary() ; plt.pause(1.0)
+# gets one step further -- new fail... HERE
 
-af.current.try_child(0)
-# Could then pull out some metrics on how well that decision went..
-af.plot_summary() ; plt.pause(1.0)
+##     
+# Basic, no lookahead:
+af.current=af.root=DTChooseSite(af)
+while 1:
+    if not af.current.children:
+        break # we're done?
+    
+    for child_i in range(len(af.current.children)):
+        if af.current.try_child(child_i):
+            # Accept the first child which returns true
+            break
+    else:
+        assert False # none of the children worked out
+af.plot_summary(ax=ax)
 
-af.current.revert_to_parent() # now back up
-af.plot_summary() ; plt.pause(1.0)
 
-af.current.try_child(1) # try a different child
-af.plot_summary()
-
+# 4. Add in test metrics to evaluate the result of each step.
+#    maybe use edits, which already tracks what parts of the grid have changed
+# 5. Implement one-lookahead (ChooseSite won't do anything smart here...)
+# 6. Implement n-lookahead
 
 ## 
 # on sfei desktop, it's 41 cells/s.
