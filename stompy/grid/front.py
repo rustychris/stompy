@@ -509,6 +509,7 @@ class JoinStrategy(Strategy):
                 if cells[1]>=0:
                     cells[1]=-2
 
+                # HERE!!
                 jnew=grid.add_edge( nodes=nodes, cells=cells )
                 edits['edges'].append(jnew)
 

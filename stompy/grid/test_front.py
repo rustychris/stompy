@@ -514,17 +514,14 @@ af.plot_summary()
 
 
 ##
-
-# This runs okay for a while, then catches an Edge has cell neighbors error
-# in the middle of merge_edges, which comes as part of a slide_node
-# looks like it just stepped over node 31 entirely?
-# it's a failed Join, and we're partway through relaxing nodes
-# site was 30,31,38
-# it's pretty clear that a Join is not the way to go, but where
-# exactly is it falling apart?
-# 
-
 # Single step lookahead:
+
+# First it failed on a bad node reference, like the node was deleted after
+# the site was selected.
+# Ran it again, and it failed with ConstraintCollinearNode
+# That is probably real, and just needs to be included in exceptions.
+# subsequent runs its all about the constraint
+
 plt.figure(1).clf()
 fig,ax=plt.subplots(num=1)
 
@@ -532,8 +529,8 @@ af=test_basic_setup()
 af.log.setLevel(logging.INFO)
 af.cdt.post_check=False
 af.current=af.root=DTChooseSite(af)
-## 
-while 1:
+
+for c in range(31):
     if not af.current.children:
         break # we're done?
 
@@ -543,12 +540,7 @@ while 1:
     
     if not af.current.best_child(cb=cb):
         assert False
-    # try: # DBG
-    #     if af.current.site.abc == [30,31,38]:
-    #         break
-    # except AttributeError:
-    #     pass
-    break # DBG
+
 af.plot_summary(ax=ax)
 try:
     af.current.site.plot()
@@ -557,7 +549,15 @@ except AttributeError:
 
 ##
 
+af.current.try_child(3)
+
+##
+
 # gets one step further -- new fail... HERE
+# bad node indices.  site is [29,30,41]
+# trying a bisect, but node 41 isn't there?
+# that's the first strategy tried.
+# is it because resampling dropped a node?
 
 ##     
 # Basic, no lookahead:
