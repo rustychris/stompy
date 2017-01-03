@@ -513,7 +513,7 @@ if 0: # manual testing
 af.plot_summary()    
 
 
-##
+## 
 # Single step lookahead:
 
 # First it failed on a bad node reference, like the node was deleted after
@@ -529,35 +529,40 @@ af=test_basic_setup()
 af.log.setLevel(logging.INFO)
 af.cdt.post_check=False
 af.current=af.root=DTChooseSite(af)
+## 
 
-for c in range(31):
+# the results are not that great, seems that Wall
+# wins out as much as possible, since it is least constrained
+# then it ends up using too many joins, where it should have
+# just used a bisect.
+# also seems like the optimization is favoring angles over 
+# scale too much, such that the results stray too far from
+# a constant scale, and then it can't recover
+
+# something is causing it to stray from determinism.
+
+while 1:
     if not af.current.children:
         break # we're done?
 
     def cb():
         af.plot_summary(label_nodes=False)
+        try:
+            af.current.site.plot()
+        except AttributeError:
+            pass
         fig.canvas.draw()
+        plt.pause(0.01)
     
     if not af.current.best_child(cb=cb):
         assert False
+    cb()
 
-af.plot_summary(ax=ax)
-try:
-    af.current.site.plot()
-except AttributeError:
-    pass
+    break
 
-##
 
-af.current.try_child(3)
+## 
 
-##
-
-# gets one step further -- new fail... HERE
-# bad node indices.  site is [29,30,41]
-# trying a bisect, but node 41 isn't there?
-# that's the first strategy tried.
-# is it because resampling dropped a node?
 
 ##     
 # Basic, no lookahead:

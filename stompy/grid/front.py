@@ -509,8 +509,11 @@ class JoinStrategy(Strategy):
                 if cells[1]>=0:
                     cells[1]=-2
 
-                # HERE!!
-                jnew=grid.add_edge( nodes=nodes, cells=cells )
+                # This can raise Collinear exceptions
+                try:
+                    jnew=grid.add_edge( nodes=nodes, cells=cells )
+                except exact_delaunay.ConstraintCollinearNode:
+                    raise StrategyFailed("Edge was collinear with existing nodes")
                 edits['edges'].append(jnew)
 
         for c,data in cells_to_replace:
