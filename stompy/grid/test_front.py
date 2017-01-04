@@ -389,12 +389,13 @@ class DTNode(object):
                     best=i
                 elif self.child_post[i] < self.child_post[best]:
                     best=i
-                if i-1<count: 
+                if i<count-1: 
                     self.revert_to_here()
             else:
                 print("best_child: option %d did not succeed"%i)
         if best is None:
             # no children worked out -
+            print("best_child: no children worked")
             return False
         
         # wait to see if the best was the last, in which case
@@ -516,12 +517,6 @@ af.plot_summary()
 ## 
 # Single step lookahead:
 
-# First it failed on a bad node reference, like the node was deleted after
-# the site was selected.
-# Ran it again, and it failed with ConstraintCollinearNode
-# That is probably real, and just needs to be included in exceptions.
-# subsequent runs its all about the constraint
-
 plt.figure(1).clf()
 fig,ax=plt.subplots(num=1)
 
@@ -529,7 +524,6 @@ af=test_basic_setup()
 af.log.setLevel(logging.INFO)
 af.cdt.post_check=False
 af.current=af.root=DTChooseSite(af)
-## 
 
 # the results are not that great, seems that Wall
 # wins out as much as possible, since it is least constrained
@@ -539,7 +533,7 @@ af.current=af.root=DTChooseSite(af)
 # scale too much, such that the results stray too far from
 # a constant scale, and then it can't recover
 
-# something is causing it to stray from determinism.
+# It now runs to completion, but the quality is low.
 
 while 1:
     if not af.current.children:
@@ -549,17 +543,15 @@ while 1:
         af.plot_summary(label_nodes=False)
         try:
             af.current.site.plot()
-        except AttributeError:
+        except: # AttributeError:
             pass
-        fig.canvas.draw()
+        # fig.canvas.draw()
         plt.pause(0.01)
     
-    if not af.current.best_child(cb=cb):
+    if not af.current.best_child(): # cb=cb
         assert False
     cb()
-
     break
-
 
 ## 
 

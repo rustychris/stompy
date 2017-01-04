@@ -437,7 +437,10 @@ class JoinStrategy(Strategy):
     def execute(self,site):
         grid=site.grid
         na,nb,nc=site.abc
-
+        # special case, when na and nc share a second common neighbor,
+        # forming a quad, that neighbor will be kept in nd
+        nd=None
+        
         # choose the node to move -
         mover=None
 
@@ -451,6 +454,13 @@ class JoinStrategy(Strategy):
             else:
                 mover=na
                 anchor=nc
+
+            he=grid.nodes_to_halfedge(na,nb)
+            pre_a=he.rev().node_rev()
+            post_c=he.fwd().fwd().node_fwd()
+            if pre_a==post_c:
+                log.info("Found a quad - proceeding carefully with nd")
+                nd=pre_a
         else:
             # special case: nodes are already joined, but there is no
             # cell.
@@ -495,11 +505,12 @@ class JoinStrategy(Strategy):
             
             for i in [0,1]:
                 if nodes[i]==mover:
-                    if nodes[1-i]==nb:
-                        break
+                    if (nodes[1-i]==nb) or (nodes[1-i]==nd):
+                        nodes=None # signal that we don't add it
                     else:
                         nodes[i]=anchor
-            else:
+                    break
+            if nodes is not None:
                 # need to remember boundary, but any real
                 # cells get added in the next step, so can
                 # be -2 here.
@@ -510,6 +521,8 @@ class JoinStrategy(Strategy):
                     cells[1]=-2
 
                 # This can raise Collinear exceptions
+                # also, it's possible that one of these edges will be a dupe,
+                # in the case of a quad
                 try:
                     jnew=grid.add_edge( nodes=nodes, cells=cells )
                 except exact_delaunay.ConstraintCollinearNode:
