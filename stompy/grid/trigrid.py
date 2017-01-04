@@ -18,8 +18,7 @@ import sys,time
 # 2015-11-18: should be history, qgis was patched at some point, iirc
 
 # updated version of safe_rtree which tries several approaches 
-from gen_spatial_index import PointIndex as Rtree
-# from rtree.index import Rtree
+from ..spatial.gen_spatial_index import PointIndex as Rtree
 
 try:
     from shapely import geometry
@@ -27,7 +26,7 @@ try:
 except ImportError:
     print("Shapely is not available!")
     geometry = "unavailable"
-import priority_queue as pq
+from .. import priority_queue as pq
 import code
 import os,types
 from collections import Iterable
@@ -42,7 +41,7 @@ except ImportError:
     ogr = "unavailable"
     osr = ogr
     
-from array_append import array_append
+from ..utils import array_append
 
 # edge markers:
 CUT_EDGE = 37 # the marker for a cut edge
@@ -1190,7 +1189,7 @@ class TriGrid(object):
         """
         fields: a structure array of fields to write out - see wkb2shp
         """ 
-        import wkb2shp
+        from ..spatial import wkb2shp
         if cell_mask is None:
             cell_mask = slice(None)
         polys = self.points[self.cells[cell_mask,:],:]

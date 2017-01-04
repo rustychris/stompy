@@ -13,16 +13,13 @@ except ImportError:
 
 if PointIndex is None:
     try:
-        import qgis_spatialindex
+        from . import qgis_spatialindex
         PointIndex=qgis_spatialindex.RtreeQgis
     except ImportError:
         print("Failed to load qgis spatial index, too")
 
-
 if PointIndex is None:
     PointIndex="not available"
-
-
 
 # other bits of implementation:
 

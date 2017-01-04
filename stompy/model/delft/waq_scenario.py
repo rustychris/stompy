@@ -10,11 +10,11 @@ import datetime
 import numpy as np
 import numpy.lib.recfunctions as rfn
 from scipy import sparse 
-import lp_filter
-from utils import forwardTo
-import utils
+from ... import filters
+from ... import utils
+forwardTo=utils.forwardTo
 import logging
-import pdb
+
 import time
 import pandas as pd
 from matplotlib.dates import num2date,date2num
@@ -24,10 +24,9 @@ from six import iteritems
 import six # next
 
 try:
-    import wkb2shp
+    from ...spatial import wkb2shp
 except ImportError:
     print("wkb2shp not found - not loading/saving of shapefiles")
-
 
 from shapely import geometry
 try:
@@ -38,11 +37,11 @@ except ImportError:
 from collections import defaultdict,OrderedDict,Iterable
 import scipy.spatial
 
-import scriptable
-import qnc
+from  ... import scriptable
+from ...io import qnc
 import xarray as xr
-import unstructured_grid
-import ugrid
+from ...grid import unstructured_grid
+from ...grid import ugrid
 import threading
 
 from . import nefis
@@ -4103,7 +4102,7 @@ class FilterHydroBC(Hydro):
             flow_padded=np.concatenate( ( pad, 
                                           self.filt_flows[:,j],
                                           pad) )
-            lp_flows=lp_filter.lowpass(flow_padded,
+            lp_flows=filters.lowpass(flow_padded,
                                        cutoff=self.lp_secs,dt=dt)
             lp_flows=lp_flows[npad:-npad] # trim the pad
             
@@ -4362,7 +4361,7 @@ class FilterAll(FilterHydroBC):
             padded=np.concatenate( ( pad, 
                                      self.filt_areas[:,j],
                                      pad) )
-            lp_areas=lp_filter.lowpass(padded,cutoff=self.lp_secs,dt=dt)
+            lp_areas=filters.lowpass(padded,cutoff=self.lp_secs,dt=dt)
             lp_areas=lp_areas[npad:-npad] # trim the pad
             
             self.filt_areas[:,j] = lp_areas
@@ -5542,7 +5541,7 @@ class ParameterSpatioTemporal(Parameter):
             if np.isnan(padded[0]):
                 values[:,seg]=-999
             else:
-                lp_values=lp_filter.lowpass(padded,
+                lp_values=filters.lowpass(padded,
                                             cutoff=lp_secs,dt=dt)
                 values[:,seg]=lp_values[npad:-npad] # trim the pad
         return ParameterSpatioTemporal(times=self.times,
@@ -6477,9 +6476,9 @@ END_MULTIGRID"""%num_layers
             g=unstructured_grid.UnstructuredGrid.from_ugrid(nc)
 
             # dicey - assumes particular names for the fields:
-            if 'FlowElem_zcc' in nc and 'Node_z' not in nc_copy:
+            if 'FlowElem_zcc' in nc and 'Node_z' not in nc:
                 self.log.info('Adding a node-centered depth via interpolation')
-                nc['Node_z']['nNode']=g.interp_cell_to_node(nc_copy.FlowElem_zcc.values)
+                nc['Node_z']['nNode']=g.interp_cell_to_node(nc.FlowElem_zcc[:])
                 nc.Node_z.units='m'
                 nc.Node_z.positive='up',
                 nc.Node_z.standard_name='sea_floor_depth',
@@ -6496,10 +6495,15 @@ END_MULTIGRID"""%num_layers
             nc[node_y].long_name='y-coordinate of net nodes'
             nc[node_y].standard_name='projection_y_coordinate'
 
-            for k,v in six.iteritems(qds.variables):
+            for k,v in six.iteritems(nc.variables):
                 if 'location' in v.ncattrs():
                     self.log.info("Stripping location attribute from %s for quickplot compatibility"%k)
-                    v.delncattr('location')            
+                    v.delncattr('location')
+
+                # some of the grids being copied through are missing this, even though waq_scenario
+                # is supposed to write it out.
+                if 'standard_name' in v.ncattrs() and v.standard_name=='ocean_sigma_coordinate':
+                    v.formula_terms="sigma: nFlowMesh_layers eta: eta depth: FlowElem_bl"
                     
         return nc
 

@@ -6,7 +6,7 @@ Relies on the qnc wrapper of netcdf4
 """
 
 from collections import defaultdict
-import qnc
+from ...io import qnc
 
 def nefis_to_nc(nef,squeeze_unl=True,squeeze_element=True,
                 short_if_unique=True,to_lower=True,unl_name='time',

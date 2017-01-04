@@ -7,12 +7,12 @@ from __future__ import print_function
 
 import numpy as np
 import netCDF4
-import trigrid
-import unstructured_grid
+from . import trigrid
+from . import unstructured_grid
 from matplotlib.dates import date2num
 import datetime
 import pytz
-import qnc
+from ..io import qnc
 
 def ncslice(ncvar,**kwargs):
     """

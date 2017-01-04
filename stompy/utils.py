@@ -27,7 +27,7 @@ except ImportError:
 from collections import OrderedDict,Iterable
 import sys
 from scipy.interpolate import RectBivariateSpline,interp1d
-import filters
+from . import filters
 import re
 
 import datetime

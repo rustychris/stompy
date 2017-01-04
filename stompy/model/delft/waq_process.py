@@ -1,5 +1,5 @@
 import numpy as np
-from delft import nefis
+from . import nefis
 from contextlib import contextmanager
 import six
 

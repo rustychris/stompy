@@ -14,7 +14,7 @@ import six
 
 from numpy.linalg import norm
 
-import wkb2shp
+from . import wkb2shp
 
 try:
     if sys.platform == 'darwin':

@@ -38,29 +38,30 @@ from shapely import wkt,geometry,wkb
 import matplotlib.pyplot as plt
 from matplotlib.collections import PolyCollection, LineCollection
 
-import gen_spatial_index
+from ..spatial import gen_spatial_index
+from ..utils import (mag, circumcenter, circular_pairs,signed_area, poly_circumcenter,
+                     orient_intersection,recarray_add_fields,array_append)
+
 
 try:
     import netCDF4    
-    import qnc
+    from ..io import qnc
 except ImportError:
     logging.info("netcdf unavailable")
     netCDF4=None
     
 # from svn:.../python - should be one directory up, and hopefully
 # on the path
-try:
-    # both depend on ogr
-    import wkb2shp
-    import join_features
-except ImportError:
-    logging.info( "No wkb2shp" )
+#try:
+# both depend on ogr
+from ..spatial import (wkb2shp, join_features)
+#except ImportError:
+#    logging.info( "No wkb2shp, join_features" )
     
-import array_append
-import undoer
+from .. import undoer
 
 try:
-    import priority_queue as pq
+    from .. import priority_queue as pq
 except ImportError:
     pq = 'NO priority queue found!'
 
@@ -151,9 +152,6 @@ class HalfEdge(object):
                  (other.j      == self.j )   and
                  (other.orient == self.orient) )
 
-
-from utils import (mag, circumcenter, circular_pairs,signed_area, poly_circumcenter,
-                   orient_intersection)
 
 def rec_to_dict(r):
     d={}
@@ -579,11 +577,11 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         initialize with data.  NB this requires copying the edges
         array - not fast!
         """
-        self.edges=array_append.recarray_add_fields(self.edges,
-                                                    [(name,data)])
+        self.edges=recarray_add_fields(self.edges,
+                                       [(name,data)])
         self.edge_dtype=self.edges.dtype
     def delete_edge_field(self,*names):
-        self.edges=array_append.recarray_del_fields(self.edges,names)
+        self.edges=recarray_del_fields(self.edges,names)
         self.edge_dtype=self.edges.dtype
 
     def add_node_field(self,name,data,on_exists='fail'):
@@ -596,11 +594,11 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             elif on_exists == 'overwrite':
                 self.nodes[name] = data
         else:
-            self.nodes=array_append.recarray_add_fields(self.nodes,
-                                                    [(name,data)])
+            self.nodes=recarray_add_fields(self.nodes,
+                                           [(name,data)])
             self.node_dtype=self.nodes.dtype
     def delete_node_field(self,*names):
-        self.nodes=array_append.recarray_del_fields(self.nodes,names)
+        self.nodes=recarray_del_fields(self.nodes,names)
         self.node_dtype=self.nodes.dtype
         
     def add_cell_field(self,name,data):
@@ -612,8 +610,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         # will need to get fancier to discern vector dtypes
         # assert data.ndim==1  - maybe no need to be smart?
 
-        self.cells=array_append.recarray_add_fields(self.cells,
-                                                    [(name,data)])
+        self.cells=recarray_add_fields(self.cells,
+                                       [(name,data)])
         # which is better?  not sure.
         if 0:
             # copy, to avoid mutating class' data
@@ -622,7 +620,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             # let recarray_add_fields do the work
             self.cell_dtype=self.cells.dtype
     def delete_cell_field(self,*names):
-        self.cells=array_append.recarray_del_fields(self.cells,names)
+        self.cells=recarray_del_fields(self.cells,names)
         self.cell_dtype=self.cells.dtype
         
     def renumber(self):
@@ -1180,7 +1178,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         if i is None: # have to extend the array
             n=np.zeros( (), dtype=self.node_dtype)
-            self.nodes=array_append.array_append(self.nodes,n)
+            self.nodes=array_append(self.nodes,n)
             i=len(self.nodes)-1
 
         for k,v in six.iteritems(kwargs):
@@ -1221,7 +1219,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 
         if j is None:
             e=np.zeros( (),dtype=self.edge_dtype)
-            self.edges=array_append.array_append(self.edges,e)
+            self.edges=array_append(self.edges,e)
             j=len(self.edges)-1
 
         # default values
@@ -1518,7 +1516,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         if i is None:
             c=np.zeros( (),dtype=self.cell_dtype)
-            self.cells=array_append.array_append(self.cells,c)
+            self.cells=array_append(self.cells,c)
             i=len(self.cells)-1
         else:
             pass

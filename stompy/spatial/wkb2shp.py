@@ -11,7 +11,7 @@ import glob,os,re
 from shapely import wkb,wkt
 from shapely.geometry import Polygon,LineString,Point,MultiPolygon,MultiLineString,MultiPoint
 import shapely.geos
-from geom_types import ogr2text,text2ogr
+from .geom_types import ogr2text,text2ogr
 import uuid
 
 import numpy as np

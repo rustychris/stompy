@@ -4,7 +4,7 @@ from six import iteritems
 import netCDF4
 import os
 import uuid
-import utils
+from .. import utils
 import numpy as np
 import collections
 from scipy import interpolate
