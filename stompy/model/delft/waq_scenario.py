@@ -225,6 +225,20 @@ class Hydro(object):
         from matplotlib.dates import num2date,date2num
         return date2num(self.time0) + self.t_secs/86400.
 
+    @property
+    def time_step(self):
+        """ Return an integer in DelWAQ format for the time step.
+        i.e. ddhhmmss.  Assumes that scu is 1s.
+        """
+        dt_secs=np.diff(self.t_secs)
+        dt_sec=dt_secs[0]
+        assert np.all( dt_sec==dt_secs )
+
+        rest,seconds=divmod(dt_sec,60)
+        rest,minutes=divmod(rest,60)
+        days,hours=divmod(rest,24)
+        return ((days*100 + hours)*100 + minutes)*100 + seconds
+
     # num_exch => use n_exch
     @property
     def n_exch(self):
@@ -1570,20 +1584,51 @@ class HydroFiles(Hydro):
                 t_sec = int( (t_sec - self.time0).total_seconds() )
             
             filename=fn or self.get_path(label)
-            ti=self.time_to_index(t_sec)
+            # Optimistically assume that the seg function has the same time steps
+            # as the hydro:
+            ti=self.time_to_index(t_sec) 
 
             stride=4+self.n_seg*4
             
             with open(filename,'rb') as fp:
                 fp.seek(stride*ti)
-                # tstamp=np.fromstring(fp.read(4),'i4')
                 tstamp=np.fromfile(fp,'i4',1)
-                if len(tstamp) and tstamp[0]!=t_sec:
-                    # scanning has sort of moved out of here, since this implementation
-                    # of seg_func is not meant to be general.
-                    # more of a sanity check now.
-                    print("WARNING: time stamp mismatch: %s != %d should scan but won't"%(tstamp[0],t_sec))
-                #return np.fromstring(fp.read(self.n_seg*4),'f4')
+                
+                if len(tstamp)==0 or tstamp[0]!=t_sec:
+                    if 0:# old behavior, no scanning:
+                        if len(tstamp)==0:
+                            print("WARNING: no timestamp read for seg function")
+                        else: 
+                            print("WARNING: time stamp mismatch: %s != %d should scan but won't"%(tstamp[0],t_sec))
+                    else: # new behavior to accomodate hydro parameters with variable time steps
+                        # assumes at least two time steps, and that all steps are the same size
+                        fp.seek(0)
+                        tstamp0=np.fromfile(fp,'i4',1)[0]
+                        fp.seek(stride*1)
+                        tstamp1=np.fromfile(fp,'i4',1)[0]
+                        dt=tstamp1 - tstamp0
+                        ti,err=divmod( t_sec-tstamp0, dt )
+                        if err!=0:
+                            print("WARNING: time stamp mismatch after inferring nonstandard time step")
+                        # also check for bounds:
+                        warning=None
+                        if ti<0:
+                            warning="WARNING: inferred time index %d is negative!"%ti
+                            ti=0
+                        max_ti=os.stat(filename).st_size / stride
+                        if ti>=max_ti:
+                            warning="WARNING: inferred time index %d is beyond the end of the file!"%ti
+                            ti=max_ti-1
+                        # try that again:
+                        fp.seek(stride*ti)
+                        tstamp=np.fromfile(fp,'i4',1)
+                        if warning is None and tstamp[0]!=t_sec:
+                            warning="WARNING: Segment function appears to have unequal steps"
+                        if warning:
+                            import pdb
+                            pdb.set_trace()
+                            print(warning)
+
                 return np.fromfile(fp,'f4',self.n_seg)
         if t_sec is None:
             return f
@@ -1752,7 +1797,6 @@ class HydroFiles(Hydro):
         """
         Read the files written by self.write_2d_links, set attributes, and return true.
         If the files don't exist, return False, log an info message.
-
         """
         path = self.get_dir()
         try:
@@ -3123,18 +3167,28 @@ class DwaqAggregator(Hydro):
             agg_scalars[~valid] = 0.0
         return agg_scalars
 
-    def seg_func(self,t_sec=None,label=None):
+    def seg_func(self,t_sec=None,label=None,param_name=None):
         """ return a callable which implements a segment function using data
-        from files with the given label (i.e. label='salinity-file')
+        from unaggregated files, either with the given label mentioned in the
+        hyd file (i.e. label='salinity-file'), or by grabbing a parameter 
+        of a given name.
 
         if t_sec is given, evaluate at that time and return the result
         """
-        assert(label is not None)
-
-        def f(t):
+        def f_label(t,label=label):
             return self.segment_aggregator(t,
                                            lambda proc: self.open_hyd(proc).seg_func(t,label=label),
                                            normalize=True)
+        def f_param(t,param_name=param_name):
+            per_proc=lambda proc: self.open_hyd(proc).parameters(force=False)[param_name].evaluate(t=t).data
+            return self.segment_aggregator(t,per_proc,normalize=True)
+        if param_name:
+            f=f_param
+        elif label:
+            f=f_label
+        else:
+            raise Exception("One of label or param_name must be supplied")
+            
         if t_sec is not None:
             return f(t_sec)
         else:
@@ -3357,18 +3411,43 @@ class DwaqAggregator(Hydro):
         hparams=super(DwaqAggregator,self).add_parameters(hparams)
         
         hyd0=self.open_hyd(0)
-        for label,pname in [('vert-diffusion-file','VertDisper'),
-                            ('salinity-file','salinity'),
-                            ('temperature-file','temperature')]:
-            # see if the first processor has it
-            if hyd0[label]=='none':
-                continue
-            fn=hyd0.get_path(label)
-            if not os.path.exists(fn):
-                self.log.info("DwaqAggregator: seg function %s (label=%s) not found"%(fn,label))
-                continue
-            hparams[pname]=ParameterSpatioTemporal(func_t=self.seg_func(label=label),
-                                                   times=self.t_secs,hydro=self)
+        # 2017-01-5: used to call temperature 'temperature', but for dwaq it should
+        #            be temp.
+
+        if 0: # old approach, reached into the files of the unaggregated runs
+            # aside from reaching around the abstraction a bit, this also
+            # suffers from using the wrong time steps, as it assumes that
+            # self.t_secs applies to all parameters
+            for label,pname in [('vert-diffusion-file','VertDisper'),
+                                ('salinity-file','salinity'),
+                                ('temperature-file','temp')]:
+                # see if the first processor has it
+                if hyd0[label]=='none':
+                    continue
+                fn=hyd0.get_path(label)
+                if not os.path.exists(fn):
+                    self.log.info("DwaqAggregator: seg function %s (label=%s) not found"%(fn,label))
+                    continue
+                hparams[pname]=ParameterSpatioTemporal(func_t=self.seg_func(label=label),
+                                                       times=self.t_secs,
+                                                       hydro=self)
+        else: # new approach - use unaggregated parameter objects.
+            hyd0_params=hyd0.parameters(force=False)
+
+            # could also loop over the parameters that hyd0 has, and just be sure
+            # step over the ones that will be replaced, like surf.
+            
+            for pname in ['VertDisper','salinity','temp']:
+                # see if the first processor has it
+                if pname in hyd0_params:
+                    hyd0_param=hyd0_params[pname]
+                    # in the past, used the label to grab this from each unaggregated
+                    # source.
+                    # now we use the parameter name
+                    hparams[pname]=ParameterSpatioTemporal(func_t=self.seg_func(param_name=pname),
+                                                           times=hyd0_param.times,
+                                                           hydro=self)
+
         return hparams
 
     def write_hyd(self,fn=None):
@@ -5474,7 +5553,7 @@ class ParameterSpatioTemporal(Parameter):
 
     def evaluate(self,**kws):
         # This implementation is pretty rough - 
-        # no support for seg_func_file, and this class is really a mix of
+        # this class is really a mix of
         # ParameterSpatial and ParameterTemporal, yet it duplicates
         # the code from both of those here.
 
@@ -5726,7 +5805,7 @@ class Scenario(scriptable.Scriptable):
     time0=None
     # time0=datetime.datetime(1990,8,5) # defaults to hydro value
     scu=datetime.timedelta(seconds=1)
-    time_step=1500
+    time_step=None # will be taken from the hydro, unless specified otherwise
 
     log=logging # take a stab at managing messages via logging
 
@@ -5878,6 +5957,7 @@ END_MULTIGRID"""%num_layers
         self.hydro.scenario=self
 
         # sensible defaults for simulation period
+        self.time_step=self.hydro.time_step
         self.time0 = self.hydro.time0
         self.start_time=self.time0+self.scu*self.hydro.t_secs[0]
         self.stop_time =self.time0+self.scu*self.hydro.t_secs[-1]
