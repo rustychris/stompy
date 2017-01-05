@@ -203,6 +203,7 @@ class Hydro(object):
     CLOSED=CLOSED
     BOUNDARY=BOUNDARY
 
+
     def __init__(self,**kws):
         self.log=logging.getLogger(self.__class__.__name__)
 
@@ -409,6 +410,26 @@ class Hydro(object):
     def get_geom(self):
         # Return the geometry as an xarray / ugrid-ish Dataset.
         return None
+
+    # How is the vertical handled in the grid?
+    # affects outputting ZMODEL NOLAY in the inp file
+    VERT_UNKNOWN=0
+    ZLAYER=1
+    SIGMA=2
+    SINGLE=3
+    @property
+    def vertical(self):
+        geom=self.get_geom()
+        if geom is None:
+            return self.VERT_UNKNOWN
+        for v in geom.variables:
+            standard_name=geom[v].attrs.get('standard_name',None)
+            if standard_name == 'ocean_sigma_coordinate':
+                return self.SIGMA
+            if standard_name == 'ocean_zlevel_coordinate':
+                return self.ZLAYER
+        return self.VERT_UNKNOWN
+    
     def grid(self):
         """ if possible, return an UnstructuredGrid instance for the 2D 
         layout.  returns None if the information is not available.
@@ -5743,7 +5764,10 @@ class Scenario(scriptable.Scriptable):
     #                 ('single (2)',[3]),
     #                 ('single (3)',[4]),
     #                 ('single (4)',[5]) ]
-    monitor_areas=() # default to none for safety...
+    # dwaq bug(?) where having transects but no monitor_areas means history
+    # file with transects is not written.  so always include a dummy:
+    monitor_areas=( ('dummy',[1]), ) 
+
     # e.g. ( ('gg_outside', [24,26,-21,-27,344] ), ...  )
     # where negative signs mean to flip the sign of that exchange.
     # note that these exchanges are ONE-BASED - this is because the
@@ -5789,7 +5813,6 @@ class Scenario(scriptable.Scriptable):
                 setattr(self,k,v)
             except AttributeError:
                 raise Exception("Unknown Scenario attribute: %s"%k)
-
         
         self.parameters=self.init_parameters()
         if self.hydro is not None:
@@ -5843,9 +5866,12 @@ class Scenario(scriptable.Scriptable):
             raise Exception("You probably mean to be running with segment-dense hydrodynamics")
         
         num_layers=self.hydro.n_seg / self.hydro.n_2d_elements
-        return """MULTIGRID
- ZMODEL NOLAY %d
+        if self.hydro.vertical != self.hydro.SIGMA:
+            return """MULTIGRID
+  ZMODEL NOLAY %d
 END_MULTIGRID"""%num_layers
+        else:
+            return " ; sigma layers - no multigrid stanza"
     
     def set_hydro(self,hydro):
         self.hydro=hydro
@@ -6050,11 +6076,19 @@ END_MULTIGRID"""%num_layers
 
     #-- Access to output files
     def nef_history(self):
-        return nefis.Nefis( os.path.join( self.base_path,self.name+".hda"),
-                            os.path.join( self.base_path,self.name+".hdf") )
+        hda=os.path.join( self.base_path,self.name+".hda")
+        hdf=os.path.join( self.base_path,self.name+".hdf")
+        if os.path.exists(hda):
+            return nefis.Nefis(hda, hdf)
+        else:
+            return None
     def nef_map(self):
-        return nefis.Nefis( os.path.join( self.base_path,self.name+".ada"),
-                            os.path.join( self.base_path,self.name+".adf") )
+        ada=os.path.join(self.base_path, self.name+".ada")
+        adf=os.path.join(self.base_path, self.name+".adf")
+        if os.path.exists(ada):
+            return nefis.Nefis( ada,adf)
+        else:
+            return None
 
     #  netcdf versions of those:
     def nc_map(self,nc_kwargs={}):
@@ -6097,7 +6131,20 @@ END_MULTIGRID"""%num_layers
         """
         if output_settings is None:
             output_settings=self.default_ugrid_output_settings
-        
+
+
+        if nef is None:
+            if mode is 'map':
+                nef=self.nef_map()
+            elif mode is 'history':
+                nef=self.nef_history()
+            close_nef=True
+        else:
+            close_nef=False
+        if nef is None: # file didn't exist
+            self.log.info("NEFIS file didn't exist. Skipping ugrid_nef()")
+            return None
+            
         flowgeom=self.flowgeom()
         mesh_name="FlowMesh" # sync with sundwaq for now.
 
@@ -6108,15 +6155,6 @@ END_MULTIGRID"""%num_layers
         nc._set_string_mode('fixed') # required for writing to disk
 
         self.hydro.infer_2d_elements()
-
-        if nef is None:
-            if mode is 'map':
-                nef=self.nef_map()
-            elif mode is 'history':
-                nef=self.nef_history()
-            close_nef=True
-        else:
-            close_nef=False
 
         try:
             if mode is 'map':
@@ -6575,14 +6613,16 @@ END_MULTIGRID"""%num_layers
     def cmd_write_nc(self):
         """ Transcribe NEFIS to NetCDF for a completed DWAQ run 
         """
-        if 1: # skip history output during dev.
+        if 1:
             nc2_fn=os.path.join(self.base_path,'dwaq_hist.nc')
             nc2=self.ugrid_history(nc_kwargs=dict(fn=nc2_fn,overwrite=True))
-            nc2.close()
+            # if no history output, no nc2.
+            nc2 and nc2.close()
         if 1:
             nc_fn=os.path.join(self.base_path,'dwaq_map.nc')
             nc=self.ugrid_map(nc_kwargs=dict(fn=nc_fn,overwrite=True))
-            nc.close()
+            # if no map output, no nc
+            nc and nc.close()
 
     use_bloom=False
     def cmd_delwaq1(self):
@@ -6862,6 +6902,8 @@ class InpFile(object):
             return " 2     ; monitoring transects not used;\n"
 
         if len(self.scenario.monitor_areas)==0:
+            # this is a real problem, though the code above for text_monitor_areas
+            # has a kludge where it adds in a dummy monitoring area to avoid the issue
             raise Exception("DWAQ may not output transects when there are no monitor areas")
 
         lines=[" 1   ; monitoring transects used",
