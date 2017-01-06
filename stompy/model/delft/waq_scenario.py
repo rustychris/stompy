@@ -1613,7 +1613,15 @@ class HydroFiles(Hydro):
                         # also check for bounds:
                         warning=None
                         if ti<0:
-                            warning="WARNING: inferred time index %d is negative!"%ti
+                            if t_sec>=0:
+                                warning="WARNING: inferred time index %d is negative!"%ti
+                            else:
+                                # kludgey - the problem is that something like the temperature field
+                                # can have a different time line, and to be sure that it has data
+                                # t=0, an extra step at t<0 is included.  But then there isn't any
+                                # volume data to be used, and that comes through here, too.
+                                # so downgrade it to a less dire message
+                                warning="INFO: inferred time index %d is negative, ignoring as t=%d"%(ti,t_sec)
                             ti=0
                         max_ti=os.stat(filename).st_size / stride
                         if ti>=max_ti:
@@ -1625,8 +1633,8 @@ class HydroFiles(Hydro):
                         if warning is None and tstamp[0]!=t_sec:
                             warning="WARNING: Segment function appears to have unequal steps"
                         if warning:
-                            import pdb
-                            pdb.set_trace()
+                            #import pdb
+                            #pdb.set_trace()
                             print(warning)
 
                 return np.fromfile(fp,'f4',self.n_seg)
