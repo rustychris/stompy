@@ -21,7 +21,6 @@ from builtins import range
 from past.utils import old_div
 from builtins import object
 import sys, os, glob
-sys.path.append( os.path.join( os.environ['HOME'], 'python') )
 
 import sunreader
 import tidal_filter
@@ -31,7 +30,19 @@ import lp_filter
 import wkb2shp
 import logging
 
+import netCDF4
+
 try:
+    if netCDF4.__version__ >= '1.2.6':
+        # kludge:
+        # recent netCDF4 isn't compatible with cfunits due to renaming
+        # some datetime internals, which cfunits tries to reach in and grab.
+        # monkey patch in shame.
+        nct = netCDF4.netcdftime.netcdftime = netCDF4.netcdftime
+        nct._DateFromNoLeapDay = nct.DatetimeNoLeap
+        nct._DateFromAllLeap   = nct.DatetimeAllLeap
+        nct._DateFrom360Day    = nct.Datetime360Day
+    
     from cfunits.units import Units
 except ImportError:
     Units=None
@@ -2771,14 +2782,3 @@ def read_datasource(fn,sun):
 
     return dsource
     
-
-
-if __name__ != 'forcing':
-    # g = UsgsGage(11458000)
-    # s = datetime.datetime(2006,7,3)
-    # e = datetime.datetime(2006,7,4)
-    # 
-    # d = g.raw_data(s,e)
-
-    sun = sunreader.SunReader('/lagniappe/rusty/classes/research/suntans/runs/sf50m/data0416/data01')
-    f = read_boundaries_dat(sun,0)
