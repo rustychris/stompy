@@ -9,10 +9,6 @@ import numpy as np
 import collections
 from scipy import interpolate
 from scipy.signal import decimate
-try:
-    import cfunits
-except ImportError:
-    cfunits=None
 
 class QncException(Exception):
     pass
@@ -207,14 +203,6 @@ class QuickVar(object): # wraps netcdf variable
     def as_datenum(self):
         import nc_utils
         return nc_utils.cf_time_to_datenum(self._v)
-
-    # def as_units(self,units):
-    #     if cfunits is not None:
-    #         here
-    #     else:
-    #         assert units==self._v.units:
-    #         return 
-        
             
 class QDataset(netCDF4.Dataset):
     # 'varlen' will try to use variable length arrays to store strings

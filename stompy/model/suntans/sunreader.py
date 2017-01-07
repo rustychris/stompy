@@ -10,9 +10,7 @@ import re
 import pprint
 import sys, os, shutil, time
 
-# import md5 # deprecated
 import hashlib, pickle
-
 
 try:
     try:
@@ -23,20 +21,20 @@ except ImportError:
     print("GDAL unavailable")
     osr = "unavaiable"
     
-import transect
 from numpy import ma
 import glob,datetime
 import subprocess
-import get_tides
 
-import trigrid,orthomaker
-import forcing
-import field, transect
+from . import transect
+
+from ...grid import (trigrid,orthomaker)
+from . import forcing
+from ...spatial import field
 
 import mmap
 from numpy import *
 
-from linestring_utils import upsample_linearring
+from ...spatial.linestring_utils import upsample_linearring
 
 try:
     import pytz
@@ -45,22 +43,18 @@ except ImportError:
     print("couldn't load utc timezone")
     utc = None
     
-
 try:
     from safe_pylab import *
     import safe_pylab as pylab
 except:
     print("Plotting disabled")
     
-import pdb
-
 from numpy.random import random
 
 # configurable, per-user or host settings:
 import local_config
 
 # use absolute paths since we need to change directories to invoke vdatum
-vdatum_dir = local_config.vdatum_dir
 REALSIZE = 8
 REALTYPE = float64
 
@@ -100,6 +94,7 @@ def apply_vdatum(src_vdatum,dest_vdatum,lonlat_locs):
     for i in range(lonlat_locs.shape[0]):
         in_fp.write("%d, %f, %f, 0.0\n"%(i,lonlat_locs[i,0],lonlat_locs[i,1]))
     in_fp.close()
+    vdatum_dir = local_config.vdatum_dir
 
     command = "cd %s ; java VDatum -lonlat -heights -hin WGS84 -units meters -vin %s -vout %s %s %s"%(
         vdatum_dir,
