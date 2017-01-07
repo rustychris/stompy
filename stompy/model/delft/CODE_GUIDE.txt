@@ -1,0 +1,21 @@
+Just some notes on coding style decisions and rationale (or complaints/quandaries)
+
+Use tuples for class default values
+--
+When it's necessary for a class, such as Scenario, to have a default value expressed
+as a list, use a tuple rather than a list.  This reduces errors in which method
+code modifies the classes value.  In particular,
+  class A(object):
+    x=(1,2,3)
+  a1=A()
+  a1.x += (4,) 
+  a2=A()
+  a2.x != a1.x
+is safe, but if x were a list, then a2.x would get the modified value from a1.
+
+
+Constants
+--
+Make constants available as attributes of the relevant class.  This makes
+objects self-contained and 'batteries-included'.  Otherwise you have to
+import the defining module just to use the object. 

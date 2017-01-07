@@ -11,7 +11,8 @@ import exact_delaunay
 import numpy as np
 from scipy import optimize as opt
 
-import utils
+from . import utils
+
 import logging
 log=logging.getLogger(__name__)
 
@@ -20,7 +21,6 @@ try:
 except ImportError:
     log.warning("Plotting not available - no matplotlib")
     plt=None
-
 
 # from numba import jit, int32, float64
 
