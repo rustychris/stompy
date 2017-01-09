@@ -36,6 +36,15 @@ class OpHistory(object):
         finally:
             self.state='recording'
 
+    def backstep(self):
+        if self.state!='recording':
+            raise Exception("backstep: state is not recording")
+        self.state='reverting'
+        try:
+            self.pop_op()
+        finally:
+            self.state='recording'
+
     def commit(self):
         assert self.state != 'reverting'
         self.op_stack = None

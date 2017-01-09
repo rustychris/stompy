@@ -11,7 +11,7 @@ import exact_delaunay
 import numpy as np
 from scipy import optimize as opt
 
-from . import utils
+from .. import utils
 
 import logging
 log=logging.getLogger(__name__)
@@ -430,10 +430,12 @@ class JoinStrategy(Strategy):
             return np.inf # not allowed
         else:
             # as theta goes to 0, a Join has no effect on scale.
+            # 
             # at larger theta, a join effectively coarsens
             # so if edges are too small, we want to coarsen, scale_factor
             # will be < 1
-            return scale_factor * theta
+            # adding the factor of 2: it was choosing join too often.
+            return 2*scale_factor * theta
     def execute(self,site):
         grid=site.grid
         na,nb,nc=site.abc
@@ -913,7 +915,7 @@ class AdvancingFront(object):
                 cell_nodes[j,:2] = cell_nodes[j,1:]
             elif cell_nodes[j,1] == n:
                 cell_nodes[j,1] = cell_nodes[j,0]
-                cell_nodes[j,0] = cell_nodes[j,2]
+                cell_nodes[j,0] = cell_nodes[j,2] # otherwise, already set
 
         edges = cell_nodes[:,:2]
         edge_points = self.grid.nodes['x'][edges]

@@ -1552,7 +1552,7 @@ class XYZText(XYZField):
 ## The rest of the density field stuff:
 class ConstantField(Field):
     def __init__(self,c):
-        self.c = c
+        self.c = float(c)
         Field.__init__(self)
         
     def value(self,X):
