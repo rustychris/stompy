@@ -1300,6 +1300,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     def undelete_edge(self,j,edge_data):
         d=rec_to_dict(edge_data)
         d['_index']=j
+        d['deleted']=False
         self.add_edge(**d)
 
     def delete_edge_cascade(self,j):
@@ -1358,7 +1359,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         for c in self.edges['cells'][A]:
             if c>=0: # it's a real cell
                 c_nodes=[n
-                         for n in self.cell_nodes(c)
+                         for n in self.cell_to_nodes(c)
                          if n!=B ]
                 self.modify_cell(c,nodes=c_nodes)
 
