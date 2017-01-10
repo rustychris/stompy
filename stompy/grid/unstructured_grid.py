@@ -773,32 +773,64 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         return None
     
     def edge_to_cells(self,e=slice(None),recalc=False):
+        """
+        recalc: if True, forces recalculation of all edges.
+
+        e: limit output to a single edge, a slice or a bitmask
+          may also limit updates to the requested edges
+        """
         # try to be a little clever about recalculating - 
         # it can be very slow to check all edges for UNKNOWN
-
-        if not recalc:
-            recalc=np.any( self.edges['cells'][e]==self.UNKNOWN )
-
+        
         if recalc:
             self.edges['cells'][:,:]=self.UNMESHED
             self.log.info("Recalculating edge to cells" )
-            # don't assume that cells['edges'] is set, either.
-            for c in range(self.Ncells()):
-                # self.update_edge_cell # false start on factoring this out.
-                nodes=self.cell_to_nodes(c)
-                for i in range(len(nodes)):
-                    a=nodes[i]
-                    b=nodes[(i+1)%len(nodes)]
-                    j=self.nodes_to_edge(a,b)
-                    if j is None:
-                        print( "Failed to find an edge" )
-                        continue
-                    # will have to trial-and-error to get the right
-                    # left/right sense here.
-                    if self.edges['nodes'][j,0]==a:
-                        self.edges['cells'][j,0]=c
+            all_c=range(self.Ncells())
+        else:
+            # on-demand approach
+            if isinstance(e,slice):
+                js=np.arange(e.start or 0,
+                             e.stop or self.Nedges(),
+                             e.step or 1)
+            else:
+                try:
+                    L=len(e)
+                    if L==self.Nedges() and np.issubdtype(np.bool,e.dtype):
+                        js=np.nonzero(e)
                     else:
-                        self.edges['cells'][j,1]=c
+                        js=e
+                except TypeError:
+                    js=[e]
+
+            all_c=set()
+            for j in js:
+                ec=self.edges['cells'][j]
+                if (ec[0]!=self.UNKNOWN) and (ec[1]!=self.UNKNOWN):
+                    continue
+
+                for n in self.edges['nodes'][j]:
+                    # don't assume that cells['edges'] is set, either.
+                    for c in self.node_to_cells(n):
+                        all_c.add(c)
+
+        # Do the actual work
+        # don't assume that cells['edges'] is set, either.
+        for c in all_c:
+            nodes=self.cell_to_nodes(c)
+            for i in range(len(nodes)):
+                a=nodes[i]
+                b=nodes[(i+1)%len(nodes)]
+                j=self.nodes_to_edge(a,b)
+                if j is None:
+                    print( "Failed to find an edge" )
+                    continue
+                # will have to trial-and-error to get the right
+                # left/right sense here.
+                if self.edges['nodes'][j,0]==a:
+                    self.edges['cells'][j,0]=c
+                else:
+                    self.edges['cells'][j,1]=c
+
         return self.edges['cells'][e]
 
     def make_cell_nodes_from_edge_nodes(self):
@@ -1100,11 +1132,14 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         and 
         self.cells['nodes'][c,1]
         """
-        e2c=self.edge_to_cells() # make sure it's fresh
+        js=self.cell_to_edges(c,ordered=ordered)
+
+        e2c=self.edge_to_cells(js) # make sure it's fresh
 
         nbrs=[]
-        for j in self.cell_to_edges(c,ordered=ordered):
-            c1,c2=e2c[j]
+        # self.cell_to_edges(c,ordered=ordered):
+        for j,(c1,c2) in zip(js,e2c):
+            # c1,c2=e2c[j]
             if c1==c:
                 nbrs.append(c2)
             else:
@@ -2162,7 +2197,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                       if not self.nodes['deleted'][i] ]
             self._node_index = gen_spatial_index.PointIndex(tuples,interleaved=False)
         return self._node_index
-            
+
     def select_nodes_nearest(self,xy,count=None):
         """ count is None: return a scalar, the closest.
         otherwise, even if count==1, return a list
@@ -2272,20 +2307,33 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             self._cell_center_index = gen_spatial_index.PointIndex(tuples,interleaved=False)
         return self._cell_center_index
 
-    def select_edges_nearest(self,xy,count=None):
+    def select_edges_nearest(self,xy,count=None,fast=True):
         xy=np.asarray(xy)
 
         real_count=count
         if count is None:
             real_count=1
 
-        # TODO: maintain a proper edge index
-        # For now, brute force it.
-        ec=self.edges_center()
-        dists=mag(xy-ec)
-        dists[self.edges['deleted']]=np.inf
+        if fast:
+            # TODO: maintain a proper edge index
+            # For now, brute force it.
+            ec=self.edges_center()
+            dists=mag(xy-ec)
+            dists[self.edges['deleted']]=np.inf
+            hits=np.argsort(dists)[:real_count]
+        else:
+            # actually query against the finite geometry of the edge
+            # still not exact, but okay in most cases.  an exact solution
+            # will have to wait until exact_delaunay is faster.
+            j_near = self.select_edges_nearest(xy,count=real_count*5,fast=True)
 
-        hits=np.argsort(dists)[:real_count]
+            geoms=[geometry.LineString(self.nodes['x'][self.edges['nodes'][j]])
+                  for j in j_near]
+            P=geometry.Point(xy)
+
+            dists=[g.distance(P) for g in geoms]
+            order=np.argsort(dists)
+            hits=j_near[order[:real_count]]
 
         if count is None:
             return hits[0]
