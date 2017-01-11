@@ -13,6 +13,7 @@ class OpHistory(object):
     # Undo-history management - very generic.
     op_stack_serial = 17
     op_stack = None
+    abs_serial=0
     def checkpoint(self):
         assert self.state != 'reverting'
 
@@ -52,6 +53,7 @@ class OpHistory(object):
         self.state='inactive'
     
     def push_op(self,meth,*data,**kwdata):
+        self.abs_serial=self.abs_serial+1
         if self.state!='recording':
             return
 
@@ -60,6 +62,8 @@ class OpHistory(object):
 
     def pop_op(self):
         assert self.state=='reverting'
+
+        self.abs_serial=self.abs_serial+1
 
         f = self.op_stack.pop()
         self.log.debug("popping: %s"%( str(f) ) )
