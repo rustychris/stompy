@@ -2,6 +2,8 @@ from __future__ import print_function
 
 import os
 import re
+import textwrap
+
 import glob
 import sys
 import subprocess
@@ -6027,16 +6029,16 @@ END_MULTIGRID"""%num_layers
         load.scenario=self
         self.loads.append(load)
         return load
-
+    
     def add_monitor_from_shp(self,shp_fn,naming='elt_layer'):
         locations=wkb2shp.shp2geom(shp_fn)
         self.hydro.infer_2d_elements()
-        
+
         g=self.hydro.grid()
         new_areas=[] # generate as list, then assign as tuple
         names={}
         for n,segs in self.monitor_areas:
-            names[n]=True
+            names[n]=True # record names in use to avoid duplicates
 
         for i,rec in enumerate(locations):
             geom=rec['geom']
@@ -6055,8 +6057,26 @@ END_MULTIGRID"""%num_layers
                         if name not in names:
                             new_areas.append( (name,[seg] ) )
                             names[name]=True
+            elif geom.type=='Polygon':
+                # bitmask over 2D elements
+                self.log.info("Selecting elements in polygon")
+                elt_sel=g.select_cells_intersecting(geom) # few seconds
+
+                # extend to segments:
+                seg_sel=elt_sel[ self.hydro.seg_to_2d_element ] & (self.hydro.seg_to_2d_element>=0)         
+
+                segs=np.nonzero( seg_sel )[0]
+                try:
+                    name=rec[naming]
+                except:
+                    name="polygon%d"%i
+
+                assert name not in names
+                new_areas.append( (name,segs) )
+                names[name]=True
             else:
                 self.log.warning("Not ready to handle geometry type %s"%geom.type)
+
         self.log.info("Added %d monitored segments from %s"%(len(new_areas),shp_fn))
         self.monitor_areas = self.monitor_areas + tuple(new_areas)
 
@@ -6979,7 +6999,12 @@ class InpFile(object):
 """.format( n_points=len(self.scenario.monitor_areas) )]
 
         for name,segs in self.scenario.monitor_areas:
-            lines.append("'{}' {} {}".format(name,len(segs)," ".join(["%d"%(i+1) for i in segs])))
+            # These can get quite long, so wrap the list of segments.
+            # DWAQ can handle up to 1000 characters/line, but might as well
+            # stop at 132 out of kindness.
+            lines.append("'{}' {} {}".format(name,len(segs),
+                                             textwrap.fill(" ".join(["%d"%(i+1) for i in segs]),
+                                                           width=132)))
 
         return "\n".join(lines)
 
