@@ -11,7 +11,7 @@ import exact_delaunay
 import numpy as np
 from scipy import optimize as opt
 
-from . import utils
+from .. import utils
 
 import logging
 log=logging.getLogger(__name__)
@@ -259,6 +259,11 @@ class Curve(object):
             raise self.CurveException("Binary search failed")
 
     def is_forward(self,fa,fb,fc):
+        """ return true if fa,fb and fc are distinct and
+        ordered CCW around the curve
+        """
+        if fa==fb or fb==fc or fc==fa:
+            return False
         d=self.total_distance()
         return ((fb-fa) % d) < ((fc-fa)%d)
     def is_reverse(self,fa,fb,fc):
@@ -430,10 +435,12 @@ class JoinStrategy(Strategy):
             return np.inf # not allowed
         else:
             # as theta goes to 0, a Join has no effect on scale.
+            # 
             # at larger theta, a join effectively coarsens
             # so if edges are too small, we want to coarsen, scale_factor
             # will be < 1
-            return scale_factor * theta
+            # adding the factor of 2: it was choosing join too often.
+            return 2*scale_factor * theta
     def execute(self,site):
         grid=site.grid
         na,nb,nc=site.abc
@@ -694,7 +701,9 @@ class AdvancingFront(object):
         Also creates a Triangulation which follows modifications to 
         the grid, keeping a constrained Delaunay triangulation around.
         """
-        g.add_node_field('oring',-1*np.ones(g.Nnodes(),'i4'),on_exists='pass')
+        # oring is stored 1-based, so that the default 0 value is
+        # the nan value.
+        g.add_node_field('oring',np.zeros(g.Nnodes(),'i4'),on_exists='pass')
         g.add_node_field('fixed',np.zeros(g.Nnodes(),'i4'),on_exists='pass')
         g.add_node_field('ring_f',-1*np.ones(g.Nnodes(),'f8'),on_exists='pass')
 
@@ -710,7 +719,7 @@ class AdvancingFront(object):
 
             # add the nodes in:
             nodes=[self.grid.add_node(x=curve_points[j],
-                                      oring=curve_i,
+                                      oring=curve_i+1,
                                       ring_f=srcs[j],
                                       fixed=self.SLIDE)
                    for j in range(len(curve_points))]
@@ -832,7 +841,7 @@ class AdvancingFront(object):
             target_span=scale
 
         # first, find a point on the original ring which satisfies the target_span
-        oring=self.grid.nodes['oring'][anchor]
+        oring=self.grid.nodes['oring'][anchor]-1
         curve = self.curves[oring]
         anchor_f = self.grid.nodes['ring_f'][anchor]
         try:
@@ -913,7 +922,7 @@ class AdvancingFront(object):
                 cell_nodes[j,:2] = cell_nodes[j,1:]
             elif cell_nodes[j,1] == n:
                 cell_nodes[j,1] = cell_nodes[j,0]
-                cell_nodes[j,0] = cell_nodes[j,2]
+                cell_nodes[j,0] = cell_nodes[j,2] # otherwise, already set
 
         edges = cell_nodes[:,:2]
         edge_points = self.grid.nodes['x'][edges]
@@ -986,7 +995,7 @@ class AdvancingFront(object):
             return 
         x0=self.grid.nodes['x'][n]
         f0=self.grid.nodes['ring_f'][n]
-        ring=self.grid.nodes['oring'][n]
+        ring=self.grid.nodes['oring'][n]-1
 
         assert np.isfinite(f0)
         assert ring>=0
@@ -996,17 +1005,94 @@ class AdvancingFront(object):
         cost_slide=lambda f: cost_free( self.curves[ring](f[0]) )
 
         local_length=self.scale( x0 )
+
+        slide_limits=self.find_slide_limits(n,3*local_length)
+        
         new_f = opt.fmin(cost_slide,
                          [f0],
                          xtol=local_length*1e-4,
                          disp=0)
+
+        if not self.curves[ring].is_forward(slide_limits[0],
+                                            new_f,
+                                            slide_limits[1]):
+            self.log.info("Slide went outside limits")
+            return cost_free(x0)
         
         if new_f[0]!=f0:
             self.slide_node(n,new_f[0]-f0)
         return cost_slide(new_f)
 
+    def find_slide_limits(self,n,cutoff=None):
+        """ Returns the range of allowable ring_f for n.
+        limits are exclusive
+        cutoff: a distance along the curve beyond which we don't
+        care. note that this is not as the crow flies, but tracing
+        the segments.  So a point which is cutoff away may be much
+        closer as the crow flies.
+        """
+        n_ring=self.grid.nodes['oring'][n]-1
+        n_f=self.grid.nodes['ring_f'][n]
+        curve=self.curves[n_ring]
+        L=curve.total_distance()
+
+        # find our two neighbors on the ring:check forward:
+        nbrs=[]
+        for nbr in self.grid.node_to_nodes(n):
+            if self.grid.nodes['oring'][nbr]-1!=n_ring:
+                continue
+            nbrs.append(nbr)
+        if len(nbrs)>2:
+            # annoying, but happens.  one or more edges are internal,
+            # and two are along the curve.
+            nbrs.append(n)
+            # sort them along the ring
+            all_f=(self.grid.nodes['ring_f'][nbrs]-n_f) % L
+            order=np.argsort(all_f)
+            nbrs=[ nbrs[order[-1]], nbrs[order[1]] ]
+        assert len(nbrs)==2
+        
+        if curve.is_forward(self.grid.nodes['ring_f'][nbrs[0]],
+                            n_f,
+                            self.grid.nodes['ring_f'][nbrs[1]] ):
+            pass # already in nice order
+        else:
+            nbrs=[nbrs[1],nbrs[0]]
+        
+        # Backward then forward
+        stops=[]
+        for sgn,nbr in zip( [-1,1], nbrs ):
+            trav=[n,nbr]
+            while 1:
+                # beyond cutoff?
+                if ( (cutoff is not None) and
+                     (sgn*(self.grid.nodes['ring_f'][trav[1]] - n_f) )%L > cutoff ):
+                    break
+                # is trav[1] something which limits the sliding of n?
+                trav_nbrs=self.grid.node_to_nodes(trav[1])
+                if len(trav_nbrs)>2:
+                    break
+                if self.grid.nodes['fixed'][trav[1]] != self.SLIDE:
+                    break
+                for nxt in trav_nbrs:
+                    if nxt not in trav:
+                        break
+                # before updating, check to see if this edge has
+                # a cell on it.  If it does, then even if the node is degree
+                # 2, we can't slide through it.
+                j=self.grid.nodes_to_edge( [trav[1],nxt] )
+                j_c=self.grid.edges['cells'][j]
+                if j_c[0]>=0 or j_c[1]>=0:
+                    # adjacent cells, can't slide through here.
+                    break
+
+                trav=[trav[1],nxt]
+            stops.append(trav[1])
+            
+        return self.grid.nodes['ring_f'][ stops ]
+    
     def find_slide_conflicts(self,n,delta_f):
-        n_ring=self.grid.nodes['oring'][n]
+        n_ring=self.grid.nodes['oring'][n]-1
         n_f=self.grid.nodes['ring_f'][n]
         new_f=n_f + delta_f
         curve=self.curves[n_ring]
@@ -1018,7 +1104,7 @@ class AdvancingFront(object):
         # do things a bit more manually.
         to_delete=[]
         for nbr in self.grid.node_to_nodes(n):
-            if self.grid.nodes['oring'][nbr]!=n_ring:
+            if self.grid.nodes['oring'][nbr]-1!=n_ring:
                 continue
 
             nbr_f=self.grid.nodes['ring_f'][nbr]
@@ -1055,7 +1141,7 @@ class AdvancingFront(object):
                 break
         # sanity checks:
         for nbr in to_delete:
-            assert n_ring==self.grid.nodes['oring'][nbr]
+            assert n_ring==self.grid.nodes['oring'][nbr]-1
             # For now, depart a bit from paver, and rather than
             # having HINT nodes, HINT and SLIDE are both fixed=SLIDE,
             # but differentiate based on node degree.
@@ -1068,7 +1154,7 @@ class AdvancingFront(object):
         for nbr in conflicts:
             self.grid.merge_edges(node=nbr)
 
-        n_ring=self.grid.nodes['oring'][n]
+        n_ring=self.grid.nodes['oring'][n]-1
         n_f=self.grid.nodes['ring_f'][n]
         new_f=n_f + delta_f
         curve=self.curves[n_ring]

@@ -166,8 +166,8 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
 
             snbrs=[]
             while 1:
-                if len(snbrs)>20: # DBG
-                    pdb.set_trace()
+                #if len(snbrs)>20: # DBG
+                #    pdb.set_trace()
                 node,cell = map_next[trav]
                 snbrs.append(node)
                 trav=cell
@@ -1155,3 +1155,8 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
                     break
         if self.post_check:
             self.check_local_delaunay()
+
+# Issues:
+#   Calls like edge_to_cells do not scale well right now.  In particular,
+#   it would be better in this code to always specify the edge, so that 
+#   a full scan isn't necessary.

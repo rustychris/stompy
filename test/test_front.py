@@ -2,28 +2,28 @@ import time
 import logging
 import matplotlib.pyplot as plt
 import numpy as np
-import field
 import pdb
-from scipy import optimize as opt
-import utils
 
-import unstructured_grid
+from scipy import optimize as opt
+
+from stompy.spatial import field
+from stompy import utils
+
+from stompy.grid import (unstructured_grid, exact_delaunay, front)
 reload(unstructured_grid)
-import exact_delaunay
 reload(exact_delaunay)
-import front
 reload(front)
-## 
+
 #-# Curve -
 
 def hex_curve():
-    hexagon = np.array( [[0,1],
-                         [1,0],
-                         [3,0],
-                         [4,1],
-                         [3,2],
-                         [1,2]] )
-    return front.Curve(10*hexagon)
+    hexagon = np.array( [[0,11],
+                         [10,0],
+                         [30,0],
+                         [40,9],
+                         [30,20],
+                         [10,20]] )
+    return front.Curve(hexagon)
 
 def test_curve_eval():
     crv=hex_curve()
@@ -267,7 +267,7 @@ def test_actions():
 af=test_basic_setup()
 check0=af.grid.checkpoint()
 
-##
+# #
 
 # Back-tracking
 # The idea is that with sufficient roll-back, it can build a 
@@ -308,26 +308,17 @@ check0=af.grid.checkpoint()
 # the tree should be held by af.
 # 
 
-##
+# af2=test_basic_setup()
+# af2.log.setLevel(logging.INFO)
+# 
+# af2.cdt.post_check=False
+# af2.loop()
+# plt.figure(2).clf()
+# fig,ax=plt.subplots(num=2)
+# af2.plot_summary(ax=ax)
+# ax.set_title('loop()')
 
-af2=test_basic_setup()
-af2.log.setLevel(logging.INFO)
 
-af2.cdt.post_check=False
-af2.loop()
-plt.figure(2).clf()
-fig,ax=plt.subplots(num=2)
-af2.plot_summary(ax=ax)
-ax.set_title('loop()')
-
-## 
-
-plt.figure(1).clf()
-fig,ax=plt.subplots(num=1)
-af=test_basic_setup()
-af.log.setLevel(logging.INFO)
-
-af.cdt.post_check=False
 
 class DTNode(object):
     parent=None 
@@ -497,6 +488,13 @@ class DTChooseStrategy(DTNode):
         return True
 
 if 0: # manual testing
+    plt.figure(1).clf()
+    fig,ax=plt.subplots(num=1)
+    af=test_basic_setup()
+    af.log.setLevel(logging.INFO)
+
+    af.cdt.post_check=False
+    
     af.root=DTChooseSite(af)
     af.current=af.root
     # af.plot_summary() ; plt.pause(1.0)
@@ -511,11 +509,23 @@ if 0: # manual testing
     # This is leaving things in a weird place
     af.current.best_child(cb=cb)
 
-af.plot_summary()    
+# af.plot_summary()    
 
 
 ## 
 # Single step lookahead:
+# This suffers from the unfair scoring of Wall.
+# Wall can often get a perfect score because it has so
+# much freedom.
+# Could look into ways of penalizing Wall - maybe because it
+# adds new unpaved edges (compared to a bisect for which the
+# unpaved is constant, and unpaved-paved goes down, or a cutoff
+# which decreases both, or a join...)
+# First, though, try an approach which takes the first successful
+# strategy.
+
+# hmm - this is now getting a DuplicatedNode error while trying some
+# terrible configuration
 
 plt.figure(1).clf()
 fig,ax=plt.subplots(num=1)
@@ -529,11 +539,19 @@ af.current=af.root=DTChooseSite(af)
 # wins out as much as possible, since it is least constrained
 # then it ends up using too many joins, where it should have
 # just used a bisect.
+# using Wall too much is inefficient, but I don't think that it
+# should lead to lower quality.  
+
 # also seems like the optimization is favoring angles over 
 # scale too much, such that the results stray too far from
 # a constant scale, and then it can't recover
 
 # It now runs to completion, but the quality is low.
+# well, almost completion - fails at abs_serial: 21451
+# another fail in slide_node.
+# node 11? f => 32.571511772985957
+# probably moved it all the way to 12.
+# ah - maybe because slide_node_limits didn't check that first edge?
 
 while 1:
     if not af.current.children:
@@ -546,19 +564,41 @@ while 1:
         except: # AttributeError:
             pass
         # fig.canvas.draw()
-        plt.pause(0.01)
+        plt.pause(0.001)
     
     if not af.current.best_child(): # cb=cb
         assert False
+        
     cb()
-    break
+    # break
+
+af.plot_summary()
+    
+
 
 ## 
 
-
-##     
 # Basic, no lookahead:
+# This produces better results because the metrics have been pre-tuned
+
+plt.figure(1).clf()
+fig,ax=plt.subplots(num=1)
+
+af=test_basic_setup()
+af.log.setLevel(logging.INFO)
+af.cdt.post_check=False
+
 af.current=af.root=DTChooseSite(af)
+
+def cb():
+    af.plot_summary(label_nodes=False)
+    try:
+        af.current.site.plot()
+    except: # AttributeError:
+        pass
+    # fig.canvas.draw()
+    plt.pause(0.01)
+
 while 1:
     if not af.current.children:
         break # we're done?
@@ -569,12 +609,63 @@ while 1:
             break
     else:
         assert False # none of the children worked out
+    cb()
+af.plot_summary(ax=ax)
+## 
+
+# Why does it divege from symmetry at the start?
+# part of this is because the combination of the original
+# metrics and the exact angles of the test case (90deg) lead
+# to a decision based on numerical roundoff
+# the optimization methods also have an effect here, as there
+# is the potential to have a bistable minimization problem,
+# and the numerical optimization chooses in a non-symmetric way.
+
+
+plt.figure(1).clf()
+fig,ax=plt.subplots(num=1)
+
+af=test_basic_setup()
+af.log.setLevel(logging.INFO)
+af.cdt.post_check=False
+
+af.current=af.root=DTChooseSite(af)
+
+def cb():
+    af.plot_summary(label_nodes=False)
+    try:
+        af.current.site.plot()
+    except: # AttributeError:
+        pass
+    plt.pause(0.01)
+## 
+while 1:
+    if not af.current.children:
+        break # we're done?
+    
+    for child_i in range(len(af.current.children)):
+        if af.current.try_child(child_i):
+            # Accept the first child which returns true
+            break
+    else:
+        assert False # none of the children worked out
+    cb()
+    break
 af.plot_summary(ax=ax)
 
+# on the right side, start with a Wall, and then Join shows
+# up first.
+# it's a numerical precision thing.
+# the internal angle is 30 degrees
+# scale_factor is 1.  Score == theta
 
-# 4. Add in test metrics to evaluate the result of each step.
-#    maybe use edits, which already tracks what parts of the grid have changed
-# 5. Implement one-lookahead (ChooseSite won't do anything smart here...)
+
+if isinstance( af.current,DTChooseStrategy ):
+    print af.current.site.abc
+    for i in af.current.child_order:
+        print "option %d: metric=%g  %s"%(i,af.current.child_prior[i],af.current.options[i])
+
+## 
 # 6. Implement n-lookahead
 
 ## 
