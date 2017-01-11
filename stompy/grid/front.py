@@ -259,6 +259,11 @@ class Curve(object):
             raise self.CurveException("Binary search failed")
 
     def is_forward(self,fa,fb,fc):
+        """ return true if fa,fb and fc are distinct and
+        ordered CCW around the curve
+        """
+        if fa==fb or fb==fc or fc==fa:
+            return False
         d=self.total_distance()
         return ((fb-fa) % d) < ((fc-fa)%d)
     def is_reverse(self,fa,fb,fc):

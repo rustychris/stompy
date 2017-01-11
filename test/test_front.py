@@ -527,7 +527,6 @@ if 0: # manual testing
 # hmm - this is now getting a DuplicatedNode error while trying some
 # terrible configuration
 
-
 plt.figure(1).clf()
 fig,ax=plt.subplots(num=1)
 
@@ -540,14 +539,19 @@ af.current=af.root=DTChooseSite(af)
 # wins out as much as possible, since it is least constrained
 # then it ends up using too many joins, where it should have
 # just used a bisect.
+# using Wall too much is inefficient, but I don't think that it
+# should lead to lower quality.  
+
 # also seems like the optimization is favoring angles over 
 # scale too much, such that the results stray too far from
 # a constant scale, and then it can't recover
 
 # It now runs to completion, but the quality is low.
-
-
-count=0
+# well, almost completion - fails at abs_serial: 21451
+# another fail in slide_node.
+# node 11? f => 32.571511772985957
+# probably moved it all the way to 12.
+# ah - maybe because slide_node_limits didn't check that first edge?
 
 while 1:
     if not af.current.children:
@@ -560,46 +564,17 @@ while 1:
         except: # AttributeError:
             pass
         # fig.canvas.draw()
-        plt.pause(0.01)
+        plt.pause(0.001)
     
     if not af.current.best_child(): # cb=cb
         assert False
         
-    if count>=72: # DBG
-        break
-    else:
-        count+=1
-        
-    # cb()
+    cb()
     # break
-
-af.zoom = (25.937156420750966, 45.729126052262501, 2.9426015973191628, 18.374753907417521)
 
 af.plot_summary()
     
-## 
 
-# problem 0 is that the optimization allowed an edge to get this short.
-#   this is an issue of how to balance a terrible angle and a terrible length.
-#   could enforce a max_cost here - any step which results in a cost above that
-#   is a failure.  the costs here are so large it wouldn't even need to be
-#   a very restrictive threshold.  But that could be a problem in cases where
-#   the starting point is really bad, but after a few optimizations it gets better.
-#   so take a pass on fixing problem 0.
-# problem 1 is that slide_node used delta_f to look for conflicts,
-# and didn't find 18.  This is probably fixable.
-# problem 3 is that slide_node doesn't seem to check the status of
-# conflicts before trying to merge them
-# the bandaid solution is to catch the error from modify_node
-# and rewind.
-
-# af.current.try_child(3) # will fail.
-
-
-##
-
-# This now runs, though it leaves 19 on top of 18.
-af.current.try_child(3) 
 
 ## 
 
