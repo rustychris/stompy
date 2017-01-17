@@ -13,7 +13,7 @@ from stompy.grid import (unstructured_grid, exact_delaunay, front)
 reload(unstructured_grid)
 reload(exact_delaunay)
 reload(front)
-## 
+
 #-# Curve -
 
 def hex_curve():
@@ -267,7 +267,7 @@ def test_actions():
 af=test_basic_setup()
 check0=af.grid.checkpoint()
 
-##
+# #
 
 # Back-tracking
 # The idea is that with sufficient roll-back, it can build a 
@@ -308,26 +308,17 @@ check0=af.grid.checkpoint()
 # the tree should be held by af.
 # 
 
-##
+# af2=test_basic_setup()
+# af2.log.setLevel(logging.INFO)
+# 
+# af2.cdt.post_check=False
+# af2.loop()
+# plt.figure(2).clf()
+# fig,ax=plt.subplots(num=2)
+# af2.plot_summary(ax=ax)
+# ax.set_title('loop()')
 
-af2=test_basic_setup()
-af2.log.setLevel(logging.INFO)
 
-af2.cdt.post_check=False
-af2.loop()
-plt.figure(2).clf()
-fig,ax=plt.subplots(num=2)
-af2.plot_summary(ax=ax)
-ax.set_title('loop()')
-
-## 
-
-plt.figure(1).clf()
-fig,ax=plt.subplots(num=1)
-af=test_basic_setup()
-af.log.setLevel(logging.INFO)
-
-af.cdt.post_check=False
 
 class DTNode(object):
     parent=None 
@@ -497,6 +488,13 @@ class DTChooseStrategy(DTNode):
         return True
 
 if 0: # manual testing
+    plt.figure(1).clf()
+    fig,ax=plt.subplots(num=1)
+    af=test_basic_setup()
+    af.log.setLevel(logging.INFO)
+
+    af.cdt.post_check=False
+    
     af.root=DTChooseSite(af)
     af.current=af.root
     # af.plot_summary() ; plt.pause(1.0)
@@ -511,7 +509,7 @@ if 0: # manual testing
     # This is leaving things in a weird place
     af.current.best_child(cb=cb)
 
-af.plot_summary()    
+# af.plot_summary()    
 
 
 ## 
@@ -529,9 +527,6 @@ af.plot_summary()
 # hmm - this is now getting a DuplicatedNode error while trying some
 # terrible configuration
 
-
-
-
 plt.figure(1).clf()
 fig,ax=plt.subplots(num=1)
 
@@ -544,14 +539,19 @@ af.current=af.root=DTChooseSite(af)
 # wins out as much as possible, since it is least constrained
 # then it ends up using too many joins, where it should have
 # just used a bisect.
+# using Wall too much is inefficient, but I don't think that it
+# should lead to lower quality.  
+
 # also seems like the optimization is favoring angles over 
 # scale too much, such that the results stray too far from
 # a constant scale, and then it can't recover
 
 # It now runs to completion, but the quality is low.
-
-
-count=0
+# well, almost completion - fails at abs_serial: 21451
+# another fail in slide_node.
+# node 11? f => 32.571511772985957
+# probably moved it all the way to 12.
+# ah - maybe because slide_node_limits didn't check that first edge?
 
 while 1:
     if not af.current.children:
@@ -564,70 +564,16 @@ while 1:
         except: # AttributeError:
             pass
         # fig.canvas.draw()
-        plt.pause(0.01)
+        plt.pause(0.001)
     
     if not af.current.best_child(): # cb=cb
         assert False
         
-    if count>=72: # DBG
-        break
-    else:
-        count+=1
-        
-    # cb()
+    cb()
     # break
 
-## 
-
-# ([37.3846831338208, 11.876848552797126], False, 17)
-# during relax_slide_node.
-# node 17: {'x': array([ 37.38468313,  11.87684855]), 'ring_f': 52.207640827256384}
-# Compare that to 18, which it's colliding with:
-# ([37.3846831338208, 11.876848552797126], False, 0, 2, 52.207640827256384)
-# So who let slide_node go that close to 18?
-# or is 18 not really legitimate?
-
-# above block stops just shy of the error
-# site is 37, 18, 19
-
-# will going straight to the Join trigger this?
-# yes.
-
-# 18 is part of a single cell, 17,18,19
-# why didn't the join figure out that 17-19 isn't a valid
-# edge?
-
-# adding the 17-19 edge is not collinear.
-# robust_predicates.orientation returns 1.
-# so maybe better to move on to the optimization, which is where it
-# really fails.
-# first time through, it already shoves 17 and 18 on top of each other.
-# they aren't quite on top of each other - out in the 10th decimal place.
-# but this shouldn't have been allowed - making an edge that short?
-# fixed[17]==2..
-
-# starting f_ring for 17: 52.207640831359832
-# so how did cost allow this?
-# and who checks on whether this is a legal slide? slide_node
-# does point to the need to realize that exact equality of ring_f
-# is not equivalent to exact equality of position
-# problem 0 is that the optimization allowed an edge to get this short.
-#   this is an issue of how to balance a terrible angle and a terrible length.
-#   could enforce a max_cost here - any step which results in a cost above that
-#   is a failure.  the costs here are so
-# problem 1 is that slide_node used delta_f to look for conflicts,
-# and didn't find 18.
-# problem 3 is that slide_node doesn't seem to check the status of
-# conflicts before trying to merge them
-# the bandaid solution is to catch the error from modify_node
-# and rewind.
-af.zoom = (25.937156420750966, 45.729126052262501, 2.9426015973191628, 18.374753907417521)
-
 af.plot_summary()
-
-# af.current.try_child(3) # will fail.
-
-
+    
 
 
 ## 

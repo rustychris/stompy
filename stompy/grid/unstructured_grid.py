@@ -2130,7 +2130,6 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     sel.append(c)
         return sel
 
-
     def select_cells_by_cut(self,line,start=0,side='left',delta=1.0):
         """
         Split the cells by a linestring.  By default, returns

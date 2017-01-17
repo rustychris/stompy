@@ -72,7 +72,7 @@ def wkb2shp(shp_name,
         fields = None
 
     if fields is not None and isinstance(fields,dict):
-        field_names=fields.keys()
+        field_names=list(fields.keys())
         N=len(fields[field_names[0]])
 
         field_values=[None]*N
