@@ -7,157 +7,16 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 import glob
+import six
+
 import matplotlib.dates as mdates
 from shapely import geometry
-
-# from stompy.model.suntans import sunreader
 
 import xarray as xr
 from stompy import utils
 from stompy.plot import (plot_utils, cmap, plot_wkb)
 from stompy.grid import unstructured_grid
 from stompy.spatial import (wkb2shp,field)
-
-## 
-
-
-# ---
-fac=86400 # adjustment for time base of all_u,all_v to t in days
-t_steps=fac*dn_steps
-# Running state with initial conditions
-xy=np.array(p0).copy()
-c=g.select_cells_nearest(p0,inside=True)
-t=t_steps[0]
-output=[xy.copy()] # [xy, ...]
-dense=[ (xy[0],xy[1],t) ]
-all_t=fac*all_dn
-ti=np.searchsorted(all_t,t)
-u = all_u[c_mapper[c],ti]
-v = all_v[c_mapper[c],ti]
-last_j=None
-edge_norm=g.edges_normals()
-
-assert c is not None # should at least start in the domain!
-assert (t>=all_t[0]) and (t<all_t[-1])
-
-# Loop over intervals:
-for stepi in range(len(t_steps)-1):
-    t0,tN=t_steps[ [stepi,stepi+1] ]
-    while t<tN: # integrate within this interval:
-        
-        # the max time step we can take is the minimum of
-        # (i) time to next output interval
-        # (ii) time to next update of input velocities
-        # (iii) time to cross into a new cell
-        dt_max_out=tN-t
-        dt_max_in =all_t[ti+1] - t
-
-        dt_max_edge=np.inf
-        j_cross=None
-        for j in g.cell_to_edges(c):
-            if j==last_j:
-                continue # don't cross back
-            normal=edge_norm[j]
-            if g.edges['cells'][j,1]==c: # ~checked
-                normal=-normal
-            # vector from xy to a point on the edge
-            d_xy_n = g.nodes['x'][g.edges['nodes'][j,0]] - xy 
-            # perpendicular distance 
-            dp_xy_n=d_xy_n[0] * normal[0] + d_xy_n[1]*normal[1]
-            assert dp_xy_n>=0 #otherwise sgn probably wrong above
-            closing=u*normal[0] + v*normal[1]
-            dt_j=dp_xy_n/closing
-            if dt_j>0 and dt_j<dt_max_edge:
-                j_cross=j
-                dt_max_edge=dt_j
-        dt_min=min(dt_max_edge,dt_max_out,dt_max_in)
-
-        # Take the step
-        xy[0] += u*dt_min
-        xy[1] += v*dt_min
-        t+=dt_min
-
-        if dt_max_edge==dt_min:
-            # cross edge j, update time.  careful that j isn't boundary
-            # or start sliding on boundary.
-            print "Cross edge"
-            cells=g.edges['cells'][j_cross]
-            if cells[0]==c:
-                new_c=cells[1]
-            elif cells[1]==c:
-                new_c=cells[0]
-            else:
-                assert False
-            if new_c<0:
-                print "Whoa - hit the boundary"
-                assert False
-            else:
-                c=new_c
-                last_j=j_cross
-                u=all_u[c_mapper[c],ti]
-                v=all_v[c_mapper[c],ti]
-        if dt_max_out==dt_min:
-            t=tN # in case of roundoff in t+=dt_min
-            output.append(xy.copy())
-        if dt_max_in==dt_min:
-            ti+=1
-            u = all_u[c_mapper[c],ti]
-            v = all_v[c_mapper[c],ti]
-            last_j=None # okay to cross back if the velocities changed.
-        dense.append( (xy[0],xy[1],t) )
-                
-## 
-
-plt.figure(1).clf()
-fig,ax=plt.subplots(num=1)
-
-g.plot_edges(ax=ax,clip=wide_zoom)
-
-path=np.array(dense)
-
-ax.plot( path[:,0], path[:,1],'k-')
-ax.scatter(path[:,0],path[:,1],30,path[:,2],lw=0)
-
-# c and xy have gotten out of sync
-tiny_zoom=(568033.41600910132, 568713.36700664461, 4179074.5373536395, 4179602.5038718581)
-
-# g.plot_cells(clip=tiny_zoom,labeler=lambda c,r: str(c))
-ax.axis(tiny_zoom)
-
-## 
-# Failed attempt
-
-
-reload(unstructured_grid)
-
-
-## 
-cdt=exact_delaunay.Triangulation()
-cdt.post_check=False
-
-import time
-
-def load_it():
-    t_last=time.time()
-    n_last=0
-    for n in range(g.Nnodes()):
-        if n-n_last>=500:
-            elapsed=time.time() - t_last
-            print "%d / %d  %gs per %d"%(n,g.Nnodes(),elapsed,n-n_last)
-            t_last=time.time()
-            n_last=n
-        cdt.add_node(x=g.nodes['x'][n],
-                     _index=n)
-
-# for 500 nodes:
-# starting point is 23.7s
-# after adding code to avoid full scans on edge_to_cells,
-# and skip delaunay checks, down to 13s for 500 nodes.
-# if we were lucky enough for this to be linear,
-# then this takes about 30 minutes to load the full grid
-# it does speed up a bit after a few thousad, and at 8k,
-# it's running about 5s per 500
-load_it()
 
 ## 
 class UgridParticles(object):
@@ -174,6 +33,7 @@ class UgridParticles(object):
     # j_last: last edge the particle crossed
     part_dtype = [ ('x',(np.float64,2)),
                    ('c',np.int32),
+                   ('u',(np.float64,2)),
                    ('j_last',np.int32) ]
 
     def __init__(self,ncs,grid=None):
@@ -246,6 +106,10 @@ class UgridParticles(object):
         v=self.current_nc.cell_north_velocity.values[:,0,self.nc_time_i]
 
         self.U=np.array( [u,v] ).T # again assume 2D
+        
+        # A little dicey - this overwrites any memory of convergent edges.
+        # so every input interval, it's going to forget
+        self.P['u']=self.U[ self.P['c'] ]
 
     def init_particles(self):
         self.P=np.zeros( 0, self.part_dtype )
@@ -271,14 +135,22 @@ class UgridParticles(object):
             self.P['c'][i]=c
             self.P['j_last'][i]=-999
 
+            # if the velocity fields were continuous, then we could
+            # skip this part, since we wouldn't really need to store
+            # velocity.
+            self.P['u'][i] = np.nan # signal that it needs to be set
+
+    record_dense=False
+
     def integrate(self,output_times_unix):
         next_out_idx=0
         next_out_time=output_times_unix[next_out_idx]
         
         self.output=[]
-        self.dense=[]
         self.append_state(self.output)
-        self.append_state(self.dense)
+        if self.record_dense:
+            self.dense=[]
+            self.append_state(self.dense)
 
         next_vel_time=self.velocity_valid_time[1]
 
@@ -328,13 +200,15 @@ class UgridParticles(object):
 
             # advance each particle to the correct state at stop_t
             part_t=self.t_unix
-
+            
+            if np.isnan( p['u'][0] ):
+                # probably first time this particle has been moved.
+                self.P['u'][i]=self.U[ self.P['c'][i] ]
+            
             while part_t<stop_t:
-                #if len(self.dense)==47:
-                #    pdb.set_trace()
-
                 dt_max_edge=np.inf
                 j_cross=None
+                j_cross_normal=None
 
                 for j in g.cell_to_edges(p['c']):
                     if j==p['j_last']:
@@ -347,26 +221,36 @@ class UgridParticles(object):
                     # perpendicular distance 
                     dp_xy_n=d_xy_n[0] * normal[0] + d_xy_n[1]*normal[1]
                     assert dp_xy_n>=0 #otherwise sgn probably wrong above
-                    u,v=self.U[p['c']]
-                    closing=u*normal[0] + v*normal[1]
-                    dt_j=dp_xy_n/closing
-                    if dt_j>0 and dt_j<dt_max_edge:
-                        j_cross=j
-                        dt_max_edge=dt_j
 
+                    #closing=u*normal[0] + v*normal[1]
+                    closing=self.P['u'][i,0]*normal[0] + self.P['u'][i,1]*normal[1]
 
+                    if closing<0: 
+                        continue
+                    else:                        
+                        dt_j=dp_xy_n/closing
+                        if dt_j>0 and dt_j<dt_max_edge:
+                            j_cross=j
+                            dt_max_edge=dt_j
+                            j_cross_normal=normal
+                        
                 t_max_edge=part_t+dt_max_edge
                 if t_max_edge>stop_t:
                     # don't make it to the edge
                     dt=stop_t-part_t
                     part_t=stop_t
+                    j_cross=None
                 else:
                     dt=dt_max_edge
                     part_t=t_max_edge
 
+                # Take the step
+                self.P['x'][i] += self.P['u'][i]*dt
+
+                if j_cross is not None:
                     # cross edge j, update time.  careful that j isn't boundary
                     # or start sliding on boundary.
-                    print "Cross edge"
+                    # print "Cross edge"
                     cells=g.edges['cells'][j_cross]
                     if cells[0]==p['c']:
                         new_c=cells[1]
@@ -374,186 +258,84 @@ class UgridParticles(object):
                         new_c=cells[0]
                     else:
                         assert False
+
+                    # More scrutiny on the edge crossing -
+                    # would it take us out of the domain? then bounce and frown.
+                    # would it take us to a convergent edge? then bounce and frown.
+                    bounce=False
+
                     if new_c<0:
-                        print "Whoa - hit the boundary"
-                        assert False
+                        bounce=True
+                    else:
+                        recross= ( self.U[new_c,0]*j_cross_normal[0] + 
+                                   self.U[new_c,1]*j_cross_normal[1] )
+                        if recross<=0: 
+                            bounce=True
 
-                    self.P['c'][i]=new_c
-                    self.P['j_last'][i]=j_cross
+                    if bounce:
+                        closing= (self.P['u'][i,0]*j_cross_normal[0] + 
+                                  self.P['u'][i,1]*j_cross_normal[1] )
+                        # slightly over-compensate, pushing away from problematic
+                        # edge
+                        print "BOUNCE"
 
-                # Take the step
-                self.P['x'][i,0] += u*dt
-                self.P['x'][i,1] += v*dt
+                        self.P['u'][i] -= 1.1 * j_cross_normal*closing
+                        self.P['j_last'][i]=j_cross
+                    else:
+                        self.P['c'][i]=new_c
+                        self.P['j_last'][i]=j_cross
+                        self.P['u'][i] = self.U[new_c]
+                        # HERE: need to check whether the new cell's 
+                        # velocity is going to push us back, in which case
+                        # we should instead scoot along the tangent and 
+                        # hide our faces.
+                        # actually, better solution is to handle *before*
+                        # the particle hits the edge.  If we handle it after,
+                        # two particles converging on this edge will cross 
+                        # paths, and that really doesn't pass the sniff test.
+                        # this is not good, but will let the sim complete
+                        
 
-                self.append_state(self.dense)
-
-
-## 
-
-fig,ax=plt.subplots(1,1,num=1)
-
-# coll=g.plot_cells(values=depth_min,ax=ax,edgecolors='face',mask=cell_sel)
-# coll.set_clim([0,0.2])
-# coll.set_cmap('summer')
-ecoll=g.plot_edges(clip=wide_zoom,ax=ax)
-ecoll.set_lw(0.5)
-ecoll.set_color('0.5')
-
-for p in paths:
-    ax.plot(p[:,0],p[:,1],'b-')
-for p in rpaths:
-    ax.plot(p[:,0],p[:,1],'m-')
-    
-ax.plot(paths[:,0,0],paths[:,0,1],'ko',label='Start')
-ax.plot(paths[:,-1,0],paths[:,-1,1],'ks',label='End')
-
-ax.xaxis.set_visible(0)
-ax.yaxis.set_visible(0)
-ax.legend(loc='lower right')
-
-ax.axis('equal')
-ax.axis(narrow_zoom)
+                if self.record_dense:
+                    self.append_state(self.dense)
 
 
-## 
-
-xyxy=poly.bounds
-# had been 10x10
-x=np.linspace(xyxy[0],xyxy[2],40)
-y=np.linspace(xyxy[1],xyxy[3],40)
-
-X,Y=np.meshgrid(x,y)
-XY=np.array([X.ravel(),Y.ravel()]).T
-
-# instead of just being inside the model domain, make sure that it's not 
-# right on the edge, as those particles are easily stuck
-#sel=np.array( [ g.select_cells_nearest(xy,inside=True) is not None
-#                for xy in XY] )
-interior_poly=boundary.buffer(-20) # shrink by 20m
-sel=np.array( [interior_poly.contains( geometry.Point(xy))
-               for xy in XY])
-
-XY=XY[sel]
-starts=XY
-
-# Forward tracks:
-# one ebb-flood cycle as shown in the time series
-dn_fsteps=np.arange(ebb_flood_dns1[0],
-                    ebb_flood_dns1[1],
-                    5*60/86400.)
-
-fpaths=[]
-for xyi,xy in enumerate(starts):
-    if xyi%10==0:
-        print "%d / %d"%( xyi,len(starts) )
-    else:
-        print ".",
-    path= my_odeint(vel,xy,dn_fsteps)
-    fpaths.append(path)
-fpaths=np.array(fpaths)
+#    Edges and incompatible velocities
+#    ---------------------------------
+#    
+#    With a discontinuous velocity field, sooner or later there
+#    is a particle which is one cell, pushed to the edge, and 
+#    enters a new cell which also wants to push the particle to
+#    the edge.
+#    
+#    Solutions: 
+#     1. Fix the velocity field.  The 0th order in space (constant
+#        velocity within a cell) approach cannot be fixed in this way.
+#        Going to a reconstruction like in Gerard's paper would be a
+#        solution, though it doesn't extend beyond triangles.  Postma
+#        I think would be sufficient to get triangles and quads, but
+#        still no good on pentagons, hexes, etc.
+#     2. Adjust the velocity when this happens.  The adjustment might
+#        be to take the average of the two cells, reach back and use
+#        an edge velocity to figure it out, force a tangent trajectory,
+#        or other approaches.  
+#    
+#        Do any of these approaches not break the reversibility of 
+#        the method?  Seems that any approach which "reacts" to finding 
+#        a convergent edge is not reversible, since that edge would be 
+#        divergent in reverse.  
+#        
+#        I think for now I have to give up on reversibility, but at least
+#        preserve invariance w.r.t. to output time stepping.  I.e. changing the
+#        output timestep shouldn't alter any results.
 
 
-# In[40]:
+# Method of Ketefian, Gross, Stelling
+# - need a 2x2 matrix Ai and vector Bi per cell
+#   u is linear in x,y
+#   they include closed solutions for a trajectory
 
-# Reverse tracks:
-rdn_steps=np.arange(ebb_flood_dns0[0],
-                    ebb_flood_dns0[1],
-                    5*60/86400.)
-
-rpaths=[]
-for xyi,xy in enumerate(starts):
-    if xyi%10==0:
-        print "%d / %d"%( xyi,len(starts) )
-    else:
-        print ".",
-    path=my_odeint(vel,xy,dn_steps,reverse=True)
-    rpaths.append(path)
-rpaths=np.array(rpaths)
-
-
-
-p0=np.array([  568274.16871831,  4178143.03463385])
-
-# Forward tracks:
-# one ebb-flood cycle as shown in the time series
-dn_fsteps=np.arange(ebb_flood_dns1[0],
-                    ebb_flood_dns1[1],
-                    5*60/86400.)
-
-
-
-## 
-
-
-# Testing:
-runs=glob.glob("/home/rusty/data/boffinator/data*")
-runs.sort()
-# the ones I was using on boffinator:
-rsel=['/home/rusty/data/boffinator/data736060',
-      '/home/rusty/data/boffinator/data736062'] 
-runs=[r for r in runs if r>=rsel[0] and r<=rsel[1]]
-print "Found %d days/runs to use"%len(runs)
-
-ncs=[xr.open_dataset(os.path.join(p,'transcribed-global-proj01.nc')) for p in runs]
-wide_zoom=utils.expand_xxyy([561841, 569835, 4175233, 4181423 ],2.)
-
-
-ebb_flood_dts1=[numpy.datetime64('2016-04-07T06:42:00'),
-                numpy.datetime64('2016-04-07T19:23:00') ]
-# ebb_flood_dns0=[736060.7650459058, 736061.279]
-
-fwd_steps=np.arange(utils.to_unix(ebb_flood_dts1[0]),
-                    utils.to_unix(ebb_flood_dts1[1]),
-                    10*60) 
-
-#rdn_steps=np.arange(ebb_flood_dns0[0],
-#                    ebb_flood_dns0[1],
-#                    10*60/86400.)
-
-starts=np.array( [
-    [  568274.16871831,  4178143.03463385] 
-])
-
-
-g=unstructured_grid.UnstructuredGrid.from_ugrid(ncs[0])
-
-## 
-
-ptm=UgridParticles(ncs=ncs,grid=g) 
-
-ptm.set_time(fwd_steps[0])
-ptm.add_particles( x=starts )
-
-# integrate starting from this location:
-
-ptm.integrate(fwd_steps)
-
-## 
-
-clip=(565918.24332594627,
-      569900.63026706409,
-      4176104.4380515865,
-      4183193.9995333287)
-zoom=(568119.50640395319,
-      568467.89101941977,
-      4178006.8156055976,
-      4178277.0946379215)
-
-plt.figure(1).clf() 
-g=ptm.g
-fig,ax=plt.subplots(num=1)
-
-dens_xy=np.array( [r[0] for r in ptm.dense] )
-dens_t=np.array( [r[1] for r in ptm.dense] )
-
-ax.plot(dens_xy[:,0,0],dens_xy[:,0,1],'k-')
-
-ax.scatter(dens_xy[:,0,0],dens_xy[:,0,1],40,dens_t,lw=0)
-g.plot_edges(clip=clip,ax=ax) # ,labeler=lambda e,r: str(e) )
-ccoll=g.plot_cells(clip=clip) #,labeler=lambda c,r:str(c))
-ccoll.set_color('w')
-ccoll.set_zorder(-5)
-ax.axis(zoom)
-
-# runs to 48 steps, then jumps too far
-
+# The full analytic solution is pretty messy, but the bulk of the mess
+# is due to the analytical integration of the linear velocity field.
+# an intermediate step would be to go for the velocity field reconstruction,
+# but go back to a numerical integration.

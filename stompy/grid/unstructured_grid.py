@@ -2072,16 +2072,20 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     def node_point(self,n):
         return geometry.Point( self.nodes['x'][n] )
 
-    def boundary_polygon(self):
-        """ return polygon, potentially with holes, representing the domain.
-        equivalent to unioning all cell_polygons, but hopefully faster
-        """
+    def boundary_linestrings(self):
         # could be much smarter and faster, directly traversing boundary edges
         # but this way is easy
         e2c=self.edge_to_cells()
         boundary_edges=(e2c[:,1]<0)&(~self.edges['deleted'])
         segs=self.nodes['x'][self.edges['nodes'][boundary_edges]]
         lines=join_features.merge_lines(segments=segs)
+        return lines
+
+    def boundary_polygon(self):
+        """ return polygon, potentially with holes, representing the domain.
+        equivalent to unioning all cell_polygons, but hopefully faster
+        """
+        lines=self.boundary_linestrings()
         polys=join_features.lines_to_polygons(lines,close_arc=False)
         if len(polys)>1:
             raise GridException("somehow there are multiple boundary polygons")
