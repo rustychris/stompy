@@ -19,6 +19,11 @@ class ParticlesKGS(basic.UgridParticles):
     def load_grid(self,grid=None):
         super(ParticlesKGS,self).load_grid(grid=grid)
 
+        self.log.info('Top of ParticlesKGS:load_grid')
+        # The method and this code can only deal with triangular grids
+        # for now.
+        assert self.g.max_sides==3
+
         # additional static geometry, beyond self.edge_norm
         # static geometry:
         self.Ac=self.g.cells_area()
@@ -32,8 +37,12 @@ class ParticlesKGS(basic.UgridParticles):
         self.bndry=self.g.edges['cells'][:,1]<0
 
         self.signs=np.zeros( (self.g.Ncells(),self.g.max_sides), 'i4') 
+        self.cell_edges=-1 + np.zeros( (self.g.Ncells(),self.g.max_sides), 'i4')
+
         for c in self.g.valid_cell_iter():
-            for ji,j in enumerate(self.g.cell_to_edges(c)):
+            c2e=self.g.cell_to_edges(c)
+            self.cell_edges[c,:] = c2e
+            for ji,j in enumerate(self.cell_edges[c,:]):
                 # not entirely sure here, but I got smaller residuals
                 # for a boundary edge this way, and reasonable
                 # comparison at the end to d_eta_dt.
@@ -50,7 +59,26 @@ class ParticlesKGS(basic.UgridParticles):
         # factors for the forward interpolation - used during 
         # the translation from suntans cell-centered to edge-centered
         # must be updated by calls to set_dz_edge - time variant!
-        self.mAs = [None]*self.g.Ncells()
+        
+        #self.mAs = [None]*self.g.Ncells()
+        self.mAs=np.zeros( (self.g.Ncells(),3,3), 'f8' )
+
+        # setup the constant parts of mA
+        def alpha_beta(c,j): # coefficient on u[j] with respect to cell center velocity of c
+            return ( (1./self.Ac[c]) * self.edge_norm[j] 
+                     * utils.dist( self.edge_center[j] - self.cell_center[c])
+                     * self.edge_len[j] )
+        for c in self.g.valid_cell_iter():
+            if c%5000==0:
+                print "%d / %d"%( c, self.g.Ncells() )
+
+            c_edges=self.cell_edges[c,:] 
+
+            alpha_betas = [alpha_beta(c,j) for j in c_edges]
+
+            self.mAs[c,0,:]= [ alpha_betas[0][0], alpha_betas[1][0], alpha_betas[2][0]]
+            self.mAs[c,1,:]= [ alpha_betas[0][1], alpha_betas[1][1], alpha_betas[2][1]]
+            self.mAs[c,2,:]= np.nan # Time varying
 
     def update_particle_velocity_for_new_step(self):
         """ this gets called within update_velocity, when 
@@ -111,36 +139,28 @@ class ParticlesKGS(basic.UgridParticles):
     def set_dz_edge(self,dz_edge):
         self.dz_edge=dz_edge
 
-        # mA cannot be set statically, so here we set it with updated 
-        # values of dz_edge..
-        def alpha_beta(c,j): # coefficient on u[j] with respect to cell center velocity of c
-            return ( (1./self.Ac[c]) * self.edge_norm[j] 
-                     * utils.dist( self.edge_center[j] - self.cell_center[c])
-                     * self.edge_len[j] )
         def gamma(c,ji,j): # coefficient on u[j] with respect to d_eta / d_t
-            return (1./self.Ac[c]) * dz_edge[j] * self.edge_len[j] * self.signs[c,ji]
+            # updated way of clamping down on boundary flows:
+            return 
 
         for c in self.g.valid_cell_iter():
             if c%5000==0:
                 print "%d / %d"%( c, self.g.Ncells() )
 
-            c_edges=self.g.cell_to_edges(c) 
-
-            alpha_betas = [alpha_beta(c,j) for j in c_edges]
-
-            rows=[ [ alpha_betas[0][0], alpha_betas[1][0], alpha_betas[2][0]],
-                   [ alpha_betas[0][1], alpha_betas[1][1], alpha_betas[2][1]],
-                   [ gamma(c,ji,j) for ji,j in enumerate(c_edges)] ]
-
+            c_edges=self.cell_edges[c,:] 
+            
             for ji,j in enumerate(c_edges):
-                if self.bndry[j]:
-                    row=[0,0,0]
-                    row[ji]=1
-                    rows.append(row)
+                # ripe for one more vectorization
+                self.mAs[c,2,ji] = ( (1e5*self.bndry[j]) 
+                                     + (1./self.Ac[c]) * dz_edge[j] * self.edge_len[j] * self.signs[c,ji] )
+            # self.mAs[c,2,:]= [ gamma(c,ji,j) for ji,j in enumerate(c_edges)] 
 
-            mA=np.array(rows)
-
-            self.mAs[c]=mA
+            # no longer needed with bndry weighting above.
+            # for ji,j in enumerate(c_edges):
+            #     if self.bndry[j]:
+            #         row=[0,0,0]
+            #         row[ji]=1
+            #         rows.append(row)
 
     def u_cell_to_u_edge(self,Uc):
         """
@@ -154,41 +174,57 @@ class ParticlesKGS(basic.UgridParticles):
         same way.  When edge-depths are accounted for, the flux at an edge is
         well-defined, but the height and the velocity are discontinuous.
         """
-        u_norms=np.nan*np.zeros( (self.g.Nedges(),2), 'f8')
+        # u_norms=np.nan*np.zeros( (self.g.Nedges(),2), 'f8')
+        u_norms=np.zeros( self.g.Nedges(), 'f8')
         u_norm_count=np.zeros(self.g.Nedges(),'i4')
 
-        for c in self.g.valid_cell_iter():
-            if c%10000==0:
-                print "%d / %d"%( c, self.g.Ncells() )
 
-            B=[Uc[c,0],
-               Uc[c,1],
-               self.d_eta_dt[c] ] 
+        if 0: # old, nonvectorized way
+            B=np.zeros(3,'f8')
+        
+            #for c in self.g.valid_cell_iter():
+            for c in range(self.g.Ncells()):
+                if c%10000==0:
+                    print "%d / %d"%( c, self.g.Ncells() )
 
-            c_edges=self.g.cell_to_edges(c) 
-            
-            # assumes that mAs has already been set
-            mA=self.mAs[c]
+                B[:2]=Uc[c]
+                B[2]=self.d_eta_dt[c]
 
-            if mA.shape[0]==3:
-                solve=np.linalg.solve
-            else:
-                solve=lambda A,B: np.linalg.lstsq(A,B)[0]
-                while len(B)<mA.shape[0]:
-                    B.append(0)
+                c_edges=self.cell_edges[c,:]
 
-            B=np.array(B)
+                # if mA.shape[0]==3:
+                #     solve=np.linalg.solve
+                # else:
+                #     solve=lambda A,B: np.linalg.lstsq(A,B)[0]
+                #     while len(B)<mA.shape[0]:
+                #         B.append(0)
+                # 
+                # B=np.array(B)
 
-            u_j = solve(mA,B)
+                u_j = np.linalg.solve(self.mAs[c],B)
 
-            for j,u in zip(c_edges,u_j):
-                u_norms[j,u_norm_count[j]]=u
-            u_norm_count[c_edges]+=1
+                # old way:
+                # for j,u in zip(c_edges,u_j):
+                #     # additional control on boundary flows:
+                #     u_norms[j,u_norm_count[j]]= (~self.bndry[j])*u
+                # new way - slightly better?
+                u_norms[c_edges] += (~self.bndry[c_edges])*u_j
+                u_norm_count[c_edges]+=1
+        else: # new vectorized way...
+            Bs=np.zeros((self.g.Ncells(),3),'f8')
+            Bs[:,:2]=Uc
+            Bs[:,2]=self.d_eta_dt
+            u_js=np.linalg.solve(self.mAs,Bs)
+
+            js=self.cell_edges.ravel()
+            u_norms=np.bincount(js,weights=u_js.ravel())
+            u_norm_count=np.bincount(js)
 
         # possible that adjacent cells have slightly different opinions
         # on the edge velocity
-        u_norm=np.nanmean(u_norms,axis=1)
-        return u_norm
+        # np.nanmean(u_norms,axis=1) # old way
+        u_norms /= u_norm_count 
+        return u_norms
 
     def set_invM14(self):
         """ set up the time invariant part of the interpolation
@@ -201,7 +237,8 @@ class ParticlesKGS(basic.UgridParticles):
         cc=self.g.cells_center()
 
         for c in range(self.g.Ncells()):
-            c_edge=self.g.cell_to_edges(c) 
+            #c_edge=self.g.cell_to_edges(c) 
+            c_edge=self.cell_edges[c,:]
 
             M14[:,:]=np.nan # DBG.  unnecessary
 
@@ -255,7 +292,8 @@ class ParticlesKGS(basic.UgridParticles):
         B14=np.zeros(6,'f8')
 
         for c in range(self.g.Ncells()):
-            c_edge=self.g.cell_to_edges(c) 
+            # c_edge=self.g.cell_to_edges(c) 
+            c_edge=self.cell_edges[c,:]
             u_norm=self.edge_flux[c_edge] / (self.dz_cell[c] * self.edge_len[c_edge])
             u_edge_into_cell = self.signs[c,:] * u_norm 
 
@@ -294,12 +332,19 @@ class ParticlesKGS(basic.UgridParticles):
             part_t=self.t_unix
 
             # start with a slow implementation
+            stuck=np.zeros(2)
             def vel(t,x):
                 # assumes that the velocity field doesn't
                 # change during the integration time step, so
                 # ignore t.
                 c=self.g.select_cells_nearest(x,inside=True)
-                return self.vel_interp(c,x)
+                if c is None:
+                    # annoying, but odeint doesn't know where the boundaries
+                    # are...
+                    print "!"
+                    return stuck
+                else:
+                    return self.vel_interp(c,x)
 
             # omit dense output, and reverse tracking
             r = scipy.integrate.ode(vel)

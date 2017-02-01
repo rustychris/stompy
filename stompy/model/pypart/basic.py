@@ -8,6 +8,7 @@ import numpy as np
 import os
 import glob
 import six
+import logging
 
 import matplotlib.dates as mdates
 from shapely import geometry
@@ -37,6 +38,7 @@ class UgridParticles(object):
                    ('j_last',np.int32) ]
 
     def __init__(self,ncs,grid=None):
+        self.log=logging.getLogger(self.__class__.__name__)
         self.ncs=ncs
         self.scan_ncs()
 
