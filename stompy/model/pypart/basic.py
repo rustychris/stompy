@@ -100,6 +100,11 @@ class UgridParticles(object):
 
         self.velocity_valid_time=[self.nc_t_unix[self.nc_time_i],
                                   next_step ]
+        # This is split off here because it's a point where basic
+        # and KSG differ
+        self.update_particle_velocity_for_new_step()
+
+    def update_particle_velocity_for_new_step(self):
         # face, layer, time.
         # assumes 2D here.
         u=self.current_nc.cell_east_velocity.values[:,0,self.nc_time_i]
