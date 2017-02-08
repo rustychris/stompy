@@ -1342,3 +1342,12 @@ def recarray_add_fields(A,new_fields):
             new_A[name]=A[name]
 
     return new_A
+
+
+def isnat(x):
+    """ 
+    datetime64 analog to isnan.
+    doesn't yet exist in numpy - other ways give warnings
+    and are likely to change.  
+    """
+    return x.astype('i8') == np.datetime64('NaT').astype('i8')
