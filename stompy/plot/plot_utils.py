@@ -9,6 +9,8 @@ from safe_pylab import *
 import time
 from matplotlib.collections import LineCollection
 from matplotlib.transforms import Transform,Affine2D
+import matplotlib.transforms as transforms
+from matplotlib import collections, path
 from matplotlib import pyplot as pl
 from matplotlib.patches import Rectangle
 from matplotlib.tri import Triangulation
@@ -1210,3 +1212,103 @@ def inset_location(inset_ax,overview_ax):
                    lw=0.5,ec='k',fc='none')
     overview_ax.add_patch(rect)
     return rect
+
+
+
+
+class RotatedPathCollection(collections.PathCollection):
+    _factor = 1.0
+
+    def __init__(self, paths, sizes=None, angles=None, **kwargs):
+        """
+        *paths* is a sequence of :class:`matplotlib.path.Path`
+        instances.
+
+        %(Collection)s
+        """
+        collections.PathCollection.__init__(self,paths,sizes,**kwargs)
+        self.set_angles(angles)
+        self.stale = True
+    
+    def set_angles(self, angles):
+        if angles is None:
+            self._angles = np.array([])
+        else:
+            self._angles = np.asarray(angles)
+            orig_trans=self._transforms
+            new_angles=self._angles
+
+            if len(self._transforms)==1 and len(self._angles)==1:
+                pass
+            else:
+                if len(self._transforms)==1:
+                    orig_trans=[self._transforms] * len(self._angles)
+                    new_angles=self._angles
+                if len(self._angles)==1:
+                    orig_trans=self.transforms
+                    new_angles=[self._angles] * len(self._transforms)
+                    
+            self._transforms = [
+                transforms.Affine2D(x).rotate(angle).get_matrix()
+                for x,angle in zip(orig_trans,new_angles)
+            ]
+
+            self.stale = True
+
+    def draw(self, renderer):
+        self.set_sizes(self._sizes, self.figure.dpi)
+        self.set_angles(self._angles)
+        collections.Collection.draw(self, renderer)
+        
+
+def fat_quiver(X,Y,U,V,ax=None,**kwargs):
+    U=np.asarray(U)
+    V=np.asarray(V)
+    mags=np.sqrt( (U**2 + V**2) )
+    angles_rad=np.arctan2( V, U )
+    
+    ax=ax or plt.gca()
+    # right facing fat arrow
+    L=0.333
+    Hw=0.1667
+    Sw=0.0833
+    Hl=0.1667
+
+    pivot=kwargs.pop('pivot','tail')
+    if pivot=='tip':
+        dx=0
+    elif pivot=='tail':
+        dx=L+Hl
+    elif pivot in ('middle','center'):
+        dx=(L+Hl)/2.0
+
+    marker =(path.Path(np.array( [ [dx + 0 ,0],
+                                   [dx - Hl,-Hw],
+                                   [dx - Hl,-Sw],
+                                   [dx - Hl-L,-Sw],
+                                   [dx - Hl-L,Sw],
+                                   [dx - Hl,Sw],
+                                   [dx - Hl,Hw],
+                                   [dx + 0,0] ] ), None),)
+
+    mags=np.sqrt( np.asarray(U)**2 + np.asarray(V)**2 )
+    angles=np.arctan2(np.asarray(V),np.asarray(U))
+    scale=kwargs.pop('scale',1)
+
+    if 'color' in kwargs and 'facecolor' not in kwargs:
+        # otherwise sets edges and faces
+        kwargs['facecolor']=kwargs.pop('color')
+    
+    # sizes is interpreted as an area - i.e. the linear scale
+    # is sqrt(size)
+    coll=RotatedPathCollection(paths=marker,
+                               offsets=np.array([X,Y]).T,
+                               sizes=mags*50000/scale,
+                               angles=angles,
+                               transOffset=ax.transData,
+                               **kwargs)
+    trans = transforms.Affine2D().scale(ax.figure.dpi / 72.0)
+    coll.set_transform(trans)  # the points to pixels transform
+
+    ax.add_collection(coll)
+    return coll

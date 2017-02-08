@@ -28,7 +28,6 @@ except ImportError:
 import logging
 log=logging.getLogger('join_features')
 
-# This should be changed to use logging!
 def progress_printer(str,steps_done=None,steps_total=None):
     if steps_done is not None and steps_total is not None:
         log.info( "%s -- %d%%"%(str,100.0*steps_done/steps_total) ) 
@@ -127,7 +126,7 @@ def merge_lines(layer=None,segments=None):
             continue
 
         pairs_processed += 1
-        if pairs_processed%100==0:
+        if pairs_processed%1000==0:
             progress_message("Merge lines exact",pairs_processed,total_pairs)
 
         # 
@@ -206,9 +205,7 @@ def tolerant_merge_lines(features,tolerance):
         if closed_already[i]:
             continue
         
-        
         progress_message("Merge lines tolerant",i,len(features))
-
         
         # once we've tried to match the i-th feature against everybody
         # after i, there's no reason to look at it again, so the inner
