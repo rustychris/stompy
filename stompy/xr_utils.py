@@ -227,3 +227,19 @@ def sort_dimension(ds,sort_var,sort_dim,inplace=False):
         tmp_trans.values=vals[tuple(idxs)]
         ds[v].values=tmp_trans.transpose(*orig_dims)
     return ds
+
+
+def first_finite(da,dim):
+    # yecch.
+    valid=np.isfinite(da.values)
+    dimi=da.get_axis_num('prof_sample') 
+    first_valid=np.argmax( valid, axis=dimi)
+    new_shape=[ slice(length)
+                for d,length in enumerate(da.shape)
+                if d!=dimi ]
+    indexers=np.ogrid[ tuple(new_shape) ]
+    indexers[dimi:dimi]=[first_valid]
+
+    da_reduced=da.isel(**{dim:0,'drop':True})
+    da_reduced.values=da.values[tuple(indexers)]
+    return da_reduced
