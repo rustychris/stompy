@@ -1,11 +1,12 @@
 from __future__ import print_function
-import unstructured_grid
+from stompy.grid import unstructured_grid
 import numpy as np
-import qnc
+
+# TODO: migrate to xarray
+from stompy.io import qnc
+
 
 # for now, only supports 2D/3D grid - no mix with 1D
-import qnc
-
 
 # First try - RGFGRID says it can't read it.
 # okay - make sure we're outputting the same netcdf 
@@ -96,14 +97,15 @@ def write_dfm(ug,nc_fn,overwrite=False):
         wgs.comment = "" 
         wgs.value = "value is equal to EPSG code" 
 
-    node_z = nc.createVariable('NetNode_z','f8',('nNetNode'))
-    node_z[:] = ug.nodes['depth'][:]
-    node_z.units = "m" 
-    node_z.positive = "up" 
-    node_z.standard_name = "sea_floor_depth" 
-    node_z.long_name = "Bottom level at net nodes (flow element\'s corners)" 
-    node_z.coordinates = "NetNode_x NetNode_y" 
-    node_z.grid_mapping = "projected_coordinate_system" 
+    if 'depth' in ug.nodes.dtype.names:
+        node_z = nc.createVariable('NetNode_z','f8',('nNetNode'))
+        node_z[:] = ug.nodes['depth'][:]
+        node_z.units = "m" 
+        node_z.positive = "up" 
+        node_z.standard_name = "sea_floor_depth" 
+        node_z.long_name = "Bottom level at net nodes (flow element\'s corners)" 
+        node_z.coordinates = "NetNode_x NetNode_y" 
+        node_z.grid_mapping = "projected_coordinate_system" 
 
     links = nc.createVariable('NetLink','i4',('nNetLink','nNetLinkPts'))
     links[:,:]=ug.edges['nodes'] + 1 # to 1-based!
@@ -116,19 +118,43 @@ def write_dfm(ug,nc_fn,overwrite=False):
     link_types.valid_range = [0, 2] 
     link_types.flag_values = [0, 1, 2]
     link_types.flag_meanings = "closed_link_between_2D_nodes link_between_1D_nodes link_between_2D_nodes" 
-    # global attributes:
-    if 1: # truth
-        nc.institution = "SFEI" 
-        nc.references = "http://www.sfei.org" 
-        nc.history = "Converted from SUNTANS grid" 
-    else: # attempt to get RGFGRID to read it
-        # history alone didn't help
-        nc.history = "Created on 2015-03-04T11:30:41+0100, D-Flow FM" 
-        nc.institution = "Deltares" 
-        nc.references = "http://www.deltares.nl" 
+
+    # global attributes - probably ought to allow passing in values for these...
+    nc.institution = "SFEI et al" 
+    nc.references = "http://github.com/rustychris/stompy" 
+    nc.history = "stompy unstructured_grid" 
 
     nc.source = "Deltares, D-Flow FM Version 1.1.135.38878MS, Feb 26 2015, 17:00:33, model" 
     nc.Conventions = "CF-1.5:Deltares-0.1" 
+
+    if 1: 
+        # add the complines to encode islands
+        lines=ug.boundary_linestrings()
+        nc.createDimension('nNetCompLines',len(lines))
+
+        # And add the cells:
+        nc.createDimension('nNetElemMaxNode',ug.max_sides)
+        nc.createDimension('nNetElem',ug.Ncells())
+        missing=-2147483647 # DFM's preferred missing value
+
+        cell_var=nc.createVariable('NetElemNode','i4',('nNetElem','nNetElemMaxNode'),
+                                   fill_value=missing)
+        # what to do about missing nodes?
+        cell_nodes=ug.cells['nodes'] + 1 #make it 1-based
+        cell_nodes[ cell_nodes<1 ] = missing
+        cell_var[:,:] =cell_nodes
+
+        # Write the complines
+        for i,line in enumerate(lines):
+            dimname='nNetCompLineNode_%d'%(i+1)
+            nc.createDimension(dimname,len(line))
+
+            compline_x=nc.createVariable('NetCompLine_x_%d'%i,'f8',(dimname,))
+            compline_y=nc.createVariable('NetCompLine_y_%d'%i,'f8',(dimname,))
+            
+            compline_x[:] = line[:,0]
+            compline_y[:] = line[:,1]
+
 
     nc.close()
 

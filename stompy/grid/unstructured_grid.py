@@ -992,6 +992,11 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         # the tangent vector
         # I think this is positive towards c2, i.e. from left to right looking
         # from n1 to n2
+
+        # starts as the vector from node1 to node2
+        # say c1 was on the left, c2 on the right.  so n1 -> n2 is (0,1)
+        # then that is changed to (1,0), then (1,-0)
+        # so this pointing left to right, and is in fact pointing towards c2.
         normals = np.diff(self.nodes['x'][self.edges['nodes']],axis=1)[:,0,::-1]
         normals[:,1] *= -1
         normals /= mag(normals)[:,None]
@@ -1816,7 +1821,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                           self.nodes['x'][mask][:,1],
                           sizes,
                           values,**kwargs)
-    def plot_edges(self,ax=None,mask=None,values=None,clip=None,**kwargs):
+    def plot_edges(self,ax=None,mask=None,values=None,clip=None,labeler=None,
+                   **kwargs):
         """
         plot edges as a LineCollection.
         optionally select a subset of edges with boolean array mask.
@@ -1849,6 +1855,13 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             kwargs['array'] = values
             
         lcoll = LineCollection(segs,**kwargs)
+
+        if labeler is not None:
+            ec=self.edges_center()
+            # weirdness to account for mask being indices vs. bitmask
+            for n in np.arange(self.Nedges())[mask]:
+                ax.text(ec[n,0], ec[n,1],
+                        labeler(n,self.edges[n]))
 
         ax.add_collection(lcoll)
         plt.axis('equal')
@@ -2059,16 +2072,20 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     def node_point(self,n):
         return geometry.Point( self.nodes['x'][n] )
 
-    def boundary_polygon(self):
-        """ return polygon, potentially with holes, representing the domain.
-        equivalent to unioning all cell_polygons, but hopefully faster
-        """
+    def boundary_linestrings(self):
         # could be much smarter and faster, directly traversing boundary edges
         # but this way is easy
         e2c=self.edge_to_cells()
         boundary_edges=(e2c[:,1]<0)&(~self.edges['deleted'])
         segs=self.nodes['x'][self.edges['nodes'][boundary_edges]]
         lines=join_features.merge_lines(segments=segs)
+        return lines
+
+    def boundary_polygon(self):
+        """ return polygon, potentially with holes, representing the domain.
+        equivalent to unioning all cell_polygons, but hopefully faster
+        """
+        lines=self.boundary_linestrings()
         polys=join_features.lines_to_polygons(lines,close_arc=False)
         if len(polys)>1:
             raise GridException("somehow there are multiple boundary polygons")

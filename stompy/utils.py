@@ -889,8 +889,14 @@ def to_dt64(x):
         assert False
 
 def to_unix(t):
-    unix0=np.datetime64('1970-01-01 00:00:00')
-    return (to_dt64(t) - unix0)/np.timedelta64(1,'s')
+    if 1:
+        # I think this is actually pretty good.
+        unix0=np.datetime64('1970-01-01 00:00:00')
+        return (to_dt64(t) - unix0)/np.timedelta64(1,'s')
+    else:
+        dt=to_datetime(t)
+        dt0=datetime.datetime(1970, 1, 1)
+        return (dt - dt0).total_seconds()
 
 def to_datetime(x):
     try:
@@ -914,7 +920,9 @@ def to_datetime(x):
             return num2date(x)
         if np.issubdtype(x.dtype,np.datetime64):
             ts = (x - np.datetime64('1970-01-01T00:00:00Z')) / np.timedelta64(1, 's')
-            return datetime.datetime.utcfromtimestamp(ts) # or do we have to vectorize?
+            # return datetime.datetime.utcfromtimestamp(ts) # or do we have to vectorize?
+            return [datetime.datetime.utcfromtimestamp(x) 
+                    for x in ts] 
         if len(x) and isinstance(x.flatten[0],datetime.datetime):
             return x
 
