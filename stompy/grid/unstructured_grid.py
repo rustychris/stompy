@@ -40,7 +40,8 @@ from matplotlib.collections import PolyCollection, LineCollection
 
 from ..spatial import gen_spatial_index
 from ..utils import (mag, circumcenter, circular_pairs,signed_area, poly_circumcenter,
-                     orient_intersection,recarray_add_fields,array_append)
+                     orient_intersection,array_append,
+                     recarray_add_fields,recarray_del_fields)
 
 
 try:
@@ -229,7 +230,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
     # useful constants - part of the class to make it easier when subclassing
     # in other modules
-    UNKNOWN = -99 # need to recalculate
+    UNKNOWN = -99 # need to recalculate. 
     UNMESHED = -2 # edges['cells'] for edge with an unmeshed boundary
     # for nodes or edges beyond the number of sides of a given cell
     # also for a edges['cells'] when at a boundary
@@ -648,6 +649,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         self._node_to_edges = None
         self._node_to_cells = None
+        self._node_index = None
         
     def renumber_cells_ordering(self): 
         """ return cell indices in the order they should appear, and
@@ -658,7 +660,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         
     def renumber_cells(self):
         csort = self.renumber_cells_ordering()
-        cell_map = np.zeros(self.Ncells()+1) # do this before truncating cells
+        Nneg=-min(-1,self.edges['cells'].min())
+        cell_map = np.zeros(self.Ncells()+Nneg) # do this before truncating cells
         self.cells = self.cells[csort]
         
         # and remap ids:
@@ -669,9 +672,14 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         # for all a, so
         # cell_map[csort[arange(Ncells)]] = arange(Ncells)
         cell_map[:] = -999 # these should only remain for deleted cells, and never show up in the output
-        cell_map[:-1][csort] = np.arange(self.Ncells())
-        cell_map[-1] = -1 # land edges map cell -1 to -1
+        cell_map[:-Nneg][csort] = np.arange(self.Ncells())
+        # cell_map[-1] = -1 # land edges map cell -1 to -1
+        # allow broader range of negatives:
+        # map cell -1 to -1, -2 to -2, etc.
+        cell_map[-Nneg:] = np.arange(-Nneg,0) 
+
         self.edges['cells'] = cell_map[self.edges['cells']]
+        self._cell_center_index=None
 
     def renumber_edges_ordering(self):
         Nactive = sum(~self.edges['deleted'])
@@ -680,12 +688,15 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     def renumber_edges(self):
         esort = self.renumber_edges_ordering()
         # edges take a little extra work, for handling -1 missing edges
-        edge_map = np.zeros(self.Nedges()+1) # do this before truncating
+        # Follows same logic as for cells
+        Nneg=-min(-1,self.cells['edges'].min())
+        edge_map = np.zeros(self.Nedges()+Nneg) # do this before truncating
         self.edges = self.edges[esort]
 
         edge_map[:] = -999 # these should only remain for deleted edges, which won't show up in the output
-        edge_map[:-1][esort] = np.arange(self.Nedges()) # and this after truncating
-        edge_map[-1] = -1 # triangles have a -1 -> -1 edge mapping
+        edge_map[:-Nneg][esort] = np.arange(self.Nedges()) # and this after truncating
+        #edge_map[-1] = -1 # triangles have a -1 -> -1 edge mapping
+        edge_map[-Nneg:] = np.arange(-Nneg,0)
 
         self.cells['edges'] = edge_map[self.cells['edges']]
 
@@ -1290,7 +1301,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     @listenable
     def delete_edge(self,j):
         if np.any(self.edges['cells'][j]>=0):
-            raise GridException("Edge has cell neighbors")
+            raise GridException("Edge %d has cell neighbors"%j)
         self.edges['deleted'][j] = True
         if self._node_to_edges is not None:
             for n in self.edges['nodes'][j]:
@@ -1482,10 +1493,17 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     def delete_cell(self,i,check_active=True):
         if check_active:
             assert self.cells['deleted'][i]==False
-        
+
+        # better to go ahead and use the dynamic updates
+        # must come before too many modifications, in case we end
+        # up recalculating cell center or truncating self.cells
+        if self._cell_center_index is not None:
+            self._cell_center_index.delete(i,self.cells_center()[i,self.xxyy])
+
         # remove links from edges:
         for j in self.cell_to_edges(i): # self.cells['edges'][i]:
             if j>=0:
+                # hmm - how would j be negative?
                 for lr in [0,1]:
                     if self.edges['cells'][j,lr]==i:
                         self.edges['cells'][j,lr]=self.UNMESHED
@@ -1499,11 +1517,6 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         self.cells['deleted'][i]=True
 
-        # better to go ahead and use the dynamic updates
-        # must come before a potential truncation (next stanza)
-        # of self.cells
-        if self._cell_center_index is not None:
-            self._cell_center_index.delete(i,self.cells_center()[i,self.xxyy])
         
         # special case for undo:
         if i+1==len(self.cells):
@@ -1581,8 +1594,6 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             for n in self.cell_to_nodes(i):
                 self._node_to_cells[n].append(i)
 
-        # silly:
-        # self._cell_center_index=None # overkill!!
         if self._cell_center_index is not None:
             cc=self.cells_center()[i]
             self._cell_center_index.insert(i,cc[self.xxyy])
@@ -1675,6 +1686,14 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             
     @listenable
     def modify_node(self,n,**kws):
+        if self._cell_center_index:
+            my_cells=self.node_to_cells(n)
+            cc=self.cells_center()
+            for c in my_cells:
+                self._cell_center_index.delete(c,cc[c,self.xxyy])
+        else:
+            cc=None
+
         if 'x' in kws and self._node_index is not None:
             self._node_index.delete(n,self.nodes['x'][n][self.xxyy])
 
@@ -1690,6 +1709,11 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         if 'x' in kws and self._node_index is not None:
             self._node_index.insert(n,self.nodes['x'][n][self.xxyy])
+
+        if self._cell_center_index:
+            cc=self.cells_center(refresh=my_cells)
+            for c in my_cells:
+                self._cell_center_index.insert(c,cc[c,self.xxyy])
 
     def elide_node(self,n):
         """ 
@@ -4095,3 +4119,26 @@ class PtmGrid(UnstructuredGrid):
     #    return coll
 
 
+# Propagating edits to cell_center_index:
+#   add_cell
+#     looks like it's already there.
+#   delete_cell
+#     ostensibly already there!?
+#   modify_node
+#     added.
+#   unadd_cell => direct to delete_cell
+#   undelete_cell => mostly redirects to add_cell
+
+# While trying to delete an edge around Palo Alto Baylands,
+# and have it cascade to two cells -
+#   Edge has cell neighbors exception,
+#   but this is part of delete_edge_cascade.  So what gives?
+
+# is it possible that the cell gets deleted, but didn't know to update
+# the edge's reference to it?   
+# delete_cell looks fine, though.
+# Seems like j=78920 is [one of] the problems
+# has cell neighbors 51553, 3323
+# This seems to happen after renumbering.
+# Okay - the cell renumbering code (maybe edges, too?) - not smart about
+# edges['cells'] < -1.

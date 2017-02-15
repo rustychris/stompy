@@ -80,6 +80,8 @@ class ParticlesKGS(basic.UgridParticles):
             self.mAs[c,1,:]= [ alpha_betas[0][1], alpha_betas[1][1], alpha_betas[2][1]]
             self.mAs[c,2,:]= np.nan # Time varying
 
+        self.log.info('Finish ParticlesKGS:load_grid')
+
     def update_particle_velocity_for_new_step(self):
         """ this gets called within update_velocity, when 
         the correct netcdf and time step within that netcdf has been
@@ -139,28 +141,23 @@ class ParticlesKGS(basic.UgridParticles):
     def set_dz_edge(self,dz_edge):
         self.dz_edge=dz_edge
 
-        def gamma(c,ji,j): # coefficient on u[j] with respect to d_eta / d_t
-            # updated way of clamping down on boundary flows:
-            return 
+        if 0: # old, non-vector approach
+            for c in self.g.valid_cell_iter():
+                if c%5000==0:
+                    print "%d / %d"%( c, self.g.Ncells() )
 
-        for c in self.g.valid_cell_iter():
-            if c%5000==0:
-                print "%d / %d"%( c, self.g.Ncells() )
+                c_edges=self.cell_edges[c,:] 
 
-            c_edges=self.cell_edges[c,:] 
-            
-            for ji,j in enumerate(c_edges):
-                # ripe for one more vectorization
-                self.mAs[c,2,ji] = ( (1e5*self.bndry[j]) 
-                                     + (1./self.Ac[c]) * dz_edge[j] * self.edge_len[j] * self.signs[c,ji] )
-            # self.mAs[c,2,:]= [ gamma(c,ji,j) for ji,j in enumerate(c_edges)] 
-
-            # no longer needed with bndry weighting above.
-            # for ji,j in enumerate(c_edges):
-            #     if self.bndry[j]:
-            #         row=[0,0,0]
-            #         row[ji]=1
-            #         rows.append(row)
+                for ji,j in enumerate(c_edges):
+                    # ripe for one more vectorization
+                    self.mAs[c,2,ji] = ( (1e5*self.bndry[j]) 
+                                         + (1./self.Ac[c]) * dz_edge[j] * self.edge_len[j] * self.signs[c,ji] )
+        else:
+            # even most of this could be kept in a constant, and we just have to multiply by dz_edge
+            # and add the bndry part.
+            self.mAs[:,2,: ] = ( (1e5*self.bndry[self.cell_edges]) 
+                                 + (1./self.Ac[:,None]) 
+                                 * dz_edge[self.cell_edges] * self.edge_len[self.cell_edges] * self.signs )
 
     def u_cell_to_u_edge(self,Uc):
         """
@@ -289,27 +286,38 @@ class ParticlesKGS(basic.UgridParticles):
         velocity interpolation coefficients.
         This is the time varying part of the interpolation
         """
-        B14=np.zeros(6,'f8')
+        if 0: # old iterative way:
+            B14=np.zeros(6,'f8')
 
-        for c in range(self.g.Ncells()):
-            # c_edge=self.g.cell_to_edges(c) 
-            c_edge=self.cell_edges[c,:]
-            u_norm=self.edge_flux[c_edge] / (self.dz_cell[c] * self.edge_len[c_edge])
-            u_edge_into_cell = self.signs[c,:] * u_norm 
+            for c in range(self.g.Ncells()):
+                c_edge=self.cell_edges[c,:]
+                u_norm=self.edge_flux[c_edge] / (self.dz_cell[c] * self.edge_len[c_edge])
+                u_edge_into_cell = self.signs[c,:] * u_norm 
 
-            # the first 3 entries are Qij/ (Lij * hi)
-            # that's just the in-cell outward normal velocity
-            B14[:3] = -u_edge_into_cell
-            # last 3 are gradients along the edge, which we can assume are 0
-            B14[3:] = 0.0
+                # the first 3 entries are Qij/ (Lij * hi)
+                # that's just the in-cell outward normal velocity
+                B14[:3] = -u_edge_into_cell
+                # last 3 are gradients along the edge, which we can assume are 0
+                B14[3:] = 0.0
 
-            # coeffs=np.linalg.solve(M14,B14)
-            coeffs=np.dot(self.invM14[c,:,:],B14)
-            # coeffs here is 
-            # [ a b ]
-            # [ c d ]
-            # [bxy1 bxy2]
-            self.coeffs[c,:,:] = coeffs.reshape([3,2] )
+                # coeffs=np.linalg.solve(M14,B14)
+                coeffs=np.dot(self.invM14[c,:,:],B14)
+                # coeffs here is 
+                # [ a b ]
+                # [ c d ]
+                # [bxy1 bxy2]
+                self.coeffs[c,:,:] = coeffs.reshape([3,2] )
+        if 1: # vectorized
+            B14s=np.zeros( (self.g.Ncells(),6), 'f8')
+            u_norms=self.edge_flux[self.cell_edges] / (self.dz_cell[:,None] * self.edge_len[self.cell_edges])
+            B14s[:,:3]=-self.signs[:,:] * u_norms 
+            B14s[:,3:]=0.0 # no gradients along edges, please
+            # soln=np.dot(self.invM14[:,:,:],B14s)
+            # Dicey getting the transposts just right, but this checks
+            # out as identical to the above iterative calc
+            soln=np.matmul(self.invM14,B14s[:,:,None])[:,:,0]
+            soln=soln.reshape( [self.g.Ncells(),3,2] )
+            self.coeffs[:,:,:]=soln
 
     def vel_interp(self,c,x):
         cc=self.g.cells_center()
