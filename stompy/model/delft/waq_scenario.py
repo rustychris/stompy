@@ -1625,7 +1625,7 @@ class HydroFiles(Hydro):
                                 # so downgrade it to a less dire message
                                 warning="INFO: inferred time index %d is negative, ignoring as t=%d"%(ti,t_sec)
                             ti=0
-                        max_ti=os.stat(filename).st_size / stride
+                        max_ti=os.stat(filename).st_size // stride
                         if ti>=max_ti:
                             warning="WARNING: inferred time index %d is beyond the end of the file!"%ti
                             ti=max_ti-1
@@ -5162,6 +5162,8 @@ class ModelForcing(object):
     def text_data(self):
         lines=[]
 
+        # FIX: somewhere we should limit the output to the simulation period plus
+        # some buffer.
         data=self.data
 
         if isinstance(data,pd.Series):
@@ -5855,7 +5857,8 @@ class Scenario(scriptable.Scriptable):
     #                 ('single (4)',[5]) ]
     # dwaq bug(?) where having transects but no monitor_areas means history
     # file with transects is not written.  so always include a dummy:
-    monitor_areas=( ('dummy',[1]), ) 
+    # the output code handles adding 1, so these should be stored zero-based.
+    monitor_areas=( ('dummy',[0]), ) 
 
     # e.g. ( ('gg_outside', [24,26,-21,-27,344] ), ...  )
     # where negative signs mean to flip the sign of that exchange.
@@ -6058,18 +6061,21 @@ END_MULTIGRID"""%num_layers
                             new_areas.append( (name,[seg] ) )
                             names[name]=True
             elif geom.type=='Polygon':
+                try:
+                    name=rec[naming]
+                except:
+                    name="polygon%d"%i
+                    
                 # bitmask over 2D elements
-                self.log.info("Selecting elements in polygon")
-                elt_sel=g.select_cells_intersecting(geom) # few seconds
+                self.log.info("Selecting elements in polygon '%s'"%name)
+                # better to go by center, so that non-intersecting polygons
+                # yield non-intersecting sets of elements and segments
+                elt_sel=g.select_cells_intersecting(geom,by_center=True) # few seconds
 
                 # extend to segments:
                 seg_sel=elt_sel[ self.hydro.seg_to_2d_element ] & (self.hydro.seg_to_2d_element>=0)         
 
                 segs=np.nonzero( seg_sel )[0]
-                try:
-                    name=rec[naming]
-                except:
-                    name="polygon%d"%i
 
                 assert name not in names
                 new_areas.append( (name,segs) )
@@ -6128,6 +6134,62 @@ END_MULTIGRID"""%num_layers
         self.log.info("Added %d monitored transects from %s"%(len(new_transects),shp_fn))
         self.monitor_transects = self.monitor_transects + tuple(new_transects)
 
+    def add_area_boundary_transects(self,exclude='dummy'):
+        """
+        create monitor transects for the common boundaries between a subset of
+        monitor areas. this assumes that the monitor areas are distinct - no
+        overlapping cells (in fact it asserts this).
+        The method and the non-overlapping requirement apply only for areas which
+        do *not* match the exclude regex.
+        """
+        areas=[a[0] for a in self.monitor_areas]
+        if exclude is not None:
+            areas=[a for a in areas if not re.match(exclude,a)]
+
+        mon_areas=dict(self.monitor_areas)
+
+        seg_to_area=np.zeros(self.hydro.n_seg,'i4')-1
+
+        for idx,name in enumerate(areas):
+            # make sure of no overlap:
+            assert np.all( seg_to_area[ mon_areas[name] ] == -1 )
+            # and label to this area:
+            seg_to_area[ mon_areas[name] ] = idx
+
+        poi0=self.hydro.pointers - 1
+
+        exch_areas=seg_to_area[poi0[:,:2]]
+        # fix up negatives in poi0
+        exch_areas[ poi0[:,:2]<0 ] = -1
+
+        # convert to tuples so we can get unique pairs
+        exch_areas_tupes=set( [ tuple(x) for x in exch_areas if x[0]!=x[1] and x[0]>=0 ] )
+        # make the order canonical 
+        canon=set()
+        for a,b in exch_areas_tupes:
+            if a>b:
+                a,b=b,a
+            canon.add( (a,b) )
+        canon=list(canon) # re-assert order
+
+        names=[]
+        exch1s=[]
+
+        for a,b in canon:
+            self.log.info("%s <-> %s"%(areas[a],areas[b]))
+            name=areas[a][:9] + "__" + areas[b][:9]
+            self.log.info("  name: %s"%name)
+            names.append(name)
+
+            fwd=np.nonzero( (exch_areas[:,0]==a) & (exch_areas[:,1]==b) )[0]
+            rev=np.nonzero( (exch_areas[:,1]==a) & (exch_areas[:,0]==b) )[0]
+            exch1s.append( np.concatenate( (fwd+1, -(rev+1)) ) )
+            self.log.info("  exchange count: %d"%len(exch1s[-1]))
+
+        # and add to transects:
+        transects=tuple(zip(names,exch1s))
+        self.monitor_transects=self.monitor_transects + transects
+        
     def add_transect(self,name,exchanges):
         """ Append a transect definition for logging.
         """

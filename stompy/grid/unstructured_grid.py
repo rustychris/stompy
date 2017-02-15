@@ -2134,21 +2134,29 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             sel=np.nonzero(sel)[0]
         return sel
 
-    def select_cells_intersecting(self,geom,invert=False,as_type="mask"):
+    def select_cells_intersecting(self,geom,invert=False,as_type="mask",by_center=False):
         """
         geom: a shapely geometry
         invert: select cells which do not intersect.
         as_type: 'mask' returns boolean valued mask, 'indices' returns array of indices
+        by_center: if true, test against the cell center.  By default, tests against the 
+        finite cell.
         """
         if as_type is 'mask':
             sel = np.zeros(self.Ncells(),np.bool8) # initialized to False
         else:
             sel = []
+
+        if by_center:
+            centers=self.cells_center()
             
         for c in range(self.Ncells()):
             if self.cells['deleted'][c]:
                 continue
-            test = geom.intersects(self.cell_polygon(c))
+            if by_center:
+                test=geom.intersects( geometry.Point(centers[c]) )
+            else:
+                test=geom.intersects( self.cell_polygon(c) )
             if invert:
                 test = ~test
             if as_type is 'mask':
