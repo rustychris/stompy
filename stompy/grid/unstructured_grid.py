@@ -1417,8 +1417,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         j=self.nodes_to_edge(n0,n1)
         if j is not None:
             raise GridException("Not ready for merging endpoints of an edge")
-            
-        for j in self.node_to_edges(n1):
+
+        n1_edges=list(self.node_to_edges(n1)) # make copy since we'll mutate it
+        for j in n1_edges:
+            # so why is this bad idea?
             print("THIS IS A REALLY BAD IDEA")
             if self.edges['nodes'][j,0]==n1:
                 nj=0
@@ -1431,6 +1433,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             # it's possible that this is an edge which already exists
             jother=self.nodes_to_edge(*newnodes)
             if jother is not None:
+                # probably could just delete it?  see grid generation code
+                # for an example
                 raise GridException("Not ready for joining edges, but soon")
             else:
                 print("Modifying edge j=%d"%j)
