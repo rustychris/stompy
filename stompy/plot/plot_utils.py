@@ -521,7 +521,7 @@ def enable_picker(coll,ax=None,cb=None,points=5):
     my_dummy.cid = ax.figure.canvas.mpl_connect('pick_event',onpick)
     return my_dummy
 
-def tooltipper(coll,tips=None,ax=None,points=5,persist=False):
+class tooltipper(object):
     """ similar to enable_picker, but displays a transient text box
     tips: either a callable, called as in enable_picker, which returns the string
      to display, or a list of strings, which will be indexed by idx from the 
@@ -537,35 +537,42 @@ def tooltipper(coll,tips=None,ax=None,points=5,persist=False):
 
     returns an object which when called always returns the most recent index chosen
     """
-    ax = ax or coll.get_axes() 
-    coll.set_picker(points) 
+    last_idx = None
+    def __init__(self,coll,tips=None,ax=None,persist=False,points=5):
+        ax = ax or coll.axes # older MPL: get_axes() 
 
-    def basic_tips(idx,**kws):
-        return str(idx)
-    if tips is None:
-        tips=basic_tips
+        self.ax=ax
+        self.coll=coll
 
-    class dummy(object):
-        last_idx = None
-        def __init__(self):
-            self.texts={} # map index to Text
-        def __call__(self):
-            return self.last_idx
-    my_dummy = dummy()
-    def onpick(event):
+        coll.set_picker(points) 
+
+        self.persist=persist
+        self.tips=tips
+        
+        self.texts={} # map index to Text
+
+        self.cid = self.ax.figure.canvas.mpl_connect('pick_event',self.onpick)
+
+
+    def __call__(self):
+        return self.last_idx
+
+    def onpick(self,event):
+        coll=self.coll
+        ax=self.ax
         if event.artist == coll:
             idx = event.ind[0]
 
-            if idx in my_dummy.texts: # toggle off
-                ax.texts.remove(my_dummy.texts.pop(idx))
+            if idx in self.texts: # toggle off
+                ax.texts.remove(self.texts.pop(idx))
                 ax.figure.canvas.draw()
                 return
-            
-            if not persist: # also toggle off anybody currently shown
-                for k,txt in my_dummy.texts.items():
+
+            if not self.persist: # also toggle off anybody currently shown
+                for k,txt in self.texts.items():
                     ax.texts.remove(txt)
                 self.texts={}
-                
+
             if hasattr(coll,'get_offsets'): # for scatter plots
                 xy=coll.get_offsets()[idx]
             elif hasattr(coll,'get_xydata'): # for lines
@@ -574,19 +581,21 @@ def tooltipper(coll,tips=None,ax=None,points=5,persist=False):
                 print("Can't figure out xy location!")
                 return
             kws=dict(ax=ax,coll=coll,event=event,dataxy=xy)
-            tip_str=tips(idx,**kws)
+
+            if self.tips is None:
+                tip_str=str(idx)
+            elif isinstance(self.tips,list):
+                tip_str=self.tips[idx]
+            else:
+                tip_str=self.tips(idx,**kws)
 
             tt_text=ax.text(xy[0],xy[1],tip_str,
                             transform=ax.transData,
                             va='top',ha='left',
                             bbox=dict(facecolor=(1.0,1.0,0.5),ec='k',lw=0.5))
-            my_dummy.texts[idx]=tt_text
+            self.texts[idx]=tt_text
             ax.figure.canvas.draw()
-                
-    my_dummy.cid = ax.figure.canvas.mpl_connect('pick_event',onpick)
-    return my_dummy
-
-
+            
 def gpick(coll,*args,**kwargs):
     """ Given a collection, wait for a pick click, and return the id 
     of the picked object within the collection
