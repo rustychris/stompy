@@ -1,10 +1,11 @@
 import numpy as np
 
+from shapely import geometry
+
 import scipy.integrate
 
 from . import basic
 from stompy import utils
-
 
 class ParticlesKGS(basic.UgridParticles):
     """ 
@@ -231,7 +232,8 @@ class ParticlesKGS(basic.UgridParticles):
 
         M14=np.zeros( (6,6), 'f8')
 
-        cc=self.g.cells_center()
+        #cc=self.g.cells_center()
+        cc=self.cell_center
 
         for c in range(self.g.Ncells()):
             #c_edge=self.g.cell_to_edges(c) 
@@ -320,7 +322,8 @@ class ParticlesKGS(basic.UgridParticles):
             self.coeffs[:,:,:]=soln
 
     def vel_interp(self,c,x):
-        cc=self.g.cells_center()
+        #cc=self.g.cells_center()
+        cc=self.cell_center
         A=self.coeffs[c,:2,:]
         bxy=self.coeffs[c,2,:]
         return np.dot(A,x-cc[c]) + bxy
@@ -335,6 +338,8 @@ class ParticlesKGS(basic.UgridParticles):
         """
         g=self.g
 
+        last_c=[None,None]
+
         for i,p in enumerate(self.P):
             # advance each particle to the correct state at stop_t
             part_t=self.t_unix
@@ -345,24 +350,69 @@ class ParticlesKGS(basic.UgridParticles):
                 # assumes that the velocity field doesn't
                 # change during the integration time step, so
                 # ignore t.
-                c=self.g.select_cells_nearest(x,inside=True)
+                c,poly=last_c
+
+                if poly is not None and poly.contains(geometry.Point(x[0],x[1])):
+                    pass # great!
+                else:
+                    c=self.g.select_cells_nearest(x,inside=True)
+                    if c is not None:
+                        poly=self.g.cell_polygon(c)
+                        last_c[:]=[c,poly]
+
                 if c is None:
-                    # annoying, but odeint doesn't know where the boundaries
+                    # annoying, but ode doesn't know where the boundaries
                     # are...
                     print "!"
                     return stuck
                 else:
                     return self.vel_interp(c,x)
 
-            # omit dense output, and reverse tracking
-            r = scipy.integrate.ode(vel)
+            # the first method is much faster, but smears out the steps
+            # between cells.  Second method is significantly slower and safer.
+            new_c=None
+            for meth in [dict(name='vode',method='bdf', order=3, nsteps=3000),
+                         dict(name='dopri5',nsteps=3000)]:
+                # omit dense output, and reverse tracking
+                r = scipy.integrate.ode(vel)
 
-            # This is the magic
-            r.set_integrator('vode', method='bdf', order=3, nsteps=3000)
-            r.set_initial_value(self.P['x'][i],part_t)
+                # This is the magic
+                # r.set_integrator('vode', method='bdf', order=3, nsteps=3000)
+                r.set_integrator(**meth)
+                r.set_initial_value(self.P['x'][i],part_t)
 
-            r.integrate(stop_t)
-            if not r.successful():
-                print "!"
+                r.integrate(stop_t)
+                if not r.successful():
+                    print "X1"
+                    continue # try with slow method
+                new_c=self.g.select_cells_nearest(r.y,inside=True)                
+                if new_c is None:
+                    print "X2"
+                    continue
+                break
+            else:
+                # Bad news - neither was great.
+                print "Couldn't salvage step."
+
             self.P['x'][i] = r.y
-            self.P['c'][i] = self.g.select_cells_nearest(r.y,inside=True)
+            if new_c is not None:
+                self.P['c'][i] = new_c
+            # assert self.g.select_cells_nearest(r.y,inside=True) is not None
+
+
+    def plot_cell_velocity(self,c,ax):
+        """ partial implementation to show interpolated velocity fields
+        """
+        cpoly=self.g.cell_polygon(c)
+        xyxy=cpoly.bounds
+
+        xs=np.linspace(xyxy[0],xyxy[2],30)
+        ys=np.linspace(xyxy[1],xyxy[3],30)
+        X,Y=np.meshgrid(xs,ys)
+        XY=np.array( [X.ravel(),Y.ravel()] ).T
+        UV=np.array( [ self.vel_interp(c,xy)
+                       for xy in XY ] )
+
+        ax.quiver(XY[:,0],XY[:,1],
+                  UV[:,0],UV[:,1])
+

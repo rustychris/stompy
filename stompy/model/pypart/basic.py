@@ -178,6 +178,7 @@ class UgridParticles(object):
             
             self.t_unix=t_next
             if t_next==next_out_time:
+                self.log.info('Output %d / %d'%(next_out_idx,len(output_times_unix)))
                 self.append_state(self.output)
                 next_out_idx+=1
                 if next_out_idx<len(output_times_unix):
