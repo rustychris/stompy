@@ -40,7 +40,7 @@ from matplotlib.collections import PolyCollection, LineCollection
 
 from ..spatial import gen_spatial_index
 from ..utils import (mag, circumcenter, circular_pairs,signed_area, poly_circumcenter,
-                     orient_intersection,recarray_add_fields,array_append)
+                     orient_intersection,recarray_add_fields,array_append,within_2d)
 
 
 try:
@@ -1797,17 +1797,21 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     def plot_boundary(self,ax=None,**kwargs):
         return self.plot_edges(mask=self.edges['mark']>0,**kwargs)
 
-    def plot_nodes(self,ax=None,mask=None,values=None,sizes=20,labeler=None,**kwargs):
+    def plot_nodes(self,ax=None,mask=None,values=None,sizes=20,labeler=None,clip=None,
+                   **kwargs):
         """ plot nodes as scatter
         labeler: callable taking (node index, node record), return string
         """
         ax=ax or plt.gca()
         if values is None:
             values=np.ones(self.Nnodes())
-        
+            
         if mask is None:
             mask=~self.nodes['deleted']
 
+        if clip is not None: # convert clip to mask
+            mask=mask & within_2d(self.nodes['x'],clip)
+            
         values=values[mask]
 
         if labeler is not None:
@@ -1817,10 +1821,13 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                         self.nodes['x'][n,1],
                         labeler(n,self.nodes[n]))
 
-        return ax.scatter(self.nodes['x'][mask][:,0],
+        coll=ax.scatter(self.nodes['x'][mask][:,0],
                           self.nodes['x'][mask][:,1],
                           sizes,
                           values,**kwargs)
+        ax.axis('equal')
+        return coll
+    
     def plot_edges(self,ax=None,mask=None,values=None,clip=None,labeler=None,
                    **kwargs):
         """
@@ -1864,7 +1871,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                         labeler(n,self.edges[n]))
 
         ax.add_collection(lcoll)
-        plt.axis('equal')
+        ax.axis('equal')
         return lcoll
 
     def plot_halfedges(self,ax=None,mask=None,values=None,clip=None,
@@ -2028,6 +2035,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             for c in np.nonzero(mask)[0]:
                 ax.text(xy[c,0],xy[c,1],labeler(c,self.cells[c]))
 
+        ax.axis('equal')
         return coll
     
     def edges_length(self):
