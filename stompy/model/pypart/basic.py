@@ -8,6 +8,7 @@ import numpy as np
 import os
 import glob
 import six
+import logging
 
 import matplotlib.dates as mdates
 from shapely import geometry
@@ -37,6 +38,7 @@ class UgridParticles(object):
                    ('j_last',np.int32) ]
 
     def __init__(self,ncs,grid=None):
+        self.log=logging.getLogger(self.__class__.__name__)
         self.ncs=ncs
         self.scan_ncs()
 
@@ -100,6 +102,11 @@ class UgridParticles(object):
 
         self.velocity_valid_time=[self.nc_t_unix[self.nc_time_i],
                                   next_step ]
+        # This is split off here because it's a point where basic
+        # and KSG differ
+        self.update_particle_velocity_for_new_step()
+
+    def update_particle_velocity_for_new_step(self):
         # face, layer, time.
         # assumes 2D here.
         u=self.current_nc.cell_east_velocity.values[:,0,self.nc_time_i]
