@@ -464,24 +464,24 @@ class Hydro(object):
     def add_parameters(self,hyd):
         """ Moved from waq_scenario init_hydro_parameters
         """
-        self.log.info("Adding planform areas parameter")
+        self.log.debug("Adding planform areas parameter")
         hyd['SURF']=self.planform_areas()
         
         try:
-            self.log.info("Adding bottom depths parameter")
+            self.log.debug("Adding bottom depths parameter")
             hyd['bottomdept']=self.bottom_depths()
         except NotImplementedError:
-            self.log.warning("Bottom depths will be inferred")
+            self.log.info("Bottom depths will be inferred")
 
-        self.log.info("Adding VertDisper parameter")
+        self.log.debug("Adding VertDisper parameter")
         hyd['VertDisper']=ParameterSpatioTemporal(func_t=self.vert_diffs,
                                                   times=self.t_secs,
                                                   hydro=self)
-        self.log.info("Adding depths parameter")
+        self.log.debug("Adding depths parameter")
         try:
             hyd['DEPTH']=self.depths()
         except NotImplementedError:
-            self.log.warning("Segment depth will be inferred")
+            self.log.info("Segment depth will be inferred")
         return hyd
 
     def write(self):
@@ -603,7 +603,7 @@ class Hydro(object):
             nbr_up=defaultdict(list) 
             nbr_down=defaultdict(list)
 
-            self.log.info("Inferring 2D elements, preprocess adjacency")
+            self.log.debug("Inferring 2D elements, preprocess adjacency")
 
             # all 0-based
             for seg_from,seg_to in (poi_vert[:,:2] - 1):
@@ -1268,7 +1268,10 @@ class Hydro(object):
                     except AttributeError:
                         # might not actually be a geometry object
                         pass
-                row[k]=v
+                if k not in row:
+                    # careful not to allow incoming attributes to overwrite
+                    # index or link0 from above
+                    row[k]=v
             rows.append(row)
 
         df=pd.DataFrame(rows)
@@ -1728,7 +1731,7 @@ class HydroFiles(Hydro):
         number is 1-based!
         """
         if self._read_seg_attrs is None and 'attributes-file' in self.hyd_toks:
-            self.log.info("Reading segment attributes from file")
+            self.log.debug("Reading segment attributes from file")
     
             seg_attrs=np.zeros( (self.n_seg,2), 'i4')
             seg_attrs[:,0] = 1 # default for active segments
@@ -5905,7 +5908,7 @@ class Scenario(scriptable.Scriptable):
                 setattr(self,k,v)
             except AttributeError:
                 raise Exception("Unknown Scenario attribute: %s"%k)
-        
+
         self.parameters=self.init_parameters()
         if self.hydro is not None:
             self.hydro_parameters=self.init_hydro_parameters()
@@ -6649,7 +6652,8 @@ END_MULTIGRID"""%num_layers
                     z_surf=z_bed + depth
                     etavar[ti,:]=z_surf
             elif mode is 'history':
-                if 'totaldepth' in nc.variables:
+                # tread carefully in case there is nothing useful in the history file.
+                if 'totaldepth' in nc.variables and 'nSegment' in nc.dimensions:
                     etavar=nc.createVariable('eta',np.float32,['time',"nSegment"],
                                              zlib=True)
                     etavar.standard_name='sea_surface_height_above_geoid'
