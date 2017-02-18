@@ -3,6 +3,7 @@ import numpy as np
 from shapely import geometry
 
 import scipy.integrate
+import pdb
 
 from . import basic
 from stompy import utils
@@ -328,8 +329,9 @@ class ParticlesKGS(basic.UgridParticles):
         bxy=self.coeffs[c,2,:]
         return np.dot(A,x-cc[c]) + bxy
 
-    def move_particles(self,stop_t):
+    def move_particles_ode(self,stop_t):
         """
+        Don't use this one!
         Advance each particle to the correct state at stop_t.
         Assumes that no input (updating velocities) or output
         is needed between self.t_unix and stop_t.
@@ -393,10 +395,42 @@ class ParticlesKGS(basic.UgridParticles):
             else:
                 # Bad news - neither was great.
                 print "Couldn't salvage step."
+                pdb.set_trace()
 
             self.P['x'][i] = r.y
             if new_c is not None:
                 self.P['c'][i] = new_c
+            # assert self.g.select_cells_nearest(r.y,inside=True) is not None
+
+    def move_particles(self,stop_t):
+        """
+        Advance each particle to the correct state at stop_t.
+        Assumes that no input (updating velocities) or output
+        is needed between self.t_unix and stop_t.
+
+        Caller is responsible for updating self.t_unix
+        """
+        g=self.g
+
+        for i,p in enumerate(self.P):
+            # advance each particle to the correct state at stop_t
+            start_t=self.t_unix
+            part_xy=self.P['x'][i]
+            # cell=g.select_cells_nearest( part_xy, inside=True ) 
+            cell=self.P['c'][i] # is somebody else taking care of initing this?
+            last_edge=None # *could* be saved, but maybe not necessary?
+
+            for i in range(2000):
+                if start_t>=stop_t:
+                    break
+                (part_xy,start_t,cell,last_edge)=self.move_particle_in_cell(part_xy,start_t,stop_t,cell,last_edge)
+                # traj.append(part_xy)
+            else:
+                # this might be okay, though.
+                raise Exception("Too many iterations?")
+
+            self.P['x'][i] = part_xy
+            self.P['c'][i] = cell
             # assert self.g.select_cells_nearest(r.y,inside=True) is not None
 
 
@@ -416,3 +450,149 @@ class ParticlesKGS(basic.UgridParticles):
         ax.quiver(XY[:,0],XY[:,1],
                   UV[:,0],UV[:,1])
 
+
+    def move_particle_in_cell(self,part_xy,t_start,t_stop,cell,last_edge):
+        poly=self.g.cell_polygon(cell)
+
+        # Lots of edge-cases, so no point in trying to test this
+        # assert( poly.contains( geometry.Point(part_xy) ) )
+
+        xy=self.exact_integrator(cell)
+
+        xy_max=xy(part_xy,t_stop - t_start)
+
+        if poly.contains( geometry.Point(xy_max) ):
+            return xy_max,t_stop, cell,last_edge
+
+        # subdivide time intervals until we find the moment
+        # the trajectory leaves this cell.
+        x_delta=1e-5 * np.sqrt(self.g.cells_area()[cell])
+
+        low=(t_start,part_xy)
+        high=(t_stop,xy_max)
+
+        # something newton-like would be much faster.
+        # 15 iterations..
+        for it in range(500):
+            if utils.dist( low[1] - high[1] ) < x_delta:
+                break
+            t_mid = (low[0] + high[0])/2.0
+            xy_mid = xy(part_xy,t_mid-t_start)
+            if poly.contains( geometry.Point(xy_mid) ):
+                low=(t_mid,xy_mid)
+            else:
+                high=(t_mid,xy_mid)
+        else:
+            print "Exhausted max iterations trying to find moment of particle exit"
+
+        # which one of this cell's edges is crossed first within this period?
+        trav_xy = high[1] - low[1] # where is the trajectory going
+
+        # a bit of slop here.  any valid crossing should have remaining
+        # of <= 1.0
+        best_remaining=1.001
+
+        for ji,j in enumerate(self.cell_edges[cell,:]):
+            if j==last_edge:
+                # no back sliding
+                continue 
+            n1=self.g.edges['nodes'][j,0]
+            p1=self.g.nodes['x'][n1]
+            # I want this to be the outward normal, so according
+            # to ketefian.py comments, need to negate
+            outward=-self.signs[cell,ji] * self.edge_norm[j]
+            dist_normal = np.dot( p1 - low[1], outward )
+            closing=np.dot(trav_xy,outward)
+            if closing>0:
+                remaining=dist_normal / closing
+                if remaining < best_remaining:
+                    best_remaining=remaining
+                    best_j=j
+        assert best_remaining <= 1.0 # will probably have to relax a little            
+        next_j=best_j
+        next_xy=low[1] + trav_xy * best_remaining
+        next_t=low[0] + (high[0] - low[0])*best_remaining
+
+        cells=self.g.edges['cells'][next_j]
+        if cells[0]==cell:
+            next_cell=cells[1]
+        elif cells[1]==cell:
+            next_cell=cells[0]
+        else:
+            raise Exception("Lost track of cells!")
+
+        return next_xy,next_t,next_cell,next_j
+
+    def exact_integrator(self,cell):
+        """ Returns a function which takes a starting position and time elapsed since
+        then, returning the integrated position.
+        """
+        cc=self.cell_center[cell]
+
+        A=self.coeffs[cell,:2,:]
+        bx,by=self.coeffs[cell,2,:]
+
+        # Following appendix A:
+        a=A[0,0] ; b=A[0,1] ; c=A[1,0] ; d=A[1,1]
+
+        lamb_avg=0.5*(a+d)
+        eps=0.5*np.sqrt( (a-d)**2 + 4*b*c + 0j)
+        det=(lamb_avg+eps)*(lamb_avg-eps)
+
+        small=1e-14
+
+        if det != 0: # and np.isreal(eps): 
+            # First case - A is invertible, with real and distinct eigenvalues
+            # this lumps in the second case with repeated eigenvalues.
+            # and in fact, since we're working off complex values anyway,
+            # the same code works for complex eigenvalues.
+            # eq A11:
+
+            def xy(part_xy,t,
+                   eps=eps,lamb_avg=lamb_avg,a=a,b=b,c=c,d=d,bx=bx,by=by):
+                x0,y0=part_xy - cc
+
+                epst=eps*t
+                sexp=(np.exp(epst)+np.exp(-epst))
+
+                # handle some of the limits manually
+                # this handles both t->0 and eps->0.
+                # not really sure what the proper value of small is.
+                if np.abs(epst)<small:
+                    expexp=1
+                else:
+                    expexp=(np.exp(epst)-np.exp(-epst))/(2*epst)
+
+                lamb_t=lamb_avg*t
+
+                #denom=lamb_t**2 + epst**2
+                #if t<small:
+                # isn't always just this - why have the extraneous t**2 ?
+                t2_frac=1./(lamb_avg**2 - eps**2)
+                #else:
+                #    t2_frac=t**2/denom
+
+                xterm1 = (a*x0 + b*y0 + bx)*t*expexp * np.exp(lamb_t)
+                xterm2 = x0*(0.5*sexp-lamb_t*expexp)*np.exp(lamb_t)
+                xterm3 = -( (d*bx-b*by)* t2_frac * 
+                           ( 1-(0.5*sexp-lamb_t*expexp)*np.exp(lamb_t)) )
+                x=np.real(xterm1+xterm2+xterm3)
+
+                yterm1=(c*x0+d*y0+by)*t*expexp*np.exp(lamb_t)
+                yterm2=y0*(0.5*sexp-lamb_t*expexp)*np.exp(lamb_t)
+                yterm3= -( (-c*bx+a*by)* t2_frac *
+                          ( 1-(0.5*sexp -lamb_t*expexp)*np.exp(lamb_t) ) )
+                y=np.real(yterm1+yterm2+yterm3)
+                return cc+np.array([x,y])
+        else:
+            raise Exception("Not ready for other matrix types")
+        return xy
+
+
+
+# For complex eigenvalues, 
+# very similar, but expexp becomes sin(eps_tilde t)/(eps_tilde t)
+#  sexp becomes cos(eps_tilde t)
+#  and t2_frac gets a - in front of eps_tilde.
+# seems like if the values are already complex, then the expressions don't
+# have to change at all.

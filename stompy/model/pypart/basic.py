@@ -307,6 +307,31 @@ class UgridParticles(object):
                 if self.record_dense:
                     self.append_state(self.dense)
 
+    def save_tracks(self,fn,overwrite=True):
+        if os.path.exists(fn):
+            if overwrite:
+                os.unlink(fn)
+            else:
+                raise Exception("Output %s already exists"%fn)
+
+        # archive the grid for good measure:
+        self.g.write_ugrid(fn)
+        ds=xr.open_dataset(fn).copy(deep=True)
+
+        ds['particle']=( ('particle',), np.arange(len(self.P)) )
+        times=np.array([out[1] for out in self.output])
+
+        ds['time'] = ( ('time',), times )
+        ds.time.attrs['units']="seconds since 1970-01-01T00:00:00"
+
+        X=np.array( [out[0] for out in self.output] )
+
+        ds['x'] = ( ('time','particle'), X[:,:,0] )
+        ds['y'] = ( ('time','particle'), X[:,:,1] )
+
+        os.unlink(fn)
+        ds.to_netcdf(fn)
+        return ds
 
 #    Edges and incompatible velocities
 #    ---------------------------------
