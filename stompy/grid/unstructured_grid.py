@@ -699,6 +699,66 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         self.cells['edges'] = edge_map[self.cells['edges']]
 
+    def add_grid(self,ugB):
+        """
+        Add the nodes, edges, and cells from another grid to this grid.
+        Copies fields with common names, any other fields are dropped from ugB.
+        Assumes (for the moment) that max_sides is compatible. Could use some
+        improvement there.
+        """
+        node_map=np.zeros( ugB.Nnodes(), 'i4')-1
+        edge_map=np.zeros( ugB.Nedges(), 'i4')-1
+        cell_map=np.zeros( ugB.Ncells(), 'i4')-1
+
+        def bad_fields(Adata,Bdata):
+            A_fields =Adata.dtype.names
+            B_fields =Bdata.dtype.names
+
+            B_bad=[f for f in B_fields
+                   if (f=='deleted') or (f not in A_fields)]
+            return B_bad
+
+        B_bad=bad_fields(self.nodes,ugB.nodes)
+
+        for n in ugB.valid_node_iter():
+            kwargs=rec_to_dict(ugB.nodes[n])
+            for f in B_bad:
+                del kwargs[f]
+
+            node_map[n]=self.add_node(**kwargs)
+
+        B_bad=bad_fields(self.edges,ugB.edges)
+        # Easier to let add_cell fix this up
+        B_bad.append('cells')
+
+        for n in ugB.valid_edge_iter():
+            kwargs=rec_to_dict(ugB.edges[n])
+            for f in B_bad:
+                del kwargs[f]
+
+            kwargs['nodes']=node_map[kwargs['nodes']]
+
+            edge_map[n]=self.add_edge(**kwargs)
+
+        B_bad=bad_fields(self.cells,ugB.cells)
+
+        for n in ugB.valid_cell_iter():
+            kwargs=rec_to_dict(ugB.cells[n])
+            for f in B_bad:
+                del kwargs[f]
+
+            for i,node in enumerate(kwargs['nodes']):
+                if node>=0:
+                    kwargs['nodes'][i]=node_map[node]
+
+            for i,edge in enumerate(kwargs['edges']):
+                if edge>=0:
+                    kwargs['edges'][i]=edge_map[edge]
+
+            cell_map[n]=self.add_cell(**kwargs)
+
+        return node_map,edge_map,cell_map
+        
     def find_cycles(self,max_cycle_len=4,starting_edges=None,check_area=True):
         """ traverse edges, returning a list of lists, each list giving the
         CCW-ordered node indices which make up a 'facet' or cycle in the graph
@@ -944,7 +1004,14 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         return np.sum(self.cells['nodes'][c]>=0)
 
     def edges_center(self):
-        return self.nodes['x'][self.edges['nodes']].mean(axis=1)
+        centers=np.zeros( (self.Nedges(), 2), 'f8')
+        valid=~self.edges['deleted']
+        centers[valid,:] = self.nodes['x'][self.edges['nodes'][valid,:]].mean(axis=1)
+        centers[~valid,:]=np.nan
+
+        # unsafe for deleted edges referencing deleted/truncated nodes
+        # return self.nodes['x'][self.edges['nodes']].mean(axis=1)
+        return centers
 
     def cells_centroid(self,ids=None):
         if ids is None:
@@ -2490,19 +2557,23 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         print("  Mean angle error: %.2f deg"%( errs[sel].mean() ) ) 
         print("  Max angle error: %.2f deg"%( errs[sel].max() ) )
 
-    def circumcenter_errors(self,radius_normalized=False):
-        centers = self.cells_center()
-        errors=np.zeros(self.Ncells(),'f8')
+    def circumcenter_errors(self,radius_normalized=False,cells=None):
+        if cells is None:
+            cells=slice(None)
+            
+        centers = self.cells_center()[cells]
+        errors=np.zeros( len(self.cells[cells]),'f8')
 
         for nsi in xrange(3,self.max_sides+1):
-            sel = (self.cells['nodes'][:,nsi-1]>=0)
+            sel = (self.cells['nodes'][cells,nsi-1]>=0) & (~self.cells['deleted'][cells])
             if nsi<self.max_sides:
-                sel = sel&(self.cells['nodes'][:,nsi]<0)
+                sel = sel&(self.cells['nodes'][cells,nsi]<0)
 
             if nsi==3:
                 pass # print "%7d cells with 3 sides."%np.sum(sel)
             else:
-                offsets = self.nodes['x'][self.cells['nodes'][sel,:nsi]] - centers[sel,None,:]
+                # A little goofy here trying to calculate just a subset..
+                offsets = self.nodes['x'][self.cells['nodes'][cells][sel,:nsi]] - centers[sel,None,:]
                 dists = mag(offsets)
                 # print "%7d cells with %d sides."%(np.sum(sel),nsi)
                 errs=np.std(dists,axis=1)
