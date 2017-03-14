@@ -40,7 +40,7 @@ from matplotlib.collections import PolyCollection, LineCollection
 
 from ..spatial import gen_spatial_index
 from ..utils import (mag, circumcenter, circular_pairs,signed_area, poly_circumcenter,
-                     orient_intersection,array_append,within_2d,
+                     orient_intersection,array_append,within_2d, to_unit,
                      recarray_add_fields,recarray_del_fields)
 
 try:
@@ -1064,7 +1064,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         else:
             return [b[0],b[2],b[1],b[3]]
 
-    def edges_normals(self):
+    def edges_normals(self,edges=slice(None)):
         # does not assume the grid is orthogonal - normals are found by rotating
         # the tangent vector
         # I think this is positive towards c2, i.e. from left to right looking
@@ -1074,9 +1074,11 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         # say c1 was on the left, c2 on the right.  so n1 -> n2 is (0,1)
         # then that is changed to (1,0), then (1,-0)
         # so this pointing left to right, and is in fact pointing towards c2.
-        normals = np.diff(self.nodes['x'][self.edges['nodes']],axis=1)[:,0,::-1]
-        normals[:,1] *= -1
-        normals /= mag(normals)[:,None]
+        # had been axis=1, and [:,0,::-1]
+        # but with edges possibly a single index, make it more general
+        normals = np.diff(self.nodes['x'][self.edges['nodes'][edges]],axis=-2)[...,0,::-1]
+        normals[...,1] *= -1
+        normals /= mag(normals)[...,None]
         return normals
 
     # Variations on access to topology
@@ -2178,7 +2180,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         # could be much smarter and faster, directly traversing boundary edges
         # but this way is easy
         e2c=self.edge_to_cells()
-        boundary_edges=(e2c[:,1]<0)&(~self.edges['deleted'])
+        # some grids don't abide by the boundary always being on the "right"
+        # so use any()
+        boundary_edges=(np.any(e2c<0,axis=1))&(~self.edges['deleted'])
         segs=self.nodes['x'][self.edges['nodes'][boundary_edges]]
         lines=join_features.merge_lines(segments=segs)
         return lines

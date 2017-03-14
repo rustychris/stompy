@@ -15,6 +15,7 @@ import six
 from numpy.linalg import norm
 
 from . import wkb2shp
+from .. import utils
 
 try:
     if sys.platform == 'darwin':
@@ -373,10 +374,11 @@ def arc_to_close_line(points,n_arc_points=40):
 
     return arc_points
 
-def lines_to_polygons(new_features,close_arc=False,single_feature=True):
+def lines_to_polygons(new_features,close_arc=False,single_feature=True,force_orientation=True):
     """
     single_feature: False is not yet implemented!
     returns a list of Polygons
+    force_orientation: ensure that interior rings have negative signed area
     """
     if not single_feature:
         raise Exception("lines_to_polygons does not yet support returning all polygons, just the biggest")
@@ -415,6 +417,8 @@ def lines_to_polygons(new_features,close_arc=False,single_feature=True):
         interior = interiors[i]
         if i%10==0:
             progress_message("Checking for orphan interior features",i,len(interiors))
+        if force_orientation and (utils.signed_area(interior) > 0):
+            interior=interior[::-1]
         int_poly = shapely.geometry.Polygon(interior)
 
         # spaghetti logic
