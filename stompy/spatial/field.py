@@ -2838,30 +2838,51 @@ class MultiRasterField(Field):
 
     def prepare(self):
         # find extents and resolution of each dataset:
-        extents = []
-        resolutions = []
+        sources=np.zeros( len(self.raster_files),
+                          dtype=[ ('field','O'),
+                                  ('filename','O'),
+                                  ('extent','f8',4),
+                                  ('resolution','f8'),
+                                  ('resx','f8'),
+                                  ('resy','f8'),
+                                  ('order','f8'),
+                                  ('last_used','i4') ] )
 
-        for f in self.raster_files:
+        for fi,f in enumerate(self.raster_files):
             extent,resolution = GdalGrid.metadata(f)
-            extents.append(extent)
-            resolutions.append( max(resolution[0],resolution[1]) )
-
-        self.extents = extents
-        self.resolutions = array(resolutions)
+            sources['extent'][fi] = extent
+            sources['resolution'][fi] = max(resolution[0],resolution[1])
+            sources['resx'][fi] = resolution[0]
+            sources['resy'][fi] = resolution[1]
+            sources['order'][fi] = 0.0
+            sources['field'][fi]=None
+            sources['filename'][fi]=f
+            sources['last_used'][fi]=-1
         
-        self.sources = [None]*len(self.raster_files)
+        self.sources = sources
         # -1 means the source isn't loaded.  non-negative means it was last used when serial
         # was that value.  overflow danger...
-        self.last_used = -1 * ones( len(self.raster_files), int32)
 
         self.build_index()
 
     def build_index(self):
         # Build a basic index that will return the overlapping dataset for a given point
-        ext = self.extents # those are x,x,y,y
-        tuples = [(i,ext[i],None) for i in range(len(ext))]
+        # these are x,x,y,y
+        tuples = [(i,extent,None) 
+                  for i,extent in enumerate(self.sources['extent'])]
         
         self.index = Rtree(tuples,interleaved=False)
+
+    def report(self):
+        """ Short text representation of the layers found and their resolutions
+        """
+        print("Raster sources:")
+        print(" Idx  Order  Res  File")
+        for fi,rec in enumerate(self.sources):
+            print("%4d %4.1f %6.1f: %s"%(fi,
+                                         rec['order'],
+                                         rec['resolution'],
+                                         rec['filename']))
 
     max_count = 20 
     open_count = 0
@@ -2869,43 +2890,35 @@ class MultiRasterField(Field):
     def source(self,i):
         """ LRU based cache of the datasets
         """
-        if self.sources[i] is None:
+        if self.sources['field'][i] is None:
             if self.open_count >= self.max_count:
                 # Have to choose someone to close.
-                current = nonzero(self.last_used>=0)[0]
+                current = np.nonzero(self.sources['last_used']>=0)[0]
                 
-                victim = current[ argmin( self.last_used[current] ) ]
+                victim = current[ np.argmin( self.sources['last_used'][current] ) ]
                 # print "Will evict source %d"%victim
-                self.last_used[victim] = -1
-                self.sources[victim] = None
+                self.sources['last_used'][victim] = -1
+                self.sources['field'][victim] = None
                 self.open_count -= 1
             # open the new guy:
-            self.sources[i] = GdalGrid(self.raster_files[i])
+            self.sources['field'][i] = GdalGrid(self.sources['filename'][i])
             self.open_count += 1
             
         self.serial += 1
-        self.last_used[i] = self.serial
-        return self.sources[i]
+        self.sources['last_used'][i] = self.serial
+        return self.sources['field'][i]
         
     def value_on_point(self,xy):
-        hits = self.index.intersection( xy[xxyy] )
-        
-        if isinstance(hits, types.GeneratorType):
-            # so translate that into a list like we used to get.
-            hits = list(hits)
-        hits = array(hits)
+        hits=self.ordered_hits(xy[xxyy])
         if len(hits) == 0:
             return nan
-        # print "Hits: ",hits
-        
-        hits = hits[ argsort( self.resolutions[hits] ) ]
-            
+
         v = nan
         for hit in hits:
             src = self.source(hit)
             
             # Here we should be asking for some kind of basic interpolation
-            v = src.interpolate( array([xy]), interpolation='linear' )[0]
+            v = src.interpolate( np.array([xy]), interpolation='linear' )[0]
 
             if isnan(v):
                 continue
@@ -2943,23 +2956,16 @@ class MultiRasterField(Field):
         Subsample the edge, using an interval based on the highest resolution overlapping
         dataset.  Average and return...
         """
-
         pmin = e.min(axis=0)
         pmax = e.max(axis=0)
-        
-        hits = self.index.intersection( [pmin[0],pmax[0],pmin[1],pmax[1]] )
-        if isinstance(hits, types.GeneratorType):
-            hits = list(hits)
-        hits = array(hits)
 
+        hits=self.ordered_hits( [pmin[0],pmax[0],pmin[1],pmax[1]] )
         if len(hits) == 0:
             return nan
 
-        # Order them based on resolution:
-        hits = hits[ argsort( self.resolutions[hits] ) ]
-        res = self.resolutions[hits[0]]
+        res = self.sources['resolution'][hits].min()
 
-        samples = int( ceil( norm(e[0] - e[1])/res) )
+        samples = int( np.ceil( norm(e[0] - e[1])/res) )
         
         x=linspace(e[0,0],e[1,0],samples)
         y=linspace(e[0,1],e[1,1],samples)
@@ -2982,16 +2988,10 @@ class MultiRasterField(Field):
             if all(isfinite(edgeF)):
                 break
 
-        edgeF = clip(edgeF,-inf,self.clip_max) # ??
-        return nanmean(edgeF)
-    
-    def extract_tile(self,xxyy=None,res=None):
-        """ Create the requested tile from merging the sources.  Resolution defaults to
-        resolution of the highest resolution source that falls inside the requested region
-        """
-        if xxyy is None:
-            xxyy=self.bounds()
-        xxyy=as_xxyy(xxyy)
+        edgeF = np.clip(edgeF,-inf,self.clip_max) # ??
+        return np.nanmean(edgeF)
+
+    def ordered_hits(self,xxyy):
         hits = self.index.intersection( xxyy )
         if isinstance(hits, types.GeneratorType):
             # so translate that into a list like we used to get.
@@ -2999,20 +2999,32 @@ class MultiRasterField(Field):
         hits = array(hits)
 
         if len(hits) == 0:
-            return None
+            return []
         
-        hits = hits[ argsort( self.resolutions[hits] ) ]
-        
+        hits = hits[ np.argsort( self.sources[hits], order=('order','resolution')) ]
+        return hits
+
+    def extract_tile(self,xxyy=None,res=None):
+        """ Create the requested tile from merging the sources.  Resolution defaults to
+        resolution of the highest resolution source that falls inside the requested region
+        """
+        if xxyy is None:
+            xxyy=self.bounds()
+        xxyy=as_xxyy(xxyy)
+
+        hits = self.ordered_hits(xxyy)
+        assert len(hits)
+
         if res is None:
-            res = self.resolutions[hits[0]]
+            res = self.sources['resolution'][hits].min()
 
         # half-pixel alignment-
         # field.SimpleGrid expects extents which go to centers of pixels.
         # x and y are inclusive of the end pixels (so for exactly abutting rects, there will be 1 pixel
         # of overlap)
-        x=arange( xxyy[0],xxyy[1]+res,res)
-        y=arange( xxyy[2],xxyy[3]+res,res)
-        targetF = nan*zeros( (len(y),len(x)), float64)
+        x=np.arange( xxyy[0],xxyy[1]+res,res)
+        y=np.arange( xxyy[2],xxyy[3]+res,res)
+        targetF = np.nan*np.zeros( (len(y),len(x)), np.float64)
         pix_extents = [x[0],x[-1], y[0],y[-1] ]
         target = SimpleGrid(extents=pix_extents,F=targetF)
 
@@ -3023,11 +3035,8 @@ class MultiRasterField(Field):
         # the idea being that it there's a 5m hole in some lidar, it's better to blend the
         # lidar than to query a 100m dataset.
 
-
         # extend the extents to consider width of pixels (this at least makes the output
         # register with the inputs)
-
-        # fig,(ax1,ax2) = subplots(2,1,sharex=1,sharey=1)
 
         for hit in hits:
             src = self.source(hit)
@@ -3045,16 +3054,16 @@ class MultiRasterField(Field):
             dec_y = (y-src_y[0]) / src_dy
 
             if self.order==0:
-                dec_x = floor( (dec_x+0.5) )
-                dec_y = floor( (dec_y+0.5) )
+                dec_x = np.floor( (dec_x+0.5) )
+                dec_y = np.floor( (dec_y+0.5) )
 
             # what range of the target array falls within this tile
-            col_range = nonzero( (dec_x>=0) & (dec_x <= len(src_x)-1))[0]
+            col_range = np.nonzero( (dec_x>=0) & (dec_x <= len(src_x)-1))[0]
             if len(col_range):
                 col_range = col_range[ [0,-1]]
             else:
                 continue
-            row_range = nonzero( (dec_y>=0) & (dec_y <= len(src_y)-1))[0]
+            row_range = np.nonzero( (dec_y>=0) & (dec_y <= len(src_y)-1))[0]
             if len(row_range):
                 row_range=row_range[ [0,-1]]
             else:
@@ -3065,12 +3074,12 @@ class MultiRasterField(Field):
             dec_x = dec_x[ col_slice ]
             dec_y = dec_y[ row_slice ]
 
-            C,R = meshgrid( dec_x,dec_y )
+            C,R = np.meshgrid( dec_x,dec_y )
 
             newF = map_coordinates(src.F, [R,C],order=self.order)
 
             # only update missing values
-            missing = isnan(target.F[ row_slice,col_slice ])
+            missing = np.isnan(target.F[ row_slice,col_slice ])
             target.F[ row_slice,col_slice ][missing] = newF[missing]
         return target
         
