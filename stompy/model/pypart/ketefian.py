@@ -420,7 +420,7 @@ class ParticlesKGS(basic.UgridParticles):
             cell=self.P['c'][i] # is somebody else taking care of initing this?
             last_edge=None # *could* be saved, but maybe not necessary?
 
-            for i in range(2000):
+            for it in range(2000):
                 if start_t>=stop_t:
                     break
                 (part_xy,start_t,cell,last_edge)=self.move_particle_in_cell(part_xy,start_t,stop_t,cell,last_edge)
