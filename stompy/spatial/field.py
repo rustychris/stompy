@@ -294,7 +294,6 @@ class XYZField(Field):
         def_args = {'c':self.F,
                     'antialiased':False,
                     'marker':'s',
-                    'lod':True,
                     'lw':0}
         def_args.update(kwargs)
         scatter( self.X[:,0].ravel(),

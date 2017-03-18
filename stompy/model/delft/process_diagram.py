@@ -5,22 +5,15 @@ import os
 import re
 import glob
 import six
-from graphviz import Digraph
 
+import logging
+log=logging.getLogger('stompy')
 
-##
-if 0: # simple run
-    waq_dir = "/opt/data/dwaq/sfbay_nophyto_agg_subtidal/dwaq03/"
-    run_name="basic"
-if 0: # BLOOM run
-    waq_dir = "/opt/data/dwaq/sfbay_phyto_agg_subtidal/dwaq26-Kx55/"
-    run_name="bloom"
-if 0: # DYNAMO run
-    waq_dir = "/opt/data/dwaq/sfbay_phyto_dynamo/dwaq09/"
-    run_name="dynamo"
+try:
+    from graphviz import Digraph
+except ImportError:
+    log.info("graphviz unavailable")
 
-
-            
 class ProcDiagram(object):
     delft_src="/home/rusty/code/delft/d3d/master"
 
@@ -143,6 +136,7 @@ class ProcDiagram(object):
 
         # dot is the only one which gives reasonable output
         # could also add in size="5,5"
+        from graphviz import Digraph
 
         dot = Digraph(name="schematic-%s"%self.run_name,
                       comment='WAQ Processes',strict=True,engine='dot')
