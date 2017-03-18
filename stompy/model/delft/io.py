@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import re
 import xarray as xr
+import six
 
 def parse_his_file(fn):
     """
@@ -131,7 +132,10 @@ def inp_tok(fp):
     for line in fp:
         if ';' in line:
             line=line[ : line.index(';')]
-        matches=re.findall(r'\s*((\'[^\']+\')|([/:-a-zA-Z_#0-9\.]+))', line)
+        # pattern had been
+        # r'\s*((\'[^\']+\')|([/:-a-zA-Z_#0-9\.]+))'
+        # but that has a bad dash before a, and doesn't permit +, either.
+        matches=re.findall(r'\s*((\'[^\']+\')|([-/:a-zA-Z_#+0-9\.]+))', line)
         for m in matches:
             yield m[0]
 
@@ -245,4 +249,32 @@ def parse_boundary_conditions(inp_file):
                 bc_typ=next(tokr)
                 bc_grp=next(tokr)
                 bcs.append( (bc_id,bc_typ,bc_grp) )
+
+
+def read_pli(fn):
+    """
+    Parse a polyline file a la DFM inputs.
+    Return a list of features:
+    [  (feature_label, N*M values), ... ]
+    where the first two columns are typically x and y, but there may be
+    more columns depending on the usage.
+    """
+    with open(fn,'rt') as fp:
+        toker=inp_tok(fp)
+        token=lambda: six.next(toker)
+
+        features=[]
+        while True:
+            try:
+                label=token()
+            except StopIteration:
+                break
+            nrows=int(token())
+            ncols=int(token())
+            geometry=[]
+            for row in range(nrows):
+                rec=[float(token()) for c in range(ncols)]
+                geometry.append(rec)
+            features.append( (label, np.array(geometry) ) )
+    return features
 
