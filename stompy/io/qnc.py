@@ -507,7 +507,9 @@ class QDataset(netCDF4.Dataset):
             for attr in myvar.ncattrs():
                 if attr != '_FillValue':
                     # _FillValue can only be set at var creation time
-                    setattr(newvar,attr,getattr(myvar,attr))
+                    # This approach was failing on valid_range, 2017-03-17
+                    # setattr(newvar,attr,getattr(myvar,attr))
+                    newvar.setncattr(attr,getattr(myvar,attr))
     def select(self,**kwargs):
         new=empty()
 

@@ -591,7 +591,7 @@ class tooltipper(object):
 
             tt_text=ax.text(xy[0],xy[1],tip_str,
                             transform=ax.transData,
-                            va='top',ha='left',
+                            va='bottom',ha='left',
                             bbox=dict(facecolor=(1.0,1.0,0.5),ec='k',lw=0.5))
             self.texts[idx]=tt_text
             ax.figure.canvas.draw()

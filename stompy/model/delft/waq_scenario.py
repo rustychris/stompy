@@ -899,7 +899,7 @@ class Hydro(object):
             bc_lgroups=self.group_boundary_links()
             bc_exchs=np.nonzero(self.pointers[:,0]<0)[0]
             self.infer_2d_links()
-            bdefs['type']=[ bc_lgroups['name'][self.exch_to_2d_link[exch]] 
+            bdefs['type']=[ bc_lgroups['name'][self.exch_to_2d_link['link'][exch]] 
                             for exch in bc_exchs]
         else:
             raise ValueError("Boundary scheme is bad: %s"%self.boundary_scheme)
@@ -5889,7 +5889,11 @@ class Scenario(scriptable.Scriptable):
 
     def __init__(self,hydro,**kw):
         self.log=logging.getLogger(self.__class__.__name__)
-        
+
+        # list of dicts.  moving towards standard setting of loads via src_tags
+        # should be populated in init_substances(), gets used 
+        self.src_tags=[]
+
         self.dispersions=NamedObjects(scenario=self)
 
         if hydro:
@@ -5926,12 +5930,14 @@ class Scenario(scriptable.Scriptable):
             super(Scenario,self).cli_handle_option(opt,val)
         
     def auto_base_path(self):
+        ymd=datetime.datetime.now().strftime('%Y%m%d')        
+        prefix='dwaq%s'%ymd
         for c in range(100):
-            base_path='dwaq%02d'%c
+            base_path=prefix+'%02d'%c
             if not os.path.exists(base_path):
                 return base_path
         else:
-            assert False
+            raise Exception("Possible run-away directory naming")
         
     @property
     def n_substances(self):
@@ -6009,6 +6015,15 @@ END_MULTIGRID"""%num_layers
 
     def init_bcs(self):
         self.bcs=[]
+
+        # 2017-03-17: moved this bit of boiler plate from a bunch of subclasses
+        # to here in a step towards standardizing the BC settings.
+        boundaries=self.hydro.boundary_defs()
+        ids=[b['id'] for b in boundaries]
+
+        for src_tag in self.src_tags:
+            # conc. defaults to 1.0
+            self.add_bc(src_tag['items'],src_tag['tracer'],src_tag.get('value',1.0))
 
     def add_bc(self,*args,**kws):
         bc=BoundaryCondition(*args,**kws)
