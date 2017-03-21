@@ -857,6 +857,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             self.log.info("Recalculating edge to cells" )
             all_c=range(self.Ncells())
         else:
+            if e is None:
+                e=slice(None)
             # on-demand approach
             if isinstance(e,slice):
                 js=np.arange(e.start or 0,
