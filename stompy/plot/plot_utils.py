@@ -810,6 +810,22 @@ def bode(G,f=np.arange(.01,100,.01),fig=None):
 
     return mag, phase
 
+# Courtesy http://stackoverflow.com/questions/41597177/get-aspect-ratio-of-axes
+# Mad Physicist
+from operator import sub
+def get_aspect(ax):
+    # Total figure size
+    figW, figH = ax.get_figure().get_size_inches()
+    # Axis size on figure
+    _, _, w, h = ax.get_position().bounds
+    # Ratio of display units
+    disp_ratio = (figH * h) / (figW * w)
+    # Ratio of data units
+    # Negative over negative because of the order of subtraction
+    data_ratio = sub(*ax.get_ylim()) / sub(*ax.get_xlim())
+
+    return disp_ratio / data_ratio
+
 
 def annotate_line(l,s,norm_position=0.5,offset_points=10,ax=None,**kwargs):
     """
@@ -833,9 +849,10 @@ def annotate_line(l,s,norm_position=0.5,offset_points=10,ax=None,**kwargs):
 
     x_of_label = np.interp(abs_position,dists,x)
     y_of_label = np.interp(abs_position,dists,y)
+    asp=get_aspect(ax)
     dx = np.interp(abs_position2,dists,x) - x_of_label
     dy = np.interp(abs_position2,dists,y) - y_of_label
-    angle = np.arctan2(dy,dx)*180/np.pi
+    angle = np.arctan2(asp*dy,dx)*180/np.pi
 
     perp = np.array([-dy,dx])
     perp = offset_points * perp / utils.mag(perp)

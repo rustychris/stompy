@@ -571,15 +571,23 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                         self.cells['nodes'][c,i] = n
                         break
 
-    def add_edge_field(self,name,data):
+    def add_edge_field(self,name,data,on_exists='fail'):
         """
         modifies edge_dtype to include a new field given by name,
         initialize with data.  NB this requires copying the edges
         array - not fast!
         """
-        self.edges=recarray_add_fields(self.edges,
-                                       [(name,data)])
-        self.edge_dtype=self.edges.dtype
+        if name in np.dtype(self.edge_dtype).names:
+            if on_exists == 'fail':
+                raise GridException("Edge field %s already exists"%name)
+            elif on_exists == 'pass':
+                return
+            elif on_exists == 'overwrite':
+                self.edges[name] = data
+        else:
+            self.edges=recarray_add_fields(self.edges,
+                                           [(name,data)])
+            self.edge_dtype=self.edges.dtype
     def delete_edge_field(self,*names):
         self.edges=recarray_del_fields(self.edges,names)
         self.edge_dtype=self.edges.dtype
@@ -1565,8 +1573,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
     @listenable
     def delete_cell(self,i,check_active=True):
-        if check_active:
-            assert self.cells['deleted'][i]==False
+        if check_active and self.cells['deleted'][i]!=False:
+            raise Exception("delete_cell(%d) - appears already deleted"%(i))
 
         # better to go ahead and use the dynamic updates
         # must come before too many modifications, in case we end
@@ -1615,16 +1623,30 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         if c is not None:
             self.delete_cell(c)
         return c
-    def add_cell_at_point(self,x,**kw):
+
+    def enclosing_nodestring(self,x,max_nodes=None):
+        """
+        Given a coordinate pair x, look for a string of nodes and edges
+        which form a closed polygon around it.
+        max_nodes defaults to self.max_sides.
+        Return None if nothing is found, otherwise a list of node indexes.
+        """
+        max_nodes=max_nodes or self.max_sides
+
         # lame stand-in for a true bounding polygon test
         edges_near=self.select_edges_nearest(x,count=6)
-        potential_cells=self.find_cycles(max_cycle_len=self.max_sides,
+        potential_cells=self.find_cycles(max_cycle_len=max_nodes,
                                          starting_edges=edges_near)
         pnt=geometry.Point(x)
         for pc in potential_cells:
             poly=geometry.Polygon( self.nodes['x'][pc] )
             if poly.contains(pnt):
-                return self.add_cell(nodes=pc,**kw)
+                return pc
+
+    def add_cell_at_point(self,x,**kw):
+        pc=self.enclosing_nodestring(x,max_nodes=self.max_sides)
+        if pc is not None:
+            return self.add_cell(nodes=pc,**kw)
         return None
 
     @listenable
