@@ -9,6 +9,7 @@ import pdb
 import unstructured_grid
 import exact_delaunay
 import numpy as np
+import time
 from scipy import optimize as opt
 
 from .. import utils
@@ -568,8 +569,16 @@ class Site(object):
         assert False
     def actions(self):
         return []
-        
-class TriangleSite(object):
+
+class FrontSite(object):
+    def metric(self):
+        assert False
+    def plot(self,ax=None):
+        assert False
+    def actions(self):
+        assert False
+
+class TriangleSite(FrontSite):
     """ 
     When adding triangles, the heuristic is to choose
     tight locations.
@@ -612,7 +621,7 @@ class ShadowCDT(exact_delaunay.Triangulation):
     triangulation, which can be used for geometric queries and
     predicates.
     """
-    def __init__(self,g):
+    def __init__(self,g,ignore_existing=False):
         super(ShadowCDT,self).__init__(extra_node_fields=[('g_n','i4')])
         self.g=g
         
@@ -626,7 +635,47 @@ class ShadowCDT(exact_delaunay.Triangulation):
         g.subscribe_before('add_edge',self.before_add_edge)
         g.subscribe_before('delete_edge',self.before_delete_edge)
         g.subscribe_before('modify_edge',self.before_modify_edge)
-        
+
+        if not ignore_existing:
+            self.init_from_grid(g)
+
+    # def init_from_grid(self):
+    #     """ going to be slow...
+    #     """
+    # 
+    #     g=self.g
+    #     t_last=time.time()
+    #     for ni,n in enumerate(g.valid_node_iter()):
+    #         if ni%100==0:
+    #             elapsed=time.time()-t_last
+    #             t_last=time.time()
+    #             print("Nodes: %d/%d %.2fs per 100"%(ni,g.Nnodes(),elapsed))
+    #         self.after_add_node(g,'add_node',n,x=g.nodes['x'][n])
+    #         
+    #     for ji,j in enumerate(g.valid_edge_iter()):
+    #         if ji%100==0:
+    #             print("Edges: %d/%d"%(ji,g.Nedge()))
+    #         self.before_add_edge(g,'add_edge',nodes=g.edges['nodes'][j])
+
+    def init_from_grid(self,g): # ShadowCDT
+        # Nodes:
+        n_valid=~g.nodes['deleted']
+        points=g.nodes['x'][n_valid]
+        self.bulk_init(points)
+
+        pidxs=np.arange(g.Nnodes())[n_valid]
+        self.nodes['g_n']=pidxs
+
+        for n in range(self.Nnodes()):
+            gn=self.nodes['g_n'][n]
+            self.nodemap_g_to_local[gn]=n
+
+        # Edges:
+        for ji,j in enumerate(g.valid_edge_iter()):
+            if ji%100==0:
+                print("Edges: %d/%d"%(ji,g.Nedges()))
+            self.before_add_edge(g,'add_edge',nodes=g.edges['nodes'][j])
+
     def before_add_node(self,g,func_name,**k):
         pass # no checks quite yet
     def after_add_node(self,g,func_name,return_value,**k):
@@ -1263,6 +1312,9 @@ class AdvancingTriangles(AdvancingFront):
         return cost
 
 class AdvancingQuads(AdvancingFront):
+    PARA=1
+    PERP=2
+    
     para_scale=None
     perp_scale=None
 
@@ -1285,3 +1337,36 @@ class AdvancingQuads(AdvancingFront):
     def set_edge_scales(self,para_scale,perp_scale):
         self.para_scale=para_scale
         self.perp_scale=perp_scale
+
+    def add_existing_curve_surrounding(self,x):
+        # Get the nodes:
+        pc=self.grid.enclosing_nodestring(x,self.grid.Nnodes())
+        if pc is None:
+            raise Exception("No ring around this rosey")
+
+        curve_idx=self.add_curve( Curve(self.grid.nodes['x'][pc],closed=True) )
+        curve=self.curves[curve_idx]
+
+        # update those nodes to reflect their relationship to this curve.
+        self.grid.nodes['oring'][pc]=curve_idx
+        self.grid.nodes['ring_f'][pc]=curve.distances[:-1] 
+
+        for n in pc:
+            degree=self.grid.node_degree(n)
+            assert degree >= 2
+            if degree==2:
+                self.grid.nodes['fixed']=self.SLIDE
+            else:
+                self.grid.nodes['fixed']=self.RIGID
+
+        # and mark the internal edges as unmeshed:
+        for na,nb in utils.circular_pairs(pc):
+            j=self.grid.nodes_to_edge([na,nb])
+            if self.grid.edges['nodes'][j,0]==na:
+                side=0
+            else:
+                side=1
+            self.grid.edges['cells'][j,side]=self.grid.UNMESHED
+            
+    def orient_quad_edge(self,j,orient):
+        self.grid.edges['para'][j]=orient

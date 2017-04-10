@@ -14,6 +14,11 @@ from ..spatial import robust_predicates
 from . import unstructured_grid
 from ..utils import circular_pairs
 
+try:
+    from scipy import spatial
+except ImportError:
+    spatial=None
+
 class DuplicateNode(Exception):
     pass
 
@@ -42,7 +47,7 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
     BadConstraint=BadConstraint
     ConstraintCollinearNode=ConstraintCollinearNode
 
-    post_check=True # enables [expensive] checks after operations
+    post_check=False # enables [expensive] checks after operations
     
     edge_dtype=(unstructured_grid.UnstructuredGrid.edge_dtype +
                 [ ('constrained',np.bool8) ] )
@@ -1156,6 +1161,45 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
         if self.post_check:
             self.check_local_delaunay()
 
+    def bulk_init_slow(self,points):
+        raise Exception("No - it's really slow.  Don't do this.")
+    
+    def bulk_init(self,points): # ExactDelaunay
+        if spatial is None:
+            return self.bulk_init_slow(points)
+        
+        sdt = spatial.Delaunay(points)
+
+        self.nodes=np.zeros( len(points), self.node_dtype)
+        self.cells=np.zeros( sdt.vertices.shape[0], self.cell_dtype)
+
+        self.nodes['x']=points
+        self.cells['nodes']=sdt.vertices
+
+        # looks like it's CGAL style:
+        # neighbor[1] shares nodes[0] and nodes[2]
+        # vertices are CCW
+
+        for c in range(self.Ncells()):
+            for i,(a,b) in enumerate(circular_pairs(self.cells['nodes'][c])):
+                # first time - that would be i=0, and the first two nodes.
+                # but for neighbors, it's indexed by the opposite node.  so the edge
+                # connected the nodes[0]--nodes[1] corresponds with neighbor 2.
+                c_nbr=sdt.neighbors[c,(i+2)%3]
+
+                # c_nbr==-1 on convex hull.
+                # only worry about cases where c is larger.
+                if c<c_nbr:
+                    continue
+
+                if c_nbr<0:
+                    c_nbr=self.INF_CELL
+
+                j=self.add_edge(nodes=[a,b],
+                                cells=[c,c_nbr])
+
+
+            
 # Issues:
 #   Calls like edge_to_cells do not scale well right now.  In particular,
 #   it would be better in this code to always specify the edge, so that 
