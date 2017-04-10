@@ -60,14 +60,6 @@ ax.axis(zoom)
 
 ## 
 
-# HERE:
-# building the triangulation for the existing grid is way too slow -
-# looks like it will take an hour? for 55k nodes.
-# also might be quadratic.
-# 1.3, 3.5, 5.4, 6.7
-# so either need to forge ahead without building the triangulation, or
-# look into how to optimize it.  should at least be possible to avoid
-# quadratic.
 reload(front)
 
 af=front.AdvancingQuads(grid=g,scale=dim_par,perp_scale=dim_perp)
@@ -182,66 +174,6 @@ def resample_neighbors(self):
 site=sites[0]
 resample_neighbors(site)
 
-##
-import time
 
-# Need to see why the DT is quadratic...
-cdt=front.ShadowCDT(g,ignore_existing=True)
-
-t_last=time.time()
-for ni,n in enumerate(g.valid_node_iter()):
-    if ni%100==0:
-        elapsed=time.time()-t_last
-        t_last=time.time()
-        print("Nodes: %d/%d %.2fs per 100"%(ni,g.Nnodes(),elapsed))
-    cdt.after_add_node(g,'add_node',n,x=g.nodes['x'][n])
-            
-##
-
-def next100():
-    for ni,n in enumerate(g.valid_node_iter()):
-        if ni<300:
-            continue
-        if ni>=400:
-            break
-        cdt.after_add_node(g,'add_node',n,x=g.nodes['x'][n])
-
-
-# Where's the time:
-# 8.2s:
-# 3.3s in check_local_delaunay.
-# 1.5 in edge_to_cells.
-# 0.9 in topo_sort_adjacent_nodes
-# 1.4 in propagating_flip.
-
-# without checks, it is better...
-# but not great.
-
-##
-
-from scipy import spatial
-
-t=time.time()
-elapsed=time.time() - t
-
-# 0.5s
-print "%d points took %.2fs"%(g.Nnodes(), elapsed)
-
-##
-
-# outputs which are useful for us:
-# sdt.vertices # [Nc,3]
-# sdt.neighbors # [Nc,3]
-
-# What state would need to be set up?
-# node['x']
-# edges['cells'] (with INF_CELL), edges['nodes']
-# shadow_cdt: nodemap_g_to_local
-reload(exact_delaunay)
-reload(front)
-
-self=front.ShadowCDT(g)
-# self.bulk_init_from_grid(self,g)
-
-# HERE - problem in the imported triangulation.
-
+# HERE:
+# should be populating the cdt, but still getting that key error.

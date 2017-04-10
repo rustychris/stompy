@@ -639,24 +639,6 @@ class ShadowCDT(exact_delaunay.Triangulation):
         if not ignore_existing:
             self.init_from_grid(g)
 
-    # def init_from_grid(self):
-    #     """ going to be slow...
-    #     """
-    # 
-    #     g=self.g
-    #     t_last=time.time()
-    #     for ni,n in enumerate(g.valid_node_iter()):
-    #         if ni%100==0:
-    #             elapsed=time.time()-t_last
-    #             t_last=time.time()
-    #             print("Nodes: %d/%d %.2fs per 100"%(ni,g.Nnodes(),elapsed))
-    #         self.after_add_node(g,'add_node',n,x=g.nodes['x'][n])
-    #         
-    #     for ji,j in enumerate(g.valid_edge_iter()):
-    #         if ji%100==0:
-    #             print("Edges: %d/%d"%(ji,g.Nedge()))
-    #         self.before_add_edge(g,'add_edge',nodes=g.edges['nodes'][j])
-
     def init_from_grid(self,g): # ShadowCDT
         # Nodes:
         n_valid=~g.nodes['deleted']
@@ -672,8 +654,8 @@ class ShadowCDT(exact_delaunay.Triangulation):
 
         # Edges:
         for ji,j in enumerate(g.valid_edge_iter()):
-            if ji%100==0:
-                print("Edges: %d/%d"%(ji,g.Nedges()))
+            if ji%5000==0:
+                log.info("Edges: %d/%d"%(ji,g.Nedges()))
             self.before_add_edge(g,'add_edge',nodes=g.edges['nodes'][j])
 
     def before_add_node(self,g,func_name,**k):

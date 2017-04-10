@@ -1197,7 +1197,16 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
 
                 j=self.add_edge(nodes=[a,b],
                                 cells=[c,c_nbr])
-
+                # and record in the cell, too
+                self.cells['edges'][c,i]=j
+                if c_nbr!=self.INF_CELL:
+                    nbr_nodes=self.cells['nodes'][c_nbr]
+                    for i_nbr in [0,1,2]:
+                        if nbr_nodes[i_nbr]==b and nbr_nodes[(i_nbr+1)%3]==a:
+                            self.cells['edges'][c_nbr,i_nbr]=j
+                            break
+                    else:
+                        assert False
 
             
 # Issues:
