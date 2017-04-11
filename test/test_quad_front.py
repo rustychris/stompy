@@ -15,7 +15,7 @@ reload(unstructured_grid)
 reload(exact_delaunay)
 reload(dfm_grid)
 
-## 
+#- # 
 
 g=dfm_grid.DFMGrid("data/lsb_combined_v14_net.nc")
 
@@ -68,112 +68,54 @@ af.grid.edges['para']=0 # avoid issues during dev
 af.add_existing_curve_surrounding(point_in_poly)
 af.orient_quad_edge(j_init,af.PARA)
 
-##
-
-# without a richer way of specifying the scales, have to start
-# with marked edges
-class QuadCutoffStrategy(front.Strategy):
-    def metric(self,site,scale_factors):
-        return 1.0 # ?
-    def execute(self,site):
-        """
-        Apply this strategy to the given Site.
-        Returns a dict with nodes,cells which were modified 
-        """
-        jnew=site.grid.add_edge(nodes=[site.abcd[0],site.abcd[3]],
-                                para=site.grid.edges['para'][site.js[1]] )
-        cnew=site.grid.add_cell(nodes=[site.a,site.b,site.c,site.d])
-
-        return {'edges': [jnew],
-                'cells': [cnewc] }
-
-QuadCutoff=QuadCutoffStrategy()
-
-class QuadSite(front.FrontSite):
-    def __init__(self,af,nodes):
-        self.af=af
-        self.grid=af.grid
-        assert len(nodes)==4
-        self.abcd = nodes
-
-        self.js=[ self.grid.nodes_to_edge(nodes[:2]),
-                  self.grid.nodes_to_edge(nodes[1:3]),
-                  self.grid.nodes_to_edge(nodes[2:])]
-        
-    def metric(self):
-        return 1.0 # ?
-    def points(self):
-        return self.grid.nodes['x'][ self.abcd ]
-    
-    # def internal_angle(self): ...
-    # def edge_length(self): ...
-    # def local_length(self): ...
-
-    def plot(self,ax=None):
-        ax=ax or plt.gca()
-        points=self.grid.nodes['x'][self.abcd]
-        return ax.plot( points[:,0],points[:,1],'r-o' )[0]
-    
-    def actions(self):
-        return [QuadCutoff] # ,FloatLeft,FloatRight,FloatBoth,NonLocal?]
+#- # 
 
 
-def enumerate_sites(self):
-    sites=[]
-    # FIX: This doesn't scale!
-    valid=(self.grid.edges['cells'][:,:]==self.grid.UNMESHED)& (self.grid.edges['para']!=0)[:,None]
-    J,Orient = np.nonzero(valid)
-
-    for j,orient in zip(J,Orient):
-        if self.grid.edges['deleted'][j]:
-            continue
-        he=self.grid.halfedge(j,orient)
-        he_nxt=he.fwd()
-        a=he.rev().node_rev()
-        b=he.node_rev()
-        c=he.node_fwd()
-        d=he.fwd().node_fwd()
-
-        sites.append( QuadSite(self,nodes=[a,b,c,d]) )
-    return sites
-
-sites=enumerate_sites(af)
-
-##
-
-# Try moving this into the site implementation -- if this is okay, then
-# do the same with TriangleSite
-def resample_neighbors(self):
-    """ may update site! 
-    """
-    a,b,c,d = self.abcd
-    # could extend to something more dynamic, like triangle does
-    local_para=self.af.para_scale
-    local_perp=self.af.perp_scale
-
-    g=self.af.grid
-    
-    if g.edges['para'][self.js[1]] == self.af.PARA:
-        scale=local_perp
-    else:
-        scale=local_para
-
-    for n,anchor,direction in [ (a,b,-1),
-                                (d,c,1) ]:
-        if ( (self.grid.nodes['fixed'][n] == self.af.SLIDE) and
-             self.grid.node_degree(n)<=2 ):
-            n_res=self.af.resample(n=n,anchor=anchor,scale=scale,direction=direction)
-            if n!=n_res:
-                self.log.info("resample_neighbors changed a node")
-                if n==a:
-                    site.abcd[0]=n_res
-                else:
-                    site.abcd[3]=n_res
-    # return True                
-
+sites=af.enumerate_sites()
 site=sites[0]
-resample_neighbors(site)
+af.resample_neighbors(site)
+
+for a in site.actions():
+    res = a.execute(site)
+    break
+
+## 
+
+plt.figure(1).clf()
+fig,ax=plt.subplots(num=1)
+
+g.plot_edges(ax=ax,clip=zoom)
+g.plot_edges(mask=[j_init],color='r',lw=2)
+
+if 0:
+    af.plot_summary(label_nodes=False,clip=zoom)
+
+site.plot(ax=ax)
+
+ax.axis(zoom)
 
 
-# HERE:
-# should be populating the cdt, but still getting that key error.
+## 
+
+# [55515, 55509] 
+# nodes=np.unique(g.edges['nodes'][ res['edges'] ])
+
+# while it might be good to do some tweaking really specific to the 
+# quad case before a more blind optimization, at least try the 
+# generic approach first.
+
+## 
+
+n=55515
+f=af.cost_function(n)
+print "Cost: ",f(af.grid.nodes['x'][n])
+
+## 
+
+# HERE
+# This runs, and yet doesn't decrease the cost at all...
+af.relax_node(n) 
+
+
+
+

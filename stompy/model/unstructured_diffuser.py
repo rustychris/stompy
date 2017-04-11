@@ -4,24 +4,20 @@ from builtins import str
 from builtins import range
 from builtins import object
 from past.utils import old_div
+
 import itertools
-import unstructured_grid
-import utils
+
 import numpy as np
 from matplotlib import pyplot as plt
+
 from scipy import sparse
 from scipy.sparse import linalg
 import logging
 log=logging.getLogger(__name__)
 
-# something similar now in unstructured_grid
-# class TrigridWrapper(unstructured_grid.UnstructuredGrid):
-#     def __init__(self,tg):
-#         self.tg=tg
-#         super(TrigridWrapper,self).__init__(edges=tg.edges[:,:2],
-#                                             points=tg.points,
-#                                             cells=tg.cells)
-    
+from ..grid import unstructured_grid
+from .. import utils
+
 class Diffuser(object):
     dt = 0.5
     alpha=0 # first order decay

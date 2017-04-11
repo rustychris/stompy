@@ -614,6 +614,101 @@ class TriangleSite(FrontSite):
         theta=self.internal_angle
         return [Wall,Cutoff,Join,Bisect]
 
+    def resample_neighbors(self):
+        """ may update site! used to be part of AdvancingFront, but
+        probably better here, as part of the site.
+        """
+        a,b,c = self.abc
+        local_length = self.af.scale( self.points().mean(axis=0) )
+        
+        grid=self.af.grid
+
+        for n,direction in [ (a,-1),
+                             (c,1) ]:
+            if ( (grid.nodes['fixed'][n] == self.af.SLIDE) and
+                 len(grid.node_to_edges(n))<=2 ):
+                n_res=self.af.resample(n=n,anchor=b,scale=local_length,direction=direction)
+                if n!=n_res:
+                    log.info("resample_neighbors changed a node")
+                    if n==a:
+                        self.abc[0]=n_res
+                    else:
+                        self.abc[2]=n_res
+
+
+# without a richer way of specifying the scales, have to start
+# with marked edges
+class QuadCutoffStrategy(Strategy):
+    def metric(self,site,scale_factors):
+        return 1.0 # ?
+    def execute(self,site):
+        """
+        Apply this strategy to the given Site.
+        Returns a dict with nodes,cells which were modified 
+        """
+        jnew=site.grid.add_edge(nodes=[site.abcd[0],site.abcd[3]],
+                                para=site.grid.edges['para'][site.js[1]] )
+        cnew=site.grid.add_cell(nodes=site.abcd)
+        return {'edges': [jnew],
+                'cells': [cnew] }
+QuadCutoff=QuadCutoffStrategy()
+
+class QuadSite(FrontSite):
+    def __init__(self,af,nodes):
+        self.af=af
+        self.grid=af.grid
+        assert len(nodes)==4
+        self.abcd = nodes
+
+        self.js=[ self.grid.nodes_to_edge(nodes[:2]),
+                  self.grid.nodes_to_edge(nodes[1:3]),
+                  self.grid.nodes_to_edge(nodes[2:])]
+        
+    def metric(self):
+        return 1.0 # ?
+    def points(self):
+        return self.grid.nodes['x'][ self.abcd ]
+    
+    # def internal_angle(self): ...
+    # def edge_length(self): ...
+    # def local_length(self): ...
+
+    def plot(self,ax=None):
+        ax=ax or plt.gca()
+        points=self.grid.nodes['x'][self.abcd]
+        return ax.plot( points[:,0],points[:,1],'r-o' )[0]
+    
+    def actions(self):
+        return [QuadCutoff] # ,FloatLeft,FloatRight,FloatBoth,NonLocal?]
+
+    def resample_neighbors(self):
+        """ may update site! 
+        """
+        a,b,c,d = self.abcd
+        # could extend to something more dynamic, like triangle does
+        local_para=self.af.para_scale
+        local_perp=self.af.perp_scale
+
+        g=self.af.grid
+
+        if g.edges['para'][self.js[1]] == self.af.PARA:
+            scale=local_perp
+        else:
+            scale=local_para
+
+        for n,anchor,direction in [ (a,b,-1),
+                                    (d,c,1) ]:
+            if ( (self.grid.nodes['fixed'][n] == self.af.SLIDE) and
+                 self.grid.node_degree(n)<=2 ):
+                n_res=self.af.resample(n=n,anchor=anchor,scale=scale,direction=direction)
+                if n!=n_res:
+                    self.log.info("resample_neighbors changed a node")
+                    if n==a:
+                        site.abcd[0]=n_res
+                    else:
+                        site.abcd[3]=n_res
+
+
 
 class ShadowCDT(exact_delaunay.Triangulation):
     """ Tracks modifications to an unstructured grid and
@@ -896,56 +991,10 @@ class AdvancingFront(object):
         return n
 
     def resample_neighbors(self,site):
-        """ may update site! currently only works for TriangleSite
-        (maybe it would work for others..?)
-        """
-        a,b,c = site.abc
-        local_length = self.scale( site.points().mean(axis=0) )
-
-        for n,direction in [ (a,-1),
-                             (c,1) ]:
-            if ( (self.grid.nodes['fixed'][n] == self.SLIDE) and
-                 len(self.grid.node_to_edges(n))<=2 ):
-                n_res=self.resample(n=n,anchor=b,scale=local_length,direction=direction)
-                if n!=n_res:
-                    self.log.info("resample_neighbors changed a node")
-                    if n==a:
-                        site.abc[0]=n_res
-                    else:
-                        site.abc[2]=n_res
+        return site.resample_neighbors()
 
     def cost_function(self,n):
         raise Exception("Implement in subclass")
-
-        local_length = self.scale( self.grid.nodes['x'][n] )
-        my_cells = self.grid.node_to_cells(n)
-
-        if len(my_cells) == 0:
-            return None
-
-        cell_nodes = [self.grid.cell_to_nodes(c)
-                      for c in my_cells ]
-
-        # for the moment, can only deal with triangles
-        cell_nodes=np.array(cell_nodes)
-
-        # pack our neighbors from the cell list into an edge
-        # list that respects the CCW condition that pnt must be on the
-        # left of each segment
-        for j in range(len(cell_nodes)):
-            if cell_nodes[j,0] == n:
-                cell_nodes[j,:2] = cell_nodes[j,1:]
-            elif cell_nodes[j,1] == n:
-                cell_nodes[j,1] = cell_nodes[j,0]
-                cell_nodes[j,0] = cell_nodes[j,2] # otherwise, already set
-
-        edges = cell_nodes[:,:2]
-        edge_points = self.grid.nodes['x'][edges]
-
-        def cost(x,edge_points=edge_points,local_length=local_length):
-            return one_point_cost(x,edge_points,target_length=local_length)
-
-        return cost
 
     def eval_cost(self,n):
         fn=self.cost_function(n)
@@ -1293,6 +1342,31 @@ class AdvancingTriangles(AdvancingFront):
 
         return cost
 
+
+#### 
+
+def one_point_quad_cost(x,edge_scales,quads):
+    # orthogonality cost:
+    ortho_cost=0.0
+
+    quads[:,0,:] = x # update the first point of each quad
+
+    for quad in quads:
+        cc=utils.poly_circumcenter(quad)
+        dists=utils.mag(quad-cc)
+        err=np.std(dists) / np.mean(dists)
+
+        ortho_cost += 10*err # ad hoc hoc hoc
+
+    # length cost:
+    scale_cost=0.0
+
+    dists=utils.mag(x - edge_scales[:,:2])
+    errs=(dists - edge_scales[:,2]) / edge_scales[:,2]
+    scale_cost = (2*errs**2).sum()
+
+    return ortho_cost+scale_cost
+
 class AdvancingQuads(AdvancingFront):
     PARA=1
     PERP=2
@@ -1330,7 +1404,8 @@ class AdvancingQuads(AdvancingFront):
         curve=self.curves[curve_idx]
 
         # update those nodes to reflect their relationship to this curve.
-        self.grid.nodes['oring'][pc]=curve_idx
+        # don't forget it's 1-based!
+        self.grid.nodes['oring'][pc]=1+curve_idx
         self.grid.nodes['ring_f'][pc]=curve.distances[:-1] 
 
         for n in pc:
@@ -1352,3 +1427,62 @@ class AdvancingQuads(AdvancingFront):
             
     def orient_quad_edge(self,j,orient):
         self.grid.edges['para'][j]=orient
+
+    def enumerate_sites(self):
+        sites=[]
+        # FIX: This doesn't scale!
+        valid=(self.grid.edges['cells'][:,:]==self.grid.UNMESHED)& (self.grid.edges['para']!=0)[:,None]
+        J,Orient = np.nonzero(valid)
+
+        for j,orient in zip(J,Orient):
+            if self.grid.edges['deleted'][j]:
+                continue
+            he=self.grid.halfedge(j,orient)
+            he_nxt=he.fwd()
+            a=he.rev().node_rev()
+            b=he.node_rev()
+            c=he.node_fwd()
+            d=he.fwd().node_fwd()
+
+            sites.append( QuadSite(self,nodes=[a,b,c,d]) )
+        return sites
+
+    def cost_function(self,n):
+        local_para = self.para_scale
+        local_perp = self.perp_scale
+
+        my_cells = self.grid.node_to_cells(n)
+
+        if len(my_cells) == 0:
+            return None
+
+        cell_nodes = [self.grid.cell_to_nodes(c)
+                      for c in my_cells ]
+
+        cell_nodes=np.array(cell_nodes) # may contain undef nodes
+
+        # make sure all quads:
+        assert np.all( cell_nodes[:,:4]>=0 )
+        assert np.all( cell_nodes[:,4:]<0 ) # does that work?
+
+        # For each quad, rotate our node to be at the front of the list:
+        quad_nodes=[np.roll(quad,-list(quad).index(n))
+                    for quad in cell_nodes]
+        quad_nodes=np.array(quad_nodes)
+        quads=self.grid.nodes['x'][quad_nodes]
+
+        # for the moment, don't worry about reestablishing scale, just
+        # focus on orthogonality
+
+        edge_scales=np.zeros( [0,3], 'f8') # np.array( [ [x,y,target_distance], ... ] )
+
+        def cost(x,edge_scales=edge_scales,quads=quads):
+            return one_point_quad_cost(x,edge_scales,quads)
+
+        return cost
+
+    def scale(self, x0):
+        # temporary hack - needed for relax_slide_node
+        return 0.5*(self.para_scale+self.perp_scale)
+
+    
