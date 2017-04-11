@@ -1935,6 +1935,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         values=values[mask]
 
         if labeler is not None:
+            if labeler=='id':
+                labeler=lambda n,rec: str(n)
+                
             # weirdness to account for mask being indices vs. bitmask
             for n in np.arange(self.Nnodes())[mask]: # np.nonzero(mask)[0]:
                 ax.text(self.nodes['x'][n,0],

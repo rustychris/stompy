@@ -646,9 +646,12 @@ class QuadCutoffStrategy(Strategy):
         Apply this strategy to the given Site.
         Returns a dict with nodes,cells which were modified 
         """
+        # Set cells to unmeshed, and one will be overwritten by add_cell.
         jnew=site.grid.add_edge(nodes=[site.abcd[0],site.abcd[3]],
-                                para=site.grid.edges['para'][site.js[1]] )
+                                para=site.grid.edges['para'][site.js[1]],
+                                cells=[site.grid.UNMESHED,site.grid.UNMESHED])
         cnew=site.grid.add_cell(nodes=site.abcd)
+        
         return {'edges': [jnew],
                 'cells': [cnew] }
 QuadCutoff=QuadCutoffStrategy()
@@ -707,7 +710,6 @@ class QuadSite(FrontSite):
                         site.abcd[0]=n_res
                     else:
                         site.abcd[3]=n_res
-
 
 
 class ShadowCDT(exact_delaunay.Triangulation):
@@ -1345,16 +1347,18 @@ class AdvancingTriangles(AdvancingFront):
 
 #### 
 
-def one_point_quad_cost(x,edge_scales,quads):
+def one_point_quad_cost(x,edge_scales,quads,para_scale,perp_scale):
     # orthogonality cost:
     ortho_cost=0.0
 
+    base_scale=np.sqrt( para_scale**2 + perp_scale**2 )
+    
     quads[:,0,:] = x # update the first point of each quad
 
     for quad in quads:
         cc=utils.poly_circumcenter(quad)
         dists=utils.mag(quad-cc)
-        err=np.std(dists) / np.mean(dists)
+        err=np.std(dists) / base_scale
 
         ortho_cost += 10*err # ad hoc hoc hoc
 
@@ -1476,8 +1480,9 @@ class AdvancingQuads(AdvancingFront):
 
         edge_scales=np.zeros( [0,3], 'f8') # np.array( [ [x,y,target_distance], ... ] )
 
-        def cost(x,edge_scales=edge_scales,quads=quads):
-            return one_point_quad_cost(x,edge_scales,quads)
+        def cost(x,edge_scales=edge_scales,quads=quads,
+                 local_para=local_para,local_perp=local_perp):
+            return one_point_quad_cost(x,edge_scales,quads,local_para,local_perp)
 
         return cost
 
