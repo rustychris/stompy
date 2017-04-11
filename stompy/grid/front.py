@@ -639,7 +639,9 @@ class TriangleSite(FrontSite):
 # without a richer way of specifying the scales, have to start
 # with marked edges
 class QuadCutoffStrategy(Strategy):
-    def metric(self,site,scale_factors):
+    def metric(self,site):
+        # how to get scale here?
+        # FIX
         return 1.0 # ?
     def execute(self,site):
         """
@@ -1460,6 +1462,7 @@ class AdvancingQuads(AdvancingFront):
         if len(my_cells) == 0:
             return None
 
+        # HERE: needs to handle mix of n-gons
         cell_nodes = [self.grid.cell_to_nodes(c)
                       for c in my_cells ]
 

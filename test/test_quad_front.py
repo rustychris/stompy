@@ -68,7 +68,10 @@ af.orient_quad_edge(j_init,af.PARA)
 
 ## 
 
-# HERE: second time around it doesn't pick up a site!
+# HERE - fails - see line 1466 of front.py
+af.loop(1)
+
+## 
 sites=af.enumerate_sites()
 site=sites[0]
 af.resample_neighbors(site)
