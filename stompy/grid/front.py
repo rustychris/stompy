@@ -735,7 +735,7 @@ class ShadowCDT(exact_delaunay.Triangulation):
         g.subscribe_before('delete_edge',self.before_delete_edge)
         g.subscribe_before('modify_edge',self.before_modify_edge)
 
-        if not ignore_existing:
+        if not ignore_existing and g.Nnodes():
             self.init_from_grid(g)
 
     def init_from_grid(self,g): # ShadowCDT
@@ -990,9 +990,29 @@ class AdvancingFront(object):
         for d in nodes_to_delete:
             self.grid.merge_edges(node=d)
 
-        self.grid.modify_node(n,x=new_x,ring_f=new_f)
-
-        return n
+        # on the other hand, it may be that the next node is too far away, and it
+        # would be better to divide the edge than to shift a node from far away.
+        # also possible that our neighbor was RIGID and can't be shifted
+        method='slide'
+        if (self.grid.nodes['fixed'][n] == self.RIGID):
+            method='split'
+        else:
+            dist_orig = utils.dist( self.grid.nodes['x'][anchor] - self.grid.nodes['x'][n] )
+            # tunable parameter here - how do we decide between shifting a neighbor and
+            # dividing the edge.  Larger threshold means shifting nodes from potentially far
+            # away, which distorts later steps.  smaller threshold means subdividing, but then
+            # there could be the potential to bump into that node during optimization (which
+            # is probably okay - we clear out interfering nodes like that).
+            if dist_orig / scale > 1.5: 
+                method='split'
+        if method=='slide':
+            self.grid.modify_node(n,x=new_x,ring_f=new_f)
+            return n
+        else: # 'split'
+            j=self.grid.nodes_to_edge([anchor,n])
+            jnew,nnew = self.grid.split_edge(j,x=new_x,ring_f=new_f,oring=oring+1,
+                                             fixed=self.SLIDE)
+            return nnew
 
     def resample_neighbors(self,site):
         return site.resample_neighbors()

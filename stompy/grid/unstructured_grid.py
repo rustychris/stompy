@@ -1477,7 +1477,30 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         edge_data['nodes']=new_nodes
         self.add_edge(_index=A,**edge_data)
         return A
+
+    def split_edge(self,j,**node_args):
+        """
+        The opposite of merge_edges, take an existing edge and insert
+        a node into the middle of it.
+        Does not allow for any cells to be involved.
+        """
+        nA,nC=self.edges['nodes'][j]
+        assert np.all( self.edge_to_cells(j) < 0 )
+
+        edge_data=rec_to_dict(self.edges[j].copy())
         
+        self.delete_edge(j)
+
+        # choose midpoint as default
+        loc_args=dict(x= 0.5*(self.nodes['x'][nA] + self.nodes['x'][nC]))
+        loc_args.update(node_args) # but args will overwrite
+
+        nB=self.add_node(**loc_args)
+        edge_data['nodes'][1]=nB
+        self.add_edge(_index=j,**edge_data)
+        jnew=self.add_edge(nodes=[nB,nC])
+        return jnew,nB
+
     def merge_nodes(self,n0,n1):
         """ copy topology from n1 to n0, i.e. edges and cells.
         fields of n1 are lost, and n1 is deleted
@@ -1631,7 +1654,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         max_nodes defaults to self.max_sides.
         Return None if nothing is found, otherwise a list of node indexes.
         """
-        max_nodes=max_nodes or self.max_sides
+        if max_nodes<0:
+            max_nodes=self.Nnodes()
+        elif max_nodes is None:
+            max_nodes=self.max_sides
 
         # lame stand-in for a true bounding polygon test
         edges_near=self.select_edges_nearest(x,count=6)
