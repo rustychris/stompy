@@ -337,9 +337,9 @@ def select_increasing(x):
     less than or equal to the largest preceding sample
     """
     mask=np.ones(len(x),np.bool8)
-    last=-np.inf
+    last=None # -np.inf doesn't work for weird types that can't compare to float
     for i in range(len(x)):
-        if x[i] <= last:
+        if last is not None and x[i] <= last:
             mask[i]=False
         else:
             last=x[i]

@@ -68,20 +68,7 @@ af.orient_quad_edge(j_init,af.PARA)
 
 ## 
 
-# HERE - fails - see line 1466 of front.py
 af.loop(1)
-
-## 
-sites=af.enumerate_sites()
-site=sites[0]
-af.resample_neighbors(site)
-
-for a in site.actions():
-    res = a.execute(site)
-    
-    break
-
-## 
 
 plt.figure(1).clf()
 fig,ax=plt.subplots(num=1)
@@ -100,39 +87,25 @@ zoom2=(578939.26355999336,
        4144480.9287384176,
        4144557.3495081947)
 
-#ax.axis(zoom)
 
-g.plot_nodes(labeler=lambda n,rec: str(n),
-             clip=zoom2,ax=ax)
-ax.axis(zoom2)
-
-## 
-
-# [55515, 55509] 
-# nodes=np.unique(g.edges['nodes'][ res['edges'] ])
-
-# while it might be good to do some tweaking really specific to the 
-# quad case before a more blind optimization, at least try the 
-# generic approach first.
+#g.plot_nodes(labeler=lambda n,rec: str(n),
+#             clip=zoom2,ax=ax)
+# ax.axis(zoom2)
+ax.axis(zoom)
 
 ## 
 
-n=55515
-f=af.cost_function(n)
-print "Cost: ",f(af.grid.nodes['x'][n])
+# Problem 1: going around a bend it starts making trapezoids, 
+#   never really recovers.  A more nuanced cost function with angles
+#   would help here.
 
-## 
+# Enhancement: there is an obvious place to put a triangle around a bend.
+#   will get there eventually.
 
-# HERE
-# This runs, and yet doesn't decrease the cost at all...
-#import pdb
-#pdb.run("af.relax_node(n)")
+# Problem 2: After about 20 cells, it gets an IntersectingConstraints
+#   error.  Catastrophic failure, no grace.
 
-# it comes up with a new_f=1753, beyond the slide_limits of
-# array([ 1645.5365554 ,  1713.80292975])
-# and way beyond reason.
-
-# some sort of bug with the cost function
-
-af.relax_node(n)
-
+# in the cdt: nodes 55581, 55580
+# while trying to move real node 55580.
+# seems to be because during the resampling, the edges have
+# gotten really coarse, that's causing problems.

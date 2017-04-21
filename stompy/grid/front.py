@@ -1462,19 +1462,29 @@ class AdvancingQuads(AdvancingFront):
         if len(my_cells) == 0:
             return None
 
-        # HERE: needs to handle mix of n-gons
-        cell_nodes = [self.grid.cell_to_nodes(c)
-                      for c in my_cells ]
+        if 0:
+            # HERE: needs to handle mix of n-gons
+            cell_nodes = [self.grid.cell_to_nodes(c)
+                          for c in my_cells ]
 
-        cell_nodes=np.array(cell_nodes) # may contain undef nodes
+            cell_nodes=np.array(cell_nodes) # may contain undef nodes
 
-        # make sure all quads:
-        assert np.all( cell_nodes[:,:4]>=0 )
-        assert np.all( cell_nodes[:,4:]<0 ) # does that work?
+            # make sure all quads:
+            assert np.all( cell_nodes[:,:4]>=0 )
+            assert np.all( cell_nodes[:,4:]<0 ) # does that work?
+        else:
+            # more general -
+            cell_nodes=self.grid.cells['nodes'][my_cells]
+            # except that for the moment I'm only going to worry about the
+            # quads:
+            sel_quad=(cell_nodes[:,3]>=0)
+            if self.grid.max_sides>4:
+                sel_quad &=(cell_nodes[:,4]<0)
+            cell_nodes=cell_nodes[sel_quad]
 
         # For each quad, rotate our node to be at the front of the list:
         quad_nodes=[np.roll(quad,-list(quad).index(n))
-                    for quad in cell_nodes]
+                    for quad in cell_nodes[:,:4]]
         quad_nodes=np.array(quad_nodes)
         quads=self.grid.nodes['x'][quad_nodes]
 
