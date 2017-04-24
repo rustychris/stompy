@@ -707,18 +707,24 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         self.cells['edges'] = edge_map[self.cells['edges']]
 
-    def add_grid(self,ugB):
+    def add_grid(self,ugB,merge_nodes=None):
         """
         Add the nodes, edges, and cells from another grid to this grid.
         Copies fields with common names, any other fields are dropped from ugB.
-        Assumes (for the moment) that max_sides is compatible. Could use some
-        improvement there.
+        Assumes (for the moment) that max_sides is compatible. 
+
+        merge_nodes: [ (self_node,ugB_node), ... ]
+          Nodes which overlap and will be mapped instead of added.
         """
         node_map=np.zeros( ugB.Nnodes(), 'i4')-1
         edge_map=np.zeros( ugB.Nedges(), 'i4')-1
         cell_map=np.zeros( ugB.Ncells(), 'i4')-1
 
-        def bad_fields(Adata,Bdata):
+        if merge_nodes is not None:
+            for my_node,B_node in merge_nodes:
+                node_map[B_node]=my_node
+
+        def bad_fields(Adata,Bdata): # field froms B which get dropped
             A_fields =Adata.dtype.names
             B_fields =Bdata.dtype.names
 
@@ -729,6 +735,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         B_bad=bad_fields(self.nodes,ugB.nodes)
 
         for n in ugB.valid_node_iter():
+            if node_map[n]>=0:
+                continue # must be part of merge_nodes
             kwargs=rec_to_dict(ugB.nodes[n])
             for f in B_bad:
                 del kwargs[f]
@@ -746,6 +754,13 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
             kwargs['nodes']=node_map[kwargs['nodes']]
 
+            # when merge_nodes is specified, have to also check
+            # for preexisting edges
+            if merge_nodes is not None:
+                j=self.nodes_to_edge(kwargs['nodes'])
+                if j is not None:
+                    edge_map[n]=j
+                    continue
             edge_map[n]=self.add_edge(**kwargs)
 
         B_bad=bad_fields(self.cells,ugB.cells)
@@ -758,6 +773,14 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             for i,node in enumerate(kwargs['nodes']):
                 if node>=0:
                     kwargs['nodes'][i]=node_map[node]
+
+            # less common, but still need to check for duplicated cells
+            # when merge_nodes is used.
+            if merge_nodes is not None:
+                c=self.nodes_to_cell( kwargs['nodes'], fail_hard=False)
+                if c is not None:
+                    cell_map[n]=c
+                    continue
 
             for i,edge in enumerate(kwargs['edges']):
                 if edge>=0:
