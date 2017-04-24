@@ -96,17 +96,18 @@ def one_point_cost(pnt,edges,target_length=5.0):
     penalty += angle_penalty + big_angle_penalty
 
     #--# Length penalties:
-    if 0:
+    if 1:
         ab_lens = (all_edges[:,0,:]**2).sum(axis=1)
         ca_lens = (all_edges[:,2,:]**2).sum(axis=1)
         min_ab=min(ab_lens)
         min_ca=min(ca_lens)
     else:
+        # maybe better for numba?
         min_ab=np.inf
         min_ca=np.inf
         for idx in range(edges.shape[0]):
-            l_ab=all_edges[idx,0,:].sum()
-            l_ca=all_edges[idx,2,:].sum()
+            l_ab=(all_edges[idx,0,:]**2).sum()
+            l_ca=(all_edges[idx,2,:]**2).sum()
             if l_ab<min_ab:
                 min_ab=l_ab
             if l_ca<min_ca:
