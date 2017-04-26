@@ -2640,6 +2640,8 @@ class GdalGrid(SimpleGrid):
         if nodata is not None:
             if A.dtype in (int16,int32):
                 A[ A==nodata ] = self.int_nan
+            elif A.dtype in (uint16,uint32):
+                A[ A==nodata ] = 0 # not great...
             else:
                 A[ A==nodata ] = nan
 
