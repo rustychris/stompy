@@ -770,6 +770,11 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             for f in B_bad:
                 del kwargs[f]
 
+            # avoid mutating ugB.
+            orig_nodes=kwargs['nodes']
+            kwargs['nodes'] = orig_nodes.copy()
+            kwargs['edges'] = kwargs['edges'].copy()
+
             for i,node in enumerate(kwargs['nodes']):
                 if node>=0:
                     kwargs['nodes'][i]=node_map[node]
@@ -780,6 +785,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 c=self.nodes_to_cell( kwargs['nodes'], fail_hard=False)
                 if c is not None:
                     cell_map[n]=c
+                    print("Skipping existing cell: %d: %s => %d: %s"%( n,str(orig_nodes),
+                                                                       c,str(kwargs['nodes'])))
                     continue
 
             for i,edge in enumerate(kwargs['edges']):
@@ -1196,17 +1203,20 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     def nodes_to_cell(self,ns,fail_hard=True):
         cells=self.node_to_cells(ns[0])
         for n in ns[1:]:
-            if len(cells)==1:
+            if len(cells)==0:
                 break
             cells2=self.node_to_cells(n)
             cells=[c
                    for c in cells
                    if c in cells2]
-        if len(cells)!=1:
+        if len(cells)==0:
             if fail_hard:
                 raise self.GridException("Cell not found")
             else:
                 return None
+        # shouldn't be possible to get more than one hit.
+        assert len(cells)==1
+
         return cells[0]
 
     def cell_to_edges(self,c,ordered=False):
