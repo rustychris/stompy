@@ -708,11 +708,11 @@ class QuadSite(FrontSite):
                  self.grid.node_degree(n)<=2 ):
                 n_res=self.af.resample(n=n,anchor=anchor,scale=scale,direction=direction)
                 if n!=n_res:
-                    self.log.info("resample_neighbors changed a node")
+                    log.info("resample_neighbors changed a node")
                     if n==a:
-                        site.abcd[0]=n_res
+                        self.abcd[0]=n_res
                     else:
-                        site.abcd[3]=n_res
+                        self.abcd[3]=n_res
 
 
 class ShadowCDT(exact_delaunay.Triangulation):

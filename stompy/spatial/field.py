@@ -39,6 +39,7 @@ except ImportError:
     # older deprecated module
     from matplotlib import delaunay
 
+from . import wkb2shp
 
 try:
     from matplotlib import cm
@@ -2631,7 +2632,9 @@ class GdalGrid(SimpleGrid):
             # and dy refer to positive northing
             y0 = y0 + Nrows*dy
             dy = -dy
-            A = A[...,::-1,:]
+            # this used to have the extra indices at the start, 
+            # but I think that's wrong, as we put extra channels at the end
+            A = A[::-1,:,...]
 
         # and there might be a nodata value, which we want to map to NaN
         b = self.gds.GetRasterBand(1)
@@ -2654,7 +2657,7 @@ class GdalGrid(SimpleGrid):
                             projection=self.gds.GetProjection() )
 
 if ogr:
-    import interp_coverage
+    from stompy.spatial import interp_coverage
     class BlenderField(Field):
         """ Delegate to sub-fields, based on polygons in a shapefile, and blending
         where polygons overlap.
@@ -2667,10 +2670,10 @@ if ogr:
         a dict with the attributse for each source.  The factory should then return the corresponding
         Field.
         """
-        def __init__(self,shp_fn,delegates=None,factory=None):
+        def __init__(self,shp_fn,delegates=None,factory=None,subset=None):
             self.shp_fn = shp_fn
 
-            self.ic = interp_coverage.InterpCoverage(shp_fn)
+            self.ic = interp_coverage.InterpCoverage(shp_fn,subset=subset)
             Field.__init__(self)
 
             self.delegates = delegates
@@ -2691,7 +2694,6 @@ if ogr:
             raise Exception("For now, you have to specify the bounds when gridding a BlenderField")
 
         def load_region(self,i):
-            # for r in self.ic.regions:
             r = self.ic.regions[i]
 
             if self.delegates is not None:
@@ -2772,8 +2774,43 @@ if ogr:
                 vals[needed] = src_vals - vals[needed] 
             return vals
 
+    class MultiBlender(Field):
+        """
+        A collection of BlenderFields, separated based on a priority
+        field in the sources shapefile.
+        """
+        def __init__(self,shp_fn,factory=None,priority_field='priority'):
+            self.priority_field=priority_field
+            self.shp_fn=shp_fn
+            self.sources=wkb2shp.shp2geom(shp_fn)
 
+            super(MultiBlender,self).__init__()
 
+            # This will sort low to high
+            self.priorities=np.unique(self.sources[self.priority_field])
+
+            self.bfs=[]
+
+            for pri in self.priorities:
+                subset= np.nonzero( self.sources[self.priority_field]==pri )[0]
+                self.bfs.append( BlenderField(shp_fn,factory=factory,subset=subset) )
+
+        # def to_grid(self,dx,dy,bounds):
+        def value(self,X):
+            shape_orig=X.shape
+            Xlin=X.reshape( [-1,2] )
+            V=np.nan*np.ones( len(Xlin), 'f8' )
+
+            # go in reverse order, to grab data from highest priority
+            # fields first.
+            for bf in self.bfs[::-1]:
+                sel=np.isnan(V)
+                if np.all(~sel):
+                    break
+                V[sel] = bf.value(Xlin[sel])
+            return V.reshape( shape_orig[:-1] )
+            
+            
 class MultiRasterField(Field):
     """ Given a collection of raster files at various resolutions and with possibly overlapping
     extents, manage a field which picks from the highest resolution raster for any given point.
