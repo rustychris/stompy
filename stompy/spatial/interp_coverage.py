@@ -104,14 +104,24 @@ class Region(object):
 class InterpCoverage(object):
     boneyard = []
     
-    def __init__(self,regions_shp,subset=None):
-        self.regions_shp = regions_shp
+    def __init__(self,regions_shp=None,regions_data=None,subset=None):
+        if regions_shp is not None:
+            self.regions_shp = regions_shp
+            self.regions_data=None
+        else:
+            assert regions_data is not None
+            self.regions_data=regions_data
+            self.regions_shp=None
 
         self.load_shp(subset=subset)
         self.find_intersections()
         
     def load_shp(self,subset=None):
-        self.shp_data=wkb2shp.shp2geom(self.regions_shp)
+        if self.regions_shp is not None:
+            self.shp_data=wkb2shp.shp2geom(self.regions_shp)
+        else:
+            self.shp_data=self.regions_data
+
         if subset is not None:
             self.shp_data=self.shp_data[subset]
         
@@ -299,7 +309,7 @@ class InterpCoverage(object):
     last_face = None
     def point_to_intersection(self,pnt):
         """ Given a shapely point, find the region it should live in """
-        # Find the intersecting regiong that the point lives in -
+        # Find the intersecting region that the point lives in -
         # this would be sped up considerably by a DT and keeping queries locally
         # correlated
 

@@ -79,8 +79,6 @@ g.plot_edges(mask=[j_init],color='r',lw=2)
 if 0:
     af.plot_summary(label_nodes=False,clip=zoom)
 
-site.plot(ax=ax)
-
 
 zoom2=(578939.26355999336,
        579037.73609418306,

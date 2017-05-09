@@ -5,19 +5,23 @@ from builtins import zip
 from builtins import range
 from builtins import object
 from past.utils import old_div
-from safe_pylab import *
+
+# This is old -- kludge for checking whether there is a graphical display or not.
+# Removing it may cause some headaches, but it's time to work through the pain.
+# from safe_pylab import *
 import time
 from matplotlib.collections import LineCollection
 from matplotlib.transforms import Transform,Affine2D
 import matplotlib.transforms as transforms
 from matplotlib import collections, path
-from matplotlib import pyplot as pl
+import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 from matplotlib.tri import Triangulation
-import numpy as np
-import utils
-from six import string_types
+from matplotlib import ticker
 
+import numpy as np
+from .. import utils
+from six import string_types
 
 try:
     import xarray as xr
@@ -27,11 +31,10 @@ except ImportError:
 # convenience function for getting coordinates from the plot:
 def pick_points(n):
     count = [0]
-    pick_points.results = zeros( (n,2), float64)
+    pick_points.results = np.zeros( (n,2), float64)
 
-    fig = gcf()
+    fig = plt.gcf()
     cid = None
-    
     
     def click_handler(event):
         print('button=%d, x=%d, y=%d, xdata=%f, ydata=%f'%(
@@ -42,11 +45,9 @@ def pick_points(n):
             if count[0] >= n:
                 fig.canvas.mpl_disconnect(cid)
             
-
     cid = fig.canvas.mpl_connect('button_press_event', click_handler)
 
 # A rehash of pick_points:
-from array_append import array_append
 def ax_picker(ax):
     fig = ax.figure
     
@@ -71,8 +72,8 @@ def ax_picker(ax):
         if fig.canvas.toolbar.mode != '':
             return
         if event.xdata and ax.pick_start is not None:
-            new_pnt = array([ax.pick_start[0],event.xdata,ax.pick_start[1],event.ydata])
-            ax.picked=array_append( ax.picked,new_pnt )
+            new_pnt = np.array([ax.pick_start[0],event.xdata,ax.pick_start[1],event.ydata])
+            ax.picked=utils.array_append( ax.picked,new_pnt )
 
     cid_p = fig.canvas.mpl_connect('button_press_event', on_press)
     cid_r = fig.canvas.mpl_connect('button_release_event', on_release)
@@ -143,27 +144,27 @@ def plotyy( x1, y1, x2, y2, color1='b', color2='g', fun=None, **kwargs ):
     """
     if fun == None: fun = plot
 
-    ax1 = gca()
+    ax1 = plt.gca()
     ax1.clear()
 
     # Get axes location
     try:
         rect = ax1.get_position().bounds
     except AttributeError:
-        rect = array( ax1.get_position() )
+        rect = np.array( ax1.get_position() )
         rect[2:] += rect[:2]
 
     # Add first curve
     h1 = fun( x1, y1, color=color1, **kwargs )
 
     # Add second axes on top of first with joined x-axis
-    ax2 = twinx(ax1)
+    ax2 = plt.twinx(ax1)
 
     # Plot second curve initially
     h2 = fun( x2, y2, color=color2, **kwargs )
 
     # Set axis properties
-    setp( ax2.get_xticklabels(), visible=False)
+    plt.setp( ax2.get_xticklabels(), visible=False)
 
     # Change colors appropriately
     def recolor( obj, col ):
@@ -182,44 +183,25 @@ def plotyy( x1, y1, x2, y2, color1='b', color2='g', fun=None, **kwargs ):
     recolor( ax1.yaxis, color1 )
     recolor( ax2.yaxis, color2 )
 
-    draw_if_interactive()
+    plt.draw_if_interactive()
 
     return ( [ax1,ax2], h1, h2 ) 
-
-
-if 0:
-    def dump_figure(fname,fig=None):
-        """ Save as much of the info about a figure as possible, such that
-        it can be replayed later, without dependence on the original data
-        but with zoom-able interactions.
-        """
-        if fig is None:
-            fig = gcf()
-
-
-    # testing for dump_figure:
-    figure(1)
-
-
-        
-
 
 
 # remove parts of the plot that extend beyond the x limits of the
 # axis - assumes that the x-data for each line is non-decreasing
 def trim_xaxis(ax=None):
-    if ax is None:
-        ax = gca()
+    ax = ax or plt.gca()
         
     xmin,xmax,ymin,ymax = ax.axis()
     for line in ax.lines:
         xdata = line.get_xdata()
         ydata = line.get_ydata()
 
-        i_start = searchsorted(xdata,xmin) - 1
+        i_start = np.searchsorted(xdata,xmin) - 1
         if i_start < 0:
             i_start = 0
-        i_end = searchsorted(xdata,xmax) + 1
+        i_end = np.searchsorted(xdata,xmax) + 1
 
         xdata = xdata[i_start:i_end]
         ydata = ydata[i_start:i_end]
@@ -234,14 +216,14 @@ def plot_tri(tri,**kwargs):
     
     ex = tri.x[tri.edge_db]
     ey = tri.y[tri.edge_db]
-    edges = concatenate( (ex[:,:,newaxis], ey[:,:,newaxis]), axis=2)
-    colors = ones( (len(edges),4), float32 )
+    edges = np.concatenate( (ex[:,:,newaxis], ey[:,:,newaxis]), axis=2)
+    colors = np.ones( (len(edges),4), float32 )
     colors[:,:3] = 0
     colors[:,3] = 1.0
     
     coll = LineCollection(edges,colors=colors)
 
-    ax = gca()
+    ax = plt.gca()
     ax.add_collection(coll)
 
 
@@ -252,7 +234,7 @@ def scalebar(xy,L=None,aspect=0.05,unit_factor=1,fmt="%.0f",label_txt=None,fract
     is given by xy.  
     xy_transform: units for interpreting xy.  If not given
     """
-    ax = ax or gca()
+    ax = ax or plt.gca()
 
     if xy_transform is None:
         txt_trans=xy_transform=ax.transData
@@ -340,7 +322,7 @@ def north_arrow(xy,L,ax=None,decl_east=0.0,transform=None,angle=0.0,width=0.1):
     return obj,txt
 
 def show_slopes(ax=None,slopes=[-5./3,-1],xfac=5,yfac=3):
-    ax = ax or pl.gca()
+    ax = ax or plt.gca()
     x = np.median( [l.get_xdata()[-1] for l in ax.lines] )
     y = np.max( [l.get_ydata()[-1] for l in ax.lines] )
 
@@ -351,15 +333,14 @@ def show_slopes(ax=None,slopes=[-5./3,-1],xfac=5,yfac=3):
     for s in slopes:
         ys = np.array([y/xfac**s,y])
         ax.loglog(xs,ys,c='0.5')
-        pl.annotate("%g"%s,[xs[0],ys[0]])
-
+        plt.annotate("%g"%s,[xs[0],ys[0]])
 
         
 # interactive log-log slope widget:
 class Sloper(object):
     def __init__(self,ax=None,slope=-5./3,xfac=5,yfac=3,xlog=True,ylog=True,x=None,y=None):
         self.slope = slope
-        self.ax = ax or pl.gca()
+        self.ax = ax or plt.gca()
         if x is None:
             x = np.median( [l.get_xdata()[-1] for l in self.ax.lines] )
         if y is None:
@@ -437,7 +418,7 @@ class LogLogSlopeGrid(object):
     def __init__(self,ax=None,slopes=[-5/3.],intervals=[10],xmin=None,xmax=None):
         """ Note that intervals is linear!  
         """
-        self.ax = ax or pl.gca()
+        self.ax = ax or plt.gca()
         self.slopes = slopes
         self.intervals = intervals
         self.colls = []
@@ -495,7 +476,7 @@ def enable_picker(coll,ax=None,cb=None,points=5):
      
     returns an object which when called always returns the most recent index chosen
     """
-    ax = ax or coll.get_axes() # was pl.gca()
+    ax = ax or coll.get_axes() # was plt.gca()
     coll.set_picker(points) # should be 5 points
 
     class dummy(object):
@@ -623,20 +604,19 @@ def function_contours(f=lambda x,y: x-y,ax=None,Nx=20,Ny=20,V=10,
     """ Cheap way to draw contours of a function and label them.
     Just evaluates the function on a grid and calls contour
     """
-    ax = ax or pl.gca()
+    ax = ax or plt.gca()
     xxyy = ax.axis()
     x = np.linspace(xxyy[0],xxyy[1],Nx)
     y = np.linspace(xxyy[2],xxyy[3],Ny)
     X,Y = np.meshgrid(x,y)
     Z = f(X,Y)
-    ctr = pl.contour(X,Y,Z,V,colors='k')
+    ctr = plt.contour(X,Y,Z,V,colors='k')
     if fmt:
         ax.clabel(ctr,fmt=fmt)
         
     return ctr
 
 
-from matplotlib import ticker
 def sqrt_scale(mappable,cbar,fmt="%.2f"):
     mappable.set_array(np.sqrt(mappable.get_array()))
 
@@ -677,7 +657,7 @@ def pad_pcolormesh(X,Y,Z,ax=None,dx_single=None,dy_single=None,**kwargs):
 
 
 def show_slopes(ax=None,slopes=[-5./3,-1],xfac=5,yfac=3):
-    ax = ax or pl.gca()
+    ax = ax or plt.gca()
     x = np.median( [l.get_xdata()[-1] for l in ax.lines] )
     y = np.max( [l.get_ydata()[-1] for l in ax.lines] )
 
@@ -688,15 +668,14 @@ def show_slopes(ax=None,slopes=[-5./3,-1],xfac=5,yfac=3):
     for s in slopes:
         ys = np.array([y/xfac**s,y])
         ax.loglog(xs,ys,c='0.5')
-        pl.annotate("%g"%s,[xs[0],ys[0]])
-
+        plt.annotate("%g"%s,[xs[0],ys[0]])
 
         
 # interactive log-log slope widget:
 class Sloper(object):
     def __init__(self,ax=None,slope=-5./3,xfac=5,yfac=3,xlog=True,ylog=True,x=None,y=None):
         self.slope = slope
-        self.ax = ax or pl.gca()
+        self.ax = ax or plt.gca()
         if x is None:
             x = np.median( [l.get_xdata()[-1] for l in self.ax.lines] )
         if y is None:
@@ -772,13 +751,13 @@ def function_contours(f=lambda x,y: x-y,ax=None,Nx=20,Ny=20,V=10,
     """ Cheap way to draw contours of a function and label them.
     Just evaluates the function on a grid and calls contour
     """
-    ax = ax or pl.gca()
+    ax = ax or plt.gca()
     xxyy = ax.axis()
     x = np.linspace(xxyy[0],xxyy[1],Nx)
     y = np.linspace(xxyy[2],xxyy[3],Ny)
     X,Y = np.meshgrid(x,y)
     Z = f(X,Y)
-    ctr = pl.contour(X,Y,Z,V,colors='k')
+    ctr = plt.contour(X,Y,Z,V,colors='k')
     if fmt:
         ax.clabel(ctr,fmt=fmt)
         
@@ -1112,13 +1091,32 @@ def savefig_geo(fig,fn,*args,**kws):
 # Transect methods:
 def transect_tricontourf(data,xcoord,ycoord,V=None,
                          elide_missing_columns=True,sortx=True,
+                         positive_down='negate',
                          **kwargs):
+    """
+    xcoord, ycoord: name of the respective coordinate variables.
+
+    positive_down: how to handle a ycoord with a positive:down attribute.
+       "negate" -- negate the sign of the coordinate
+       "flip"   -- reverse the axis in matplotlib
+       "none"   -- ignore
+    """
     ax=kwargs.pop('ax',None)
     if ax is None:
         ax=plt.gca()
+
+    y_scale=1
+    do_flip=False
+
+    if data[ycoord].attrs.get('positive',"")=='down':
+        if positive_down=='negate':
+            y_scale=-1
+        elif positive_down=='flip':
+            do_flip=True
         
     tri,mapper = transect_to_triangles(data,xcoord,ycoord,
                                        elide_missing_columns=elide_missing_columns,
+                                       y_scale=y_scale,
                                        sortx=sortx)
     if tri is None:
         return None
@@ -1127,11 +1125,34 @@ def transect_tricontourf(data,xcoord,ycoord,V=None,
         args=[V]
     else:
         args=[]
-    return ax.tricontourf(tri,mapper(data.values),*args,**kwargs)
+    coll=ax.tricontourf(tri,mapper(data.values),*args,**kwargs)
+
+    # Seems that mpl does not autoscale for contoursets.
+    xmin,xmax,ymin,ymax=ax.axis()
+    if ymin>ymax:
+        do_flip=True
+        ymin,ymax=ymax,ymin
+
+    if True: # ax.get_autoscalex_on():
+        xmin=min(xmin,data[xcoord].min())
+        xmax=max(xmax,data[xcoord].max())
+
+    if True: # ax.get_autoscaley_on():
+        ymin=min(ymin,(y_scale*data[ycoord]).min())
+        ymax=max(ymax,(y_scale*data[ycoord]).max())
+
+    if do_flip:
+        ymin,ymax=ymax,ymin
+
+        
+    
+    ax.axis(xmin=xmin,xmax=xmax,ymin=ymin,ymax=ymax)
+
+    return coll
     
 def transect_to_triangles(data,xcoord,ycoord,
                           elide_missing_columns=True,
-                          sortx=True):
+                          sortx=True,y_scale=1.0):
     """
     data: xarray DataArray with two dimensions, first assumed to be
     horizontal, second vertical.
@@ -1143,6 +1164,8 @@ def transect_to_triangles(data,xcoord,ycoord,
       shown as blanks.  Note that missing columns at the beginning or
       end are not affected by this
     sortx: force x coordinate to be sorted low to high.  
+    y_scale: apply scaling factor, possibly negative, to y coordinate.
+      (useful for flipping soundings vs. elevations)
     return (triangulation,mapper)
     such that tricontourf(triangulation,mapper(data.values))
     generates a transect plot
@@ -1164,6 +1187,8 @@ def transect_to_triangles(data,xcoord,ycoord,
         X=X[:,None] * np.ones_like(data.values)
     if Y.ndim==1:
         Y=Y[None,:] * np.ones_like(data.values)
+
+    Y=y_scale*Y
 
     # build up a triangulation and mapping for better display
     # assumed the triangles should be formed only between consecutive 

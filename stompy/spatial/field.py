@@ -230,7 +230,7 @@ class Field(object):
     def __sub__(self,other):
         return BinopField(self,subtract,other)
 
-    def to_grid(self,nx=None,ny=None,interp='nn',bounds=None,dx=None,dy=None,valuator='value'):
+    def to_grid(self,nx=None,ny=None,interp='linear',bounds=None,dx=None,dy=None,valuator='value'):
         """ bounds is a 2x2 [[minx,miny],[maxx,maxy]] array, and is *required* for BlenderFields
         bounds can also be a 4-element sequence, [xmin,xmax,ymin,ymax], for compatibility with
         matplotlib axis(), and Paving.default_clip.
@@ -238,6 +238,8 @@ class Field(object):
         specify *one* of:
           nx,ny: specify number of samples in each dimension
           dx,dy: specify resolution in each dimension
+
+        interp used to default to nn, but that is no longer available in mpl, so now use linear.
         """
         if bounds is None:
             xmin,xmax,ymin,ymax = self.bounds()
@@ -371,7 +373,8 @@ class XYZField(Field):
         return self._lin_interper
     
     #_voronoi = None
-    default_interpolation='naturalneighbor'
+    # default_interpolation='naturalneighbor'# phased out by mpl
+    default_interpolation='linear' 
     def interpolate(self,X,interpolation=None):
         if interpolation is None:
             interpolation=self.default_interpolation
@@ -2670,25 +2673,26 @@ if ogr:
         a dict with the attributse for each source.  The factory should then return the corresponding
         Field.
         """
-        def __init__(self,shp_fn,delegates=None,factory=None,subset=None):
-            self.shp_fn = shp_fn
-
-            self.ic = interp_coverage.InterpCoverage(shp_fn,subset=subset)
+        def __init__(self,shp_fn=None,delegates=None,factory=None,subset=None,
+                     shp_data=None):
+            # awkward handling of cobbled together multicall - can pass either shapefile
+            # path or pre-parsed shapefile data.
+            if shp_fn is not None: # read from shapefile
+                self.shp_fn = shp_fn
+                self.shp_data=None
+                self.ic = interp_coverage.InterpCoverage(shp_fn,subset=subset)
+            else:
+                assert shp_data is not None
+                self.shp_data=shp_data
+                self.shp_fn=None
+                self.ic = interp_coverage.InterpCoverage(regions_data=shp_data,subset=subset)
+                
             Field.__init__(self)
 
             self.delegates = delegates
             self.factory = factory
 
             self.delegate_list = [None]*len(self.ic.regions)
-
-            # get the delegates into the same order as expected by InterpCoverage
-            # DELAY this until it's needed
-            # for r in self.ic.regions:
-            #     if delegates is not None:
-            #         delegate = delegates[r.items['name']] 
-            #     else:
-            #         delegate = factory( r.items )
-            #     self.delegates.append(delegate)
 
         def bounds(self):
             raise Exception("For now, you have to specify the bounds when gridding a BlenderField")
@@ -2779,10 +2783,14 @@ if ogr:
         A collection of BlenderFields, separated based on a priority
         field in the sources shapefile.
         """
-        def __init__(self,shp_fn,factory=None,priority_field='priority'):
+        def __init__(self,shp_fn,factory=None,priority_field='priority',
+                     buffer_field=None):
             self.priority_field=priority_field
             self.shp_fn=shp_fn
             self.sources=wkb2shp.shp2geom(shp_fn)
+
+            if buffer_field is not None:
+                self.flatten_with_buffer(buffer_field)
 
             super(MultiBlender,self).__init__()
 
@@ -2793,7 +2801,8 @@ if ogr:
 
             for pri in self.priorities:
                 subset= np.nonzero( self.sources[self.priority_field]==pri )[0]
-                self.bfs.append( BlenderField(shp_fn,factory=factory,subset=subset) )
+                self.bfs.append( BlenderField(shp_data=self.sources,
+                                              factory=factory,subset=subset) )
 
         # def to_grid(self,dx,dy,bounds):
         def value(self,X):
@@ -2810,6 +2819,64 @@ if ogr:
                 V[sel] = bf.value(Xlin[sel])
             return V.reshape( shape_orig[:-1] )
             
+        def flatten_with_buffer(self,buffer_field='buffer'):
+            """ 
+            Rather then pure stacking of the rasters by priority,
+            automatically create some buffers between the high
+            priority fields and lower priority, to get some 
+            blending
+            """
+            sources=self.sources.copy()
+            
+            priorities=np.unique(self.sources[self.priority_field])
+
+            union_geom=None # track the union of all polygons so far
+
+            from shapely.ops import cascaded_union
+
+            # higher priority layers, after being shrunk by their 
+            # respective buffer distances, are subtracted from lower layer polygons.
+            # each feature's geometry is updated with the higher priority layers
+            # subtracted out, and then contributes its own neg-buffered geometry
+            # to the running union
+
+            for pri in priorities[::-1]:
+                # if pri<100:
+                #     import pdb
+                #     pdb.set_trace()
+                sel_idxs = np.nonzero( sources['priority'] == pri )[0]
+
+                updated_geoms=[] # just removed higher priority chunks
+                slimmed_geoms=[] # to be included in running unionn
+
+                for sel_idx in sel_idxs:
+                    sel_geom=sources['geom'][sel_idx]
+                    if union_geom is not None:
+                        print("Updating %d"%sel_idx)
+                        # HERE: this can come up empty
+                        vis_sel_geom = sources['geom'][sel_idx] = sel_geom.difference( union_geom )
+                    else:
+                        vis_sel_geom=sel_geom
+
+                    if vis_sel_geom.area > 0.0:
+                        buff=sources[buffer_field][sel_idx]
+                        sel_geom_slim=sel_geom.buffer(-buff)
+                        # print("Buffering by %f"%(-buff) )
+                        slimmed_geoms.append( sel_geom_slim )
+
+                merged=cascaded_union(slimmed_geoms) # polygon or multipolygon
+                if union_geom is None:
+                    union_geom=merged
+                else:
+                    union_geom=merged.union(union_geom)
+            self.old_sources=self.sources
+            sources[self.priority_field]=0.0 # no more need for priorities
+            valid=np.array( [ (source['geom'].area > 0.0)
+                              for source in sources ] )
+            invalid_count=np.sum(~valid)
+            if invalid_count:
+                print("MultiBlenderField: %d source polygons were totally obscured"%invalid_count)
+            self.sources=sources[valid]
             
 class MultiRasterField(Field):
     """ Given a collection of raster files at various resolutions and with possibly overlapping

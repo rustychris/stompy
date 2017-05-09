@@ -36,6 +36,7 @@ from collections import defaultdict
 
 from shapely import wkt,geometry,wkb
 import matplotlib.pyplot as plt
+from matplotlib.tri import Triangulation
 from matplotlib.collections import PolyCollection, LineCollection
 
 from ..spatial import gen_spatial_index
@@ -2159,6 +2160,57 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         return ecoll
 
+    def make_triangular(self):
+        if self.max_sides==3:
+            return # nothing to do
+
+        for c in self.valid_cell_iter():
+            nodes=np.array(self.cell_to_nodes(c))
+
+            if len(nodes)==3:
+                continue
+            g.delete_cell(c)
+            g.add_cell_and_edges(nodes=nodes[ [0,1,2] ] )
+            if len(nodes)>=4:
+                g.add_cell_and_edges(nodes=nodes[ [0,2,3] ] )
+            if len(nodes)>=5: # a few of these...
+                g.add_cell_and_edges(nodes=nodes[ [0,3,4] ] )
+            # too lazy to be generic about it...
+            # also note that the above only work for convex cells.
+
+        self.renumber()
+
+    def mpl_triangulation(self):
+        """
+        Return a matplotlib triangulation for the cells of the grid.
+        Only guarantees that the nodes retain their order
+        """
+        tris=[] # [ (n1,n2,n3), ...]
+
+        for c in self.valid_cell_iter():
+            nodes=np.array(self.cell_to_nodes(c))
+
+            # this only works for convex cells
+            for i in range(1,len(nodes)-1):
+                tris.append( nodes[ [0,i,i+1] ] )
+
+        tris=np.array(tris)
+        tri=Triangulation(self.nodes['x'][:,0],self.nodes['x'][:,1],
+                          triangles=tris )
+        return tri
+        
+    def contourf_node_values(self,values,*args,**kwargs):
+        """
+        Plot a smooth contour field defined by values at nodes and topology of cells.
+
+        More involved than you might imagine:
+         1. Fabricate a triangular version of the grid
+         2. 
+        """
+        ax=kwargs.get('ax',None) or plt.gca()
+        tri=self.mpl_triangulation()
+        return ax.tricontourf(tri,values,*args,**kwargs)
+        
     def edge_clip_mask(self,xxyy):
         centers=self.edges_center()
         return (centers[:,0] > xxyy[0]) & (centers[:,0]<xxyy[1]) & \

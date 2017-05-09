@@ -69,7 +69,7 @@ def cruise_dataset(start,stop):
                  'latitude','longitude',
                  'StationName']
         for fld in spatial:
-            ds4[fld] = ds4[fld].isel(date=0,prof_sample=0,drop=True)
+            ds4[fld] = ds4[fld].isel(drop=True,date=0,prof_sample=0)
             
         ds4=ds4.set_coords(spatial)
      
@@ -91,6 +91,9 @@ def cruise_dataset(start,stop):
 
     # The rest will get sorted by depth
     ds5=xr_utils.sort_dimension(ds4,'depth','prof_sample')
+    # add a bit of CF-style metadata - possible that this could be copied from the
+    # ERDDAP data...
+    ds5.depth.attrs['positive']='down'
 
     # Go ahead and add UTM coordinates
     utm_xy=proj_utils.mapper('WGS84','EPSG:26910')( np.array( [ds5.longitude,ds5.latitude] ).T )

@@ -441,6 +441,17 @@ def dist_along(x,y=None):
                              np.cumsum(steps) ) )
 
 
+def point_line_distance(point,line):
+    """
+    point: [nd] array
+    line [2,nd] array
+    """
+    # find the point-line distance
+    delta = point - line[0]
+    vec = to_unit(line[1] - line[0])
+    delta -= np.dot(delta,vec) * vec
+    return mag(delta)
+
 # rotate the given vectors/points through the CCW angle in radians
 def rot_fn(angle):
     R = np.array( [[np.cos(angle),-np.sin(angle)],
