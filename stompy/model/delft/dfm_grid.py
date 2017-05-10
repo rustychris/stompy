@@ -4,6 +4,7 @@ import numpy as np
 
 # TODO: migrate to xarray
 from stompy.io import qnc
+import xarray as xr
 
 
 # for now, only supports 2D/3D grid - no mix with 1D
@@ -163,39 +164,106 @@ class DFMGrid(unstructured_grid.UnstructuredGrid):
                  cells_from_edges='auto',max_sides=6):
         if nc is None:
             assert fn
-            nc=qnc.QDataset(fn)
+            #nc=qnc.QDataset(fn)
+            # Trying out xarray instead
+            nc=xr.open_dataset(fn)
 
         if isinstance(nc,str):
-            nc=qnc.QDataset(nc)
+            #nc=qnc.QDataset(nc)
+            nc=xr.open_dataset(nc)
 
+        #if isinstance(nc,xr.Dataset):
+        #    raise Exception("Pass the filename or a qnc.QDataset.  Not ready for xarray")
+
+        # Default names for fields
+        var_points_x='NetNode_x'
+        var_points_y='NetNode_y'
+        
+        var_edges='NetLink'
+        var_cells='NetElemNode' # often have to infer the cells
+
+        meshes=[v for v in nc.data_vars if getattr(nc[v],'cf_role','none')=='mesh_topology']
+        if meshes:
+            mesh=nc[meshes[0]]
+            var_points_x,var_points_y = mesh.node_coordinates.split(' ')
+            var_edges=mesh.edge_node_connectivity
+            var_cells=mesh.face_node_connectivity
+        
         # probably this ought to attempt to find a mesh variable
         # with attributes that tell the correct names, and lacking
         # that go with these as defaults
         # seems we always get nodes and edges
-        kwargs=dict(points=np.array([nc.NetNode_x[:],nc.NetNode_y[:]]).T,
-                    edges=nc.NetLink[:,:]-1)
+        kwargs=dict(points=np.array([nc[var_points_x].values,
+                                     nc[var_points_y].values]).T,
+                    edges=nc[var_edges].values-1)
 
         # some nc files also have elements...
-        if 'NetElemNode' in nc.variables:
-            cells=nc.NetElemNode[:,:] 
+        if var_cells in nc.variables:
+            cells=nc[var_cells].values.copy()
+
+            # missing values come back in different ways -
+            # might come in masked, might also have some huge negative values,
+            # and regardless it will be one-based.
+            if isinstance(cells,np.ma.MaskedArray):
+                cells=cells.filled(0)
+
+            if np.issubdtype(cells.dtype,np.float):
+                bad=np.isnan(cells)
+                cells=cells.astype(np.int32)
+                cells[bad]=0
+                
+            # just to be safe, do this even if it came from Masked.
             cells[ cells<0 ] = 0 
             cells-=1
             kwargs['cells']=cells
             if cells_from_edges=='auto':
                 cells_from_edges=False
 
-        if 'NetNode_z' in nc.variables: # have depth at nodes
+        var_depth='NetNode_z'
+        
+        if var_depth in nc.variables: # have depth at nodes
             kwargs['extra_node_fields']=[ ('depth','f4') ]
 
         if cells_from_edges: # True or 'auto'
             self.max_sides=max_sides
 
-        # account for 1-based => 0-based indices
+        # Partition handling - at least the output of map_merge
+        # does *not* remap indices in edges and cells
+        if 'partitions_node_start' in nc.variables:
+            import pdb
+            pdb.set_trace()
+            node_offsets=nc.partitions_node_start.values-1
+            
+            cell_missing=kwargs['cells']<0
+
+            cell_domains=nc.FlowElemDomain.values # hope that's 0-based?
+
+            cell_node_offsets=node_offsets[cell_domains]
+
+            kwargs['cells']+=cell_node_offsets[:,None]
+            
+            # for part_i in range(nc.NumPartitionsInFile):
+            #     edge_start=nc.partitions_edge_start.values[part_i]
+            #     edge_count=nc.partitions_edge_count.values[part_i]
+            #     node_start=nc.partitions_node_start.values[part_i]
+            #     node_count=nc.partitions_node_count.values[part_i]
+            #     cell_start=nc.partitions_face_start.values[part_i]
+            #     cell_count=nc.partitions_face_count.values[part_i]
+            # 
+            #     kwargs['edges'][edge_start-1:edge_start-1+edge_count] += node_start-1
+            #     kwargs['cells'][cell_start-1:cell_start-1+cell_count] += node_start-1
+
+            # Reset the missing nodes
+            kwargs['cells'][cell_missing]=-1
+            # And force valid values for over-the-top cells:
+            bad=kwargs['cells']>=len(kwargs['points'])
+            kwargs['cells'][bad]=0
+                
         super(DFMGrid,self).__init__(**kwargs)
 
         if cells_from_edges:
             print("Making cells from edges")
             self.make_cells_from_edges()
 
-        if 'NetNode_z' in nc.variables: # have depth at nodes
-            self.nodes['depth']=nc.NetNode_z[:]
+        if var_depth in nc.variables: # have depth at nodes
+            self.nodes['depth']=nc[var_depth].values.copy()

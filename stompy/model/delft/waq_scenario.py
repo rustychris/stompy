@@ -591,7 +591,8 @@ class Hydro(object):
             seg_k=np.zeros(self.n_seg,'i4')-1 
 
             poi=self.pointers
-            poi_vert=poi[-self.n_exch_z:]
+            #poi_vert=poi[-self.n_exch_z:] # unsafe with 2D!
+            poi_vert=poi[self.n_exch_x + self.n_exch_y:]
 
             # don't make any assumptions about layout -
             # but by enumerating 2D segments in the same order as the
@@ -3212,11 +3213,14 @@ class DwaqAggregator(Hydro):
         # based on the output from Rose, the top layer is missing
         # vertical diffusivity entirely.
         diffs=self.segment_aggregator(t_sec,
-                                       lambda proc: self.open_hyd(proc).vert_diffs(t_sec),
-                                       normalize=True)
+                                      lambda proc: self.open_hyd(proc).vert_diffs(t_sec),
+                                      normalize=True)
         # kludge - get a nonzero diffusivity in the top layer
         n2d=self.n_2d_elements
-        diffs[:n2d] = diffs[n2d:2*n2d]
+        if len(diffs)>n2d:
+            diffs[:n2d] = diffs[n2d:2*n2d]
+        else:
+            pass # probably a 2D run.
         return diffs
 
     def planform_areas(self):
@@ -4216,7 +4220,7 @@ class FilterHydroBC(Hydro):
                                           self.filt_flows[:,j],
                                           pad) )
             lp_flows=filters.lowpass(flow_padded,
-                                       cutoff=self.lp_secs,dt=dt)
+                                     cutoff=self.lp_secs,dt=dt)
             lp_flows=lp_flows[npad:-npad] # trim the pad
             
             # separate into tidal and subtidal constituents
@@ -5431,7 +5435,7 @@ class ParameterTemporal(Parameter):
         super(ParameterTemporal,self).__init__(name=name,scenario=scenario,hydro=hydro)
         self.times=times
         self.values=values
-    def text(self):
+    def text(self,write_supporting=False):
         lines=["FUNCTIONS '{}' BLOCK DATA".format(self.name),
                ""]
         for t,v in zip(self.times,self.values):
@@ -5698,6 +5702,10 @@ class NamedObjects(OrderedDict):
             return k.lower()
         except AttributeError:
             return k
+
+    def __contains__(self,k):
+        return super(NamedObjects,self).__contains__(self.normalize_key(k))
+    
     def __setitem__(self,k,v):
         v.name=k
         setattr(v,self.parent_name,self.parent) # v.scenario=self.scenario
@@ -5843,13 +5851,12 @@ class Scenario(scriptable.Scriptable):
     _base_path="dwaq"
     @property
     def base_path(self):
+        if self._base_path=='auto':
+            self._base_path=self.auto_base_path()            
         return self._base_path
     @base_path.setter
     def base_path(self,v):
-        if v=='auto':
-            self._base_path=self.auto_base_path()
-        else:
-            self._base_path=v
+        self._base_path=v
 
     # tuples of name, segment id
     # some confusion about whether that's a segment id or list thereof
