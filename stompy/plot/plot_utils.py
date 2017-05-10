@@ -79,6 +79,11 @@ def ax_picker(ax):
     ax.pick_cids = [cid_p,cid_r]
 
 def draw_polyline(ax=None,remove=True):
+    """
+    rough and ready interface to capture a polyline in a plot window.
+    left clicks add a point, right click ends.  returns the points in
+    a numpy array.
+    """
     ax=ax or plt.gca()
     fig=ax.get_figure()
 

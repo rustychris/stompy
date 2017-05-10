@@ -716,7 +716,7 @@ def bootstrap_stat(X,n_pop=10000,n_elements=None,pop_stat=np.mean,
         pop_stats[i] = pop_stat(res) 
     return bootstrap_stat( np.array(pop_stats) )
 
-def model_skill(xmodel,xobs):
+def model_skill(xmodel,xobs,ignore_nan=True):
     """ Wilmott 1981 model skill metric
     """
     # Weird - random data gets a score of 0.43 or so - 
@@ -724,7 +724,16 @@ def model_skill(xmodel,xobs):
     #  the same.  In fact if the prediction is 0, it will still get a score of 0.43.
     # but if the predictions are too large, or have a markedly different mean, then
     # the score gets much closer to 0.
-    skill = 1 - sum( (xmodel - xobs)**2 ) / sum( (abs(xmodel - xobs.mean()) + abs(xobs - xobs.mean()))**2 )
+
+    if ignore_nan:
+        sel=np.isfinite(xmodel+xobs)
+    else:
+        sel=slice(None)
+
+    num = np.sum( (xmodel - xobs)[sel]**2 )
+    den = np.sum( (np.abs(xmodel[sel] - xobs[sel].mean()) + np.abs(xobs[sel] - xobs[sel].mean()))**2 )
+    
+    skill = 1 - num / den
     return skill
 
 def break_track(xy,waypoints,radius_min=400,radius_max=800,min_samples=10):
@@ -1351,3 +1360,61 @@ def isnat(x):
     and are likely to change.  
     """
     return x.astype('i8') == np.datetime64('NaT').astype('i8')
+
+
+def group_by_sign_hysteresis(Q,Qlow=0,Qhigh=0):
+    """
+    A seemingly over-complicated way of solving a simple problem.
+    Breaking a time series into windows of positive and negative values 
+    (e.g. delimiting flood and ebb in a velocity or flux time series).
+    With the complicating factor of the time series sometimes hovering 
+    close to zero.
+    This function introduces some hysteresis, while preserving the exact
+    timing of the original zero-crossing.  Qlow (typ. <0) and Qhigh (typ>0)
+    set the hysteresis band.  Crossings only count when they start below Qlow 
+    and end above Qhigh.  Within that period, there could be many small amplitude
+    crossings - the last one is used.  This is in contrast to standard hysteresis
+    where the timing would corresponding to crossing Qhigh or Qlow.  
+
+    returns two arrays, pos_windows = [Npos,2], neg_windows=[Nneg,2]
+    giving the indices in Q for respective windows
+    """
+    states=[]
+
+    for idx in range(len(Q)):
+        if Q[idx]<=Qlow:
+            states.append('L')
+        elif Q[idx]<=0:
+            states.append('l')
+        elif Q[idx]<=Qhigh:
+            states.append('h')
+        else:
+            states.append('H')
+    statestr="".join(states)
+
+    p2n=[]
+    for m in re.finditer( r'H[hl]*L',statestr):
+        sub=m.group(0)
+        # the last h-l transition
+        # 1 for the leading H
+        idx=m.span()[0] + 1 + re.search(r'[Hh][lL]+$',sub).span()[0]
+        p2n.append(idx)
+
+    n2p=[]
+    for m in re.finditer( r'L[hl]*H',statestr):
+        sub=m.group(0)
+        # the last h-l transition
+        idx=m.span()[0] + 1 + re.search(r'[Ll][hH]+$',sub).span()[0]
+        n2p.append(idx)
+
+    if p2n[0]<n2p[0]:
+        # starts positive, so the first full window is negative
+        neg_windows=zip(p2n,n2p)
+        pos_windows=zip(n2p,p2n[1:])
+    else:
+        # starts negative, first full window is positive
+        pos_windows=zip(n2p,p2n)
+        neg_windows=zip(p2n,n2p[1:])
+    pos_windows=np.array(list(pos_windows))
+    neg_windows=np.array(list(neg_windows))
+    return pos_windows,neg_windows
