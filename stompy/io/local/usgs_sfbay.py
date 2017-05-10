@@ -9,11 +9,13 @@ from stompy.spatial import proj_utils
 
 usgs_erddap="http://sfbaynutrients.sfei.org/erddap/tabledap/usgs_sfb_nutrients"
 
+
 def cruise_dataset(start,stop):
     """
-    start, stop: dates bracketing the period of interest.
     Fetches USGS SF Bay water quality cruises from SFEI ERDDAP, munges the
     data to some degree and returns in an xarray dataset.
+
+    start, stop: dates bracketing the period of interest.
     """
     full_remote_usgs_ds=xr.open_dataset(usgs_erddap)
 
@@ -67,7 +69,7 @@ def cruise_dataset(start,stop):
                  'latitude','longitude',
                  'StationName']
         for fld in spatial:
-            ds4[fld] = ds4[fld].isel(date=0,prof_sample=0,drop=True)
+            ds4[fld] = ds4[fld].isel(drop=True,date=0,prof_sample=0)
             
         ds4=ds4.set_coords(spatial)
      
@@ -89,6 +91,9 @@ def cruise_dataset(start,stop):
 
     # The rest will get sorted by depth
     ds5=xr_utils.sort_dimension(ds4,'depth','prof_sample')
+    # add a bit of CF-style metadata - possible that this could be copied from the
+    # ERDDAP data...
+    ds5.depth.attrs['positive']='down'
 
     # Go ahead and add UTM coordinates
     utm_xy=proj_utils.mapper('WGS84','EPSG:26910')( np.array( [ds5.longitude,ds5.latitude] ).T )
@@ -98,4 +103,89 @@ def cruise_dataset(start,stop):
     ds5=ds5.set_coords(['time','x','y','depth'])
 
     return ds5
+    
+## --- 
+
+# Directly query USGS system:
+# And get some discrete chl from USGS data
+# easiest to go straight to the source 
+
+# this is from executing the request on the USGS Site, and grabbing the form
+# data which was posted:
+
+# Included for reference for future development of a proper function
+if 0:
+    import StringIO
+    import datetime
+    import requests
+    from bs4 import BeautifulSoup, Comment
+    import re
+
+    form_vars="""\
+    col:realdate
+    col:stat
+    col:depth
+    col:dscrchl
+    col:calcchl
+    col:salin
+    col:temp
+    col:sigt
+    dstart:1990
+    p11:
+    p12:
+    p21:
+    p22:
+    p31:
+    p32:
+    type1:year
+    type2:---
+    type3:---
+    value1:2012
+    value2:
+    value3:
+    comp1:ge
+    comp2:gt
+    comp3:gt
+    conj2:AND
+    conj3:AND
+    sort1:fulldate
+    asc1:on
+    sort2:stat
+    asc2:on
+    sort3:---
+    asc3:on
+    out:comma
+    parm:on
+    minrow:0
+    maxrow:99999
+    ftype:easy
+    """
+
+    params=[s.split(':') for s in form_vars.split()]
+
+    url="https://sfbay.wr.usgs.gov/cgi-bin/sfbay/dataquery/query16.pl"
+
+    result=requests.post(url,params)
+
+    text=result.text
+
+    soup = BeautifulSoup(text, 'html.parser')
+    #comments = soup.findAll(text=lambda text:isinstance(text, Comment))
+    #[comment.extract() for comment in comments]
+
+    data = soup.find('pre')
+    data1=data.get_text()
+
+    # Remove HTML comments
+    data2=re.sub(r'<!--[^>]*>','',data1)
+
+    df = pd.read_csv(StringIO.StringIO(data2),skiprows=[1],parse_dates=["Date"] )
+
+    # Shorten names
+    df1=df.rename(columns={'Station Number':'Station',
+                           'Discrete Chlorophyll':'dChl ug/L',
+                           'Calculated Chlorophyll':'cChl ug/L',
+                           'Salinity':'sal',
+                           'Temperature':"T",
+                           'Sigma-t':'sigmat'})
     

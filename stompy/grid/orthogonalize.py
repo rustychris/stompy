@@ -2,10 +2,9 @@
 Prototyping some approaches for local orthogonalization
 """
 
+import numpy as np
+
 from stompy.grid import unstructured_grid
-from stompy.model.delft import dfm_grid
-import matplotlib.pyplot as plt
-from stompy.plot import plot_utils
 
 from stompy.utils import (mag, circumcenter, circular_pairs,signed_area, poly_circumcenter,
                           orient_intersection,array_append,within_2d, to_unit,
@@ -28,7 +27,7 @@ class Tweaker(object):
         self.g=g
 
     def nudge_node_orthogonal(self,n):
-        self=self.g
+        g=self.g
         n_cells=g.node_to_cells(n)
 
         centers = g.cells_center(refresh=n_cells,mode='sequential')
@@ -63,6 +62,10 @@ class Tweaker(object):
 
 
 if 0: # dev code.
+    from stompy.model.delft import dfm_grid
+    import matplotlib.pyplot as plt
+    from stompy.plot import plot_utils
+
     g=dfm_grid.DFMGrid('/home/rusty/models/grids/lsb_combined/lsb_combined_v03_net.nc')
     errs=g.circumcenter_errors(radius_normalized=True)
 

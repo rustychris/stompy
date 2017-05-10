@@ -137,9 +137,9 @@ def redimension(ds,new_dims,
 
     for vname in ds.data_vars:
         if lin_dim not in ds[vname].dims:
-            print("Skipping %s"%vname)
+            # print("Skipping %s"%vname)
             continue
-        print(vname)
+        # print(vname)
 
         var_new_dims=[]
         var_new_slice=[]
@@ -202,7 +202,7 @@ def sort_dimension(ds,sort_var,sort_dim,inplace=False):
         for d in sort_var_dims:
             compat=True
             if d not in ds[v].dims:
-                print("%s not compatible with dimensions for sorting"%v)
+                # print("%s not compatible with dimensions for sorting"%v)
                 compat=False
         if not compat: continue
 

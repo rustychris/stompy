@@ -141,7 +141,10 @@ def wkb2shp(shp_name,
         if type(val) == int or isinstance(val,np.integer):
             field_def = ogr.FieldDefn(key,ogr.OFTInteger)
             casters.append( int )
-        elif isinstance(val,float):
+        elif isinstance(val,np.float): 
+            # above: use np.float, as it seems to be more compatible with
+            # 32-bit and 64-bit floats.
+
             # This is an old bug - seems to work without this in the modern
             # era, and in turn, asscalar does *not* work with list of lists
             # # a numpy array of float32 ends up with

@@ -36,6 +36,7 @@ from collections import defaultdict
 
 from shapely import wkt,geometry,wkb
 import matplotlib.pyplot as plt
+from matplotlib.tri import Triangulation
 from matplotlib.collections import PolyCollection, LineCollection
 
 from ..spatial import gen_spatial_index
@@ -571,15 +572,23 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                         self.cells['nodes'][c,i] = n
                         break
 
-    def add_edge_field(self,name,data):
+    def add_edge_field(self,name,data,on_exists='fail'):
         """
         modifies edge_dtype to include a new field given by name,
         initialize with data.  NB this requires copying the edges
         array - not fast!
         """
-        self.edges=recarray_add_fields(self.edges,
-                                       [(name,data)])
-        self.edge_dtype=self.edges.dtype
+        if name in np.dtype(self.edge_dtype).names:
+            if on_exists == 'fail':
+                raise GridException("Edge field %s already exists"%name)
+            elif on_exists == 'pass':
+                return
+            elif on_exists == 'overwrite':
+                self.edges[name] = data
+        else:
+            self.edges=recarray_add_fields(self.edges,
+                                           [(name,data)])
+            self.edge_dtype=self.edges.dtype
     def delete_edge_field(self,*names):
         self.edges=recarray_del_fields(self.edges,names)
         self.edge_dtype=self.edges.dtype
@@ -699,18 +708,24 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         self.cells['edges'] = edge_map[self.cells['edges']]
 
-    def add_grid(self,ugB):
+    def add_grid(self,ugB,merge_nodes=None):
         """
         Add the nodes, edges, and cells from another grid to this grid.
         Copies fields with common names, any other fields are dropped from ugB.
-        Assumes (for the moment) that max_sides is compatible. Could use some
-        improvement there.
+        Assumes (for the moment) that max_sides is compatible. 
+
+        merge_nodes: [ (self_node,ugB_node), ... ]
+          Nodes which overlap and will be mapped instead of added.
         """
         node_map=np.zeros( ugB.Nnodes(), 'i4')-1
         edge_map=np.zeros( ugB.Nedges(), 'i4')-1
         cell_map=np.zeros( ugB.Ncells(), 'i4')-1
 
-        def bad_fields(Adata,Bdata):
+        if merge_nodes is not None:
+            for my_node,B_node in merge_nodes:
+                node_map[B_node]=my_node
+
+        def bad_fields(Adata,Bdata): # field froms B which get dropped
             A_fields =Adata.dtype.names
             B_fields =Bdata.dtype.names
 
@@ -721,6 +736,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         B_bad=bad_fields(self.nodes,ugB.nodes)
 
         for n in ugB.valid_node_iter():
+            if node_map[n]>=0:
+                continue # must be part of merge_nodes
             kwargs=rec_to_dict(ugB.nodes[n])
             for f in B_bad:
                 del kwargs[f]
@@ -738,6 +755,13 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
             kwargs['nodes']=node_map[kwargs['nodes']]
 
+            # when merge_nodes is specified, have to also check
+            # for preexisting edges
+            if merge_nodes is not None:
+                j=self.nodes_to_edge(kwargs['nodes'])
+                if j is not None:
+                    edge_map[n]=j
+                    continue
             edge_map[n]=self.add_edge(**kwargs)
 
         B_bad=bad_fields(self.cells,ugB.cells)
@@ -747,9 +771,24 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             for f in B_bad:
                 del kwargs[f]
 
+            # avoid mutating ugB.
+            orig_nodes=kwargs['nodes']
+            kwargs['nodes'] = orig_nodes.copy()
+            kwargs['edges'] = kwargs['edges'].copy()
+
             for i,node in enumerate(kwargs['nodes']):
                 if node>=0:
                     kwargs['nodes'][i]=node_map[node]
+
+            # less common, but still need to check for duplicated cells
+            # when merge_nodes is used.
+            if merge_nodes is not None:
+                c=self.nodes_to_cell( kwargs['nodes'], fail_hard=False)
+                if c is not None:
+                    cell_map[n]=c
+                    print("Skipping existing cell: %d: %s => %d: %s"%( n,str(orig_nodes),
+                                                                       c,str(kwargs['nodes'])))
+                    continue
 
             for i,edge in enumerate(kwargs['edges']):
                 if edge>=0:
@@ -857,6 +896,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             self.log.info("Recalculating edge to cells" )
             all_c=range(self.Ncells())
         else:
+            if e is None:
+                e=slice(None)
             # on-demand approach
             if isinstance(e,slice):
                 js=np.arange(e.start or 0,
@@ -1163,17 +1204,20 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     def nodes_to_cell(self,ns,fail_hard=True):
         cells=self.node_to_cells(ns[0])
         for n in ns[1:]:
-            if len(cells)==1:
+            if len(cells)==0:
                 break
             cells2=self.node_to_cells(n)
             cells=[c
                    for c in cells
                    if c in cells2]
-        if len(cells)!=1:
+        if len(cells)==0:
             if fail_hard:
                 raise self.GridException("Cell not found")
             else:
                 return None
+        # shouldn't be possible to get more than one hit.
+        assert len(cells)==1
+
         return cells[0]
 
     def cell_to_edges(self,c,ordered=False):
@@ -1467,7 +1511,30 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         edge_data['nodes']=new_nodes
         self.add_edge(_index=A,**edge_data)
         return A
+
+    def split_edge(self,j,**node_args):
+        """
+        The opposite of merge_edges, take an existing edge and insert
+        a node into the middle of it.
+        Does not allow for any cells to be involved.
+        """
+        nA,nC=self.edges['nodes'][j]
+        assert np.all( self.edge_to_cells(j) < 0 )
+
+        edge_data=rec_to_dict(self.edges[j].copy())
         
+        self.delete_edge(j)
+
+        # choose midpoint as default
+        loc_args=dict(x= 0.5*(self.nodes['x'][nA] + self.nodes['x'][nC]))
+        loc_args.update(node_args) # but args will overwrite
+
+        nB=self.add_node(**loc_args)
+        edge_data['nodes'][1]=nB
+        self.add_edge(_index=j,**edge_data)
+        jnew=self.add_edge(nodes=[nB,nC])
+        return jnew,nB
+
     def merge_nodes(self,n0,n1):
         """ copy topology from n1 to n0, i.e. edges and cells.
         fields of n1 are lost, and n1 is deleted
@@ -1563,8 +1630,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
     @listenable
     def delete_cell(self,i,check_active=True):
-        if check_active:
-            assert self.cells['deleted'][i]==False
+        if check_active and self.cells['deleted'][i]!=False:
+            raise Exception("delete_cell(%d) - appears already deleted"%(i))
 
         # better to go ahead and use the dynamic updates
         # must come before too many modifications, in case we end
@@ -1613,16 +1680,33 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         if c is not None:
             self.delete_cell(c)
         return c
-    def add_cell_at_point(self,x,**kw):
+
+    def enclosing_nodestring(self,x,max_nodes=None):
+        """
+        Given a coordinate pair x, look for a string of nodes and edges
+        which form a closed polygon around it.
+        max_nodes defaults to self.max_sides.
+        Return None if nothing is found, otherwise a list of node indexes.
+        """
+        if max_nodes<0:
+            max_nodes=self.Nnodes()
+        elif max_nodes is None:
+            max_nodes=self.max_sides
+
         # lame stand-in for a true bounding polygon test
         edges_near=self.select_edges_nearest(x,count=6)
-        potential_cells=self.find_cycles(max_cycle_len=self.max_sides,
+        potential_cells=self.find_cycles(max_cycle_len=max_nodes,
                                          starting_edges=edges_near)
         pnt=geometry.Point(x)
         for pc in potential_cells:
             poly=geometry.Polygon( self.nodes['x'][pc] )
             if poly.contains(pnt):
-                return self.add_cell(nodes=pc,**kw)
+                return pc
+
+    def add_cell_at_point(self,x,**kw):
+        pc=self.enclosing_nodestring(x,max_nodes=self.max_sides)
+        if pc is not None:
+            return self.add_cell(nodes=pc,**kw)
         return None
 
     @listenable
@@ -1911,6 +1995,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         values=values[mask]
 
         if labeler is not None:
+            if labeler=='id':
+                labeler=lambda n,rec: str(n)
+                
             # weirdness to account for mask being indices vs. bitmask
             for n in np.arange(self.Nnodes())[mask]: # np.nonzero(mask)[0]:
                 ax.text(self.nodes['x'][n,0],
@@ -2073,6 +2160,57 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         return ecoll
 
+    def make_triangular(self):
+        if self.max_sides==3:
+            return # nothing to do
+
+        for c in self.valid_cell_iter():
+            nodes=np.array(self.cell_to_nodes(c))
+
+            if len(nodes)==3:
+                continue
+            g.delete_cell(c)
+            g.add_cell_and_edges(nodes=nodes[ [0,1,2] ] )
+            if len(nodes)>=4:
+                g.add_cell_and_edges(nodes=nodes[ [0,2,3] ] )
+            if len(nodes)>=5: # a few of these...
+                g.add_cell_and_edges(nodes=nodes[ [0,3,4] ] )
+            # too lazy to be generic about it...
+            # also note that the above only work for convex cells.
+
+        self.renumber()
+
+    def mpl_triangulation(self):
+        """
+        Return a matplotlib triangulation for the cells of the grid.
+        Only guarantees that the nodes retain their order
+        """
+        tris=[] # [ (n1,n2,n3), ...]
+
+        for c in self.valid_cell_iter():
+            nodes=np.array(self.cell_to_nodes(c))
+
+            # this only works for convex cells
+            for i in range(1,len(nodes)-1):
+                tris.append( nodes[ [0,i,i+1] ] )
+
+        tris=np.array(tris)
+        tri=Triangulation(self.nodes['x'][:,0],self.nodes['x'][:,1],
+                          triangles=tris )
+        return tri
+        
+    def contourf_node_values(self,values,*args,**kwargs):
+        """
+        Plot a smooth contour field defined by values at nodes and topology of cells.
+
+        More involved than you might imagine:
+         1. Fabricate a triangular version of the grid
+         2. 
+        """
+        ax=kwargs.get('ax',None) or plt.gca()
+        tri=self.mpl_triangulation()
+        return ax.tricontourf(tri,values,*args,**kwargs)
+        
     def edge_clip_mask(self,xxyy):
         centers=self.edges_center()
         return (centers[:,0] > xxyy[0]) & (centers[:,0]<xxyy[1]) & \

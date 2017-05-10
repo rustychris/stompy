@@ -337,9 +337,9 @@ def select_increasing(x):
     less than or equal to the largest preceding sample
     """
     mask=np.ones(len(x),np.bool8)
-    last=-np.inf
+    last=None # -np.inf doesn't work for weird types that can't compare to float
     for i in range(len(x)):
-        if x[i] <= last:
+        if last is not None and x[i] <= last:
             mask[i]=False
         else:
             last=x[i]
@@ -440,6 +440,17 @@ def dist_along(x,y=None):
     return np.concatenate( ( [0],
                              np.cumsum(steps) ) )
 
+
+def point_line_distance(point,line):
+    """
+    point: [nd] array
+    line [2,nd] array
+    """
+    # find the point-line distance
+    delta = point - line[0]
+    vec = to_unit(line[1] - line[0])
+    delta -= np.dot(delta,vec) * vec
+    return mag(delta)
 
 # rotate the given vectors/points through the CCW angle in radians
 def rot_fn(angle):
