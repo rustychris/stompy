@@ -3,16 +3,17 @@ tools related to processing SUNTANS output for DWAQ input.
 requires instrument version of SUNTANS code for the flux
 integration
 """
-import utils
 import glob
-import sunreader
 import numpy as np
-import qnc
 import os
+
+from ... import utils
+from ..suntans import sunreader
+from ...io import qnc
 from . import waq_scenario
-import forcing
-import wkb2shp
-import unstructured_grid
+from ..suntans import forcing
+from ...spatial import wkb2shp
+from ...grid import unstructured_grid
 
 def sun_to_flowgeom(sun,proc,filename,overwrite=True):
     """

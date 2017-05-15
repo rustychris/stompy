@@ -167,7 +167,8 @@ def merge_lines(layer=None,segments=None):
         # and delete featB
         del features[fidB]
     progress_message("merge completed")
-    return features.values()
+    # cast to list for python 3
+    return list(features.values())
     
 
 def tolerant_merge_lines(features,tolerance):
