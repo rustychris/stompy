@@ -1,8 +1,15 @@
+import os
 import numpy as np
 import pandas as pd
 import re
 import xarray as xr
 import six
+
+import logging
+
+log=logging.getLogger('delft.io')
+
+from . import waq_scenario as waq
 
 def parse_his_file(fn):
     """
@@ -278,3 +285,70 @@ def read_pli(fn):
             features.append( (label, np.array(geometry) ) )
     return features
 
+def read_map(fn,hyd,use_memmap=True):
+    """
+    Read binary D-Water Quality map output, returning an xarray dataset.
+
+    fn: path to .map file
+    hyd: path to .hyd file describing the hydrodynamics.
+    use_memmap: use memory mapping for file access.  Currently
+      this must be enabled.
+    """
+    if not isinstance(hyd,waq.Hydro):
+        hyd=waq.HydroFiles(hyd)
+
+    nbytes=os.stat(fn).st_size # 420106552 
+
+    with open(fn,'rb') as fp:
+
+        # header line of 160 characters
+        txt_header=fp.read(160)
+        # print "Text header: ",txt_header
+
+        # 4 bytes, maybe a little-endian int.  0x0e, that's 14, number of substances
+        n_subs=np.fromfile(fp,np.int32,1)[0]
+        # print "# substances: %d"%n_subs
+
+        n_segs=np.fromfile(fp,np.int32,1)[0]
+        # print "Nsegs: %d"%n_segs
+
+        substance_names=np.fromfile(fp,'S20',n_subs)
+
+        # not sure if there is a quicker way to get the number of layers
+        hyd.infer_2d_elements()
+        n_layers=1+hyd.seg_k.max()
+
+        g=hyd.grid() # ignore message about ugrid.
+
+        assert g.Ncells()*n_layers == n_segs
+
+        # I'm hoping that now we get 4 byte timestamps in reference seconds,
+        # and then n_subs,n_segs chunks.
+        # looks that way.
+        data_start=fp.tell()
+
+    bytes_left=nbytes-data_start 
+    framesize=(4+4*n_subs*n_segs)
+    nframes,extra=divmod(bytes_left,framesize)
+    if extra!=0:
+        log.warning("Reading map file %s: bad length %d extra bytes (or %d missing)"%(
+            fn,extra,framesize-extra))
+
+    # Specify nframes in cases where the filesizes don't quite match up.
+    mapped=np.memmap(fn,[ ('tsecs','i4'),
+                          ('data','f4',(n_layers,hyd.n_2d_elements,n_subs))] ,
+                     mode='r',
+                     shape=(nframes,),
+                     offset=data_start)
+
+    ds=xr.Dataset()
+    ds.attrs['header']=txt_header
+
+    ds['sub']= ( ('sub',), [s.strip() for s in substance_names] )
+
+    ds['t_sec']=( ('t_sec',), mapped['tsecs'] )
+
+    for idx,name in enumerate(ds.sub.values):
+        ds[name]= ( ('t_sec','layer','element'), 
+                    mapped['data'][...,idx] )
+    return ds

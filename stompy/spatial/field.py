@@ -124,8 +124,14 @@ class Field(object):
     """ Superclass for spatial fields
     """
     def __init__(self,projection=None):
-        self._projection = projection
+        """
+        projection: GDAL/OGR parseable string representation
+        """
+        self.assign_projection(projection)
         
+    def assign_projection(self,projection):
+        self._projection = projection
+
     def reproject(self,from_projection=None,to_projection=None):
         """ Reproject to a new coordinate system.
         If the input is structured, this will create a curvilinear
@@ -2307,7 +2313,6 @@ class SimpleGrid(QuadrilateralGrid):
         
     def write_gdal(self,output_file,nodata=None):
         """ Write a Geotiff of the field.
-        Currently setting the projection doesn't appear to work...
 
         if nodata is specified, nan's are replaced by this value, and try to tell
         gdal about it.
@@ -2351,7 +2356,8 @@ class SimpleGrid(QuadrilateralGrid):
         # set the reference info
         if self.projection() is not None:
             srs = osr.SpatialReference()
-            srs.SetWellKnownGeogCS(self.projection())
+            if srs.SetFromUserInput(self.projection()) != 0:
+                log.warning("Failed to set projection (%s) on GDAL output"%(self.projection()))
             dst_ds.SetProjection( srs.ExportToWkt() )
 
         # write the band
