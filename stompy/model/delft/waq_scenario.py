@@ -49,6 +49,7 @@ import threading
 from . import nefis
 from . import nefis_nc
 from . import waq_process
+from . import dfm_grid
 from . import process_diagram
 
 def waq_timestep_to_timedelta(s):
@@ -1454,6 +1455,8 @@ class HydroFiles(Hydro):
             raise KeyError(p)
         return p
 
+    # be tolerant of mismatch in file sizes up to this many steps
+    nstep_mismatch_threshold=2
     _n_seg = None
     @property
     def n_seg(self):
@@ -1492,27 +1495,31 @@ class HydroFiles(Hydro):
                 # than volume-related data.
                 # each step has 4 bytes per exchange, plus a 4 byte time stamp.
                 pred_n_steps = are_size/4./(self.n_exch+1)
+
                 if pred_n_steps==nsteps:
                     pass # great
-                elif pred_n_steps==nsteps-1:
-                    self.log.info("Area file has one fewer time step than expected - probably SUNTANS trancription")
-                elif pred_n_steps==nsteps+1:
-                    self.log.info("Area file has one more time step than expected - probably okay?")
+                elif abs(pred_n_steps-nsteps)<=self.nstep_mismatch_threshold:
+                    self.log.info("Area file has %s steps vs. %s expected - proceed with caution"%(pred_n_steps,
+                                                                                                   nsteps))
                 else:
                     raise Exception("nsteps %s too different from size of area file (~ %s steps)"%(nsteps,
                                                                                                    pred_n_steps))
                 vol_size=os.stat(self.get_path('volumes-file')).st_size
                 # kludgY.  Ideally have the same number of volume and area output timesteps, but commonly
                 # one off.
-                for vol_n_steps in pred_n_steps,pred_n_steps+1:
-                    n_seg = (vol_size/float(vol_n_steps) -4)/ 4.
-                    if n_seg%1.0 != 0.0:
-                        continue
-                    else:
-                        n_seg=int(n_seg)
+                for step_error in range(1+self.nstep_mismatch_threshold):
+                    for vol_n_steps in pred_n_steps - step_error,pred_n_steps+step_error:
+                        n_seg = (vol_size/float(vol_n_steps) -4)/ 4.
+                        if n_seg%1.0 != 0.0:
+                            n_seg=-1 # continue
+                        else:
+                            n_seg=int(n_seg)
+                            break
+                    if n_seg>0:
                         break
                 else:
-                    raise Exception("Volume file has neither %d nor %d steps"%(pred_n_steps,pred_n_steps+1))
+                    raise Exception("Volume file steps not in [%d,%d]"%(pred_n_steps-self.nstep_mismatch_threshold,
+                                                                        pred_n_steps+self.nstep_mismatch_threshold))
 
                 if n_seg==n_seg_dense:
                     self.log.debug("Discovered that hydro is dense")
@@ -1787,8 +1794,13 @@ class HydroFiles(Hydro):
                 orig=self.get_path('grid-coordinates-file',check=True)
             except KeyError:
                 return None
-            ug=ugrid.Ugrid(orig)
-            self._grid=ug.grid()
+            try:
+                ug=ugrid.Ugrid(orig)
+                self._grid=ug.grid()
+            except IndexError:
+                self.log.warning("Grid wouldn't load as ugrid, trying dfm grid")
+                dg=dfm_grid.DFMGrid(orig)
+                self._grid=dg
         return self._grid
 
     def add_parameters(self,hyd):
