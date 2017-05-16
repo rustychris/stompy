@@ -6757,6 +6757,8 @@ END_MULTIGRID"""%num_layers
     def cmd_write_runid(self):
         """
         Label run name in the directory, needed for some delwaq2 (confirm?)
+
+        Maybe this can be supplied on the command line, too?
         """
         self.ensure_base_path()
 
