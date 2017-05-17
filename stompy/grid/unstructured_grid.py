@@ -426,7 +426,28 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         ug = UnstructuredGrid(points=node_xy,cells=faces,edges=edges)
         return ug
-    
+
+    def write_to_xarray(self,ds=None,mesh_name='mesh'):
+        """ write grid definition, ugrid-ish, to a new xarray dataset
+        """
+        if ds is None:
+            ds=xr.Dataset()
+
+        ds[mesh_name]=1
+        ds[mesh_name].attrs['cf_role']='mesh_topology'
+        ds[mesh_name].attrs['node_coordinates']='node_x node_y'
+        ds[mesh_name].attrs['face_node_connectivity']='face_node'
+        ds[mesh_name].attrs['edge_node_connectivity']='edge_node'
+
+        ds['node_x']= ( ('node',),self.nodes['x'][:,0])
+        ds['node_y']= ( ('node',),self.nodes['x'][:,1])
+
+        ds['face_node']= ( ('face','maxnode_per_face'), self.cells['nodes'] )
+
+        ds['edge_node']= ( ('edge','node_per_edge'), self.edges['nodes'] )
+
+        return ds
+
     def write_ugrid(self,
                     fn,
                     mesh_name='mesh',
@@ -658,6 +679,24 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         self._node_to_edges = None
         self._node_to_cells = None
         self._node_index = None
+
+    def delete_orphan_nodes(self):
+        """ Scan for nodes not part of an edge, and delete them.
+        """
+        used=np.zeros( self.Nnodes(),'b1')
+        valid_cells=~self.cells['deleted']
+        valid_nodes=self.cells['nodes'][valid_cells,:].ravel()
+        valid_nodes=valid_nodes[ valid_nodes>=0 ]
+        used[ valid_nodes ]=True
+
+        valid_edges=~self.edges['deleted']
+        valid_nodes=self.edges['nodes'][valid_edges,:].ravel()
+        used[ valid_nodes ]=True
+        
+        self.log.info("%d nodes found to be orphans"%np.sum(~used))
+
+        for n in np.nonzero(~used)[0]:
+            self.delete_node(n)
         
     def renumber_cells_ordering(self): 
         """ return cell indices in the order they should appear, and
@@ -997,6 +1036,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         self.edges = np.zeros( len(new_edges),self.edge_dtype )
         self.edges['nodes'] = new_edges[:,:2]
         self.edges['cells'] = new_edges[:,2:4]
+        self._node_to_edges=None
 
     def refresh_metadata(self):
         """ Call this when the cells, edges and nodes may be out of sync with indices
@@ -1536,27 +1576,40 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         return jnew,nB
 
     def merge_nodes(self,n0,n1):
-        """ copy topology from n1 to n0, i.e. edges and cells.
-        fields of n1 are lost, and n1 is deleted
+        """ 
+        Merge or fuse two nodes.  Attempts to merge associated
+        topology from n1 to n0, i.e. edges and cells.
+
+        The fields of n1 are lost, and n1 is deleted.
+
+        Functionality here is in progress - not all cases for merging nodes
+        are handled.  In particular, it will fail if there is an edge between
+        n0 and n1, or if a single cell contains both n0 and n1.
         """
-        # if they share any cells, update the cells
+        # -- Sanity checks - does not yet allow for collapsing edges.
+
+        # if they share any cells, would update the cells, but for now
+        # just signal failure.
         n0_cells=self.node_to_cells(n0)
         n1_cells=self.node_to_cells(n1)
         for c in n1_cells:
             if c in n0_cells:
                 print("cell %d common to both nodes"%c)
                 raise GridException("Not ready for merging nodes in the same cell")
-                update_n1_cells # it's used below
+                # otherwise record and fix up below
 
         # do they share an edge, but not already fixed in the above stanza?
         j=self.nodes_to_edge(n0,n1)
         if j is not None:
             raise GridException("Not ready for merging endpoints of an edge")
 
+
+        edge_map={} # index of superceded edge => superceding edge
+
+        # Update edges of n1 to point to n0
+        # if that would cause a duplicate edge, then the n1 version is deleted
         n1_edges=list(self.node_to_edges(n1)) # make copy since we'll mutate it
         for j in n1_edges:
-            # so why is this bad idea?
-            print("THIS IS A REALLY BAD IDEA")
             if self.edges['nodes'][j,0]==n1:
                 nj=0
             elif self.edges['nodes'][j,1]==n1:
@@ -1568,23 +1621,59 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             # it's possible that this is an edge which already exists
             jother=self.nodes_to_edge(*newnodes)
             if jother is not None:
-                # probably could just delete it?  see grid generation code
-                # for an example
-                raise GridException("Not ready for joining edges, but soon")
+                # want to keep jother, delete j.  but is there info on
+                # cells which should be brought over?
+                edge_map[j]=jother
+                # wait to delete j until after cells have been moved to jother.
             else:
-                print("Modifying edge j=%d"%j)
+                self.log.info("Modifying edge j=%d"%j)
                 self.modify_edge(j,nodes=newnodes)
-            # This code is way incomplete - the initial use just needs the cells,
-            # which are handled below
-        
+
+        # -- Transition any cells.  
         for c in n1_cells:
+            # update the node list:
             cnodes=self.cell_to_nodes(c).copy()
             nc=list(cnodes).index(n1)
             cnodes[nc]=n0
-            self.modify_cell(c,nodes=cnodes)
+
+            cedges=self.cell_to_edges(c).copy()
+            for ji,j in enumerate(cedges):
+                if j in edge_map:
+                    # is there were edges['cells'] should be updated?
+
+                    # sever the edge=>cell pointer, to p
+                    # could just set to [-1,-1], but this keeps things very explicit
+                    # for debugging
+                    j_cells=list(self.edges['cells'][j])
+                    j_cells_side=j_cells.index(c)
+                    j_cells[ j_cells_side ] = -1
+                    self.modify_edge(j,cells=j_cells)
+
+                    # and modify the receiving edge, too
+                    jo=edge_map[j]
+                    jo_cells=list(self.edges['cells'][jo])
+                    # which side of jo?  a bit tedious...
+                    if list(self.edges['nodes'][j]).index(n1) == list(self.edges['nodes'][jo]).index(n0):
+                        # same orientation
+                        jo_cells_side=j_cells_side
+                    elif list( self.edges['nodes'][j]).index(n1) == 1-list(self.edges['nodes'][jo]).index(n0):
+                        jo_cells_side=1-j_cells_side
+                    else:
+                        raise Exception("Failed in some tedium")
+                    assert jo_cells[jo_cells_side]<0
+                    jo_cells[jo_cells_side]=c
+                    self.modify_edge(edge_map[j],cells=jo_cells)
+                    # yikes.  any chance that worked?
+
+                    cedges[ji]=edge_map[j]
+
+            # maybe this is where we'd update cells['edges'] too?
+            self.modify_cell(c,nodes=cnodes,edges=cedges)
+
+        for dead_edge in edge_map:
+            self.delete_edge(dead_edge)
 
         self.delete_node(n1)
-
         
     @listenable
     def delete_node(self,n):
@@ -2058,6 +2147,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         return lcoll
 
     def plot_halfedges(self,ax=None,mask=None,values=None,clip=None,
+                       labeler=None,
                        offset=0.2,**kwargs):
         """
         plot a scatter and/or labels, two per edge, corresponding to
@@ -2067,8 +2157,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         mask is over all edges, even deleted ones, and overrides
           internal masking of deleted edges.
         values: scalar values for scatter.  size  (Nedges,2) or (sum(mask),2)
-        NOT YET labels: show text label at each location. callable
-          function f(edge_idx,{0,1})
+        labeler: show text label at each location. callable function f(edge_idx,{0,1})
         offset: fraction of edge length to offset the half-edge location
         """
         ax = ax or plt.gca()
@@ -2103,10 +2192,19 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                                values.ravel())
         else:
             coll = ax.plot(offset_points[:,:,0].ravel(),
-                            offset_points[:,:,1].ravel(),
-                            '.')
-        return coll
+                           offset_points[:,:,1].ravel(),
+                           '.')
 
+        if labeler is not None:
+            # offset_points has already been masked, so use the 
+            # enumerated ji there, but labeler expects original
+            # edge indices, pre-mask, so use j.
+            for ji,j in enumerate( np.nonzero(mask)[0] ):
+                for side in [0,1]:
+                    ax.text( offset_points[ji,side,0],
+                             offset_points[ji,side,1],
+                             labeler(j,side) )
+        return coll
     
     def scalar_contour(self,scalar,V=10,smooth=True):
         """ Generate a collection of edges showing the contours of a

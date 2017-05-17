@@ -285,7 +285,7 @@ def read_pli(fn):
             features.append( (label, np.array(geometry) ) )
     return features
 
-def read_map(fn,hyd,use_memmap=True):
+def read_map(fn,hyd,use_memmap=True,include_grid=True):
     """
     Read binary D-Water Quality map output, returning an xarray dataset.
 
@@ -293,6 +293,12 @@ def read_map(fn,hyd,use_memmap=True):
     hyd: path to .hyd file describing the hydrodynamics.
     use_memmap: use memory mapping for file access.  Currently
       this must be enabled.
+
+    include_grid: the returned dataset also includes grid geometry, suitable
+       for unstructured_grid.from_ugrid(ds)
+
+    note that missing values at this time are not handled - they'll remain as
+    the delwaq standard -999.0.
     """
     if not isinstance(hyd,waq.Hydro):
         hyd=waq.HydroFiles(hyd)
@@ -342,13 +348,19 @@ def read_map(fn,hyd,use_memmap=True):
                      offset=data_start)
 
     ds=xr.Dataset()
-    ds.attrs['header']=txt_header
 
+    ds.attrs['header']=txt_header
+    
     ds['sub']= ( ('sub',), [s.strip() for s in substance_names] )
 
     ds['t_sec']=( ('t_sec',), mapped['tsecs'] )
 
     for idx,name in enumerate(ds.sub.values):
-        ds[name]= ( ('t_sec','layer','element'), 
+        ds[name]= ( ('t_sec','layer','face'), 
                     mapped['data'][...,idx] )
+
+    if include_grid:
+        # not sure why this doesn't work.
+        g.write_to_xarray(ds=ds)
+
     return ds
