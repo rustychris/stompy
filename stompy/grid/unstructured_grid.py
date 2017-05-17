@@ -1590,19 +1590,24 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         # if they share any cells, would update the cells, but for now
         # just signal failure.
-        n0_cells=self.node_to_cells(n0)
-        n1_cells=self.node_to_cells(n1)
+        n0_cells=list(self.node_to_cells(n0))
+        n1_cells=list(self.node_to_cells(n1))
+        cell_to_edge_cache={}
+
         for c in n1_cells:
             if c in n0_cells:
                 print("cell %d common to both nodes"%c)
                 raise GridException("Not ready for merging nodes in the same cell")
                 # otherwise record and fix up below
 
+            # while we're looping, cache the edges as they will
+            # be mutated along the way.
+            cell_to_edge_cache[c]=self.cell_to_edges(c).copy()
+
         # do they share an edge, but not already fixed in the above stanza?
         j=self.nodes_to_edge(n0,n1)
         if j is not None:
             raise GridException("Not ready for merging endpoints of an edge")
-
 
         edge_map={} # index of superceded edge => superceding edge
 
@@ -1636,7 +1641,17 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             nc=list(cnodes).index(n1)
             cnodes[nc]=n0
 
-            cedges=self.cell_to_edges(c).copy()
+            # Dangerous to use cell_to_edges, since it may
+            # have to consult the edge topology, which is disrupted
+            # in the above code. 
+            # cell_to_edges: first checks cells['edges'], may 
+            # go to cell_to_nodes(c): that's safe.
+            # and   nodes_to_edge
+            #     -> node_to_edges, which in turn may consult self.edges['nodes']
+
+            #cedges=self.cell_to_edges(c).copy()
+            cedges=cell_to_edge_cache[c]
+
             for ji,j in enumerate(cedges):
                 if j in edge_map:
                     # is there were edges['cells'] should be updated?
