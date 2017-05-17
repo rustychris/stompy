@@ -10,6 +10,7 @@ import logging
 log=logging.getLogger('delft.io')
 
 from . import waq_scenario as waq
+from ... import utils
 
 def parse_his_file(fn):
     """
@@ -353,10 +354,13 @@ def read_map(fn,hyd,use_memmap=True,include_grid=True):
     
     ds['sub']= ( ('sub',), [s.strip() for s in substance_names] )
 
-    ds['t_sec']=( ('t_sec',), mapped['tsecs'] )
+    times=utils.to_dt64(hyd.time0) + np.timedelta64(1,'s') * mapped['tsecs']
+
+    ds['time']=( ('time',), times)
+    ds['t_sec']=( ('time',), mapped['tsecs'] )
 
     for idx,name in enumerate(ds.sub.values):
-        ds[name]= ( ('t_sec','layer','face'), 
+        ds[name]= ( ('time','layer','face'), 
                     mapped['data'][...,idx] )
 
     if include_grid:
