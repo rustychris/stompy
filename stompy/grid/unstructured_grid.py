@@ -697,7 +697,26 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         for n in np.nonzero(~used)[0]:
             self.delete_node(n)
-        
+
+    def merge_duplicate_nodes(self):
+        """ Match up nodes based on *exact* coordinates.
+        When two nodes share the same coordinates, attempt
+        to merge them.  This can get dicey!
+
+        Returns a dict mapping the deleted nodes with the node they
+        were merged with.
+        """
+        merges={}
+        xys={}
+        for n in self.valid_node_iter():
+            k=tuple(self.nodes['x'][n])
+            if k in xys:
+                merges[n]=xys[k]
+                self.merge_nodes(xys[k],n)
+            else:
+                xys[k]=n
+        return merges
+
     def renumber_cells_ordering(self): 
         """ return cell indices in the order they should appear, and
         with deleted cells not appearing at all.
@@ -2344,7 +2363,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         ax = ax or plt.gca()
         
         if values is not None:
-            values = np.asarray(values)
+            # asanyarray allows for masked arrays to pass through unmolested.
+            values = np.asanyarray(values)
 
         if clip is not None: # convert clip to mask
             mask=self.cell_clip_mask(clip)

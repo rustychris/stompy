@@ -1004,8 +1004,7 @@ class XYZField(Field):
     def value(self,X):
         """ X must be shaped (...,2)
         """
-        
-        X = array(X)
+        X = np.asanyarray(X)
         orig_shape = X.shape
 
         X = reshape(X,(-1,2))
@@ -1565,6 +1564,7 @@ class ConstantField(Field):
         Field.__init__(self)
         
     def value(self,X):
+        X=np.asanyarray(X)
         return self.c * ones(X.shape[:-1])
         
 

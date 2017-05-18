@@ -22,7 +22,7 @@ def upsample_linearring(points,density,closed_ring=1,return_sources=False):
     sources = []
 
     density = as_density(density)
-        
+
     for i in range(len(points)):
         A = points[i]
         

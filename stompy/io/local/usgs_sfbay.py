@@ -102,6 +102,9 @@ def cruise_dataset(start,stop):
     
     ds5=ds5.set_coords(['time','x','y','depth'])
 
+    # add more metadata
+    ds5['prof_sample'].attrs['long_name']='Profile (vertical) dimension'
+
     return ds5
     
 ## --- 
