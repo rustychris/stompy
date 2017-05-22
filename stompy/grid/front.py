@@ -572,6 +572,7 @@ class Site(object):
         return []
 
 class FrontSite(object):
+    resample_status=None
     def metric(self):
         assert False
     def plot(self,ax=None):
@@ -623,19 +624,24 @@ class TriangleSite(FrontSite):
         local_length = self.af.scale( self.points().mean(axis=0) )
         
         grid=self.af.grid
+        self.resample_status=True
 
         for n,direction in [ (a,-1),
                              (c,1) ]:
             if ( (grid.nodes['fixed'][n] == self.af.SLIDE) and
                  len(grid.node_to_edges(n))<=2 ):
-                n_res=self.af.resample(n=n,anchor=b,scale=local_length,direction=direction)
+                try:
+                    n_res=self.af.resample(n=n,anchor=b,scale=local_length,direction=direction)
+                except Curve.CurveException as exc:
+                    self.resample_status=False
+                    continue
                 if n!=n_res:
                     log.info("resample_neighbors changed a node")
                     if n==a:
                         self.abc[0]=n_res
                     else:
                         self.abc[2]=n_res
-
+        return self.resample_status
 
 # without a richer way of specifying the scales, have to start
 # with marked edges
@@ -689,6 +695,9 @@ class QuadSite(FrontSite):
 
     def resample_neighbors(self):
         """ may update site! 
+        if resampling failed, returns False. It's possible that some 
+        nodes have been updated, but no guarantee that they are as far
+        away as requested.
         """
         a,b,c,d = self.abcd
         # could extend to something more dynamic, like triangle does
@@ -702,18 +711,24 @@ class QuadSite(FrontSite):
         else:
             scale=local_para
 
+        self.resample_status=True
         for n,anchor,direction in [ (a,b,-1),
                                     (d,c,1) ]:
             if ( (self.grid.nodes['fixed'][n] == self.af.SLIDE) and
                  self.grid.node_degree(n)<=2 ):
-                n_res=self.af.resample(n=n,anchor=anchor,scale=scale,direction=direction)
+                try:
+                    n_res=self.af.resample(n=n,anchor=anchor,scale=scale,direction=direction)
+                except Curve.CurveException as exc:
+                    log.warning("Unable to resample neighbors")
+                    self.resample_status=False
+                    continue
                 if n!=n_res:
                     log.info("resample_neighbors changed a node")
                     if n==a:
                         self.abcd[0]=n_res
                     else:
                         self.abcd[3]=n_res
-
+        return self.resample_status
 
 class ShadowCDT(exact_delaunay.Triangulation):
     """ Tracks modifications to an unstructured grid and
@@ -959,7 +974,7 @@ class AdvancingFront(object):
         anchor_f = self.grid.nodes['ring_f'][anchor]
         try:
             new_f,new_x = curve.distance_away(anchor_f,direction*target_span)
-        except curve.CurveException as exc:
+        except Curve.CurveException as exc:
             raise
 
         # check to see if there are other nodes in the way, and remove them.
@@ -1261,8 +1276,9 @@ class AdvancingFront(object):
                 break
             
     def advance_at_site(self,site):
-        # This can modify site!
-        self.resample_neighbors(site)
+        # This can modify site! May also fail.
+        resampled_success = self.resample_neighbors(site)
+        
         actions=site.actions()
         metrics=[a.metric(site) for a in actions]
         bests=np.argsort(metrics)
@@ -1451,6 +1467,10 @@ class AdvancingQuads(AdvancingFront):
             else:
                 side=1
             self.grid.edges['cells'][j,side]=self.grid.UNMESHED
+            # and for later sanity checks, mark the other side as outside (-1)
+            # if it's -99.
+            if self.grid.edges['cells'][j,1-side]==self.grid.UNKNOWN:
+                self.grid.edges['cells'][j,1-side]=self.grid.UNDEFINED
             
     def orient_quad_edge(self,j,orient):
         self.grid.edges['para'][j]=orient
