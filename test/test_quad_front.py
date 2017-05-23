@@ -68,7 +68,7 @@ af.orient_quad_edge(j_init,af.PARA)
 
 ## 
 
-af.loop(46)
+af.loop()
 
 ## 
 
@@ -81,59 +81,9 @@ af.grid.plot_edges(mask=[j_init],color='r',lw=2)
 if 0:
     af.plot_summary(label_nodes=False,clip=zoom)
 
+af.grid.plot_cells(centers=True,clip=zoom)
 
-zoom2=(578939.26355999336,
-       579037.73609418306,
-       4144480.9287384176,
-       4144557.3495081947)
-
-
-#g.plot_nodes(labeler=lambda n,rec: str(n),
-#             clip=zoom2,ax=ax)
-# ax.axis(zoom2)
 ax.axis(zoom)
-
-## 
-
-# af.loop:
-site=af.choose_site()
-
-site.plot()
-fig.canvas.draw()
-
-##
-self=af
-# Fails here:
-
-# trying to merge some edges - (121999, 122071)
-# they have incompatible cells (one -1, one -2), *and* 122071
-# is part of the site (which might be okay...)
-# 121999: -2,-99 - this is probably not right.  the -99 should be -1.
-# 122071: -1,-1 - one of those should be -2.
-# When it starts, the outside is all -99, but ought to be -1.
-# fixed the starting state, and at loop 46, looks correct.
-# but that last loop mucks with the cell labels of 122072 and
-# 122071
-# happens during resample_neighbors.
-
-# resample_neighbors calls free_span, and we should probably
-# tell it about the other end of the site as an extra stop.
-# the current problem is likely the fault of split_edge
-ret=self.resample_neighbors(site)
-
-
-##
-
-zoom2=(578294.20525725419, 578455.3281456246, 4143970.8466474125, 4144095.8879623255)
-af.grid.plot_edges(clip=zoom2,labeler=lambda i,r: str(i))
-af.grid.plot_halfedges(clip=zoom2,labeler=lambda j,s: str(af.grid.edges['cells'][j,s]))
-ax.axis(zoom2)
-fig.canvas.draw()
-
-## 
-actions=site.actions()
-metrics=[a.metric(site) for a in actions]
-bests=np.argsort(metrics)
 
 ## 
 # Problem 1: going around a bend it starts making trapezoids, 
@@ -143,5 +93,12 @@ bests=np.argsort(metrics)
 # Enhancement: there is an obvious place to put a triangle around a bend.
 #   will get there eventually.
 
-# Problem 2: Doesn't know how to steop.
+# other stopping strategies (triangle?) may become necessary..
 
+
+## 
+
+# thoughts on how to optimize out the trapezoids:
+#  - more weight on the lengths could help, but it's nuanced since 
+#    some of the edges can only be made longer by creating a trapezoid.
+#  - 
