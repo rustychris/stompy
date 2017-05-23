@@ -665,13 +665,19 @@ class QuadCutoffStrategy(Strategy):
         Apply this strategy to the given Site.
         Returns a dict with nodes,cells which were modified 
         """
-        # Set cells to unmeshed, and one will be overwritten by add_cell.
-        jnew=site.grid.add_edge(nodes=[site.abcd[0],site.abcd[3]],
-                                para=site.grid.edges['para'][site.js[1]],
-                                cells=[site.grid.UNMESHED,site.grid.UNMESHED])
+        nodes=[site.abcd[0],site.abcd[3]]
+        j=site.grid.nodes_to_edge(nodes)
+        if j is None: # typ. case
+            # Set cells to unmeshed, and one will be overwritten by add_cell.
+            j=site.grid.add_edge(nodes=nodes,
+                                 para=site.grid.edges['para'][site.js[1]],
+                                 cells=[site.grid.UNMESHED,site.grid.UNMESHED])
+        else:
+            log.info("Cutoff found edge %d already exists"%j)
+            
         cnew=site.grid.add_cell(nodes=site.abcd)
         
-        return {'edges': [jnew],
+        return {'edges': [j],
                 'cells': [cnew] }
 QuadCutoff=QuadCutoffStrategy()
 
@@ -741,8 +747,8 @@ class QuadSite(FrontSite):
                     continue
                 
                 # is this the right time to change the fixed status?
-                if grid.nodes['fixed'][n] == self.af.HINT:
-                    grid.modify_node(n,fixed=self.af.SLIDE)
+                if self.grid.nodes['fixed'][n] == self.af.HINT:
+                    self.grid.modify_node(n,fixed=self.af.SLIDE)
                 
                 if n!=n_res:
                     log.info("resample_neighbors changed a node")
