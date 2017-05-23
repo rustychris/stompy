@@ -478,10 +478,11 @@ class JoinStrategy(Strategy):
             # not creation)
             if (grid.edges['cells'][j_ac,0] >=0) or (grid.edges['cells'][j_ac,1]>=0):
                 raise StrategyFailed("Edge already has real cells")
-            if grid.nodes['fixed'][na] in [site.af.FREE,site.af.SLIDE]:
+            # these now include HINT for choosing the mover.
+            if grid.nodes['fixed'][na] in [site.af.FREE,site.af.HINT,site.af.SLIDE]:
                 mover=na
                 anchor=nc
-            elif grid.nodes['fixed'][nc] in [site.af.FREE,site.af.SLIDE]:
+            elif grid.nodes['fixed'][nc] in [site.af.FREE,site.af.HINT,site.af.SLIDE]:
                 mover=nc
                 anchor=na
             else:
@@ -626,15 +627,24 @@ class TriangleSite(FrontSite):
         grid=self.af.grid
         self.resample_status=True
 
+        if self.grid.nodes['fixed'][b] == self.af.HINT:
+            self.grid.modify_node(b,fixed=self.af.SLIDE)
+
         for n,direction in [ (a,-1),
                              (c,1) ]:
-            if ( (grid.nodes['fixed'][n] == self.af.SLIDE) and
-                 len(grid.node_to_edges(n))<=2 ):
+            # used to check for SLIDE and degree
+            # not sure whether we should let SLIDE through...
+            if grid.nodes['fixed'][n] in [self.af.HINT,self.af.SLIDE]:
                 try:
                     n_res=self.af.resample(n=n,anchor=b,scale=local_length,direction=direction)
                 except Curve.CurveException as exc:
                     self.resample_status=False
                     continue
+                
+                # is this the right time to change the fixed status?
+                if grid.nodes['fixed'][n] == self.af.HINT:
+                    grid.modify_node(n,fixed=self.af.SLIDE)
+                
                 if n!=n_res:
                     log.info("resample_neighbors changed a node")
                     if n==a:
@@ -698,6 +708,8 @@ class QuadSite(FrontSite):
         if resampling failed, returns False. It's possible that some 
         nodes have been updated, but no guarantee that they are as far
         away as requested.
+
+        this is where HINT nodes which part of the site are set to SLIDE nodes.
         """
         a,b,c,d = self.abcd
         # could extend to something more dynamic, like triangle does
@@ -711,17 +723,27 @@ class QuadSite(FrontSite):
         else:
             scale=local_para
 
+        for n in [b,c]:
+            if self.grid.nodes['fixed'][n] == self.af.HINT:
+                self.grid.modify_node(n,fixed=self.af.SLIDE)
+                
         self.resample_status=True
         for n,anchor,direction in [ (a,b,-1),
                                     (d,c,1) ]:
-            if ( (self.grid.nodes['fixed'][n] == self.af.SLIDE) and
-                 self.grid.node_degree(n)<=2 ):
+            # this used to check SLIDE and degree
+            # not sure if we should let SLIDE through now...
+            if self.grid.nodes['fixed'][n] in [self.af.HINT,self.af.SLIDE]:
                 try:
                     n_res=self.af.resample(n=n,anchor=anchor,scale=scale,direction=direction)
                 except Curve.CurveException as exc:
                     log.warning("Unable to resample neighbors")
                     self.resample_status=False
                     continue
+                
+                # is this the right time to change the fixed status?
+                if grid.nodes['fixed'][n] == self.af.HINT:
+                    grid.modify_node(n,fixed=self.af.SLIDE)
+                
                 if n!=n_res:
                     log.info("resample_neighbors changed a node")
                     if n==a:
@@ -815,8 +837,9 @@ class AdvancingFront(object):
     #  in order of increasing degrees of freedom in its location.
     # don't use 0 here, so that it's easier to detect uninitialized values
     RIGID=1 # should not be moved at all
-    SLIDE=2 # able to slide along a ring
+    SLIDE=2 # able to slide along a ring.  
     FREE=3  # not constrained
+    HINT=4  # slidable and can be removed.
 
     StrategyFailed=StrategyFailed
     
@@ -862,10 +885,11 @@ class AdvancingFront(object):
             curve_points,srcs=curve.upsample(self.scale,return_sources=True)
 
             # add the nodes in:
+            # used to initialize as SLIDE
             nodes=[self.grid.add_node(x=curve_points[j],
                                       oring=curve_i+1,
                                       ring_f=srcs[j],
-                                      fixed=self.SLIDE)
+                                      fixed=self.HINT)
                    for j in range(len(curve_points))]
 
             if curve.closed:
@@ -914,8 +938,8 @@ class AdvancingFront(object):
         nodes=[last] # anchor is included
 
         def pred(n):
-            return ( (self.grid.nodes['fixed'][n]== self.SLIDE) and
-                     len(self.grid.node_to_edges(n))<=2 )
+            # used to check for SLIDE and degree
+            return self.grid.nodes['fixed'][n]== self.HINT
 
         while pred(trav) and (trav != anchor) and (span<max_span):
             span += utils.dist( self.grid.nodes['x'][last] -
@@ -942,6 +966,14 @@ class AdvancingFront(object):
         length is close to scale.
 
         assumes that n is SLIDE, and has only 2 neighbors.
+        normally, a SLIDE node cannot be deleted.  in some cases resample will
+        create a new node for n, and it will be a SLIDE node.  in that case, should
+        n retain SLIDE, too? is it the responsibility of resample(), or the caller?
+        can we at least guarantee that no other nodes need to be changing status?
+
+        as it stands, if this code creates a new node, it is given fixed=SLIDE.
+        it is up to the caller to reset the fixed of the original
+        node to HINT, if that is what is desired.  
         """
         self.log.debug("resample %d to be %g away from %d in the %s direction"%(n,scale,anchor,
                                                                                 direction) )
@@ -1076,6 +1108,8 @@ class AdvancingFront(object):
             return self.relax_free_node(n)
         elif self.grid.nodes['fixed'][n] == self.SLIDE:
             return self.relax_slide_node(n)
+        else:
+            raise Exception("relax_node with fixed=%s"%self.grid.nodes['fixed'][n])
 
     def relax_free_node(self,n):
         cost=self.cost_function(n)
@@ -1174,10 +1208,15 @@ class AdvancingFront(object):
                     break
                 # is trav[1] something which limits the sliding of n?
                 trav_nbrs=self.grid.node_to_nodes(trav[1])
-                if len(trav_nbrs)>2:
+                # if len(trav_nbrs)>2:
+                #     break
+                # if self.grid.nodes['fixed'][trav[1]] != self.SLIDE:
+                #     break
+
+                # the transition to HINT
+                if self.grid.nodes['fixed'][trav[1]] != self.HINT:
                     break
-                if self.grid.nodes['fixed'][trav[1]] != self.SLIDE:
-                    break
+                
                 for nxt in trav_nbrs:
                     if nxt not in trav:
                         break
@@ -1246,10 +1285,14 @@ class AdvancingFront(object):
         # sanity checks:
         for nbr in to_delete:
             assert n_ring==self.grid.nodes['oring'][nbr]-1
+            # OLD COMMENT:
             # For now, depart a bit from paver, and rather than
             # having HINT nodes, HINT and SLIDE are both fixed=SLIDE,
             # but differentiate based on node degree.
-            assert self.grid.nodes['fixed'][nbr]==self.SLIDE
+            # NEW COMMENT:
+            # actually, that was a bad idea.  better to stick with
+            # how it was in paver
+            assert self.grid.nodes['fixed'][nbr]==self.HINT # SLIDE
             assert self.grid.node_degree(nbr)==2
         return to_delete
     
@@ -1455,7 +1498,7 @@ class AdvancingQuads(AdvancingFront):
             degree=self.grid.node_degree(n)
             assert degree >= 2
             if degree==2:
-                self.grid.nodes['fixed']=self.SLIDE
+                self.grid.nodes['fixed']=self.HINT # self.SLIDE
             else:
                 self.grid.nodes['fixed']=self.RIGID
 
