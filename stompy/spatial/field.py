@@ -212,14 +212,14 @@ class Field(object):
         # X = array(X)
         # return self.constant * ones(X.shape[:-1])
 
-    def value_on_edge(self,e,samples=5):
+    def value_on_edge(self,e,samples=5,reducer=np.nanmean):
         """ Return the value averaged along an edge - the generic implementation
         just takes 5 samples evenly spaced along the line, using value()
         """
         x=linspace(e[0,0],e[1,0],samples)
         y=linspace(e[0,1],e[1,1],samples)
         X = array([x,y]).transpose()
-        return nanmean(self.value(X))
+        return reducer(self.value(X))
 
     def __call__(self,X):
         return self.value(X)
@@ -1915,13 +1915,13 @@ class SimpleGrid(QuadrilateralGrid):
             xmin,xmax,ymin,ymax = rect
 
 
-            min_col = max( floor( (xmin - self.extents[0]) / dx ), 0)
-            max_col = min( ceil( (xmax - self.extents[0]) / dx ), self.F.shape[1]-1)
+            min_col = int( max( floor( (xmin - self.extents[0]) / dx ), 0) )
+            max_col = int( min( ceil( (xmax - self.extents[0]) / dx ), self.F.shape[1]-1) )
 
-            min_row = max( floor( (ymin - self.extents[2]) / dy ), 0)
-            max_row = min( ceil( (ymax - self.extents[2]) / dy ), self.F.shape[0]-1)
+            min_row = int( max( floor( (ymin - self.extents[2]) / dy ), 0) )
+            max_row = int( min( ceil( (ymax - self.extents[2]) / dy ), self.F.shape[0]-1) )
 
-            print(min_row, max_row, min_col, max_col)
+            # print(min_row, max_row, min_col, max_col)
             return self.crop(indexes=[min_row,max_row,min_col,max_col])
         elif indexes is not None:
             min_row,max_row,min_col,max_col = indexes
@@ -2005,7 +2005,7 @@ class SimpleGrid(QuadrilateralGrid):
     def value(self,X):
         return self.interpolate(X)
 
-    def value_on_edge(self,e,samples=None):
+    def value_on_edge(self,e,samples=None,**kw):
         """ Return the value averaged along an edge - the generic implementation
         just takes 5 samples evenly spaced along the line, using value()
         """
@@ -2014,7 +2014,7 @@ class SimpleGrid(QuadrilateralGrid):
             l = norm(e[1]-e[0])
             samples = int(ceil(l/res))
 
-        return Field.value_on_edge(self,e,samples=samples)
+        return Field.value_on_edge(self,e,samples=samples,**kw)
 
     def upsample(self,factor=2):
         x = linspace(self.extents[0],self.extents[1],1+factor*(self.F.shape[1]-1))
