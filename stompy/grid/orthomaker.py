@@ -2,9 +2,11 @@ from __future__ import division
 from __future__ import print_function
 from future import standard_library
 standard_library.install_aliases()
-from builtins import str
-from builtins import range
-from past.utils import old_div
+
+# from py2to3 - maybe unnecessary
+#from builtins import str
+#from builtins import range
+
 import sys
 try:
     import cPickle as pickle
@@ -31,7 +33,7 @@ except:
     print("Missing shapely library.  Please install it")
     # sys.exit(1)
 
-import trigrid
+from . import trigrid
 from trigrid import rot
 
 ### Some geometric utility functions ###

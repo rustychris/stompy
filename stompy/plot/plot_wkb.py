@@ -1,5 +1,4 @@
 from __future__ import print_function
-from safe_pylab import *
 from matplotlib.collections import PatchCollection,LineCollection
 
 

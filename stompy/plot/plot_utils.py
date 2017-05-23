@@ -4,11 +4,7 @@ from builtins import str
 from builtins import zip
 from builtins import range
 from builtins import object
-from past.utils import old_div
 
-# This is old -- kludge for checking whether there is a graphical display or not.
-# Removing it may cause some headaches, but it's time to work through the pain.
-# from safe_pylab import *
 import time
 from matplotlib.collections import LineCollection
 from matplotlib.transforms import Transform,Affine2D
