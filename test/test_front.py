@@ -92,7 +92,7 @@ def test_curve_upsample():
     
 def test_basic_setup():
     boundary=hex_curve()
-    af=front.AdvancingFront()
+    af=front.AdvancingTriangles()
     scale=field.ConstantField(3)
 
     af.add_curve(boundary)
@@ -322,7 +322,7 @@ check0=af.grid.checkpoint()
 
 class DTNode(object):
     parent=None 
-    af=None # AdvancingFront object
+    af=None # AdvancingTriangles object
     cp=None # checkpoint
     ops_parent=None # chunk of op_stack to get from parent to here.
     options=None # node-specific list of data for child options
@@ -611,6 +611,10 @@ while 1:
         assert False # none of the children worked out
     cb()
 af.plot_summary(ax=ax)
+
+##
+
+af.grid.plot_nodes(labeler=lambda i,r: "   %s"%r['fixed'] )
 ## 
 
 # Why does it divege from symmetry at the start?
@@ -650,7 +654,7 @@ while 1:
     else:
         assert False # none of the children worked out
     cb()
-    break
+    # break
 af.plot_summary(ax=ax)
 
 # on the right side, start with a Wall, and then Join shows

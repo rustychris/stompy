@@ -312,8 +312,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             self.from_simple_data(points=points,edges=edges,cells=cells)
 
     def copy(self):
-        return self.__class__(grid=self)
-    
+        # maybe subclasses shouldn't be used here - for example,
+        # this requires that every subclass include 'grid' in its
+        # __init__.  Maybe more subclasses should just be readers?
+        # return self.__class__(grid=self)
+        return UnstructuredGrid(grid=self)
+
     def copy_from_grid(self,grid):
         # this takes care of allocation, and setting the most basic topology
         self.from_simple_data(points=grid.nodes['x'],
@@ -1591,7 +1595,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         nB=self.add_node(**loc_args)
         edge_data['nodes'][1]=nB
         self.add_edge(_index=j,**edge_data)
-        jnew=self.add_edge(nodes=[nB,nC])
+        # this way we get the same cell marks, too.
+        # this helps in tracking marks like UNDEFINED vs. UNPAVED
+        edge_data['nodes']=[nB,nC]
+        jnew=self.add_edge(**edge_data)
         return jnew,nB
 
     def merge_nodes(self,n0,n1):

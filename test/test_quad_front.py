@@ -55,12 +55,12 @@ g.edge_to_cells()
 #  ## 
 #  af.plot_summary(label_nodes=False,clip=zoom)
 #  ax.axis(zoom)
-#  
-#  ## 
+
+## 
 
 reload(front)
 
-af=front.AdvancingQuads(grid=g,scale=dim_par,perp_scale=dim_perp)
+af=front.AdvancingQuads(grid=g.copy(),scale=dim_par,perp_scale=dim_perp)
 af.grid.edges['para']=0 # avoid issues during dev
 
 af.add_existing_curve_surrounding(point_in_poly)
@@ -68,31 +68,24 @@ af.orient_quad_edge(j_init,af.PARA)
 
 ## 
 
-af.loop(1)
+af.loop()
+
+## 
 
 plt.figure(1).clf()
 fig,ax=plt.subplots(num=1)
 
-g.plot_edges(ax=ax,clip=zoom)
-g.plot_edges(mask=[j_init],color='r',lw=2)
+af.grid.plot_edges(ax=ax,clip=zoom)
+af.grid.plot_edges(mask=[j_init],color='r',lw=2)
 
 if 0:
     af.plot_summary(label_nodes=False,clip=zoom)
 
+af.grid.plot_cells(centers=True,clip=zoom)
 
-zoom2=(578939.26355999336,
-       579037.73609418306,
-       4144480.9287384176,
-       4144557.3495081947)
-
-
-#g.plot_nodes(labeler=lambda n,rec: str(n),
-#             clip=zoom2,ax=ax)
-# ax.axis(zoom2)
 ax.axis(zoom)
 
 ## 
-
 # Problem 1: going around a bend it starts making trapezoids, 
 #   never really recovers.  A more nuanced cost function with angles
 #   would help here.
@@ -100,10 +93,12 @@ ax.axis(zoom)
 # Enhancement: there is an obvious place to put a triangle around a bend.
 #   will get there eventually.
 
-# Problem 2: After about 20 cells, it gets an IntersectingConstraints
-#   error.  Catastrophic failure, no grace.
+# other stopping strategies (triangle?) may become necessary..
 
-# in the cdt: nodes 55581, 55580
-# while trying to move real node 55580.
-# seems to be because during the resampling, the edges have
-# gotten really coarse, that's causing problems.
+
+## 
+
+# thoughts on how to optimize out the trapezoids:
+#  - more weight on the lengths could help, but it's nuanced since 
+#    some of the edges can only be made longer by creating a trapezoid.
+#  - 
