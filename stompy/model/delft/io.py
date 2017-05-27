@@ -286,6 +286,43 @@ def read_pli(fn):
             features.append( (label, np.array(geometry) ) )
     return features
 
+def write_pli(fn,pli_data):
+    with open(fn,'wt') as fp:
+        for label,data in pli_data:
+            fp.write("%s\n"%label)
+            fp.write("     %d     %d\n"%data.shape)
+            block="\n".join( [ "  ".join(["%15s"%d for d in row])
+                               for row in data] )
+            fp.write(block)
+            fp.write("\n")
+
+def grid_to_pli_data(g,node_fields,labeler=None):
+    """
+    UnstructuredGrid => PLI translation
+    translate the edges of g into a list of features as returned
+    by read_pli()
+    features are extracted as contiguous linestrings, as long as possible.
+    node_fields is a list giving a subset of the grid's node fields to
+    be written out, in addition to x and y.
+    labeler: leave as None to get Lnnn style labels.  Otherwise, a function
+       which takes the index, and returns a string for the label.
+    """
+    strings=g.extract_linear_strings()
+
+    features=[]
+
+    labeler=labeler or (lambda i: "L%04d"%i)
+
+    for feat_i,nodes in enumerate(strings):
+        label=labeler(feat_i)
+
+        cols=[ g.nodes['x'][nodes,0], g.nodes['x'][nodes,1] ]
+
+        for fld in node_fields:
+            cols.append( g.nodes[fld][nodes] )
+        feature=np.array( cols ).T
+        features.append( (label,feature) )
+    return features
 
 def read_map(fn,hyd,use_memmap=True,include_grid=True):
     """

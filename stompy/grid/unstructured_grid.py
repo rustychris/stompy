@@ -2468,6 +2468,54 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             raise GridException("somehow there are multiple boundary polygons")
         return polys[0]
 
+    def extract_linear_strings(self):
+        """
+        extract contiguous linestrings as sequences of nodes.
+        """ 
+        # there are at least three choices of how greedy to be.
+        #  min: each edge is its own feature
+        #  max: extract features as long as possible, and allow for 'T' junctions.
+        #  mid: break features at nodes with degree>2.
+        # go with mid
+        strings=[]
+        edge_marks=np.zeros( self.Nedges(),'b1')
+
+        for j in self.valid_edge_iter():
+            if edge_marks[j]:
+                continue
+            edge_marks[j]=True
+
+            trav=tuple(self.edges['nodes'][j])
+            node_fwd=self.edges['nodes'][j,1]
+            node_rev=self.edges['nodes'][j,0]
+
+            node_string=[node_fwd,node_rev]
+
+            for trav in [ (node_fwd,node_rev),
+                          (node_rev,node_fwd) ]:
+                while 1:
+                    js = self.node_to_edges(trav[1])
+
+                    if len(js)!=2:
+                        break
+
+                    for j in js:
+                        jnodes=self.edges['nodes'][j]
+                        if trav[0] in jnodes:
+                            continue
+                    if edge_marks[j]:
+                        # possible if we go all the way around a ring.
+                        break
+                    edge_marks[j]=True
+                    nxt=[n for n in jnodes if n!=trav[1]][0]
+                    node_string.append(nxt)
+                    trav=(trav[1],nxt)
+                node_string=node_string[::-1]
+
+            feat_nodes=np.array( node_string )
+            strings.append( feat_nodes )
+        return strings
+
     def select_nodes_intersecting(self,geom=None,xxyy=None,invert=False,as_type='mask'):
         sel = np.zeros(self.Nnodes(),np.bool8) # initialized to False
 
