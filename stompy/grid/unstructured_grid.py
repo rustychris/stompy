@@ -1123,9 +1123,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             
         centroids=np.zeros( (len(ids),2),'f8')*np.nan
         
-        for c in ids:
+        for ci,c in enumerate(ids):
             if not self.cells['deleted'][c]:
-                centroids[c]= np.array(self.cell_polygon(c).centroid)
+                centroids[ci]= np.array(self.cell_polygon(c).centroid)
         return centroids
     
     def cells_center(self,refresh=False,mode='first3'):
