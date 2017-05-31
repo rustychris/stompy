@@ -2750,6 +2750,58 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         elif return_type in ('edges','sides'):
             return np.array( [self.nodes_to_edge(path[i],path[i+1])
                               for i in range(len(path)-1)] )
+
+    def cells_connected_components(self,edge_mask,cell_mask=None,randomize=True):
+        """
+        Label the cells of the grid based on connections. 
+        edge_mask: boolean array, true for edges which should be considered a connection.
+        cell_mask: optional boolean array, true for cells which should be considered
+          active.  Currently this is taken into account as a post-processing step - 
+          connectivity is defined based on edges, and inactive cells are trimmed from
+          the output.  This may change in the future, though.
+        randomize: the returned labels are randomly assigned.  This can help with 
+          color plotting of the labels by generally creating more contrast between 
+          adjacent components.
+
+        Returns: labels, masked integer array of size self.Ncells().  Inactive cells
+          masked out, other cells labeled with the component to which they belong.
+          
+        """
+        # further constrain to edges which are not on the boundary
+        edge_mask=edge_mask & np.all( self.edges['cells']>=0,axis=1)
+
+        cell_pairs = self.edges['cells'][edge_mask]
+
+        # use scipy graph algorithms to find the connections
+        from scipy import sparse
+
+        graph=sparse.csr_matrix( (np.ones(len(cell_pairs)), 
+                                  (cell_pairs[:,0],cell_pairs[:,1])),
+                                 shape=(self.Ncells(),self.Ncells()) )
+
+        n_comps,labels=sparse.csgraph.connected_components(graph,directed=False)
+
+        if cell_mask is None:
+            cell_mask=slice(None)
+
+        unique_labels=np.unique( labels[cell_mask] ) 
+        labels[~cell_mask]=-1 # mark dry cells as -1
+
+        # create an array which takes the original label, maps it to small, sequential
+        # label.
+
+        if not randomize:
+            new_labels=np.arange(len(unique_labels)) # -1 will be handled separately
+        else:
+            new_labels=np.argsort(np.random.random(len(unique_labels)))
+
+        mapper=np.zeros( 1+unique_labels.max() ) - 1 # map original labels to compressed labels
+        mapper[unique_labels]=new_labels
+        labels=mapper[labels]
+        labels[~cell_mask] = -1
+        labels=np.ma.array(labels,mask=~cell_mask)
+        return labels
+
         
     _cell_center_index=None
     def cell_center_index(self):
