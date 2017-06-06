@@ -11,7 +11,9 @@ import glob,os,re
 from shapely import wkb,wkt
 from shapely.geometry import Polygon,LineString,Point,MultiPolygon,MultiLineString,MultiPoint
 import shapely.geos
+from shapely import ops # for transform()
 from .geom_types import ogr2text,text2ogr
+from . import proj_utils
 import uuid
 
 import numpy as np
@@ -193,11 +195,48 @@ def wkb2shp(shp_name,
 
 
 # kind of the reverse of the above
-def shp2geom(shp_fn,use_wkt=False):
+def shp2geom(shp_fn,use_wkt=False,target_srs=None,
+             source_srs=None):
+    """
+    Read a shapefile into memory as a numpy array.
+    Data is returned as a record array, with geometry as a shapely
+    geometry in the 'geom' field.
+
+    target_srs: input suitable for osgeo.osr.SetFromUserInput(), or an
+    existing osr.SpatialReference, to specify
+    a projection to which the data should be translated.  If this is specified
+    but the shapefile does not specify a projection, and source_srs is not given,
+    then an exception is raised.  source_srs will override the projection in 
+    the shapefile if specified.
+    """
     ods = ogr.Open(shp_fn)
     if ods is None:
         raise ValueError("File '%s' corrupt or not found"%shp_fn)
     layer = ods.GetLayer(0)
+
+    if target_srs is not None: # potentially transform on the fly
+        if source_srs is None:
+            source_srs=layer.GetSpatialRef()
+        if source_srs is None:
+            raise Exception("Reprojection requested, but no source reference available")
+
+        mapper=proj_utils.mapper(source_srs,'EPSG:26910')
+        # have to massage it a bit to suit shapely's calling convention
+        def xform(x,y,z=None): # x,y,z may be scalar or array
+            # ugly code... annoying code...
+            if z is None:
+                xy=np.moveaxis( np.array([x,y]), 0, -1 )
+                xyp=mapper(xy)
+                return xyp[...,0], xyp[...,1]
+            else:
+                xyz=np.moveaxis( np.array([x,y,z]), 0, -1 )
+                xyzp=mapper(xyz)
+                return xyzp[...,0],xyzp[...,1],xyzp[...,2]
+        def geom_xform(g):
+            return ops.transform(xform,g)
+    else:
+        def geom_xform(g):
+            return g
 
     feat = layer.GetNextFeature()
 
@@ -223,13 +262,17 @@ def shp2geom(shp_fn,use_wkt=False):
 
     # And one for the geometry
     def rdr(f):
-        try:
-            if use_wkt:
-                geo=wkt.loads( f.GetGeometryRef().ExportToWkt() )
-            else:
-                geo=wkb.loads( f.GetGeometryRef().ExportToWkb() )
-        except:
-            geo=None
+        # The try..except block is from olden days when OGR was not stable
+        # to weird geometries.
+
+        #try:
+        if use_wkt:
+            geo=wkt.loads( f.GetGeometryRef().ExportToWkt() )
+        else:
+            geo=wkb.loads( f.GetGeometryRef().ExportToWkb() )
+        geo=geom_xform(geo)
+        #except:
+        #    geo=None
         return geo
     fields.append( (None,'geom',object,rdr) )
     
