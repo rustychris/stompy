@@ -434,8 +434,12 @@ class Hydro(object):
     ZLAYER=1
     SIGMA=2
     SINGLE=3
+    _vertical=None
     @property
     def vertical(self):
+        if self._vertical is not None:
+            return self._vertical
+        
         geom=self.get_geom()
         if geom is None:
             return self.VERT_UNKNOWN
@@ -446,6 +450,9 @@ class Hydro(object):
             if standard_name == 'ocean_zlevel_coordinate':
                 return self.ZLAYER
         return self.VERT_UNKNOWN
+    @vertical.setter
+    def vertical(self,v):
+        self._vertical = v
     
     def grid(self):
         """ if possible, return an UnstructuredGrid instance for the 2D 
@@ -570,6 +577,7 @@ class Hydro(object):
         """
         raise NotImplementedError("Implement in subclass")
 
+    
     def seg_active(self):
         # this is now just a thin wrapper on seg_attrs
         return self.seg_attrs(number=1).astype('b1')
@@ -918,7 +926,18 @@ class Hydro(object):
         assert np.all( np.diff(bc_external)==1)
         return poi[bc_exch,1]-1
 
-    def time_to_index(self,t):
+    def datetime_to_index(self,dt):
+        """ takes a scalar argument convertible to a datetime via utils, 
+        and return the timestep index for this Hydro data.
+        """
+        t_sec=(utils.to_datetime(dt) - self.time0).total_seconds()
+        return self.t_sec_to_index(t_sec)
+    
+    def t_sec_to_index(self,t):
+        """ 
+        This used to be called time_to_index, but since it accepts time as an integer
+        number rof seconds, better to make that clear in the name
+        """
         return np.searchsorted(self.t_secs,t).clip(0,len(self.t_secs)-1)
 
     # not really that universal, but moving towards a common
@@ -1366,11 +1385,11 @@ class HydroFiles(Hydro):
     # if True, allow symlinking to original files where possible.
     enable_write_symlink=False
 
-    def __init__(self,hyd_path):
+    def __init__(self,hyd_path,**kw):
         self.hyd_path=hyd_path
         self.parse_hyd()
 
-        super(HydroFiles,self).__init__()
+        super(HydroFiles,self).__init__(**kw)
 
     def parse_hyd(self):
         self.hyd_toks={}
@@ -1543,7 +1562,13 @@ class HydroFiles(Hydro):
     def exchange_lengths(self):
         with open(self.get_path('lengths-file'),'rb') as fp:
             n_exch=np.fromfile(fp,'i4',1)[0]
-            assert n_exch == self.n_exch
+            if n_exch==0:
+                # at least in the output of ddcouplefm, it seems not to bother
+                # setting the number of exchanges, just writing 0 instead.
+                self.log.warning("Exchange length file lazily reports 0 exchanges")
+                n_exch=self.n_exch
+            else:
+                assert n_exch == self.n_exch
             return np.fromfile(fp,'f4',2*self.n_exch).reshape( (self.n_exch,2) )
 
     def write_are(self):
@@ -1554,7 +1579,7 @@ class HydroFiles(Hydro):
                         self.are_filename)
 
     def areas(self,t):
-        ti=self.time_to_index(t)
+        ti=self.t_sec_to_index(t)
 
         stride=4+self.n_exch*4
         area_fn=self.get_path('areas-file')
@@ -1599,7 +1624,7 @@ class HydroFiles(Hydro):
             filename=fn or self.get_path(label)
             # Optimistically assume that the seg function has the same time steps
             # as the hydro:
-            ti=self.time_to_index(t_sec) 
+            ti=self.t_sec_to_index(t_sec) 
 
             stride=4+self.n_seg*4
             
@@ -1673,7 +1698,7 @@ class HydroFiles(Hydro):
         since flow is integrated over [t,t+dt].  Checks file size and may return
         zero flow
         """
-        ti=self.time_to_index(t)
+        ti=self.t_sec_to_index(t)
         
         stride=4+self.n_exch*4
         flo_fn=self.get_path('flows-file')
@@ -1695,6 +1720,29 @@ class HydroFiles(Hydro):
         with open(poi_fn,'rb') as fp:
             return np.fromstring( fp.read(), 'i4').reshape( (self.n_exch,4) )
 
+    def bottom_depths_2d(self):
+        """ 
+        Return per-element bottom depths.  You may prefer bottom_depths(),
+        which wraps this up into a ParameterSpatial.
+        """
+        try:
+            fn=self.get_path('depths-file')
+        except KeyError:
+            return None
+
+        with open(fn,'rb') as fp:
+            sizes=np.fromfile(fp,'i4',count=6)
+            _,count1,count2,count3,count4,_ = sizes
+            depths=np.fromfile(fp,'f4')
+            assert len(depths)==count1
+        return depths
+
+    def bottom_depths(self):
+        elt_depths=self.bottom_depths_2d()
+        self.infer_2d_elements()
+        assert self.n_2d_elements==len(elt_depths)
+        return ParameterSpatial(elt_depths[self.seg_to_2d_element],hydro=self)
+        
     def planform_areas(self):
         # any chance we have this info written out to file?
         # seems like there are two competing ideas of what is in surfaces-file
@@ -4400,13 +4448,13 @@ class FilterHydroBC(Hydro):
         return sel
 
     def volumes(self,t):
-        ti=self.time_to_index(t)
+        ti=self.t_sec_to_index(t)
         return self.filt_volumes[ti,:]
     def flows(self,t):
-        ti=self.time_to_index(t)
+        ti=self.t_sec_to_index(t)
         return self.filt_flows[ti,:]
     def areas(self,t):
-        ti=self.time_to_index(t)
+        ti=self.t_sec_to_index(t)
         return self.filt_areas[ti,:]
 
     def planform_areas(self):
@@ -4853,7 +4901,7 @@ class Sigmified(Hydro):
         rel_err_thresh=0.5
         if rel_err.max() >= rel_err_thresh:
             self.log.warning("Vertical fluxes still had relative errors up to %.2f%%"%( 100*rel_err.max() ) )
-            self.log.warning("  at t=%s  (ti=%d)"%(t, self.time_to_index(t)))
+            self.log.warning("  at t=%s  (ti=%d)"%(t, self.t_sec_to_index(t)))
 
             # It's possible that precip or mass limits from the hydro code yield Vpred which go negative.
             # this would be bad news for dwaq scalar transport.  Find any water columns which have a
@@ -4895,7 +4943,7 @@ class Sigmified(Hydro):
             dz_pred=Vpred / plan_areas
 
             # compare to the errors already in hydro_z:
-            z_errors=self.check_hydro_z_conservation(ti=self.time_to_index(t))
+            z_errors=self.check_hydro_z_conservation(ti=self.t_sec_to_index(t))
             
             self.log.warning("Some predicted volumes are negative, for min(dz)=%f at seg %d"%(dz_pred.min(),
                                                                                               np.argmin(dz_pred)))
@@ -5283,7 +5331,7 @@ class Discharge(object):
     No support yet for things like SURFACE, BANK or BED.
     """
     def __init__(self,
-                 seg_id=None, # directly specify a segment
+                 seg_id=None, # directly specify a segment, 0-based
                  element=None,k=0, # segment from element,k combination
                  load_id=None, # defaults to using seg_id
                  load_name=None, # defaults to load_id,
@@ -5857,6 +5905,9 @@ class Scenario(scriptable.Scriptable):
     hist_output=(DEFAULT,'SURF','LocalDepth') # history file
     map_output =(DEFAULT,'SURF','LocalDepth')  # map file
 
+    map_formats=['nefis']
+    history_formats=['nefis','binary']
+
     # settings related to paths - a little sneaky, to allow for shorthand
     # to select the next non-existing subdirectory by setting base_path to
     # "auto"
@@ -5998,7 +6049,8 @@ END_MULTIGRID"""%num_layers
         self.hydro.scenario=self
 
         # sensible defaults for simulation period
-        self.time_step=self.hydro.time_step
+        if self.time_step is None:
+            self.time_step=self.hydro.time_step
         self.time0 = self.hydro.time0
         self.start_time=self.time0+self.scu*self.hydro.t_secs[0]
         self.stop_time =self.time0+self.scu*self.hydro.t_secs[-1]
@@ -6058,9 +6110,20 @@ END_MULTIGRID"""%num_layers
         self.discharges=[]
         self.loads=[]
 
-    def add_discharge(self,*arg,**kws):
+    def add_discharge(self,*arg,on_exists='exception',**kws):
         disch=Discharge(*arg,**kws)
         disch.scenario=self
+        disch.update_fields()
+        exists=False
+        for other in self.discharges:
+            if other.load_id==disch.load_id:
+                if on_exists=='exception':
+                    raise Exception("Discharge with id='%s' already exists"%other.load_id)
+                elif on_exists=='ignore':
+                    self.log.info("Discharge id='%s' exists - skipping duplicate"%other.load_id)
+                    return other
+                else:
+                    assert False 
         self.discharges.append(disch)
         return disch
 
@@ -7559,12 +7622,19 @@ INCLUDE '{self.atr_filename}'  ; attributes file
                 lines.append("  3 ; only extras, {} output".format(output_type))
                 lines.append("{} ; number of extra".format(len(vnames)))
                 lines+=vnames
-        lines += ["  1 ; binary history file on",
-                  "  0 ; binary map     file on",
-                  "  1 ; nefis  history file on",
-                  "  1 ; nefis  map     file on",
-                  "; ",
-                  " #9 ; delimiter for the ninth block"]
+
+        if 1: # allow formats to be configurable, too
+            lines.append( "%d ; binary history file"%int('binary' in self.scenario.history_formats) )
+            lines.append( "%d ; binary map file    "%int('binary' in self.scenario.map_formats)     )
+            lines.append( "%d ; nefis history file "%int('nefis'  in self.scenario.history_formats) )
+            lines.append( "%d ; nefis map file     "%int('nefis'  in self.scenario.map_formats)     )
+        else: # old hardcoded approach:
+            lines += ["  1 ; binary history file on",
+                      "  0 ; binary map     file on",
+                      "  1 ; nefis  history file on",
+                      "  1 ; nefis  map     file on"]
+        lines+=["; ",
+                " #9 ; delimiter for the ninth block"]
 
         return "\n".join(lines)
 
@@ -7576,3 +7646,4 @@ INCLUDE '{self.atr_filename}'  ; attributes file
                " #10 ; delimiter for the tenth block "]
         return "\n".join(lines)
 
+    
