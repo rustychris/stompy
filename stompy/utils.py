@@ -909,6 +909,15 @@ def to_dt64(x):
         assert False
 
 def to_unix(t):
+    """ Convert t to unix epoch time, defined as the number of seconds
+    since 1970-01-01 00:00:00.  The result is a float or int, and is *not*
+    distinguishable a priori from datenums.  For that reason, numerical values
+    passed to the other date converters are assumed to be datenums.
+
+    Also note that if you want to double-check the results of this function
+    via python's datetime module, use datetime.datetime.utcfromtimestamp(x).
+    Otherwise you are likely to get some unwelcome time zone conversions.
+    """
     if 1:
         # I think this is actually pretty good.
         unix0=np.datetime64('1970-01-01 00:00:00')
