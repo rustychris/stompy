@@ -684,8 +684,8 @@ class PrincipalThetaException(Exception):
     pass
 principal_theta.Exception=PrincipalThetaException
 
-def principal_vec(vec,detrend=False):
-    theta=principal_theta(vec,detrend=detrend)
+def principal_vec(vec,**kw):
+    theta=principal_theta(vec,**kw)
     return np.array( [np.cos(theta),np.sin(theta)] )
 
 def rotate_to_principal(vec,eta=None,positive='flood',detrend=False,
@@ -924,11 +924,16 @@ def to_datetime(x):
     except AttributeError:
         pass
 
+    # Unwrap xarray data
+    if xr is not None and isinstance(x,xr.DataArray):
+        x=x.values
+    
     if isinstance(x,float):
         return num2date(x)
     if isinstance(x,datetime.datetime):
         return x
 
+    
     # isscalar is not so general - it does *not* mean not array, it means
     # the value *is* a numpy scalar.
     if np.isscalar(x):

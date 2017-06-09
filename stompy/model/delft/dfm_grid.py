@@ -1,6 +1,8 @@
 from __future__ import print_function
 from stompy.grid import unstructured_grid
 import numpy as np
+import logging
+log=logging.getLogger(__name__)
 
 # TODO: migrate to xarray
 from stompy.io import qnc
@@ -267,3 +269,22 @@ class DFMGrid(unstructured_grid.UnstructuredGrid):
 
         if var_depth in nc.variables: # have depth at nodes
             self.nodes['depth']=nc[var_depth].values.copy()
+
+
+def cleanup_multidomains(grid):
+    """
+    Given an unstructured grid which was the product of DFlow-FM
+    multiple domains stitched together, fix some of the extraneous
+    geometries left behind.
+    Grid doesn't have to have been read as a DFMGrid.
+    """
+    log.info("Regenerating edges")
+    grid.make_edges_from_cells()
+    log.info("Removing orphaned nodes")
+    grid.delete_orphan_nodes()
+    log.info("Removing duplicate nodes")
+    grid.merge_duplicate_nodes()
+    log.info("Renumbering nodes")
+    grid.renumber_nodes()
+    log.info("Extracting grid boundary")
+    return grid

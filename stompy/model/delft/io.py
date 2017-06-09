@@ -359,6 +359,7 @@ def read_map(fn,hyd,use_memmap=True,include_grid=True):
 
         substance_names=np.fromfile(fp,'S20',n_subs)
 
+
         # not sure if there is a quicker way to get the number of layers
         hyd.infer_2d_elements()
         n_layers=1+hyd.seg_k.max()
@@ -389,7 +390,12 @@ def read_map(fn,hyd,use_memmap=True,include_grid=True):
     ds=xr.Dataset()
 
     ds.attrs['header']=txt_header
-    
+
+    # a little python 2/3 misery
+    try:
+        substance_names=[s.decode() for s in substance_names]
+    except AttributeError:
+        pass
     ds['sub']= ( ('sub',), [s.strip() for s in substance_names] )
 
     times=utils.to_dt64(hyd.time0) + np.timedelta64(1,'s') * mapped['tsecs']
