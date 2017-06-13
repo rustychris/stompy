@@ -1,7 +1,9 @@
+from __future__ import print_function
+
 import numpy as np
 import os
 import nose
-from nose.tools import assert_raise
+from nose.tools import assert_raises
 
 from stompy.grid import unstructured_grid
 
@@ -144,7 +146,7 @@ def test_pickle():
 ## 
 
 def test_modify_max_sides():
-    ug=unstructured_grid.SuntansGrid('/home/rusty/src/umbra/Umbra/sample_data/sfbay')
+    ug=unstructured_grid.SuntansGrid(os.path.join(sample_data,'sfbay') )
 
     ug.modify_max_sides(max_sides=6)
     
@@ -159,6 +161,32 @@ def test_modify_max_sides():
 
     with assert_raises(unstructured_grid.GridException) as cm:
         ug.modify_max_sides(max_sides=3)
+
+## 
+
+def test_boundary_polygon():
+    ug=unstructured_grid.SuntansGrid(os.path.join(sample_data,'sfbay') )
+    poly1=ug.boundary_polygon()
+    poly2=ug.boundary_polygon_by_edges()
+    poly3=ug.boundary_polygon_by_union()
+
+    print("poly1 area:",poly1.area)
+    print("poly2 area:",poly2.area)
+    print("poly3 area:",poly3.area)
+
+    # in one test, these were the same out to 12 digits.
+    assert abs( (poly1.area - poly2.area) / poly1.area ) < 1e-10
+    assert abs( (poly1.area - poly3.area) / poly1.area ) < 1e-10
+
+
+def test_nearest_cell():
+    ug=unstructured_grid.SuntansGrid(os.path.join(sample_data,'sfbay') )
+    
+    target=[550000,4.14e6]
+    hit1=ug.select_cells_nearest(target,inside=True)
+    hit2=ug.cell_containing(target)
+
+    assert hit1==hit2
 
 ## 
     

@@ -1,19 +1,9 @@
 #!/usr/bin/env python
 from __future__ import print_function
 
-# Next: replicate the listener architecture
-#  possibly using a decorator.  Can probably migrate some existing
-#  functionality to listeners, too.
-
 # unstructured_grid.py
 #  common methods for manipulating unstructured grids, specifically mixed quad/tri
 #  grids from FISH-PTM and UnTRIM
-
-# This started from grid_reader.py, but has been expanded to include some writing
-# functionality, and hopefully a more explicit interface
-
-# used to be in rma/unstructured_grid.py
-#  also some code incorporated from branched rma/unstructured_grid_netcdf.py
 
 import sys,os,types
 import logging
@@ -34,10 +24,11 @@ import numpy as np
 from numpy.linalg import norm
 from collections import defaultdict
 
-from shapely import wkt,geometry,wkb
+from shapely import wkt,geometry,wkb,ops
 import matplotlib.pyplot as plt
 from matplotlib.tri import Triangulation
 from matplotlib.collections import PolyCollection, LineCollection
+from matplotlib.path import Path
 
 from ..spatial import gen_spatial_index
 from ..utils import (mag, circumcenter, circular_pairs,signed_area, poly_circumcenter,
@@ -51,13 +42,11 @@ except ImportError:
     logging.info("netcdf unavailable")
     netCDF4=None
     
-# from svn:.../python - should be one directory up, and hopefully
-# on the path
-#try:
-# both depend on ogr
-from ..spatial import (wkb2shp, join_features)
-#except ImportError:
-#    logging.info( "No wkb2shp, join_features" )
+try:
+    # both depend on ogr
+    from ..spatial import (wkb2shp, join_features)
+except ImportError:
+    logging.info( "No wkb2shp, join_features" )
     
 from .. import undoer
 
@@ -65,7 +54,6 @@ try:
     from .. import priority_queue as pq
 except ImportError:
     pq = 'NO priority queue found!'
-
 
 
 class GridException(Exception):
@@ -230,7 +218,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
     # useful constants - part of the class to make it easier when subclassing
     # in other modules
-    UNKNOWN = -99 # need to recalculate. 
+    UNKNOWN = -99 # need to recalculate
     UNMESHED = -2 # edges['cells'] for edge with an unmeshed boundary
     # for nodes or edges beyond the number of sides of a given cell
     # also for a edges['cells'] when at a boundary
@@ -2465,15 +2453,40 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         lines=join_features.merge_lines(segments=segs)
         return lines
 
-    def boundary_polygon(self):
+    def boundary_polygon_by_edges(self):
         """ return polygon, potentially with holes, representing the domain.
-        equivalent to unioning all cell_polygons, but hopefully faster
+        equivalent to unioning all cell_polygons, but hopefully faster.
+        in one test, this method was 3.9 times faster than union.  This is 
+        certainly depends on the complexity and size of the grid, though.
         """
         lines=self.boundary_linestrings()
         polys=join_features.lines_to_polygons(lines,close_arc=False)
         if len(polys)>1:
             raise GridException("somehow there are multiple boundary polygons")
         return polys[0]
+
+    def boundary_polygon_by_union(self):
+        """ Compute a polygon encompassing the full domain by unioning all
+        cell polygons.
+        """
+        cell_geoms = [None]*self.Ncells()
+
+        for i in self.valid_cell_iter():
+            xy = self.nodes['x'][self.cell_to_nodes(i)]
+            cell_geoms[i] = geometry.Polygon(xy)
+        return ops.cascaded_union(cell_geoms) 
+
+    def boundary_polygon(self):
+        """ return polygon, potentially with holes, representing the domain.
+        This method tries an edge-based approach, but will fall back to unioning
+        all cell polygons if the edge-based approach fails.
+        """
+        try:
+            return self.boundary_polygon_by_edges()
+        except Exception as exc:
+            self.log.warning('Warning, boundary_polygon() failed using edges!  Trying polygon union method')
+            self.log.warning(exc,exc_info=True)
+            return self.boundary_polygon_by_union()
 
     def extract_linear_strings(self):
         """
@@ -2858,7 +2871,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
           False => use faster query, but no guarantee that xy is inside the returned cell
           True  => verify that xy is inside the returned cell, may return None.  cannot
            be used with count.  Even with True, the search isn't exhaustive and a really
-           bizarre grid might yield erroneous results.
+           bizarre grid might yield erroneous results.  In this case, count is used to
+           specify how many cells to test for containing the query point, and the
+           return value will be a single index.
         """
         xy=np.asarray(xy)
         real_count=count
@@ -2866,11 +2881,14 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             real_count=1
 
         if inside:
-            assert real_count==1
+            # Now use count t
+            # assert real_count==1
             # give ourselves a better shot at finding the right cell
             # figure that 10 is greater than the degree of
             # any nodes
-            real_count=10
+            if count is None:
+                real_count=10
+            count=1
 
         hits = self.cell_center_index().nearest(xy[self.xxyy],real_count)
 
@@ -2882,11 +2900,15 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     break
             hits=results
         
-        if inside:
-            pnt=geometry.Point(xy[0],xy[1])
+        if inside: # check whether the point is truly inside the cell
+            # -- using shapely to determine contains, may be slower than matplotlib
+            #  pnt=geometry.Point(xy[0],xy[1])
+            #  for hit in hits:
+            #      if self.cell_polygon(hit).contains(pnt):
+            # -- using matplotlib to determine contains
             for hit in hits:
-                if self.cell_polygon(hit).contains(pnt):
-                    return hit
+                if self.cell_path(hit).contains_point(xy):
+                    return hit            
             return None
 
         if count is None:
@@ -3420,6 +3442,27 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             return HalfEdge(self,j,0)
         else:
             return HalfEdge(self,j,1)
+
+    def cell_containing(self,xy,neighbors_to_test=4):
+        """ Compatibility wrapper for select_cells_nearest.  This
+        may disappear in the future, depending...
+        """ 
+        hit = self.select_cells_nearest(xy, count=neighbors_to_test, inside=True)
+        if hit is None:
+            return -1
+        else:
+            return hit
+
+    def cell_path(self,i):
+        """
+        Return a matplotlib Path object representing the closed polygon of
+        cell i
+        """
+        cell_nodes = self.cell_to_nodes(i)
+        cell_codes = np.ones(len(cell_nodes),np.int32)*Path.LINETO
+        cell_codes[0] = Path.MOVETO    
+        cell_codes[-1] = Path.CLOSEPOLY
+        return Path(self.nodes['x'][cell_nodes])
 
 class UGrid(UnstructuredGrid):
     def __init__(self,nc=None,grid=None):
@@ -4342,275 +4385,3 @@ class PtmGrid(UnstructuredGrid):
             self.edges['nodes'][i,:] = [int(s)-1 for s in line[2:4]]
             self.edges['cells'][i,:] = [int(s)-1 for s in line[4:6]]
             self.edges['mark'][i] = int(line[6])
-
-    ## Everything below here is from the old code, and should probably be translated to the new
-    ## API and moved into UnstructuredGrid
-    #
-    #       
-    #def init_shp(self,shpname,geom_type):
-    #    drv = ogr.GetDriverByName('ESRI Shapefile')
-    #    if shpname[-4:] == '.shp':
-    #        # remove any matching files:
-    #        if os.path.exists(shpname):
-    #            print "Removing the old to make way for the new"
-    #            os.unlink(shpname)
-    #
-    #    new_ds = drv.CreateDataSource(shpname)
-    #    srs = osr.SpatialReference()
-    #    
-    #    # for now, assume that it's UTM Zone 10, NAD83 - 
-    #    srs.SetFromUserInput('EPSG:26910')
-    #    
-    #    base,ext = os.path.splitext(os.path.basename(shpname))
-    #
-    #    new_layer = new_ds.CreateLayer(base,srs=srs,geom_type=geom_type)
-    #    return new_ds,new_layer
-    #    
-    #def write_shore_shp(self,shpname):
-    #    new_ds, new_layer = self.init_shp(shpname,ogr.wkbLineString)
-    #    
-    #    fdef = new_layer.GetLayerDefn()
-    #
-    #    sides = self.sides()
-    #    vertices = self.vertices()
-    #    
-    #    boundaries = sides[where(sides[:,-1]>0)][:,:2]
-    #
-    #    for i in range(boundaries.shape[0]):
-    #        l = vertices[boundaries[i]]
-    #
-    #        feat = ogr.Feature(fdef)
-    #        wkt = """LINESTRING(%f %f, %f %f)"""%(l[0,0],l[0,1],l[1,0],l[1,1])
-    #        # print "Wkt is: ",wkt
-    #        
-    #        geom = ogr.CreateGeometryFromWkt(wkt)
-    #        feat.SetGeometryDirectly(geom)
-    #        new_layer.CreateFeature(feat)
-    #        
-    #    new_layer.SyncToDisk()
-    #
-    #
-    #def write_edges_shp(self,shpname,extra_fields=[]):
-    #    """ Write a shapefile with each edge as a polyline.
-    #    see write_cells_shp for description of extra_fields        
-    #    """ 
-    #    base_dtype = [('edge_id1',np.int32),
-    #                  ('length',np.float64),
-    #                  ('depth_mean',np.float64)]
-    #                  
-    #    side_depths_mean = self.side_depths()
-    #    
-    #    try:
-    #        side_depths_max = self.side_depths_max()
-    #        extra_fields.append( ('depth_max',np.float64, lambda e: side_depths_max[e]) )
-    #    except:
-    #        pass
-    #    
-    #                  
-    #    for efi in range(len(extra_fields)):
-    #        fname,ftype,ffunc = extra_fields[efi]
-    #        if ftype == int:
-    #            ftype = np.int32
-    #        base_dtype.append( (fname,ftype) )
-    #        
-    #    edges = self.sides()
-    #    vertices = self.vertices()
-    #    
-    #    edge_data = zeros(len(edges), dtype=base_dtype)
-    #    edge_geoms = [None]*len(edges)
-    #      
-    #    for edge_id in range(edges.shape[0]):
-    #        if edge_id % 500 == 0:
-    #            print "%0.2g%%"%(100.*edge_id/edges.shape[0])
-    #        
-    #        nodes = vertices[edges[edge_id,:2]]
-    #        g = geometry.LineString(nodes)
-    #        edge_geoms[edge_id] = g
-    #        edge_data[edge_id]['length'] = g.length
-    #        edge_data[edge_id]['edge_id1'] = edge_id + 1
-    #        edge_data[edge_id]['depth_mean'] = side_depths_mean[edge_id]
-    #
-    #        for fname,ftype,ffunc in extra_fields:
-    #            edge_data[edge_id][fname] = ffunc(edge_id)
-    #        
-    #    wkb2shp.wkb2shp(shpname,input_wkbs=edge_geoms,fields=edge_data,
-    #                    overwrite=True)
-    #    
-    #                 
-    #def write_cells_shp(self,shpname,extra_fields=[]):
-    #    """ extra_fields is a list of lists:
-    #          extra_fields[i] = (field_name,field_type, lambda cell_index: field_value)
-    #    field type must be a numpy type - int32,float64, etc.     
-    #    """
-    #    # assemble a numpy struct array with all of the info 
-    #    # seems that having an object references in there is unstable,
-    #    # so pass geometries in a list separately.
-    #    base_dtype =[('poly_id1',np.int32),
-    #                 ('_area',np.float64),
-    #                 ('volume',np.float64),
-    #                 ('depth_mean',np.float64)]
-    #
-    #    try:
-    #        cell_depths_max = self.cell_depths_max()
-    #        extra_fields.append( ('depth_max',np.float64, lambda i: cell_depths_max[i]) )
-    #    except:
-    #        pass
-    #             
-    #    for efi in range(len(extra_fields)):
-    #        fname,ftype,ffunc = extra_fields[efi]
-    #        if ftype == int:
-    #            ftype = np.int32
-    #        base_dtype.append( (fname,ftype) )
-    #        
-    #    polys = self.polygons()
-    #    edges = self.sides()
-    #    vertices = self.vertices()
-    #    cell_depths = self.cell_depths()
-    #    
-    #    cell_data = zeros(len(polys), dtype=base_dtype)
-    #    cell_geoms = [None]*len(polys)
-    #      
-    #    for poly_id in range(polys.shape[0]):
-    #        if poly_id % 500 == 0:
-    #            print "%0.2g%%"%(100.*poly_id/polys.shape[0])
-    #        
-    #        edge_indices = (polys[poly_id])[polys[poly_id]>=0]
-    #
-    #        # now get an array of nodeA,nodeB pairs
-    #        my_edges = edges[edge_indices,:2]
-    #
-    #        # flip the first manually:
-    #        n_sides = my_edges.shape[0]
-    #        
-    #        for i in range(n_sides):
-    #            # if nodeA of the first edge is in the second
-    #            # edge, then it's really nodeB...
-    #            if my_edges[i,0] in my_edges[(i+1)%n_sides]:
-    #                my_edges[i] = my_edges[i,::-1]
-    #        node_indices = my_edges[:,0]
-    #        nodes = vertices[node_indices]
-    #        
-    #        # is the problem with shapely? nope
-    #        # is the problem with assigning to the struct?
-    #        g = geometry.Polygon(array(nodes))
-    #        cell_geoms[poly_id] = g
-    #        
-    #        area = g.area
-    #        cell_data[poly_id]['poly_id1'] = poly_id + 1
-    #        cell_data[poly_id]['_area'] = area
-    #        cell_data[poly_id]['volume'] = area * cell_depths[poly_id]
-    #        cell_data[poly_id]['depth_mean'] = cell_depths[poly_id]
-    #
-    #        for fname,ftype,ffunc in extra_fields:
-    #            cell_data[poly_id][fname] = ffunc(poly_id)
-    #        
-    #    wkb2shp.wkb2shp(shpname,input_wkbs=cell_geoms,fields=cell_data,
-    #                    overwrite=True)
-    #    
-    #    
-    #def cell_vertex_centroids(self):
-    #    cell_sides = self.polygons()
-    #    centers = zeros( (len(cell_sides),2), np.float64)
-    #    tris = cell_sides[:,3] < 0
-    #    
-    #    edge_nodes = self.sides()[:,:2]
-    #    tri_nodes = edge_nodes[cell_sides[tris,:3]] # each node included twice
-    #    quad_nodes = edge_nodes[cell_sides[~tris,:]]
-    #    tri_nodes=tri_nodes.reshape( (-1,6))
-    #    quad_nodes = quad_nodes.reshape( (-1,8))
-    #    verts = self.vertices()
-    #    tri_pnts = verts[tri_nodes].mean(axis=1)
-    #    quad_pnts = verts[quad_nodes].mean(axis=1)
-    #    centers[tris,:]= tri_pnts
-    #    centers[~tris,:]=quad_pnts
-    #    return centers
-    #    
-    #_cell_index = None
-    #def closest_cell(self,p):
-    #    if self._cell_index is None and KDTree is not None:
-    #        centers = self.cell_vertex_centroids()
-    #        self._cell_index = KDTree(centers)
-    #    if self._cell_index is not None:
-    #        d,i = self._cell_index.query(array(p))            
-    #    else:            
-    #        centers = self.cell_vertex_centroids()
-    #        dists = sum( (p - centers)**2, axis=1 )
-    #        i = argmin(dists)
-    #    return i
-    #_node_index = None
-    #def closest_node(self,p):
-    #    if self._node_index is None and KDTree is not None:
-    #        self._node_index = KDTree(self.vertices())
-    #    if self._node_index is not None:
-    #        d,i = self._node_index.query(array(p))       
-    #    else:            
-    #        dists = sum( (p - self.vertices())**2, axis=1 )
-    #        i = argmin(dists)
-    #    return i
-    #    
-    #def boundary_sides_and_nodes(self,p):
-    #    boundary_sides_in_polygon = []
-    #    boundary_nodes_in_polygon = []
-    #    for j in range(self.Ninternal_sides, self.Nflow_sides):
-    #        vert_indices = self._sides[j,0:2]
-    #        print "vert_in",vert_indices
-    #        # check if both nodes within polygon
-    #        p1 = geometry.Point(self._vertices[vert_indices[0]])
-    #        p2 = geometry.Point(self._vertices[vert_indices[1]])
-    #        if (p.intersects(p1) and p.intersects(p2)):
-    #            boundary_sides_in_polygon.append(j)
-    #            boundary_nodes_in_polygon.append([vert_indices[0],vert_indices[1]])
-    #    return boundary_sides_in_polygon, boundary_nodes_in_polygon 
-    #    
-    #def plot_scalar(self,scal,edgewidths=0,ax=None):
-    #    ax = ax or pylab.gca()
-    #    
-    #    # create a poly collection:
-    #    cell_sides = self.polygons()
-    #    edges = self.sides() # node,node,cell,cell
-    #    tris = cell_sides[:,3] < 0
-    #
-    #    cell_sides = cell_sides.copy() # Ncells,4  gives the edges that make up a cell
-    #    # make triangles just degenerate quads
-    #    cell_sides[tris,3] = cell_sides[tris,2] 
-    #
-    #    edge_nodes = self.sides()[:,:2]
-    #    fwd_nodes = 1*(edges[cell_sides,3]==arange(len(cell_sides))[:,newaxis])
-    #    cell_nodes = edge_nodes[cell_sides,fwd_nodes]
-    #    cell_vertices = self.vertices()[cell_nodes]
-    #
-    #    coll = PolyCollection(cell_vertices)
-    #    if scal is not None:
-    #        coll.set_array(scal)
-    #    if edgewidths == 0:
-    #        coll.set_edgecolor('none')
-    #    else:
-    #        coll.set_linewidths(edgewidths)
-    #        coll.set_edgecolor('face')
-    #    ax.add_collection(coll)
-    #    return coll
-
-
-# Propagating edits to cell_center_index:
-#   add_cell
-#     looks like it's already there.
-#   delete_cell
-#     ostensibly already there!?
-#   modify_node
-#     added.
-#   unadd_cell => direct to delete_cell
-#   undelete_cell => mostly redirects to add_cell
-
-# While trying to delete an edge around Palo Alto Baylands,
-# and have it cascade to two cells -
-#   Edge has cell neighbors exception,
-#   but this is part of delete_edge_cascade.  So what gives?
-
-# is it possible that the cell gets deleted, but didn't know to update
-# the edge's reference to it?   
-# delete_cell looks fine, though.
-# Seems like j=78920 is [one of] the problems
-# has cell neighbors 51553, 3323
-# This seems to happen after renumbering.
-# Okay - the cell renumbering code (maybe edges, too?) - not smart about
-# edges['cells'] < -1.
