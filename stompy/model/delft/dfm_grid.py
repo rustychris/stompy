@@ -189,7 +189,11 @@ class DFMGrid(unstructured_grid.UnstructuredGrid):
             mesh=nc[meshes[0]]
             var_points_x,var_points_y = mesh.node_coordinates.split(' ')
             var_edges=mesh.edge_node_connectivity
-            var_cells=mesh.face_node_connectivity
+            try:
+                var_cells=mesh.face_node_connectivity
+            except AttributeError:
+                var_cells='not specified'
+                cells_from_edges=True
         
         # probably this ought to attempt to find a mesh variable
         # with attributes that tell the correct names, and lacking

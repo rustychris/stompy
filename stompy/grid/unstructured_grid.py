@@ -2346,7 +2346,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
          1. Fabricate a triangular version of the grid
          2. 
         """
-        ax=kwargs.get('ax',None) or plt.gca()
+        ax=kwargs.pop('ax',None) or plt.gca()
         tri=self.mpl_triangulation()
         return ax.tricontourf(tri,values,*args,**kwargs)
         
