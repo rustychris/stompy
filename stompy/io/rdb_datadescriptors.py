@@ -1,4 +1,7 @@
+# 2017-06-13: This file seems extraneous, in light of rdb_physical_codes.rdb
+
 # a catalog of data descriptors for USGS rdb records
+
 
 dd_dict = {
     '00060':['Discharge [cfs]'],

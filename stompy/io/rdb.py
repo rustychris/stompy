@@ -1,29 +1,33 @@
+"""
+Tools for reading RDB files, the text-based format often used in USGS 
+data.  See stompy/test/data for examples of this type of data.
+"""
+
 from __future__ import print_function
-from future import standard_library
+
 from functools import reduce
-standard_library.install_aliases()
-from builtins import zip
-from builtins import map
-from builtins import range
-from builtins import object
+
+# the 2to3 stuff added some other cruft which I think actually makes it all worse...
+
 # python import routines for rdb (USGS tab delimited) format
 
 import re,string,time
-import datetime
-from matplotlib.dates import date2num,num2date
-
-import rdb_codes
 import six
-
 import io
+
+import datetime
+import numpy as np
+import xarray as xr
+from matplotlib.dates import date2num,num2date
 
 try:
     import cPickle as pickle
 except ImportError:
     import pickle
     
-from numpy import *
 from rdb_datadescriptors import dd_to_synonyms
+
+from . import rdb_codes
 
 
 # best way to deal with dates:
@@ -70,10 +74,9 @@ class Rdb(object):
 
     def float_or_nan(self,s):
         if s in (None,'','Eqp'):
-            return NaN
+            return np.nan
         else:
             return float(s)
-
 
     def data(self):
         """ assuming that only one data type was requested, try to figure out which
@@ -140,10 +143,12 @@ class Rdb(object):
         # fix up columns
         for i in range(len(headers)):
             if specs[i][-1] == 'n':
-                columns[i] = array(list(map(self.float_or_nan,columns[i])))
+                columns[i] = np.array(list(map(self.float_or_nan,columns[i])))
             elif specs[i][-1] == 'd':
                 # dates get mapped to days since AD 0
-                columns[i] = array(list(map(self.parse_date,columns[i])))
+                columns[i] = np.array(list(map(self.parse_date,columns[i])))
+            elif specs[i][-1] == 's':
+                columns[i] = np.array(columns[i],dtype=object)
 
             # check for single-valued lists -
             # The logic here is a bit odd - since we often get columns
@@ -197,3 +202,66 @@ class Rdb(object):
         valid = reduce(lambda x,y: x&y, masks)
 
         return [compress(valid,column) for column in columns]
+
+
+
+
+def rdb_to_dataset(usgs_fn):
+    usgs_data=Rdb(source_file=usgs_fn)
+
+    # Convert that xarray for consistency
+    ds=xr.Dataset()
+    ds['time']=( ('time',), usgs_data['datetime'])
+
+
+    for key in usgs_data.keys():
+        if key=='datetime':
+            continue
+        data=usgs_data[key]
+
+        # attempt to find better name for the columns
+        varname=key # default to original name
+
+        m=re.match(r'(\d+)_(\d+)_(\d+)(_cd)?$',key)
+        meta={}
+        if m:
+            meta['ts_code']=m.group(1)
+            meta['parm_code']=m.group(2)
+            meta['stat_code']=m.group(3)
+            # print("ts: %s  parm: %s  stat: %s"%(meta['ts_code'],
+            #                                     meta['parm_code'],
+            #                                     meta['stat_code']))
+            parameter=rdb_codes.parm_code_lookup(meta['parm_code'])
+            if parameter is not None:
+                # parm_nm is often really long!
+                # srsname, when present, is shorter
+                srsname=parameter['srsname']
+                if srsname:
+                    varname=srsname
+                else:
+                    varname=parameter['parameter_nm']
+                varname=varname.lower().replace(' ','_').replace(',','').replace('.','')
+
+                meta['units']=parameter['parameter_units']
+            statistic=rdb_codes.stat_code_lookup(meta['stat_code'])
+            if statistic is not None:
+                meta['statistic']=statistic['name']
+
+            if m.group(4) is not None:
+                # TODO: save QA codes
+                continue 
+
+        if isinstance( usgs_data[key], np.ndarray ):
+            if len(data)==len(ds.time):
+                ds[varname] = ( ('time',), data)
+            else:
+                print("What to do with %s"%key)
+
+            for k in meta:
+                ds[varname].attrs[k]=meta[k]
+
+        else: # probably should be an attribute
+            ds.attrs[key]=data
+
+    return ds
+    

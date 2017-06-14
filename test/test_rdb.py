@@ -1,10 +1,21 @@
-from importlib import reload
-import rdb
-import pdb
+import os
+import nose
 
-reload(rdb)
+from stompy.io import rdb, rdb_codes
 
-fp=open('test_rdb.rdb','rb')
+datadir=os.path.join(os.path.dirname(__file__),'data')
 
-#pdb.run( "r=rdb.Rdb(fp=fp)")
-r=rdb.Rdb(fp=fp)
+def test_basic():
+    fn=os.path.join(datadir,'test_rdb.rdb')
+    r=rdb.Rdb(source_file=fn)
+
+def test_xarray():
+    ds1=rdb.rdb_to_dataset(os.path.join(datadir,'test_rdb.rdb'))
+    ds2=rdb.rdb_to_dataset(os.path.join(datadir,'coyote.rdb'))
+
+def test_codes():
+    pcodes=rdb_codes.parm_codes()
+    scodes=rdb_codes.stat_codes()
+    pcodes.loc[60]
+
+
