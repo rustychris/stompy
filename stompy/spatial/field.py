@@ -28,7 +28,7 @@ except ImportError:
     from numpy import nanmean
 
 from scipy import signal
-from scipy.ndimage import map_coordinates
+from scipy import ndimage
 from array_append import array_append
 
 from scipy.interpolate import RectBivariateSpline
@@ -406,7 +406,7 @@ class XYZField(Field):
         elif interpolation=='linear':
             interper = self.lin_interper()
             for i in range(len(X)):
-                if i>0 and i%10000==0:
+                if i>0 and i%100000==0:
                     print("%d/%d"%(i,len(X)))
                 # remember, the slices are y, x
                 vals = interper[X[i,1]:X[i,1]:2j,X[i,0]:X[i,0]:2j]
@@ -2102,7 +2102,6 @@ class SimpleGrid(QuadrilateralGrid):
 
         self.F[~valid] = fill_data[~valid] # fill_data is wrong orientation
 
-
     # Is there a clever way to use convolution here -
     def fill_by_convolution(self,iterations=7,smoothing=0,kernel_size=3):
         """  Better for filling in small seams - repeatedly
@@ -2118,9 +2117,9 @@ class SimpleGrid(QuadrilateralGrid):
 
         If iterations is 'adaptive', then iterate until there are no nans.
         """
-        kern = ones( (kernel_size,kernel_size) )
+        kern = np.ones( (kernel_size,kernel_size) )
 
-        valid = isfinite(self.F) 
+        valid = np.isfinite(self.F) 
 
         bin_valid = valid.copy()
         # newF = self.F.copy()
@@ -2157,7 +2156,33 @@ class SimpleGrid(QuadrilateralGrid):
                 adaptive = False # we're done 
 
         # and turn the missing values back to nan's
-        newF[~bin_valid] = nan
+        newF[~bin_valid] = np.nan
+
+    def smooth_by_convolution(self,kernel_size=3,iterations=1):
+        """
+        Repeatedly apply a 3x3 average filter (or other size: kernel_size).
+        Similar to the smoothing step of fill_by_convolution, except that
+        the effect is applied everywhere, not just in the newly-filled
+        areas.
+        """
+        kern = np.ones( (kernel_size,kernel_size) )
+
+        valid = np.isfinite(self.F) 
+
+        # avoid nan contamination - set these to zero
+        self.F[~valid] = 0.0
+
+        for i in range(iterations):
+            weights = signal.convolve2d(valid, kern,mode='same',boundary='symm')
+            values  = signal.convolve2d(self.F,kern,mode='same',boundary='symm')
+
+            # update data_or_zero and bin_valid
+            # so anywhere that we now have a nonzero weight, we should get a usable value.
+            self.F[valid] = values[valid] / weights[valid]
+
+        # and turn the missing values back to nan's
+        self.F[~valid] = np.nan
+
     
     def polygon_mask(self,poly):
         """ similar to mask_outside, but:
@@ -2198,7 +2223,7 @@ class SimpleGrid(QuadrilateralGrid):
                     [self.dx/2.0,self.dy/2.0],
                     [-self.dx/2.0,self.dy/2.0]])
         for col in range(len(X)):
-            print("%d/%d"%(col,len(X)))
+            # print("%d/%d"%(col,len(X)))
             for row in range(len(Y)):
                 if isfinite(self.F[row,col]):
                     if straddle is None:
@@ -2387,8 +2412,11 @@ class SimpleGrid(QuadrilateralGrid):
 
         interpolation: 'linear','quadratic','cubic' will pass the corresponding order
            to RectBivariateSpline.
-         'bilinear' will instead use simple bilinear interpolation, will has the
+         'bilinear' will instead use simple bilinear interpolation, which has the
          added benefit of preserving nans.
+
+        missing: the value to be assigned to parts of the tile which are not covered 
+        by the source data.
         """
         if match is not None:
             xxyy = match.extents
@@ -2442,6 +2470,7 @@ class SimpleGrid(QuadrilateralGrid):
                 result[ y>F.shape[0],: ] = missing
                 result[ :, x<0 ] = missing
                 result[ :, x>F.shape[1]] = missing
+
                 return result
         else:
             k = ['constant','linear','quadratic','cubic'].index(interpolation)
@@ -2458,9 +2487,9 @@ class SimpleGrid(QuadrilateralGrid):
 
         # limit to where we actually have data:
         # possible 0.5dx issues here
-        xbeg,xend = searchsorted(x,self.extents[:2])
-        ybeg,yend = searchsorted(y,self.extents[2:])
-        Ftmp = ones( (len(y),len(x)),dtype=self.F.dtype)
+        xbeg,xend = np.searchsorted(x,self.extents[:2])
+        ybeg,yend = np.searchsorted(y,self.extents[2:])
+        Ftmp = np.ones( (len(y),len(x)),dtype=self.F.dtype)
         Ftmp[...] = missing
         # This might have some one-off issues
         Ftmp[ybeg:yend,xbeg:xend] = interper(y[ybeg:yend],x[xbeg:xend])
@@ -2883,6 +2912,200 @@ if ogr:
             if invalid_count:
                 print("MultiBlenderField: %d source polygons were totally obscured"%invalid_count)
             self.sources=sources[valid]
+
+class CompositeField(Field):
+    """ 
+    In the same vein as BlenderField, but following the model of raster
+    editors like Photoshop or the Gimp.
+
+    Individual sources are treated as an ordered "stack" of layers.
+    
+    Layers higher on the stack can overwrite the data provided by layers
+    lower on the stack.
+
+    A layer is typically defined by a raster data source and a polygon over
+    which it is valid.  
+
+    Each layer's contribution to the final dataset is both a data value and
+    an alpha value.  This allows for blending/feathering between layers.
+
+    The default "data_mode" is simply overlay.  Other data modes like "min" or 
+    "max" are possible.  
+
+    The default "alpha_mode" is "valid()" which is essentially opaque where there's
+    valid data, and transparent where there isn't.  A second common option would 
+    probably be "feather(<distance>)", which would take the valid areas of the layer,
+    and feather <distance> in from the edges.
+
+    The sources, data_mode, alpha_mode details are taken from a shapefile.
+
+    Alternatively, if a factory is given, it should be callable and will take a single argument -
+    a dict with the attributse for each source.  The factory should then return the corresponding
+    Field.
+    """
+    def __init__(self,shp_fn=None,factory=None,
+                 priority_field='priority',
+                 data_mode='data_mode',
+                 alpha_mode='alpha_mode',
+                 shp_data=None):
+        self.shp_fn = shp_fn
+        if shp_fn is not None: # read from shapefile
+            self.sources=wkb2shp.shp2geom(shp_fn)
+        else:
+            self.sources=shp_data
+
+        if data_mode is not None:
+            self.data_mode=self.sources[data_mode]
+        else:
+            self.data_mode=['overlay()']*len(self.sources)
+
+        if alpha_mode is not None:
+            self.alpha_mode=self.sources[alpha_mode]
+        else:
+            self.data_mode=['valid()']*len(self.sources)
+
+        # Impose default values on those:
+        for i in range(len(self.sources)):
+            if self.alpha_mode[i]=='':
+                self.alpha_mode[i]='valid()'
+            if self.data_mode[i]=='':
+                self.data_mode[i]='overlay()'
+
+        super(CompositeField,self).__init__()
+
+        self.factory = factory
+
+        self.delegate_list=[None]*len(self.sources)
+
+        self.src_priority=self.sources[priority_field]
+        self.priorities=np.unique(self.src_priority)
+
+    def bounds(self):
+        raise Exception("For now, you have to specify the bounds when gridding a BlenderField")
+
+    def load_source(self,i):
+        if self.delegate_list[i] is None:
+            self.delegate_list[i] = self.factory( self.sources[i] )
+        return self.delegate_list[i]
+
+    def to_grid(self,nx=None,ny=None,bounds=None,dx=None,dy=None):
+        """ render the layers to a SimpleGrid tile.
+        """
+        # boil the arguments down to dimensions
+        if bounds is None:
+            xmin,xmax,ymin,ymax = self.bounds()
+        else:
+            if len(bounds) == 2:
+                xmin,ymin = bounds[0]
+                xmax,ymax = bounds[1]
+            else:
+                xmin,xmax,ymin,ymax = bounds
+        if nx is None:
+            nx=1+int(np.round((xmax-xmin)/dx))
+            ny=1+int(np.round((ymax-ymin)/dy))
+
+        # allocate the blank starting canvas
+        result_F =np.ones((ny,nx),'f8')
+        result_F[:]=-999
+        result_data=SimpleGrid(extents=bounds,F=result_F)
+        result_alpha=result_data.copy()
+        result_alpha.F[:]=0.0
+
+        # Which sources to use, and in what order?
+        box=geometry.box(bounds[0],bounds[2],bounds[1],bounds[3])
+
+        # Which sources are relevant?
+        relevant_srcs=np.nonzero( [ box.intersects(geom)  
+                                    for geom in self.sources['geom'] ])[0]
+        # omit negative priorities
+        relevant_srcs=relevant_srcs[ self.src_priority[relevant_srcs]>=0 ]
+
+        # Starts with lowest, goes to highest
+        order = np.argsort(self.src_priority[relevant_srcs])
+        ordered_srcs=relevant_srcs[order]
+
+        for src_i in ordered_srcs:
+            log.info(self.sources['src_name'][src_i])
+            log.info("   data mode: %s  alpha mode: %s"%(self.data_mode[src_i],
+                                                         self.alpha_mode[src_i]))
+                  
+            source=self.load_source(src_i)
+            src_data = source.to_grid(bounds=bounds,dx=dx,dy=dy)
+            src_alpha= SimpleGrid(extents=src_data.extents,
+                                  F=np.ones(src_data.F.shape,'f8'))
+
+            if 0: # slower
+                src_alpha.mask_outside(self.sources['geom'][src_i],value=0.0)
+            else: 
+                mask=src_alpha.polygon_mask(self.sources['geom'][src_i])
+                src_alpha.F[~mask] = 0.0
+
+            # create an alpha tile. depending on alpha_mode, this may draw on the lower data,
+            # the polygon and/or the data tile.
+            # modify the data tile according to the data mode - so if the data mode is 
+            # overlay, do nothing.  but if it's max, the resulting data tile is the max
+            # of itself and the lower data.
+            # composite the data tile, using its alpha to blend with lower data.
+
+            # the various operations
+            def min():
+                """ new data will only decrease values
+                """
+                valid=result_alpha.F>0
+                src_data.F[valid]=np.minimum( src_data.F[valid],result_data.F[valid] )
+            def max():
+                """ new data will only increase values
+                """
+                valid=result_alpha.F>0
+                src_data.F[valid]=np.maximum( src_data.F[valid],result_data.F[valid] )
+            def fill(dist):
+                "fill in small missing areas"
+                pixels=int(round(float(dist)/dx))
+                niters=np.maximum( pixels//3, 2 )
+                src_data.fill_by_convolution(iterations=niters)
+            # def blur(dist):
+            #     "smooth data channel with gaussian filter - this allows spreading beyond original poly!"
+            #     pixels=int(round(float(dist)/dx))
+            #     src_data.F=ndimage.gaussian_filter(src_alpha.F,pixels)
+                
+            def overlay():
+                pass 
+            # alpha channel operations:
+            def valid():
+                # updates alpha channel to be zero where source data is missing.
+                data_missing=np.isnan(src_data.F)
+                src_alpha.F[data_missing]=0.0
+            # def blur_alpha(dist):
+            #     "smooth alpha channel with gaussian filter - this allows spreading beyond original poly!"
+            #     pixels=int(round(float(dist)/dx))
+            #     src_alpha.F=ndimage.gaussian_filter(src_alpha.F,pixels)
+            def feather(dist):
+                "linear feathering within original poly"
+                pixels=int(round(float(dist)/dx))
+                Fsoft=ndimage.distance_transform_bf(src_alpha.F)
+                src_alpha.F = (Fsoft/pixels).clip(0,1)
+
+            # dangerous! executing code from a shapefile!
+            eval(self.data_mode[src_i])
+            eval(self.alpha_mode[src_i])
+
+            data_missing=np.isnan(src_data.F)
+            src_alpha.F[data_missing]=0.0
+            cleaned=src_data.F.copy()
+            cleaned[data_missing]=-999 # avoid nan contamination.
+
+            assert np.allclose( result_data.extents, src_data.extents )
+            assert np.all( result_data.F.shape==src_data.F.shape )
+            # before getting into fancy modes, just stack it all up:
+            result_data.F   = result_data.F *(1-src_alpha.F) + cleaned*src_alpha.F
+            result_alpha.F  = result_alpha.F*(1-src_alpha.F) + src_alpha.F
+
+        # fudge it a bit, and allow semi-transparent data back out, but 
+        # at least nan out the totally transparent stuff.
+        result_data.F[ result_alpha.F==0 ] = np.nan
+        return result_data
+
+
             
 class MultiRasterField(Field):
     """ Given a collection of raster files at various resolutions and with possibly overlapping
@@ -3187,7 +3410,7 @@ class MultiRasterField(Field):
 
             C,R = np.meshgrid( dec_x,dec_y )
 
-            newF = map_coordinates(src.F, [R,C],order=self.order)
+            newF = ndimage.map_coordinates(src.F, [R,C],order=self.order)
 
             # only update missing values
             missing = np.isnan(target.F[ row_slice,col_slice ])
