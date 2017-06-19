@@ -1,6 +1,11 @@
+import datetime
+
 import numpy as np
 import xarray as xr
 import requests
+import logging
+
+log=logging.getLogger('noaa_coops')
 
 from ... import utils
 
@@ -83,6 +88,7 @@ def coops_dataset(station,start_date,end_date,products,
 
     for product in products:
         ds_per_product.append( coops_dataset_product(station=station,
+                                                     product=product,
                                                      start_date=start_date,
                                                      end_date=end_date,
                                                      days_per_request=days_per_request) )
@@ -90,37 +96,85 @@ def coops_dataset(station,start_date,end_date,products,
     assert len(products)==1
     return ds_per_product[0]
 
-def coops_dataset_product(station,start_date,end_date,days_per_request=None):
+def coops_dataset_product(station,product,
+                          start_date,end_date,days_per_request=None):
+    """
+    Retrieve a single data product from a single station.
+    station: string or numeric identifier for COOPS station
+    product: string identifying the variable to retrieve.  See all_products at 
+      the top of this file.
+    start_date,end_date: period to retrieve, as python datetime, matplotlib datenum,
+      or numpy datetime64.
+    days_per_request: batch the requests to fetch smaller chunks at a time.
+
+    returns an xarray dataset
+    """
     fmt_date=lambda d: utils.to_datetime(d).strftime("%Y%m%d %H:%M")
     base_url="https://tidesandcurrents.noaa.gov/api/datagetter"
 
     # not supported by this script: bin
     datums=['NAVD','MSL']
 
-    if days_per_request is None:
-        period_slices=[ (start_date,end_date) ]
-    else:
+    def periods(start_date,end_date,days_per_request):
+        start_date=utils.to_datetime(start_date)
+        end_date=utils.to_datetime(end_date)
 
-        
-        params=dict(begin_date=fmt_date(start_date),
-                    end_date=fmt_date(end_date),
+        if days_per_request is None:
+            yield (start_date,end_date)
+        else:
+            interval=datetime.timedelta(days=days_per_request)
+
+            while start_date<end_date:
+                next_date=min(start_date+interval,end_date)
+                yield (start_date,next_date)
+                start_date=next_date
+
+    datasets=[]
+
+    for interval_start,interval_end in periods(start_date,end_date,days_per_request):
+        log.info("Fetching %s -- %s"%(interval_start,interval_end))
+
+        params=dict(begin_date=fmt_date(interval_start),
+                    end_date=fmt_date(interval_end),
                     station=str(station),
                     time_zone='gmt', # always!
-                    application='SFEI',
+                    application='stompy',
                     units='metric',
                     format='json',
                     product=product)
         if product in ['water_level','hourly_height',"one_minute_water_level"]:
-            for datum in datums:
-                params['datum']=datum # not all stations have this, though.
+            while 1:
+                # not all stations have NAVD, so fall back to MSL
+                params['datum']=datums[0] 
                 req=requests.get(base_url,params=params)
-                if 'error' in req.json():
+                data=req.json()
+                if ('error' in data) and ("datum" in data['error']['message'].lower()):
+                    # Actual message like 'The supported Datum values are: MHHW, MHW, MTL, MSL, MLW, MLLW, LWI, HWI'
+                    log.info(data['error']['message'])
+                    datums.pop(0) # move on to next datum
                     continue # assume it's because the datum is missing
                 break
         else:
             req=requests.get(base_url,params=params)
+            data=req.json()
 
-        data=req.json()
+        if 'error' in data:
+            msg=data['error']['message']
+            if "No data was found" in msg:
+                # station does not have this data for this time.
+                log.warning("No data found for this period")
+                continue
 
-    ds=coops_json_to_ds(data,params)    
-    return ds
+        ds=coops_json_to_ds(data,params)    
+        datasets.append(ds)
+
+    if len(datasets)==0:
+        # could try to construct zero-length dataset, but that sounds like a pain
+        # at the moment.
+        return None 
+
+    if len(datasets)>1:
+        dataset=xr.concat( datasets, dim='time')
+    else:
+        dataset=datasets[0]
+    return dataset
