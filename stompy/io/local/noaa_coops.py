@@ -67,19 +67,41 @@ def coops_json_to_ds(json,params):
     return ds
 
 
-def coops_dataset(station,start_date,end_date,products):
+def coops_dataset(station,start_date,end_date,products,
+                  days_per_request=None):
     """
     bare bones retrieval script for NOAA Tides and Currents data.
     In particular, no error handling yet, doesn't batch requests, no caching,
     can't support multiple parameters, no metadata, etc.
+
+    days_per_request: break up the request into chunks no larger than this many
+    days.  for hourly data, this should be less than 365.  for six minute, I think
+    the limit is 32 days.
     """
+
+    ds_per_product=[]
+
+    for product in products:
+        ds_per_product.append( coops_dataset_product(station=station,
+                                                     start_date=start_date,
+                                                     end_date=end_date,
+                                                     days_per_request=days_per_request) )
+    # punt for the moment - no real support for multiple datasets...
+    assert len(products)==1
+    return ds_per_product[0]
+
+def coops_dataset_product(station,start_date,end_date,days_per_request=None):
     fmt_date=lambda d: utils.to_datetime(d).strftime("%Y%m%d %H:%M")
     base_url="https://tidesandcurrents.noaa.gov/api/datagetter"
 
     # not supported by this script: bin
     datums=['NAVD','MSL']
-    
-    for product in products:
+
+    if days_per_request is None:
+        period_slices=[ (start_date,end_date) ]
+    else:
+
+        
         params=dict(begin_date=fmt_date(start_date),
                     end_date=fmt_date(end_date),
                     station=str(station),
@@ -88,7 +110,7 @@ def coops_dataset(station,start_date,end_date,products):
                     units='metric',
                     format='json',
                     product=product)
-        if product in ['water_level']:
+        if product in ['water_level','hourly_height',"one_minute_water_level"]:
             for datum in datums:
                 params['datum']=datum # not all stations have this, though.
                 req=requests.get(base_url,params=params)
