@@ -29,20 +29,35 @@ log=logging.getLogger(__name__)
 from ctypes import * 
 
 # better to get this from an environment variable
-def nef_lib():
-    d3d_libdir=os.path.join(os.environ['HOME'],
-                            "code/delft/d3d/master/src/lib/")
+def load_nef_lib():
+    """
+    Find and load the dll for NEFIS.
+    This has to come from a compiled D-WAQ installation.
 
-    nefis_lib=os.path.join(d3d_libdir,'libNefisSO')
+    Tries these locations:
+     $HOME/code/delft/d3d/master/src/lib
+     $PYTHON_DIR/lib
+     $D3D_HOME/lib
 
+    return None if the DLL cannot be found
+    """
     if sys.platform.startswith('linux'):
         basename='libNefisSO.so'
-    else:
+    elif sys.platform=='darwin':
+        # this is for OSX
         basename='libNefisSO.dylib'
+    else:
+        log.warning("Need to add support in nefis.nef_lib() for platform=%s"%sys.platform)
+        return None
 
-    for prefix in [ os.path.join(os.environ['HOME'],"code/delft/d3d/master/src/lib/"), # goofy local
+    fail='_fail_' # to test for missing environment variables
+    for prefix in [ os.path.join(os.environ.get('HOME',fail),
+                                 "code/delft/d3d/master/src/lib/"), # goofy local
                     os.path.join(sys.prefix,"lib"),
-                    os.path.join(os.environ.get('D3D_HOME','fail'),'lib') ]:
+                    os.path.join(os.environ.get('D3D_HOME',fail),'lib') ]:
+        if fail in prefix:
+            continue
+
         nefis_lib=os.path.join(prefix,basename)
         try:
             return cdll.LoadLibrary(nefis_lib)
@@ -50,8 +65,13 @@ def nef_lib():
             continue
     log.warning("Failed to load nefis DLL - read/write not enabled")
     return None
-    
-nef=nef_lib()
+
+_nef_lib=False # False=> uninitialized, None=> not found
+def nef_lib():
+    global _nef_lib
+    if _nef_lib is False:
+        _nef_lib=load_nef_lib()
+    return _nef_lib
 
 class NefisException(Exception):
     def __init__(self,code,msg):
@@ -135,7 +155,7 @@ class NefisGroup(object):
         grpnam=create_string_buffer(to_bytes(self.name),17)
         maxi=c_int(-1)
         
-        err=nef.Inqmxi(byref(self.nefis.fd),byref(grpnam),byref(maxi))
+        err=nef_lib().Inqmxi(byref(self.nefis.fd),byref(grpnam),byref(maxi))
         if err:
             self.nefis.with_err(err)
         return maxi.value
@@ -241,11 +261,11 @@ class NefisGroup(object):
         grp_name=create_string_buffer(to_bytes(self.name))
         elm_name=create_string_buffer(to_bytes(element))
 
-        err = nef.Getelt(byref(self.nefis.fd),
-                         byref(grp_name), byref(elm_name),
-                         uindex_ref, uorder_ref,
-                         byref(buflen),
-                         data_ref)
+        err = nef_lib().Getelt(byref(self.nefis.fd),
+                               byref(grp_name), byref(elm_name),
+                               uindex_ref, uorder_ref,
+                               byref(buflen),
+                               data_ref)
         if err:
             self.nefis.with_err(err)
 
@@ -264,14 +284,17 @@ class NefisGroup(object):
         return self.attrs_int() + self.attrs_real() + self.attrs_str()
 
     def attrs_int(self):
+        nef=nef_lib()
         return self.attrs_gen( lambda: c_int(-1),
                                nef.Inqfia, nef.Inqnia )
 
     def attrs_real(self):
+        nef=nef_lib()
         return self.attrs_gen( lambda: c_float(-1),
                                nef.Inqfra, nef.Inqnra )
 
     def attrs_str(self):
+        nef=nef_lib()
         return self.attrs_gen( lambda: create_string_buffer(17),
                                nef.Inqfsa, nef.Inqnsa )
 
@@ -319,7 +342,7 @@ class Nefis(object):
     def with_err(self,err):
         if err:
             buff=create_string_buffer(1025)
-            nef.nefis_error(0,byref(buff))
+            nef_lib().nefis_error(0,byref(buff))
             raise NefisException(code=err,msg=buff.value)
 
     def open(self):
@@ -330,12 +353,12 @@ class Nefis(object):
 
         # from nefis, oc.c, line 276 - looks like combined data/definition
         # files are loaded by specifying the same filename for both.
-        self.with_err(nef.Crenef(byref(self.fd), 
-                                 self.dat_fn.encode(), 
-                                 (self.def_fn or self.dat_fn).encode(),
-                                 byref(endian), access))
+        self.with_err(nef_lib().Crenef(byref(self.fd), 
+                                       self.dat_fn.encode(), 
+                                       (self.def_fn or self.dat_fn).encode(),
+                                       byref(endian), access))
     def close(self):
-        self.with_err( nef.Clsnef(byref(self.fd)) )
+        self.with_err( nef_lib().Clsnef(byref(self.fd)) )
         self.fd=None
 
     def __del__(self):
@@ -352,7 +375,7 @@ class Nefis(object):
         # get basic header info:
         # init as long, null-terminated, so nefis knows it's long enough
         header_buff=create_string_buffer(b" "*self.header_max_len)
-        self.with_err( nef.Gethdf(byref(self.fd),
+        self.with_err( nef_lib().Gethdf(byref(self.fd),
                                   byref(header_buff)) )
         # => 'Deltares, NEFIS Definition File; 5.00.00'
         return header_buff.value
@@ -362,6 +385,7 @@ class Nefis(object):
         if self._groups is None:
             groups=[]
             
+            nef=nef_lib()
             while 1:
                 grpnam=create_string_buffer(b" "*16)
                 celnam=create_string_buffer(b" "*16)
@@ -417,13 +441,13 @@ class Nefis(object):
         elmndm=c_int(5)
         elmdms=np.ones(5,'i4')
 
-        self.with_err( nef.Inqelm(byref(self.fd),byref(elmnam), # inputs
-                                  byref(elmtyp), # outputs
-                                  byref(nbytsg),
-                                  byref(elmqty),byref(elmunt),
-                                  byref(desc),
-                                  byref(elmndm),
-                                  elmdms.ctypes) )
+        self.with_err( nef_lib().Inqelm(byref(self.fd),byref(elmnam), # inputs
+                                        byref(elmtyp), # outputs
+                                        byref(nbytsg),
+                                        byref(elmqty),byref(elmunt),
+                                        byref(desc),
+                                        byref(elmndm),
+                                        elmdms.ctypes) )
         return NefisElement(nefis=self,
                             name=name,
                             typ=elmtyp.value,
@@ -437,6 +461,7 @@ class Nefis(object):
     _cells=None
     def cells(self):
         if self._cells is None:
+            nef=nef_lib()
             cells=[]
             
             while 1:
