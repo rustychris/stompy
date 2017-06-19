@@ -27,6 +27,7 @@ except ImportError:
     
 from rdb_datadescriptors import dd_to_synonyms
 
+from .. import utils
 from . import rdb_codes
 
 
@@ -207,12 +208,16 @@ class Rdb(object):
 
 
 def rdb_to_dataset(usgs_fn):
+    """
+    Read an rdb file and return an xarray dataset.
+    """
     usgs_data=Rdb(source_file=usgs_fn)
 
     # Convert that xarray for consistency
     ds=xr.Dataset()
-    ds['time']=( ('time',), usgs_data['datetime'])
-
+    
+    ds['time']=( ('time',), utils.to_dt64(usgs_data['datetime']) )
+    ds['datenum']=( ('time',), usgs_data['datetime'])
 
     for key in usgs_data.keys():
         if key=='datetime':

@@ -1,4 +1,5 @@
 import os
+import numpy as np
 import nose
 
 from stompy.io import rdb, rdb_codes
@@ -12,6 +13,8 @@ def test_basic():
 def test_xarray():
     ds1=rdb.rdb_to_dataset(os.path.join(datadir,'test_rdb.rdb'))
     ds2=rdb.rdb_to_dataset(os.path.join(datadir,'coyote.rdb'))
+    
+    assert ds2.time.dtype==np.datetime64
 
 def test_codes():
     pcodes=rdb_codes.parm_codes()
