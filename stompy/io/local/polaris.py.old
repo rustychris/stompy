@@ -1,9 +1,21 @@
+"""
+In the process of being deprecated
+
+Fetch data from USGS Polaris / Peterson cruises in SF Bay.
+This code should migrated and merged with io.local.usgs_sfbay.
+
+The selection of cruises is static!  So this is probably not what
+you want.
+"""
+
 from __future__ import print_function
 
 import urllib,re,time,datetime,pytz
-from numpy import *
+#from numpy import *
+import numpy as np
 from numpy import ma # masked arrays
 
+import six
 import datetime
 
 try:
@@ -13,7 +25,9 @@ except ImportError:
 
 from cache_handler import urlopen
 
-from safe_pylab import *
+# from safe_pylab import *
+import matplotlib.pyplot as plt
+from matplotlib import dates
 
 from matplotlib import ticker
 
@@ -28,7 +42,7 @@ def ll2utm(lonlat):
         utmz10.SetFromUserInput('EPSG:26910')
         ll2utm.xform = osr.CoordinateTransformation(nad83,utmz10)
 
-    utm = zeros_like(lonlat)
+    utm = np.zeros_like(lonlat)
 
     for i in range(len(lonlat)):
         utm[i] = ll2utm.xform.TransformPoint(*lonlat[i])[:2]
@@ -36,41 +50,41 @@ def ll2utm(lonlat):
     return utm
 ll2utm.xform = None
 
-cruise_jdates = array([2004252, 2004258, 2004308, 2004349, 2005341,
-                       2005326, 2005285, 2005269, 2005250, 2005298,
-                       2005312, 2005241, 2005172, 2005081, 2005123,
-                       2005102, 2005054, 2005108, 2005033, 2005011,
-                       2006045, 2006052, 2006010, 2005130, 2005077,
-                       2006066, 2006080, 2006074, 2006095, 2006111,
-                       1995114, 2006129, 2006255, 2006272, 2006243,
-                       2006227, 2006214, 2006192, 2006290, 2006318,
-                       2006346, 2007009, 2007040, 2007037, 
-                       # 2005221, # oddly missing from database, but
-                       # the cruise happened.  ??
-                       2007087, 2007100, 2007093, 2007071, 2007065,
-                       2007113, 2007172, 2007204, 2007234, 2007254,
-                       2007264, 2007292, 2007318, 2007296, 2007345,
-                       2008010, 2008032, 2008043, 2008060, 2008091,
-                       2008071, 2008105, 2008119, 2008127, 2008150,
-                       2008169, 2008192, 2008197, 2008225, 2008232,
-                       2008253, 2008260, 2008281, 2008289, 2008310,
-                       2008323, 2008351, 2009013, 2009035, 2009041,
-                       2009048, 2009064, 2009079, 2009071, 2009097,
-                       2009106, 2009125, 2009139, 2009167, 2009174,
-                       2009196, 2009202, 2009225, 2009239, 2009265,
-                       2009271, 2009302, 2009322, 2009337, 2010005,
-                       2010026, 2010040, 2010054, 2010068, 2010083,
-                       2010089, 2010097, 2010103, 2010113, 2010127,
-                       2010140, 2010158, 2010166, 2010187, 2010194,
-                       2010215, 2010229, 2010244, 2010257, 2010274,
-                       2010288, 2010299, 2010319, 2010350,
-                       2011011, 2011040, 2011070, 2011088, 2011098,
-                       2011102, 2011118, 2011131,
-                       2012090, 2012102, 2012111,
-                       2012118, 2012136, 2012144, 2012164, 2012071,
-                       2012193, 2012199, 2012220, 2012240, 2012251,
-                       2012255, 2012277, 2012284, 2012311, 2012339
-                       ])
+cruise_jdates = np.array([2004252, 2004258, 2004308, 2004349, 2005341,
+                          2005326, 2005285, 2005269, 2005250, 2005298,
+                          2005312, 2005241, 2005172, 2005081, 2005123,
+                          2005102, 2005054, 2005108, 2005033, 2005011,
+                          2006045, 2006052, 2006010, 2005130, 2005077,
+                          2006066, 2006080, 2006074, 2006095, 2006111,
+                          1995114, 2006129, 2006255, 2006272, 2006243,
+                          2006227, 2006214, 2006192, 2006290, 2006318,
+                          2006346, 2007009, 2007040, 2007037, 
+                          # 2005221, # oddly missing from database, but
+                          # the cruise happened.  ??
+                          2007087, 2007100, 2007093, 2007071, 2007065,
+                          2007113, 2007172, 2007204, 2007234, 2007254,
+                          2007264, 2007292, 2007318, 2007296, 2007345,
+                          2008010, 2008032, 2008043, 2008060, 2008091,
+                          2008071, 2008105, 2008119, 2008127, 2008150,
+                          2008169, 2008192, 2008197, 2008225, 2008232,
+                          2008253, 2008260, 2008281, 2008289, 2008310,
+                          2008323, 2008351, 2009013, 2009035, 2009041,
+                          2009048, 2009064, 2009079, 2009071, 2009097,
+                          2009106, 2009125, 2009139, 2009167, 2009174,
+                          2009196, 2009202, 2009225, 2009239, 2009265,
+                          2009271, 2009302, 2009322, 2009337, 2010005,
+                          2010026, 2010040, 2010054, 2010068, 2010083,
+                          2010089, 2010097, 2010103, 2010113, 2010127,
+                          2010140, 2010158, 2010166, 2010187, 2010194,
+                          2010215, 2010229, 2010244, 2010257, 2010274,
+                          2010288, 2010299, 2010319, 2010350,
+                          2011011, 2011040, 2011070, 2011088, 2011098,
+                          2011102, 2011118, 2011131,
+                          2012090, 2012102, 2012111,
+                          2012118, 2012136, 2012144, 2012164, 2012071,
+                          2012193, 2012199, 2012220, 2012240, 2012251,
+                          2012255, 2012277, 2012284, 2012311, 2012339
+                      ])
 
 
 cruise_jdates.sort()
@@ -78,7 +92,7 @@ cruise_jdates.sort()
 
 
 def day_of_year(t):
-    return int(1 + date2num(t) - date2num( datetime.datetime(t.year,1,1)))
+    return int(1 + dates.date2num(t) - dates.date2num( datetime.datetime(t.year,1,1)))
 
     
 def cruise_jdates_in_range(start_date,end_date):
@@ -92,13 +106,13 @@ def cruise_jdates_in_range(start_date,end_date):
         # raise Exception("The requested dates fall beyond the range of cruises polaris.py knows about")
         return []
 
-    start_i = searchsorted(cruise_jdates,start_jdate)
-    end_i = searchsorted(cruise_jdates,end_jdate)
+    start_i = np.searchsorted(cruise_jdates,start_jdate)
+    end_i = np.searchsorted(cruise_jdates,end_jdate)
     
     return cruise_jdates[start_i:end_i]
 
 def cruise_nearest_jdate(target):
-    right_i = searchsorted(cruise_jdates,target)
+    right_i = np.searchsorted(cruise_jdates,target)
     left_i = right_i - 1
 
     def julian_to_date(j):
@@ -251,12 +265,12 @@ class PolarisCruise(object):
                 print("Nearest Polaris cruise is ",self.req_juliandate)
 
         # initialize the station data:
-        self.station_data = array(self.station_data,
-                                  [('station_no',float64),
-                                   ('name',object),
-                                   ('lat',float64),
-                                   ('lon',float64),
-                                   ('depth',float64)])
+        self.station_data = np.array(self.station_data,
+                                     [('station_no',np.float64),
+                                      ('name',object),
+                                      ('lat',np.float64),
+                                      ('lon',np.float64),
+                                      ('depth',np.float64)])
         # switch to more conventional east-positive longitide
         self.station_data['lon'] *= -1
         
@@ -266,13 +280,13 @@ class PolarisCruise(object):
     def station_locs_utm(self):
         lats = self.station_data['lat']
         lons = self.station_data['lon']
-        lonlat = hstack( ( lons[:,newaxis], lats[:,newaxis]) )
+        lonlat = np.hstack( ( lons[:,newaxis], lats[:,newaxis]) )
         utm = ll2utm(lonlat)
 
         return utm
         
     def start_date(self):
-        return num2date(self.times[0])
+        return dates.num2date(self.times[0])
     
     def download(self):
         query = self.query_values(year = self.req_year,
@@ -328,7 +342,7 @@ class PolarisCruise(object):
 
                 for h,s in zip(headers,fields):
                     if h == 'date':
-                        row.append( date2num( datetime.datetime.strptime(s.strip(),'%m/%d/%Y') ) )
+                        row.append( dates.date2num( datetime.datetime.strptime(s.strip(),'%m/%d/%Y') ) )
                     else:
                         try:
                             row.append(float(s))
@@ -338,10 +352,10 @@ class PolarisCruise(object):
                             row.append(nan)
                 ldata.append(row)
 
-            self.data = array(ldata)
+            self.data = np.array(ldata)
         else:
             print( "NO data!!")
-            self.data = zeros( (0,len(headers)), float64 )
+            self.data = np.zeros( (0,len(headers)), np.float64 )
         
         self.columns = {}
         
@@ -355,7 +369,7 @@ class PolarisCruise(object):
         if 'date' in self.columns:
             # Add the half so that we are in the middle of the day, rather than midnight
             # before it.
-            base_date = num2date( self.columns['date'][0] ) + datetime.timedelta(0.5)
+            base_date = dates.num2date( self.columns['date'][0] ) + datetime.timedelta(0.5)
             pacific = pytz.timezone('US/Pacific')
 
             # oddities of the python tzinfo means we create the date then ask
@@ -374,7 +388,6 @@ class PolarisCruise(object):
             return off.days + off.seconds/(24*3600.)
         else:
             raise Exception("No date field, so we can't figure out the timezone offset")
-            
 
     def fetch(self):
         """ download or read from cache the desired data and
@@ -404,22 +417,22 @@ class PolarisCruise(object):
         all_depths = self.columns['depth']
         all_distances = self.columns['distance from 36']
         
-        self.depths = unique(all_depths)
+        self.depths = np.unique(all_depths)
         self.depths.sort()
 
-        self.distances = unique(all_distances)
+        self.distances = np.unique(all_distances)
         self.distances.sort()
 
         # then work backwards to get station indexes and times for each distance:
         # 
-        self.stations = zeros( self.distances.shape, float64 )
+        self.stations = np.zeros( self.distances.shape, np.float64 )
         
-        self.times = zeros( self.distances.shape, float64 )
+        self.times = np.zeros( self.distances.shape, np.float64 )
         local_time_offset = self.utc_to_local_days()
         
         for i in range(len(self.stations)):
             # what station number goes with this distance?
-            record = where(all_distances == self.distances[i])[0][0]
+            record = np.where(all_distances == self.distances[i])[0][0]
             
             self.stations[i] = self.columns['station number'][record]
 
@@ -427,17 +440,17 @@ class PolarisCruise(object):
             # 4-digit 24 hour local time.  So the key is converting the
             # local time back to UTC
             hhmm = self.columns['time'][record]
-            frac_days = (floor(hhmm/100.) + (hhmm%100.)/60.)/24.
+            frac_days = (np.floor(hhmm/100.) + (hhmm%100.)/60.)/24.
             self.times[i] = self.columns['date'][record] + frac_days - local_time_offset
 
         # Need to index stations by their distance from 36, but still be able
         # to refer to the station number so we can get the lat/lon later on
         
-        self.grid_index = -1 * ones( (len(self.depths),len(self.distances)),int32 )
+        self.grid_index = -1 * np.ones( (len(self.depths),len(self.distances)),np.int32 )
 
         for i in range(len(self.data)):
-            depth_i = searchsorted(self.depths,all_depths[i])
-            dist_i = searchsorted(self.distances,all_distances[i])
+            depth_i = np.searchsorted(self.depths,all_depths[i])
+            dist_i = np.searchsorted(self.distances,all_distances[i])
 
             self.grid_index[depth_i,dist_i] = i
 
@@ -445,29 +458,28 @@ class PolarisCruise(object):
         # first station
 
         # get indices into station_data
-        idx = searchsorted(self.station_data['station_no'],self.stations)
+        idx = np.searchsorted(self.station_data['station_no'],self.stations)
         
         lats = self.station_data['lat'][idx]
         lons = self.station_data['lon'][idx]
-        self.lonlat = hstack( ( lons[:,newaxis], lats[:,newaxis]) )
+        self.lonlat = np.hstack( ( lons[:,newaxis], lats[:,newaxis]) )
         self.utm = ll2utm(self.lonlat)
         
-        d = sqrt( (diff(self.utm,axis=0)**2).sum(axis=1) )
-        self.x = concatenate( ([0.0], cumsum( d )) )
+        d = np.sqrt( (np.diff(self.utm,axis=0)**2).sum(axis=1) )
+        self.x = np.concatenate( ([0.0], cumsum( d )) )
         self.y = - self.depths
-
         
     def as_grid(self,field):
         d = self.columns[field]
-        d = concatenate( (d,[nan]) )
+        d = np.concatenate( (d,[nan]) )
 
         g = d[self.grid_index]
         g = ma.array(g,mask=isnan(g))
         return g
     def contourf(self,field,**kwargs):
         gd = self.as_grid(field)
-        Y,X = meshgrid(self.y,self.x)
-        contourf(X,Y,transpose(gd),**kwargs)
+        Y,X = np.meshgrid(self.y,self.x)
+        plt.contourf(X,Y,transpose(gd),**kwargs)
 
     def to_transect(self,v='salinity',clip_dist=None):
         """ A hopefully neat package for dealing with transect-like
@@ -475,17 +487,17 @@ class PolarisCruise(object):
         if clip_dist is specified, throw out data for points that are beyond this distance.
         """
         scalar = self.as_grid(v)
-        d = num2date( self.columns['date'][0] )
+        d = dates.num2date( self.columns['date'][0] )
         
         desc = 'Polaris Cruise, %s: %s'%(d.strftime('%m/%d/%Y'),v)
         if clip_dist is not None:
             valid = self.x <= clip_dist
         else:
-            valid = ones( self.x.shape,'bool8')
+            valid = np.ones( self.x.shape,np.bool8)
 
         # In some cases, a location is missing data entirely -
         # punt, and just remove that water column.
-        valid_data = any( ~scalar.mask, axis=0 )
+        valid_data = np.any( ~scalar.mask, axis=0 )
         
         if any( ~valid_data ):
             print("Some Polaris data is missing")
@@ -496,9 +508,9 @@ class PolarisCruise(object):
         #  the bed is taken to be at the location of the last measurement
         if self.y[0] < 0:
             # extend the surface measurement all the way to the surface
-            i = concatenate( ( [0],arange(scalar.shape[0])) )
+            i = np.concatenate( ( [0],np.arange(scalar.shape[0])) )
             scalar = scalar[i,:] # concatenate( ( scalar[0:1,:], scalar[:,:]), axis=0)
-            y = concatenate( ([0],self.y) )
+            y = np.concatenate( ([0],self.y) )
         else:
             y = self.y
         
@@ -526,7 +538,7 @@ class PolarisCruise(object):
         new_x_list = []
         new_utm_list = []
 
-        X,Y = meshgrid( self.x, self.y ) # that's distance along transect and depth
+        X,Y = np.meshgrid( self.x, self.y ) # that's distance along transect and depth
         Z = self.as_grid(v)
 
         for station in range(X.shape[1] - 1):
@@ -550,7 +562,7 @@ class PolarisCruise(object):
             nsteps = int(ceil( (x2-x1)/dx ))
 
             if nsteps > 1:
-                alpha = linspace(0,1,nsteps+1)[1:-1]
+                alpha = np.linspace(0,1,nsteps+1)[1:-1]
 
                 new_x = (1-alpha)*x1 + alpha*x2
                 new_utm = (1-alpha[:,newaxis])*u1 + alpha[:,newaxis]*u2
@@ -569,11 +581,11 @@ class PolarisCruise(object):
 
 
         # put them all back together:    
-        new_x = concatenate( new_x_list)
+        new_x = np.concatenate( new_x_list)
         new_y = self.y
-        new_G = concatenate( new_g_list,axis=1)
+        new_G = np.concatenate( new_g_list,axis=1)
         new_G = ma.array(new_G,mask=isnan(new_G))
-        new_utm = concatenate( new_utm_list )
+        new_utm = np.concatenate( new_utm_list )
 
         return field.ZLevelField(new_utm,new_y,new_G)
     
@@ -582,10 +594,10 @@ class PolarisCruise(object):
         dists = self.columns['distance from 36']
 
         # so I want to remove any duplicates
-        nums,num_index = unique(nums,return_index=1)
+        nums,num_index = np.unique(nums,return_index=1)
         dists = dists[num_index]
 
-        db_i = [ nonzero( self.station_data['station_no'] == num )[0][0] for num in nums]
+        db_i = [ np.nonzero( self.station_data['station_no'] == num )[0][0] for num in nums]
         names = self.station_data['name'][db_i]
 
         # ax.xaxis.set_tick_major_locator( ticker.FixedLocator(dists) )
@@ -594,25 +606,6 @@ class PolarisCruise(object):
         
 
 
-if __name__ == '__main__':
-    pc = PolarisCruise(juliandate=2008232)
-
-    zlf = pc.z_level_field()
-
-    # and plot the new data:
-
-    clf()
-    subplot(211)
-    zlf.plot_transect()
-
-    subplot(212)
-    import trigrid
-    g = trigrid.TriGrid(suntans_path='/home/rusty/classes/research/suntans/runs/long-delta-250m/rundata')
-    g.plot(all_cells=0)
-    zlf.plot_surface()
-
-
-    print("Extrapolated value: ",zlf.extrapolate(550000,4.2e6,0))
 
 
 

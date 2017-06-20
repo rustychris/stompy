@@ -17,7 +17,7 @@ import matplotlib
 import wkb2shp
 
 # Cairo doesn't play well with some conda installations.
-matplotlib.use('agg')
+# matplotlib.use('agg')  # This causes warnings
 import pylab 
 import numpy as np
 

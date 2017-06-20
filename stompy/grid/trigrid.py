@@ -1,13 +1,14 @@
 from __future__ import print_function
 
 try:
-    from safe_pylab import *
-    from matplotlib.collections import *
+    import matplotlib.pyplot as plt
+    from matplotlib import collections
     import plot_wkb
 except:
     pass
 
-from numpy import *
+# from numpy import *
+import numpy as np
 
 import sys,time
 
@@ -53,21 +54,21 @@ DELETED_EDGE = -1
 BOUNDARY = -1 # cell marker for edge of domain
 UNMESHED = -2 # cell marker for edges not yet meshed
 
-xxyy = array([0,0,1,1])
-xyxy = array([0,1,0,1])
+xxyy = np.array([0,0,1,1])
+xyxy = np.array([0,1,0,1])
 
 
 def dist(a,b):
-    return sqrt(sum((a-b)**2,axis=-1))
+    return np.sqrt(np.sum((a-b)**2,axis=-1))
 
 # rotate the given vectors/points through the CCW angle in radians
 def rot(angle,pnts):
-    R = array( [[cos(angle),-sin(angle)],
-                [sin(angle),cos(angle)]] )
-    return tensordot(R,pnts,axes=(1,-1) ).transpose() # may have to tweak this for multiple points
+    R = np.array( [[np.cos(angle),-np.sin(angle)],
+                   [np.sin(angle),np.cos(angle)]] )
+    return np.tensordot(R,pnts,axes=(1,-1) ).transpose() # may have to tweak this for multiple points
 
 def signed_area(points):
-    i = arange(points.shape[0])
+    i = np.arange(points.shape[0])
     ip1 = (i+1)%(points.shape[0])
     return 0.5*(points[i,0]*points[ip1,1] - points[ip1,0]*points[i,1]).sum()
     
@@ -88,11 +89,12 @@ def ensure_cw(points):
 
 
 def outermost_rings( poly_list ):
-    """ given a list of Polygons, return indices for those that are not inside
+    """ 
+    given a list of Polygons, return indices for those that are not inside
     any other polygon
     """
-    areas = array( [p.area for p in poly_list])
-    order = argsort(-1 * areas) # large to small
+    areas = np.array( [p.area for p in poly_list])
+    order = np.argsort(-1 * areas) # large to small
     outer = []
 
     for i in range(len(order)):
@@ -126,7 +128,7 @@ def circumcenter(p1,p2,p3):
     p3x = p3[...,0] - ref[...,0]
     p3y = p3[...,1] - ref[...,1]
 
-    vc = zeros( p1.shape, float64)
+    vc = np.zeros( p1.shape, np.float64)
     
     # taken from TRANSFORMER_gang.f90
     dd=2.0*((p1x-p2x)*(p1y-p3y) -(p1x-p3x)*(p1y-p2y))
@@ -215,22 +217,22 @@ class TriGrid(object):
             return self.suntans_path + '/' + basename
     def from_data(self,points,edges,cells):
         if points is None:
-            self.points = zeros( (0,2), float64 )
+            self.points = np.zeros( (0,2), np.float64 )
         else:
             self.points = points[:,:2]  # discard any z's that come in
 
         if cells is None:
-            self.cells = zeros( (0,3), int32)
+            self.cells = np.zeros( (0,3), np.int32)
         else:
             self.cells = cells
         
         if edges is None:
-            self.edges = zeros((0,5),int32)
+            self.edges = np.zeros((0,5),np.int32)
         else:
             ne = len(edges)
             # incoming edges may just have connectivity
             if edges.shape[1] == 2:
-                self.edges = zeros( (ne,5), int32)
+                self.edges = np.zeros( (ne,5), np.int32)
                 self.edges[:,:2] = edges
 
                 # defaults:
@@ -251,9 +253,7 @@ class TriGrid(object):
 
             
     def set_edge_neighbors_from_cells(self):
-        """ 
-        """
-        iip = array([[0,1],[1,2],[2,0]])
+        iip = np.array([[0,1],[1,2],[2,0]])
 
         for c in xrange(self.Ncells()):
             for pair in iip:
@@ -265,7 +265,8 @@ class TriGrid(object):
                     self.edges[j,4] = c
 
     def refresh_metadata(self):
-        """ Call this when the cells, edges and nodes may be out of sync with indices
+        """ 
+        Call this when the cells, edges and nodes may be out of sync with indices
         and the like.
         """
         self.index = None
@@ -289,7 +290,7 @@ class TriGrid(object):
                 coords = list([float(s) for s in line.split()])
                 if len(coords) >= 2:
                     pnts.append(coords[:2])
-            self.points = array(pnts)
+            self.points = np.array(pnts)
             if use_cache:
                 if self.readonly:
                     points_dat_cache[points_fn] = self.points
@@ -309,10 +310,10 @@ class TriGrid(object):
                 vcenters.append( list([float(s) for s in line[:2]]))
                 # then three point indices:
                 cells.append( list([int(s) for s in line[2:5]]) )
-        self._vcenters = array(vcenters)
-        self.cells = array(cells)
+        self._vcenters = np.array(vcenters)
+        self.cells = np.array(cells)
 
-        self.cell_mask = ones( len(self.cells) )
+        self.cell_mask = np.ones( len(self.cells) )
         
         # Edges!
         # Each line is endpoint_i endpoint_i  edge_marker  cell_i cell_i
@@ -328,10 +329,11 @@ class TriGrid(object):
             line = line.split()
             if len(line) == 5:
                 edges.append( list([int(s) for s in line]) )
-        self.edges = array(edges)
+        self.edges = np.array(edges)
 
     def read_gmsh(self,gmsh_basename):
-        """ reads output from gmsh  - gmsh_basename.{nod,ele}
+        """ 
+        reads output from gmsh  - gmsh_basename.{nod,ele}
         """
         self.fname = gmsh_basename
         self.read_from = "GMSH"
@@ -346,14 +348,15 @@ class TriGrid(object):
         print("Reading cells")
         elements = loadtxt( self.fname +".ele")
 
-        self.cells = elements[:,1:4].astype(int32) - id_offset
-        self.cell_mask = ones( len(self.cells) )
+        self.cells = elements[:,1:4].astype(np.int32) - id_offset
+        self.cell_mask = np.ones( len(self.cells) )
         self.make_edges_from_cells()
 
         print( "Done")
 
     def read_triangle(self,tri_basename):
-        """ reads output from triangle, tri_basename.{ele,poly,node}
+        """ 
+        reads output from triangle, tri_basename.{ele,poly,node}
         """
         self.fname = tri_basename
         self.read_from = "Triangle"
@@ -365,7 +368,7 @@ class TriGrid(object):
 
         Npoints,point_dimension,npoint_attrs,npoint_markers = [int(s) for s in points_fp.readline().split()]
 
-        self.points = zeros((Npoints,2),float64)
+        self.points = np.zeros((Npoints,2),np.float64)
         id_offset = 0
         for i in range(self.Npoints()):
             line = points_fp.readline().split()
@@ -386,13 +389,13 @@ class TriGrid(object):
         if node_per_tri != 3:
             raise Exception("Please - just use 3-point triangles!")
         
-        self.cells = zeros((Ncells,3),int32) 
-        self.cell_mask = ones( len(self.cells) )
+        self.cells = np.zeros((Ncells,3),np.int32) 
+        self.cell_mask = np.ones( len(self.cells) )
 
         for i in range(self.Ncells()):
             parsed = [int(s) for s in elements_fp.readline().split()]
             cell_id = parsed[0]
-            self.cells[i] = array(parsed[1:]) - id_offset
+            self.cells[i] = np.array(parsed[1:]) - id_offset
 
         edges_fn = tri_basename + ".edge"
         if os.path.exists(edges_fn):
@@ -400,7 +403,7 @@ class TriGrid(object):
 
             Nedges,nedge_markers = [int(s) for s in edges_fp.readline().split()]
 
-            self.edges = zeros((Nedges,5),int32)
+            self.edges = np.zeros((Nedges,5),np.int32)
 
             # each edge is stored as:  (pnt_a, pnt_b, default_marker,node_1,node_2)
             for i in range(Nedges):
@@ -454,13 +457,13 @@ class TriGrid(object):
         Ncells = int( m.group(2) )
         Npoints = int( m.group(1) )
 
-        self.points = zeros((Npoints,2),float64)
+        self.points = np.zeros((Npoints,2),np.float64)
         for i in range(Npoints):
             self.points[i,:] = [float(s) for s in fp.readline().split()]
 
         print("Reading cells")
-        self.cells = zeros((Ncells,3),int32) # store zero-based indices
-        self.cell_mask = ones( len(self.cells) )
+        self.cells = np.zeros((Ncells,3),np.int32) # store zero-based indices
+        self.cell_mask = np.ones( len(self.cells) )
 
         # we might be reading in the output from ortho, in which
         # it reports the number of unique cells, not the real number
@@ -469,7 +472,7 @@ class TriGrid(object):
         i=0
         cell_hash = {}
         for line in fp:
-            pnt_ids = array( [int(s) for s in line.split()] )
+            pnt_ids = np.array( [int(s) for s in line.split()] )
 
             my_key = tuple(sort(pnt_ids))
             if my_key not in cell_hash:
@@ -501,20 +504,22 @@ class TriGrid(object):
         return self._edge_centers
 
     def ghost_cells(self):
-        """ Return a bool array, with ghost cells marked True
+        """ 
+        Return a bool array, with ghost cells marked True
         Ghost cells are determined as any cell with an edge that has marker 6
         """
         ghost_edge = self.edges[:,2] == 6
         ghost_cells = self.edges[ghost_edge,3:5].ravel()
 
-        bitmap = zeros( self.Ncells(), bool8 )
+        bitmap = np.zeros( self.Ncells(), bool8 )
         bitmap[ ghost_cells ] = True
         return bitmap
 
     def delete_unused_nodes(self):
-        """ any nodes which aren't in any cells or edges will be removed.
+        """ 
+        any nodes which aren't in any cells or edges will be removed.
         """
-        all_nodes = arange(self.Npoints())
+        all_nodes = np.arange(self.Npoints())
 
         cell_nodes = unique(ravel(self.cells))
         edge_nodes = unique(ravel(self.edges[:,:2]))
@@ -549,7 +554,7 @@ class TriGrid(object):
         if any(active_nodes) <= 0:
             raise Exception("renumber: Active nodes includes some negative indices")
 
-        old_indices = -ones(self.Npoints(),int32)
+        old_indices = -np.ones(self.Npoints(),np.int32)
         
         self.points = self.points[active_nodes]
         if any(isnan(self.points)):
@@ -557,7 +562,7 @@ class TriGrid(object):
         
         # need a mapping from active node to its index -
         # explicitly ask for int32 for consistency
-        new_indices = arange(active_nodes.shape[0],dtype=int32)
+        new_indices = np.arange(active_nodes.shape[0],dtype=np.int32)
         old_indices[active_nodes] = new_indices
         # map onto the new indices
         self.cells = old_indices[self.cells]
@@ -580,7 +585,8 @@ class TriGrid(object):
                 'valid_nodes':active_nodes}
 
     def write_Triangle(self,basename,boundary_nodes=None):
-        """  duplicate some of the output of the Triangle program -
+        """  
+        duplicate some of the output of the Triangle program -
         particularly the .node and .ele files
 
         note that node and cell indices are taken as 1-based.
@@ -611,7 +617,8 @@ class TriGrid(object):
         ele_fp.close()
 
     def write_obj(self,fname):
-        """ Output to alias wavefront
+        """ 
+        Output to alias wavefront
          - scales points to fall within [0,10]
         """
         fp = open(fname,'wt')
@@ -635,7 +642,8 @@ class TriGrid(object):
 
         
     def write_tulip(self,fname):
-        """ Write a basic representation of the grid to a tulip
+        """ 
+        Write a basic representation of the grid to a tulip
         compatible file
         """
         fp = file(fname,'wt')
@@ -686,7 +694,7 @@ class TriGrid(object):
         #  - turns out SMS wants the order to be consistent, but it always *creates* CCW
         # triangles.  so best to create CCW triangles
         bad = self.areas() < 0
-        n_bad = sum(bad)
+        n_bad = np.sum(bad)
         
         if n_bad > 0:
             print( "Found %i CW triangles that will be reversed"%n_bad )
@@ -708,9 +716,11 @@ class TriGrid(object):
         fp.close()
 
     def areas(self):
-        """ returns signed area, CCW is positive"""
-        i = array([0,1,2])
-        ip = array([1,2,0])
+        """ 
+        returns signed area, CCW is positive
+        """
+        i = np.array([0,1,2])
+        ip = np.array([1,2,0])
         xi = self.points[self.cells[:,i],0]
         yi = self.points[self.cells[:,i],1]
         xip = self.points[self.cells[:,ip],0]
@@ -721,7 +731,8 @@ class TriGrid(object):
         return A
 
     def angles(self):
-        """ returns [Nc,3] array of internal angles, in radians
+        """ 
+        returns [Nc,3] array of internal angles, in radians
         """ 
         triples=np.array( [[0,1,2],[1,2,0],[2,0,1] ] )
         all_triples=p.points[p.cells[:,triples]]
@@ -750,7 +761,7 @@ class TriGrid(object):
         # each point has three numbers, though the third is apparently
         # always 0
 
-        self.points = zeros((Npoints,2),float64)
+        self.points = np.zeros((Npoints,2),np.float64)
         for i in range(Npoints):
             line = fp.readline().split()
             # pnt_id is 1-based
@@ -759,15 +770,15 @@ class TriGrid(object):
             self.points[pnt_id-1] = [float(_s) for _s in line[1:3]]
 
         print("Reading cells")
-        self.cells = zeros((Ncells,3),int32) # store zero-based indices, and assume
-        self.cell_mask = ones( len(self.cells) )
+        self.cells = np.zeros((Ncells,3),np.int32) # store zero-based indices, and assume
+        self.cell_mask = np.ones( len(self.cells) )
 
         # everything is a triangle
         for i in range(Ncells):
             parsed = [int(_s) for _s in fp.readline().split()]
             cell_id = parsed[0]
             nvertices = parsed[1]
-            pnt_ids = array(parsed[2:])
+            pnt_ids = np.array(parsed[2:])
 
             if nvertices != 3:
                 raise Exception("Assumption of all triangles is not true!")
@@ -856,7 +867,8 @@ class TriGrid(object):
         return self._pnt2edges.get(pnt_i,[])
 
     def boundary_angle(self,pnt_i):
-        """ returns the interior angle in radians, formed by the
+        """ 
+        returns the interior angle in radians, formed by the
         boundary at the given point
         """
 
@@ -933,7 +945,7 @@ class TriGrid(object):
 
     def plot_nodes(self,ids=None):
         if ids is None:
-            ids = arange(self.Npoints())
+            ids = np.arange(self.Npoints())
             if self.default_clip is not None:
                 c = self.default_clip
                 valid = (self.points[:,0] > c[0]) & (self.points[:,0]<c[1]) & \
@@ -943,7 +955,8 @@ class TriGrid(object):
         [annotate(str(i),self.points[i]) for i in ids if not isnan(self.points[i,0])]
         
     def plot_edge_marks(self,edge_mask=None,clip=None):
-        """ label edges with c[nc1]-j[j],mark-c[nc2],
+        """ 
+        label edges with c[nc1]-j[j],mark-c[nc2],
         rotated so it reads in the correct orientation for nc1, nc2
         edge_mask should be a boolean array of size Nedges()
         clip can be a list like matplotlib axis() - [xmin,xmax,ymin,ymax]
@@ -968,7 +981,8 @@ class TriGrid(object):
              all_cells=True,edge_values=None,
              edge_mask=None,vmin=None,vmax=None,ax=None,
              clip=None):
-        """ vmin: if nan, don't set an array at all for the edges
+        """ 
+        vmin: if nan, don't set an array at all for the edges
 
         clip=[xmin,xmax,ymin,ymax]: additionally mask edges which are not within the given rectangle
 
@@ -976,7 +990,7 @@ class TriGrid(object):
         
         """
         if ax is None:
-            ax = gca()
+            ax = plt.gca()
 
         if self.Ncells() == 0:
             voronoi = False
@@ -991,9 +1005,9 @@ class TriGrid(object):
             if not all_cells:
                 edge_mask = self.edges[:,4] < 0
             else:
-                edge_mask = self.edges[:,0] >= 0 # ones( self.edges[:,2].shape ) == 1
+                edge_mask = self.edges[:,0] >= 0 # np.ones( self.edges[:,2].shape ) == 1
 
-        if sum(edge_mask) == 0:
+        if np.sum(edge_mask) == 0:
             return
         
         # g.edges[:,:2] pulls out every edge, and just the endpoint
@@ -1014,7 +1028,7 @@ class TriGrid(object):
             clip = any( points_visible, axis=1)
             segments = segments[clip,...]
         
-        line_coll = LineCollection(segments,**line_collection_args)
+        line_coll = collections.LineCollection(segments,**line_collection_args)
 
         if vmin is not None and isnan(vmin):
             print( "Skipping the edge array" )
@@ -1054,12 +1068,12 @@ class TriGrid(object):
         to mask out values, set scalar to nan
         """
         if ax is None:
-            ax = gca()
+            ax = plt.gca()
         
         if not pdata:
             # create a numpy array for all of the segments:
             # each segment has 4 points so that it closes the triangle
-            segments = zeros((self.Ncells(),4,2),float64)
+            segments = np.zeros((self.Ncells(),4,2),np.float64)
             for i in range(self.Ncells()):
                 for j in range(4):
                     segments[i,j,:] = self.points[self.cells[i,j%3]]
@@ -1084,7 +1098,7 @@ class TriGrid(object):
                 if len(scalar) == 0:
                     return None
                 
-            patch_coll = PolyCollection(segments,edgecolors='None',antialiaseds=0,norm=norm,cmap=cmap)
+            patch_coll = collections.PolyCollection(segments,edgecolors='None',antialiaseds=0,norm=norm,cmap=cmap)
             # is this sufficient for coloring? YES
             patch_coll.set_array(scalar)
             pdata = patch_coll
@@ -1098,7 +1112,7 @@ class TriGrid(object):
             draw()
         return pdata
     def animate_scalar(self,scalar_frames,post_proc=None):
-        clf() # clear figure, to get rid of colorbar, too
+        plt.clf() # clear figure, to get rid of colorbar, too
         vmin = scalar_frames.min()
         vmax = scalar_frames.max()
         print( "Max,min: ",vmax,vmin)
@@ -1156,7 +1170,7 @@ class TriGrid(object):
         else:
             simple_segs = joined_segs
 
-        ecoll = LineCollection(simple_segs)
+        ecoll = collections.LineCollection(simple_segs)
         ecoll.set_edgecolor('k')
 
         return ecoll
@@ -1180,7 +1194,7 @@ class TriGrid(object):
         # returns an 3 element array giving the edge indices for the
         # cell i
         # the 0th edge goes from the 0th vertex to the 1st.
-        f = array([-1,-1,-1])
+        f = np.array([-1,-1,-1])
         for nf in range(3):
             f[nf] = self.find_edge( (self.cells[i,nf],self.cells[i,(nf+1)%3]) )
         return f
@@ -1315,7 +1329,7 @@ class TriGrid(object):
 
         # Track who's been visited -
         # this records the index of the cell from which this cell was visited.
-        visitors = -1 * ones(self.Ncells(),int32)
+        visitors = -1 * np.ones(self.Ncells(),np.int32)
 
         # Initialize the list of cells to visit
         stack = [c]
@@ -1531,7 +1545,7 @@ class TriGrid(object):
                     nbrs.append(nc1)
                 if nc2 != cell_id and nc2 >= 0:
                     nbrs.append(nc2)
-            return array(nbrs)
+            return np.array(nbrs)
         
     def make_edges_from_cells(self):
         # iterate over cells, and for each cell, if it's index
@@ -1573,7 +1587,7 @@ class TriGrid(object):
                                   default_marker,
                                   i,n))
 
-        self.edges = array(edges,int32)
+        self.edges = np.array(edges,np.int32)
 
     def verify_bc(self,do_plot=True):
         """ check to make sure that all grid boundaries have a BC set 
@@ -1583,14 +1597,14 @@ class TriGrid(object):
         # marker: 0=> internal,1=> closed, 3=> open
         #  make sure that any internal boundary has a second cell index
         #  assumes that all edges have the first cell index != -1
-        bad_edges = find( (self.edges[:,2]==0) & (self.edges[:,4]==-1 ) )
+        bad_edges = np.nonzero( (self.edges[:,2]==0) & (self.edges[:,4]==-1 ) )[0]
 
         if do_plot:
             for e in bad_edges:
                 bad_points = self.edges[e,0:2]
             
-                plot(self.points[bad_points,0],
-                     self.points[bad_points,1],'r-o')
+                plt.plot(self.points[bad_points,0],
+                         self.points[bad_points,1],'r-o')
         
         if len(bad_edges) > 0:
             print( "BAD: there are %d edges without BC that have only 1 cell"%len(bad_edges))
@@ -1618,7 +1632,7 @@ class TriGrid(object):
         N.B. this is not kept up to date when modifying the grid.
         """
         if self._cell_edge_map is None:
-            cem = zeros( (self.Ncells(),3), int32)
+            cem = np.zeros( (self.Ncells(),3), np.int32)
 
             for i in xrange(self.Ncells()):
                 cem[i,:] = self.cell2edges(i)
@@ -1646,7 +1660,7 @@ class TriGrid(object):
         return nc1_weight * F[nc1] + (1-nc1_weight) * F[nc2]
 
     def interp_cell_to_node(self,F):
-        vals=zeros(self.Npoints(),'f8')
+        vals=np.zeros(self.Npoints(),'f8')
 
         for i in range(self.Npoints()):
             cells=list(self.pnt2cells(i))
@@ -1668,8 +1682,8 @@ class TriGrid(object):
         nxy = dxy / dxy_norm[:,:,newaxis]
         # got depth from the start, but need edge length
         edge_len = dist( self.points[self.edges[:,0]], self.points[self.edges[:,1]])
-        flux_divergence = sum(sum(nxy * (edge_len[:,newaxis] * edge_flux)[cell_to_edges],
-                                  axis=1),axis=1) # maybe...
+        flux_divergence = np.sum(np.sum(nxy * (edge_len[:,newaxis] * edge_flux)[cell_to_edges],
+                                        axis=1),axis=1) # maybe...
         return flux_divergence / self.areas()
 
     def smooth_scalar(self,cell_value):
@@ -1740,8 +1754,8 @@ class TriGrid(object):
             # boundary nodes.  Note that this will include interprocessor boundary
             # nodes, too.
             boundary_nodes = unique( self.edges[self.edges[:,2]>0,:2] )
-            dists = sum( (p - self.points[boundary_nodes])**2, axis=1)
-            order = argsort(dists)
+            dists = np.sum( (p - self.points[boundary_nodes])**2, axis=1)
+            order = np.argsort(dists)
             closest = boundary_nodes[ order[:count] ]
             # print "   done with boundary node search"
             
@@ -1753,7 +1767,7 @@ class TriGrid(object):
             if self.index is None:
                 self.build_index()
 
-            p = array(p)
+            p = np.array(p)
 
             # returns the index of the grid point closest to the given point:
             hits = self.index.nearest( p[xxyy], count)
@@ -1915,7 +1929,7 @@ class TriGrid(object):
             if not found_prev:
                 return None
 
-        return array( path[::-1] )
+        return np.array( path[::-1] )
 
     def cells_on_line(self,xxyy):
         """ Return cells intersecting the given line segment
@@ -1923,21 +1937,21 @@ class TriGrid(object):
         the line, and cell centers which are within the segment's
         extent
         """
-        m=array([ [xxyy[0],xxyy[2],1],
+        m=np.array([ [xxyy[0],xxyy[2],1],
                   [xxyy[1],xxyy[3],1],
                   [1,1,1] ])
-        b=array([0,0,abs(xxyy).mean()])
+        b=np.array([0,0,abs(xxyy).mean()])
         line_eq=solve(m,b)
 
-        hom_points=concatenate( (self.points,ones((self.Npoints(),1))),axis=1)
+        hom_points=concatenate( (self.points,np.ones((self.Npoints(),1))),axis=1)
 
-        pnt_above=dot(hom_points,line_eq)>0
-        cell_sum=sum(pnt_above[self.cells],axis=1)
+        pnt_above=np.dot(hom_points,line_eq)>0
+        cell_sum=np.sum(pnt_above[self.cells],axis=1)
         straddle=nonzero((cell_sum>0)&(cell_sum<3))[0]
 
         # further limit that to the lateral range of the transect
-        A=array([xxyy[0],xxyy[2]])
-        B=array([xxyy[1],xxyy[3]])
+        A=np.array([xxyy[0],xxyy[2]])
+        B=np.array([xxyy[1],xxyy[3]])
         vec=B-A
         d_min=0
         d_max=norm(vec)
@@ -2088,9 +2102,11 @@ class TriGrid(object):
                 self._pnt2cells[i].add(c)
         
     def delete_cell(self,c,replace_with=-2,rollback=1):
-        """ replace_with: the value to set on edges that used to reference
-             this cell. -2 => leave an internal hole
-                        -1 => create an 'island'
+        """ 
+        replace_with: the value to set on edges that used to reference
+        this cell.
+        -2 => leave an internal hole
+        -1 => create an 'island'
         """
 
         nA,nB,nC = self.cells[c]
@@ -2325,7 +2341,7 @@ class TriGrid(object):
                 for c in candidates:
                     ac = self.points[c] - self.points[nodeA]
                      
-                    if dot(ac,ab_left) < 0: # this one is on the right of AB
+                    if np.dot(ac,ab_left) < 0: # this one is on the right of AB
                         # make a stand-in A & B that are in CCW order in this cell
                         ccwA,ccwB = nodeB,nodeA
                         check_cell_ab = 4 # the relevant cell for the new edge
@@ -2357,7 +2373,7 @@ class TriGrid(object):
                     
                     adj_ids = [ self.edges[e,check]
                                 for e,check in zip(ccw_edges,check_cells) ]
-                    adj_ids = array( adj_ids )
+                    adj_ids = np.array( adj_ids )
 
                     if any(adj_ids >= 0) and any( adj_ids != adj_ids[0]):
                         # bad.  one edge thinks there is already a cell here, but
@@ -2463,10 +2479,10 @@ class TriGrid(object):
                                 
     def add_cell(self,c):
         self.push_op(self.unadd_cell,len(self.cells))
-        c = array(c,int32)
+        c = np.array(c,np.int32)
         
-        i = array([0,1,2])
-        ip = array([1,2,0])
+        i = np.array([0,1,2])
+        ip = np.array([1,2,0])
         xi = self.points[c[i],0]
         yi = self.points[c[i],1]
         xip = self.points[c[ip],0]
@@ -2508,7 +2524,7 @@ class TriGrid(object):
             return masked_grid.edges_to_rings(edgemask=None)
 
         # remember which edges have already been assigned to a ring
-        edges_used = zeros( self.Nedges(), int8 )
+        edges_used = np.zeros( self.Nedges(), int8 )
 
         rings = []
         
@@ -2558,7 +2574,7 @@ class TriGrid(object):
                         # debug
                         self.plot()
                         pnts = self.points[ring] 
-                        plot(pnts[:,0],pnts[:,1],'ro')
+                        plt.plot(pnts[:,0],pnts[:,1],'ro')
                         # /debug
                         raise Exception("Traced too far.  Something is wrong.  bailing")
                     
@@ -2582,12 +2598,12 @@ class TriGrid(object):
                             c = setdiff1d(self.edges[next_e,:2],[b])[0]
                             d = self.points[c] - self.points[b]
                             angles.append( arctan2(d[1],d[0]) )
-                        angles = array(angles)
+                        angles = np.array(angles)
                         
                         e_idx = b_edges.index(e)
                         e_angle = angles[e_idx]
                         angles = (angles-e_angle) % (2*pi)
-                        next_idx = argsort(angles)[-1]
+                        next_idx = np.argsort(angles)[-1]
                         e = b_edges[next_idx]
                         
                     # # setdiff1d is slow.  do this manually
@@ -2623,7 +2639,7 @@ class TriGrid(object):
                 if bool(ccw) == bool(is_ccw(points)):
                     # print "great, got correctly oriented ring (ccw=%s)"%ccw
                     edges_used[ edges_used==1 ] = 2 # really used
-                    rings.append( array(ring) )
+                    rings.append( np.array(ring) )
                     break # breaks out of the flip loop
                 else:
                     # print "ring orientation wrong, wanted ccw=%s"%ccw
@@ -2675,8 +2691,8 @@ class TriGrid(object):
             inner_points = [self.points[ir] for ir in inner_rings]
             polys.append( geometry.Polygon( outer_points, inner_points) )
 
-        areas = array([p.area for p in polys])
-        order = argsort(-1 * areas)
+        areas = np.array([p.area for p in polys])
+        order = np.argsort(-1 * areas)
 
         return [polys[i] for i in order]
         
@@ -2789,9 +2805,9 @@ class TriGrid(object):
 
         parallel = (b-a)
         # manually rotate 90deg CCW
-        bad = array([ -parallel[1],parallel[0]] )
+        bad = np.array([ -parallel[1],parallel[0]] )
 
-        if dot(self.points[other_point1],bad) > dot(self.points[other_point2],bad):
+        if np.dot(self.points[other_point1],bad) > np.dot(self.points[other_point2],bad):
             bad_cell = cell1
         else:
             bad_cell = cell2
@@ -2873,7 +2889,7 @@ class TriGrid(object):
     #         Bleaves = array(gridB.leaf_nodes(use_envelope=use_envelope,
     #                                          tolerance=envelope_tol,
     #                                          use_degree=False),
-    #                         int32)
+    #                         np.int32)
     # 
     #         if i == 0:
     #             accum_grid = gridB
@@ -3110,28 +3126,5 @@ class TriGrid(object):
         print("Failed to remove cb_id %d"%cb_id)
 
         
-
-# g = TriGrid(sms_fname="../suntans/main/testcases/sms-grid/fort.grd")
-# # g.plot(voronoi=False)
-# # show()
-# g.write_suntans("../suntans/main/testcases/sms-grid")
-# 
-# g2 = TriGrid(suntans_path="../suntans/main/testcases/sms-grid")
-# g2.plot()
-# show()
-
-# g = TriGrid(suntans_path="../suntans/main/testcases/sanfran_lowres_1000_trial/data")
-# scalar = rand(g.Ncells())
-# g.plot_scalar(scalar)
-# g.plot(voronoi=False)
-# show()
-
-
-if __name__ == '__main__':
-    g = TriGrid(sms_fname="/home/rusty/data/sfbay/grids/100km-arc/250m/250m-100km_arc.grd")
-    g.plot()
-    g.verify_bc(do_plot=1)
-
-
 
 
