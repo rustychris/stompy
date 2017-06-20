@@ -1,5 +1,11 @@
-stompy package
-==============
+stompy
+======
+
+Spatial Tools for Ocean Modeling in Python
+
+A broad collection of half-baked tools related to many aspects of
+oceanographic data processing with an emphasis on modeling.
+
 
 Subpackages
 -----------

@@ -142,7 +142,8 @@ def hashes_to_array(records,float_fill=np.nan,int_fill=-99,uint_fill=0):
 
 
 def bounds(pnts):
-    """ returns array [{lower,upper},pnts.shape[-1]]
+    """ 
+    returns array [{lower,upper},pnts.shape[-1]]
     """
     lower=pnts
     upper=pnts
@@ -153,7 +154,8 @@ def bounds(pnts):
     return np.array([lower,upper])
         
 def center_to_interval(c):
-    """ c: coordinates of centers,
+    """
+    c: coordinates of centers,
     d: sizes of intervals, with the first/last interval
     assumed same as neighbors
     """
@@ -271,9 +273,10 @@ def expand_xxyy(xxyy,factor):
              xxyy[3] + dy*factor] 
 
 def dice_interval(subinterval,overlap_fraction,start,end=None):
-    """ subinterval gives a duration, say 90 [s]
+    """ 
+    subinterval gives a duration, say 90 [s]
     overlap_fraction=0 means end of one interval is start of the next,
-      overlap_fraction=0.5 means middle of one interval is start of next.
+    overlap_fraction=0.5 means middle of one interval is start of next.
     start is either a scalar, or a pair of scalars
     if start is a scalar, end must be specified also as a scalar
 
@@ -299,10 +302,10 @@ def dice_interval(subinterval,overlap_fraction,start,end=None):
 
 
 def fill_invalid(A,axis=0,ends='constant'):
-    """ ends:
-      'constant'  missing values at the ends will take nearest valid value
-      'linear' missing values will be extrapolated with a linear fit through
-          the first/last valid values
+    """ 
+    ends:
+    'constant'  missing values at the ends will take nearest valid value
+    'linear' missing values will be extrapolated with a linear fit through the first/last valid values
     """
     # rotate the operational index to be first:
     new_order=(np.arange(A.ndim)+axis)%A.ndim
@@ -333,7 +336,8 @@ def fill_invalid(A,axis=0,ends='constant'):
 
 
 def select_increasing(x):
-    """ Return a bitmask over x removing any samples which are
+    """ 
+    Return a bitmask over x removing any samples which are
     less than or equal to the largest preceding sample
     """
     mask=np.ones(len(x),np.bool8)
@@ -394,7 +398,8 @@ def interp_near(x,sx,sy,max_dx=None):
     return y_at_x
 
 def nearest(A,x):
-    """ like searchsorted, but return the index of the nearest value,
+    """ 
+    like searchsorted, but return the index of the nearest value,
     not just the first value greater than x
     """
     N=len(A)
@@ -696,17 +701,19 @@ def rotate_to_principal(vec,eta=None,positive='flood',detrend=False,
     return rot(-theta,vec)
 
 def bootstrap_resample(X, n=None):
-    """ Bootstrap resample an array_like
+    """ 
+    Bootstrap resample an array_like
     credits to http://nbviewer.ipython.org/gist/aflaxman/6871948
 
-    Parameters
-    ----------
+    Parameters:
+    
     X : array_like
       data to resample
     n : int, optional
       length of resampled array, equal to len(X) if n==None
-    Results
-    -------
+
+    Results:
+
     returns X_resamples
     """
     if n == None:
@@ -728,7 +735,8 @@ def bootstrap_stat(X,n_pop=10000,n_elements=None,pop_stat=np.mean,
     return bootstrap_stat( np.array(pop_stats) )
 
 def model_skill(xmodel,xobs,ignore_nan=True):
-    """ Wilmott 1981 model skill metric
+    """ 
+    Wilmott 1981 model skill metric
     """
     # Weird - random data gets a score of 0.43 or so - 
     #  if the prediction is too small by a factor of 10, the skill is still about
@@ -914,7 +922,8 @@ def to_dt64(x):
         assert False
 
 def to_unix(t):
-    """ Convert t to unix epoch time, defined as the number of seconds
+    """ 
+    Convert t to unix epoch time, defined as the number of seconds
     since 1970-01-01 00:00:00.  The result is a float or int, and is *not*
     distinguishable a priori from datenums.  For that reason, numerical values
     passed to the other date converters are assumed to be datenums.
@@ -1058,7 +1067,8 @@ def dnum_jday0(dnum):
     return to_dnum(dt0)
 
 def invert_permutation(p):
-    '''Returns an array s, where s[i] gives the index of i in p.
+    '''
+    Returns an array s, where s[i] gives the index of i in p.
     The argument p is assumed to be some permutation of 0, 1, ..., len(p)-1. 
     see http://stackoverflow.com/questions/11649577/how-to-invert-a-permutation-array-in-numpy
     
@@ -1091,7 +1101,8 @@ def circumcenter(p1,p2,p3):
     return vc
 
 def poly_circumcenter(points):
-    """ unbiased (mostly) estimate of circumcenter, by computing circumcenter
+    """ 
+    unbiased (mostly) estimate of circumcenter, by computing circumcenter
     of consecutive groups of 3 points
     """
     triples=np.array(list(circular_n(points,3)))
@@ -1121,7 +1132,8 @@ def circular_n(iterable,n):
         
 
 def cdiff(a,n=1,axis=-1):
-    """ Like np.diff, but include difference from last element back
+    """ 
+    Like np.diff, but include difference from last element back
     to first.
     """ 
     assert n==1 # not ready for higher order
@@ -1179,7 +1191,8 @@ def touch(fname, times=None):
 
 
 def orient_intersection(lsA,lsB,delta=1.0):
-    """ lsA,lsB: LineString geometries with exactly one intersecting point.
+    """ 
+    lsA,lsB: LineString geometries with exactly one intersecting point.
     returns 
     1: if lsA crosses lsB left to right, when looking from the start towards the
     end of lsB.
@@ -1305,7 +1318,8 @@ def uniquify_paths(fns):
 
 # Used to be in array_append
 def array_append( A, b ):
-    """ append b to A, where b.shape == A.shape[1:]
+    """ 
+    append b to A, where b.shape == A.shape[1:]
     Attempts to make this fast by dynamically resizing the base array of
     A, and returning the appropriate slice.
     """
@@ -1383,7 +1397,8 @@ def array_concatenate( AB ):
     
     
 def concatenate_safe_dtypes( ab ):
-    """ Concatenate two arrays, but allow for the dtypes to be different.  The
+    """ 
+    Concatenate two arrays, but allow for the dtypes to be different.  The
     fields are taken from the first array - matching fields in subsequent arrays
     are copied, others discarded.
     """
@@ -1410,7 +1425,8 @@ def recarray_del_fields(A,old_fields):
     return new_A
     
 def recarray_add_fields(A,new_fields):
-    """ A: a record array
+    """ 
+    A: a record array
     new_fields: [ ('name',data), ... ]
     where data must be the same length as A.  So far, no support for
     non-scalar values

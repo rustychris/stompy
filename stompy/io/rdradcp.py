@@ -1,12 +1,17 @@
-""" A mostly direct translation of rdradcp.m to python.
+""" 
+A mostly direct translation of rdradcp.m to python.
 1/3/2013: Updated with DKR changes to rdradcp.m
 
 """
+
 from __future__ import division
 from __future__ import print_function
-from builtins import range
-from builtins import object
-from past.utils import old_div
+
+#  cruft that 2to3 added - but seems to make less compatible with older code
+#  and unclear that it's needed for py3k.
+# from builtins import range
+# from builtins import object
+# from past.utils import old_div
 
 import sys,os,re,math
 from numpy import *
@@ -88,6 +93,7 @@ def rdradcp(name,
             despike='no',
             log_fp=None):
     """
+    The original documentation from Rich Pawlowicz's code:
 
     RDRADCP  Read (raw binary) RDI ADCP files, 
     ADCP=RDRADCP(NAME) reads the raw binary RDI BB/Workhorse ADCP file NAME and
@@ -102,98 +108,121 @@ def rdradcp(name,
     files, but it is still 'beta'. There are (inadequately documented) timestamps
     of various kinds from VMDAS, for example, and caveat emptor on WINRIVER2 NMEA data.
     
-    [ADCP,CFG]=RDRADCP(...) returns configuration data in a
+    (ADCP,CFG)=RDRADCP(...) returns configuration data in a
     separate data structure.
 
     Various options can be specified on input:
-    [..]=RDRADCP(NAME,NUMAV) averages NUMAV ensembles together in the result.
-    [..]=RDRADCP(NAME,NUMAV,NENS) reads only NENS ensembles (-1 for all).
-    [..]=RDRADCP(NAME,NUMAV,[NFIRST NEND]) reads only the specified range
+    (..)=RDRADCP(NAME,NUMAV) averages NUMAV ensembles together in the result.
+    (..)=RDRADCP(NAME,NUMAV,NENS) reads only NENS ensembles (-1 for all).
+    (..)=RDRADCP(NAME,NUMAV,(NFIRST NEND)) reads only the specified range
     of ensembles. This is useful if you want to get rid of bad data before/after
     the deployment period.
     
-    Notes- sometimes the ends of files are filled with garbage. In this case you may
-         have to rerun things explicitly specifying how many records to read (or the
-         last record to read). I don't handle bad data very well. Also - in Aug/2007
-         I discovered that WINRIVER-2 files can have a varying number of bytes per
-         ensemble. Thus the estimated number of ensembles in a file (based on the
-         length of the first ensemble and file size) can be too high or too low.
+    Notes:
+    - sometimes the ends of files are filled with garbage. In this case you may
+      have to rerun things explicitly specifying how many records to read (or the
+      last record to read). I don't handle bad data very well. Also - in Aug/2007
+      I discovered that WINRIVER-2 files can have a varying number of bytes per
+      ensemble. Thus the estimated number of ensembles in a file (based on the
+      length of the first ensemble and file size) can be too high or too low.
 
-       - I don't read in absolutely every parameter stored in the binaries;
-         just the ones that are 'most' useful. Look through the code if
-         you want to get other things.
+    - I don't read in absolutely every parameter stored in the binaries;
+      just the ones that are 'most' useful. Look through the code if
+      you want to get other things.
 
-       - chaining of files does not occur (i.e. read .000, .001, etc.). Sometimes
-         a ping is split between the end of one file and the beginning of another.
-         The only way to get this data is to concatentate the files, using
-           cat file1.000 file1.001 > file1   (unix)
-           copy file1.000/B+file2.001/B file3.000/B     (DOS/Windows)
+    - chaining of files does not occur (i.e. read .000, .001, etc.). Sometimes
+      a ping is split between the end of one file and the beginning of another.
+      The only way to get this data is to concatentate the files, using
+      cat file1.000 file1.001 > file1   (unix)
+      copy file1.000/B+file2.001/B file3.000/B     (DOS/Windows)
 
-         (as of Dec 2005 we can probably read a .001 file)
+      (as of Dec 2005 we can probably read a .001 file)
 
-       - velocity fields are always called east/north/vertical/error for all
-         coordinate systems even though they should be treated as
-         1/2/3/4 in beam coordinates etc.
+    - velocity fields are always called east/north/vertical/error for all
+      coordinate systems even though they should be treated as
+      1/2/3/4 in beam coordinates etc.
 
     String parameter/option pairs can be added after these initial parameters:
 
-    'baseyear'    : Base century for BB/v8WH firmware (default to 2000).
+    'baseyear': Base century for BB/v8WH firmware (default to 2000).
 
-    'despike'    : [ 'no' | 'yes' | 3-element vector ]
-                   Controls ensemble averaging. With 'no' a simple mean is used 
-                   (default). With 'yes' a mean is applied to all values that fall 
-                   within a window around the median (giving some outlier rejection). 
-                   This is useful for noisy data. Window sizes are [.3 .3 .3] m/s 
-                   for [ horiz_vel vert_vel error_vel ] values. If you want to 
-                   change these values, set 'despike' to the 3-element vector.
+    'despike': 'no' | 'yes' | 3-element vector 
+    
+    Controls ensemble averaging. With 'no' a simple mean is used 
+    (default). With 'yes' a mean is applied to all values that fall 
+    within a window around the median (giving some outlier rejection). 
+    This is useful for noisy data. Window sizes are [.3 .3 .3] m/s 
+    for [ horiz_vel vert_vel error_vel ] values. If you want to 
+    change these values, set 'despike' to the 3-element vector.
 
     R. Pawlowicz (rich@eos.ubc.ca) - 17/09/99
 
     R. Pawlowicz - 17/Oct/99 
-          5/july/00 - handled byte offsets (and mysterious 'extra" bytes) slightly better, Y2K
-          5/Oct/00 - bug fix - size of ens stayed 2 when NUMAV==1 due to initialization,
-                     hopefully this is now fixed.
-          10/Mar/02 - #bytes per record changes mysteriously,
-                      tried a more robust workaround. Guess that we have an extra
-                      2 bytes if the record length is even?
-          28/Mar/02 - added more firmware-dependent changes to format; hopefully this
-                      works for everything now (put previous changes on firmer footing?)
-          30/Mar/02 - made cfg output more intuitive by decoding things.
-                    - An early version of WAVESMON and PARSE which split out this
-                      data from a wave recorder inserted an extra two bytes per record.
-                      I have removed the code to handle this but if you need it see line 509
-         29/Nov/02  - A change in the bottom-track block for version 4.05 (very old!).
-         29/Jan/03  - Status block in v4.25 150khzBB two bytes short?
-         14/Oct/03  - Added code to at least 'ignore' WinRiver GPS blocks.
-         11/Nov/03  - VMDAS navigation block, added hooks to output
-                      navigation data.
-         26/Mar/04  - better decoding of nav blocks
-                    - better handling of weird bytes at beginning and end of file
-                      (code fixes due to Matt Drennan).
-         25/Aug/04  - fixes to "junk bytes" handling.
-         27/Jan/05  - even more fixed to junk byte handling (move 1 byte at a time rather than
-                      two for odd lengths.
+    5/july/00 - handled byte offsets (and mysterious 'extra" bytes) slightly better, Y2K
+
+    5/Oct/00 - bug fix - size of ens stayed 2 when NUMAV==1 due to initialization,
+    hopefully this is now fixed.
+
+    10/Mar/02 - #bytes per record changes mysteriously,
+    tried a more robust workaround. Guess that we have an extra
+    2 bytes if the record length is even?
+
+    28/Mar/02 - added more firmware-dependent changes to format; hopefully this
+    works for everything now (put previous changes on firmer footing?)
+
+    30/Mar/02 - made cfg output more intuitive by decoding things.
+    An early version of WAVESMON and PARSE which split out this
+    data from a wave recorder inserted an extra two bytes per record.
+    I have removed the code to handle this but if you need it see line 509
+
+    29/Nov/02  - A change in the bottom-track block for version 4.05 (very old!).
+
+    29/Jan/03  - Status block in v4.25 150khzBB two bytes short?
+
+    14/Oct/03  - Added code to at least 'ignore' WinRiver GPS blocks.
+
+    11/Nov/03  - VMDAS navigation block, added hooks to output
+    navigation data.
+
+    26/Mar/04
+    - better decoding of nav blocks
+    - better handling of weird bytes at beginning and end of file
+    - (code fixes due to Matt Drennan).
+
+    25/Aug/04  - fixes to "junk bytes" handling.
+
+    27/Jan/05  - even more fixed to junk byte handling (move 1 byte at a time rather than
+    two for odd lengths.
+
     29/Sep/2005 - median windowing done slightly incorrectly in a way which biases
-                  results in a negative way in data is *very* noisy. Now fixed.
+    results in a negative way in data is *very* noisy. Now fixed.
 
     28/Dc/2005  - redid code for recovering from ensembles that mysteriously change length, added
-                  'checkheader' to make a complete check of ensembles.
-      Feb/2006  - handling of firmware version 9 (navigator)
+    'checkheader' to make a complete check of ensembles.
+
+    Feb/2006  - handling of firmware version 9 (navigator)
+
     23/Aug/2006 - more firmware updates (16.27)
+
     23/Aug2006  - ouput some bt QC stiff
+
     29/Oct/2006 - winriver bottom track block had errors in it - now fixed.
+
     30/Oct/2006 - pitch_std, roll_std now uint8 and not int8 (thanks Felipe pimenta)
+
     13/Aug/2007 - added Rio Grande (firmware v 10), 
-                  better handling of those cursed winriver ASCII NMEA blocks whose
-                  lengths change unpredictably.
-                  skipping the inadequately documented 2022 WINRIVER-2 NMEA block
+    better handling of those cursed winriver ASCII NMEA blocks whose
+    lengths change unpredictably.
+    skipping the inadequately documented 2022 WINRIVER-2 NMEA block
+
     13/Mar/2010 - firmware version 50 for WH.
    
     31/Aug/2012 - Rusty Holleman / RMA - ported to python
     
     Python port details:
-     log_fp: a file-like object - the message are the same as in the matlab code,
-        but this allows them to be redirected elsewhere.
+
+    log_fp: a file-like object - the message are the same as in the matlab code,
+    but this allows them to be redirected elsewhere.
     """
     if log_fp is None:
         log_fp = sys.stdout
@@ -715,7 +744,7 @@ SOURCE = None
 def rd_buffer(fd,num_av,msg=msg_print):
     """ RH: return ens=None, hdr=None if there's a problem
 
-    returns [ens,hdr,cfg,pos]
+    returns (ens,hdr,cfg,pos)
     """
     # To save it being re-initialized every time.
     # [python] cache the preallocated array in ens_alloc, and remember 
@@ -1542,9 +1571,10 @@ def adcp_merge_nmea(r,gps_fn,adjust_to_utc=False):
 
 
 def ship_to_earth(r):
-    """ rotate r.east_vel, r.north_vel, r.bt_vel
+    """ 
+    rotate r.east_vel, r.north_vel, r.bt_vel
     by compass heading.
-    ship values moved to r.ship_<var>
+    ship values moved to r.ship_**var**
     """
     if r.config.coord_sys!='ship':
         raise Exception("applying ship_to_earth but coord sys is %s"%r.config.coord_sys)

@@ -5,14 +5,14 @@ import numpy as np
 
 import colorsys
 import os,glob
-from pylab import *
+
 import ggr
+import matplotlib.pyplot as plt
 from matplotlib import colors
 
 # these are the candidates for default in mpl1.5 / mpl2.0
 # viridis is the new default
 from mpl15 import magma,inferno,plasma,viridis
-
 
 
 def list_gradients():
@@ -30,21 +30,21 @@ def write_sample():
     grads = list_gradients()
 
     rc('text', usetex=False)
-    a=outer(arange(0,1,0.01),ones(10))
-    figure(figsize=(10,5))
-    subplots_adjust(top=0.8,bottom=0.05,left=0.01,right=0.99)
+    a=np.outer(np.arange(0,1,0.01),np.ones(10))
+    plt.figure(figsize=(10,5))
+    plt.subplots_adjust(top=0.8,bottom=0.05,left=0.01,right=0.99)
     
     maps=list_gradients()
       
     l=len(maps)+1
     for i, m in enumerate(maps):
-        subplot(1,l,i+1)
-        axis("off")
-        imshow(a,aspect='auto',cmap=load_gradient(m),origin="lower")
-        title(m,rotation=90,fontsize=10)
+        plt.subplot(1,l,i+1)
+        plt.axis("off")
+        plt.imshow(a,aspect='auto',cmap=load_gradient(m),origin="lower")
+        plt.title(m,rotation=90,fontsize=10)
         
-    savefig(os.path.join( os.path.dirname(__file__), "cmaps","colormaps.png"),
-            dpi=100,facecolor='gray')      
+    plt.savefig(os.path.join( os.path.dirname(__file__), "cmaps","colormaps.png"),
+                dpi=100,facecolor='gray')      
     
 
 def load_gradient(filename,reverse=False):
@@ -188,9 +188,9 @@ def cmap_discretize(cmap, N):
     """
     if type(cmap) == str:
         cmap = get_cmap(cmap)
-    colors_i = concatenate((linspace(0, 1., N), (0.,0.,0.,0.)))
+    colors_i = np.concatenate((linspace(0, 1., N), (0.,0.,0.,0.)))
     colors_rgba = cmap(colors_i)
-    indices = linspace(0, 1., N+1)
+    indices = np.linspace(0, 1., N+1)
     cdict = {}
     for ki,key in enumerate(('red','green','blue')):
         cdict[key] = [ (indices[i], colors_rgba[i-1,ki], colors_rgba[i,ki]) for i in range(N+1) ]
@@ -212,10 +212,10 @@ def cmap_clip(cmap,low,high):
     else:
         N = 256  # conservative overkill
 
-    colors_i = concatenate( (linspace(float(low), float(high), N),[low]) )
+    colors_i = np.concatenate( (linspace(float(low), float(high), N),[low]) )
 
     colors_rgba = cmap(colors_i)
-    indices = linspace(0, 1., N+1)
+    indices = np.linspace(0, 1., N+1)
     cdict = {}
     for ki,key in enumerate(('red','green','blue')):
         cdict[key] = [ (indices[i], colors_rgba[i-1,ki], colors_rgba[i,ki]) for i in range(N+1) ]
