@@ -1,4 +1,4 @@
-stompy\.io package
+stompy\.io — Reading and writing of various formats and data sources
 ==================
 
 Subpackages

@@ -1,4 +1,4 @@
-stompy\.grid package
+stompy\.grid — Grid reading, writing and manipulating
 ====================
 
 Submodules

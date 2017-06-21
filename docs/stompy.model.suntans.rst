@@ -1,5 +1,8 @@
-stompy\.model\.suntans package
+stompy\.model\.suntans — Tools and interface for SUNTANS hydrodynamics
 ==============================
+
+N.B.: `Matt Rayson's tools <https://github.com/mrayson/>`, are likely more general
+purpose and more widely used.
 
 Submodules
 ----------

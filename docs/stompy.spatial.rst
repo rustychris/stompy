@@ -1,5 +1,8 @@
-stompy\.spatial package
+stompy\.spatial — Spatial analysis, data management and manipulation.
 =======================
+
+For GIS-related operations, and spatial tools to support model
+development and data analysis.
 
 Submodules
 ----------

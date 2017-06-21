@@ -1,4 +1,4 @@
-stompy\.model package
+stompy\.model — Utilities and interfaces to numerical models
 =====================
 
 Subpackages

@@ -1,5 +1,7 @@
-stompy\.model\.pypart package
+stompy\.model\.pypart — Python-based particle tracking
 =============================
+
+Alpha.
 
 Submodules
 ----------

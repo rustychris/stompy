@@ -1,4 +1,4 @@
-stompy\.io\.local package
+stompy\.io\.local — Methods for regional and local data sources
 =========================
 
 Submodules
