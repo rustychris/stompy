@@ -1,4 +1,4 @@
-stompy\.model\.delft package
+stompy\.model\.delft — Tools related Deltares models, D-Flow FM and D-WaQ
 ============================
 
 Submodules

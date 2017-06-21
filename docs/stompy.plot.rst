@@ -1,4 +1,4 @@
-stompy\.plot package
+stompy\.plot — Plotting utilities and enhancements
 ====================
 
 Submodules
