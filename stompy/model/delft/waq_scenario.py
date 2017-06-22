@@ -1738,7 +1738,14 @@ class HydroFiles(Hydro):
         return depths
 
     def bottom_depths(self):
+        """
+        Returns a parameter object (most likely ParameterSpatial) for 
+        the bottom depths.  Raises NotImplementedError if that information is 
+        not available in the source data.
+        """
         elt_depths=self.bottom_depths_2d()
+        if elt_depths is None:
+            raise NotImplementedError("Bottom depths not available")
         self.infer_2d_elements()
         assert self.n_2d_elements==len(elt_depths)
         return ParameterSpatial(elt_depths[self.seg_to_2d_element],hydro=self)
@@ -5438,6 +5445,9 @@ class Parameter(object):
         return self
 
 class ParameterConstant(Parameter):
+    """
+    A constant in time, constant in space parameter
+    """
     def __init__(self,value,scenario=None,name=None,hydro=None):
         super(ParameterConstant,self).__init__(name=name,scenario=scenario,hydro=hydro)
         self.data=self.value=value

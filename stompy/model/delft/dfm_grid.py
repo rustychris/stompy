@@ -158,7 +158,6 @@ def write_dfm(ug,nc_fn,overwrite=False):
             compline_x[:] = line[:,0]
             compline_y[:] = line[:,1]
 
-
     nc.close()
 
 class DFMGrid(unstructured_grid.UnstructuredGrid):

@@ -412,3 +412,180 @@ def read_map(fn,hyd,use_memmap=True,include_grid=True):
         g.write_to_xarray(ds=ds)
 
     return ds
+
+def dfm_wind_to_nc(wind_u_fn,wind_v_fn,nc_fn):
+    """
+    Transcribe DFM 'arcinfo' style gridded wind to
+    CF compliant netcdf file (ready for import to erddap)
+    """
+    fp_u=open(wind_u_fn,'rt')
+    fp_v=open(wind_v_fn,'rt')
+
+    # read the header, gathering parameters in a dict.
+    def parse_header(fp):
+        params={}
+        while 1:
+            line=fp.readline().strip()
+            if line.startswith('### START OF HEADER'):
+                break
+        for line in fp:
+            line=line.strip()
+            if line.startswith('#'):
+                if line.startswith('### END OF HEADER'):
+                    break
+                continue # comment lines
+            key,value = line.split('=',2)
+            key=key.strip()
+            value=value.strip()
+
+            # some hardcoded data type conversion:
+            if key in ['n_rows','n_cols']:
+                value=int(value)
+            elif key in ['dx','dy','x_llcorner','y_llcorner','NODATA_value']:
+                value=float(value)
+            params[key]=value
+        return params
+
+    fp_u.seek(0)
+    fp_v.seek(0)
+    u_header=parse_header(fp_u)
+    v_header=parse_header(fp_v)
+
+    # make sure they match up
+    for k in u_header.keys():
+        if k in ['quantity1']:
+            continue
+        assert u_header[k] == v_header[k]
+
+    # use netCDF4 directly, so we can stream it to disk
+    import netCDF4
+
+    os.path.exists(nc_fn) and os.unlink(nc_fn)
+    nc=netCDF4.Dataset(nc_fn,'w') # don't worry about netcdf versions quite yet
+
+    xdim='x'
+    ydim='y'
+    tdim='time'
+
+    nc.createDimension(xdim,u_header['n_cols'])
+    nc.createDimension(ydim,u_header['n_rows'])
+    nc.createDimension(tdim,None) # unlimited
+
+    # assign some attributes while we're at it
+    for k in ['FileVersion','Filetype','dx','dy','grid_unit','unit1','x_llcorner','y_llcorner']:
+        setattr(nc,k,u_header[k])
+
+    # cf conventions suggest this order of dimensions
+    u_var = nc.createVariable('wind_u',np.float32,[tdim,ydim,xdim],
+                              fill_value=u_header['NODATA_value'])
+    v_var = nc.createVariable('wind_v',np.float32,[tdim,ydim,xdim],
+                              fill_value=v_header['NODATA_value'])
+    t_var = nc.createVariable('time',np.float64,[tdim])
+
+
+    # install some metadata
+
+    # parse the times into unix epochs for consistency
+    t_var.units='seconds since 1970-01-01T00:00:00Z'
+    t_var.calendar = "proleptic_gregorian"
+
+    # Going to assume that we're working out of the same UTM 10:
+    utm_var = nc.createVariable('UTM10',np.int32,[])
+    utm_var.grid_mapping_name = "universal_transverse_mercator" 
+    utm_var.utm_zone_number = 10
+    utm_var.semi_major_axis = 6378137
+    utm_var.inverse_flattening = 298.257 
+    utm_var._CoordinateTransformType = "Projection" 
+    utm_var._CoordinateAxisTypes = "GeoX GeoY" 
+    utm_var.crs_wkt = """PROJCS["NAD83 / UTM zone 10N",
+        GEOGCS["NAD83",
+            DATUM["North_American_Datum_1983",
+                SPHEROID["GRS 1980",6378137,298.257222101,
+                    AUTHORITY["EPSG","7019"]],
+                TOWGS84[0,0,0,0,0,0,0],
+                AUTHORITY["EPSG","6269"]],
+            PRIMEM["Greenwich",0,
+                AUTHORITY["EPSG","8901"]],
+            UNIT["degree",0.0174532925199433,
+                AUTHORITY["EPSG","9122"]],
+            AUTHORITY["EPSG","4269"]],
+        PROJECTION["Transverse_Mercator"],
+        PARAMETER["latitude_of_origin",0],
+        PARAMETER["central_meridian",-123],
+        PARAMETER["scale_factor",0.9996],
+        PARAMETER["false_easting",500000],
+        PARAMETER["false_northing",0],
+        UNIT["metre",1,
+            AUTHORITY["EPSG","9001"]],
+        AXIS["Easting",EAST],
+        AXIS["Northing",NORTH],
+        AUTHORITY["EPSG","26910"]]
+    """
+
+    y_var=nc.createVariable('y',np.float64,[ydim])
+    y_var.units='m'
+    y_var.long_name="y coordinate of projection"
+    y_var.standard_name="projection_y_coordinate"
+    y_var[:]=u_header['y_llcorner'] + u_header['dy']*np.arange(u_header['n_rows'])
+
+    x_var=nc.createVariable('x',np.float64,[xdim])
+    x_var.units='m'
+    x_var.long_name="x coordinate of projection"
+    x_var.standard_name="projection_x_coordinate"
+    x_var[:]=u_header['x_llcorner'] + u_header['dx']*np.arange(u_header['n_cols'])
+
+    u_var.units='m s-1'
+    u_var.grid_mapping='transverse_mercator'
+    u_var.long_name='eastward wind from F Ludwig method'
+    u_var.standard_name='eastward_wind'
+
+    v_var.units='m s-1'
+    v_var.grid_mapping='transverse_mercator'
+    v_var.long_name='northward wind from F Ludwig method'
+    v_var.standard_name='northward_wind'
+
+    def read_frame(fp,header):
+        # Assumes that the TIME line is alone,
+        # but the pixel data isn't restricted to a particular number of elements per line.
+        time_line=fp.readline()
+        if not time_line:
+            return None,None
+
+        assert time_line.startswith('TIME')
+        _,time_string=time_line.split('=',2)
+        count=0
+        items=[]
+        expected=header['n_cols'] * header['n_rows']
+        for line in fp:
+            this_data=np.fromstring(line,sep=' ',dtype=np.float32)
+            count+=len(this_data)
+            items.append(this_data)
+            if count==expected:
+                break
+            assert count<expected
+
+        block=np.concatenate( items ).reshape( header['n_rows'],header['n_cols'] )
+
+        time=utils.to_dt64(time_string)
+        return time,block
+
+    frame_i=0
+    while 1:
+        u_time,u_block = read_frame(fp_u,u_header)
+        v_time,v_block = read_frame(fp_v,v_header)
+        if u_time is None or v_time is None:
+            break
+
+        assert u_time==v_time
+
+        if frame_i%96==0:
+            print("%d frames, %s most recent"%(frame_i,u_time))
+        u_var[frame_i,:,:] = u_block
+        v_var[frame_i,:,:] = v_block
+        t_var[frame_i] = u_time
+
+        # t... come back to it.
+        frame_i+=1
+
+    nc.close()
+

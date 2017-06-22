@@ -885,6 +885,11 @@ def to_dt64(x):
     if not isinstance(x,np.ndarray):
         if isinstance(x,float):
             x=num2date(x) # now a datetime
+        elif isinstance(x,str):
+            if 'since' in x:
+                return cf_string_to_dt64(x)
+            else:
+                return np.datetime64(x)
 
         if isinstance(x,datetime.datetime) or isinstance(x,datetime.date):
             x=np.datetime64(x)
@@ -927,6 +932,48 @@ def to_unix(t):
         dt0=datetime.datetime(1970, 1, 1)
         return (dt - dt0).total_seconds()
 
+def cf_string_to_dt64(x):
+    """ return a seconds-based numpy datetime 
+    from something like 
+    ``1000 seconds since 1983-01-09T12:43:10``
+
+    This is conditionally called from to_datetime(), too.
+
+    A timezone, either as a trailing 'Z' or -0:00 is allowed,
+    but other timezones are not (since that would introduce an 
+    ambiguity as to whether to adjust to UTC, or leave in 
+    another timezone)
+    """
+    duration,origin = x.split(" since ")
+    count,units = duration.split()
+
+    if origin.endswith('Z'):
+        origin=origin[:-1]
+    else:
+        # does it have a +0800 style time zone?
+        time_part=origin[10:]
+        for sep in "+-":
+            if sep in time_part:
+                tz_part=time_part[ time_part.index(sep):]
+                break
+        else:
+            tz_part=None
+        if tz_part:
+            tz_part=tz_part.replace(':','')
+            assert float(tz_part)==0
+            # extra 1 for the separator
+            origin=origin[:-1-len(tz_part)]
+
+    tzero = np.datetime64(origin,'s')
+
+    mult = dict(seconds=1,
+                minutes=60,
+                hours=3600,
+                days=86400)[units]
+    delta=np.timedelta64(int( float(count) * mult),'s')
+    return tzero + delta
+
+
 def to_datetime(x):
     try:
         x=x.asm8 # if it's a scalar pandas timestamp
@@ -941,7 +988,15 @@ def to_datetime(x):
         return num2date(x)
     if isinstance(x,datetime.datetime):
         return x
-
+    if isinstance(x,str):
+        if 'since' in x:
+            x=cf_string_to_dt64(x)
+        else:
+            # see if numpy will parse it
+            # a bit dangerous and not as smart as pandas, but
+            # at the moment we're trying to avoid a pandas dependency
+            # here.
+            x=np.datetime64(x)
     
     # isscalar is not so general - it does *not* mean not array, it means
     # the value *is* a numpy scalar.
