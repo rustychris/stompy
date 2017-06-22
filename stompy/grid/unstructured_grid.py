@@ -274,7 +274,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         edges: [N,2] indices into points, 0-based
         cells: [N,maxsides] indices into points, 0-based, -1 for missing nodes.
         """
-
+        cells=np.asanyarray(cells)
         super(UnstructuredGrid,self).__init__()
 
         self.init_log()
@@ -422,6 +422,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     def write_to_xarray(self,ds=None,mesh_name='mesh'):
         """ write grid definition, ugrid-ish, to a new xarray dataset
         """
+        import xarray as xr
         if ds is None:
             ds=xr.Dataset()
 
@@ -1228,7 +1229,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
     def build_node_to_edges(self):
         n2e = defaultdict(list)
-        for e in self.valid_edge_iter(): # xrange(self.Nedges()):
+        for e in self.valid_edge_iter(): 
             for i in [0,1]:
                 n2e[self.edges['nodes'][e,i]].append(e)
         self._node_to_edges = n2e
@@ -2296,12 +2297,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
             if len(nodes)==3:
                 continue
-            g.delete_cell(c)
-            g.add_cell_and_edges(nodes=nodes[ [0,1,2] ] )
+            self.delete_cell(c)
+            self.add_cell_and_edges(nodes=nodes[ [0,1,2] ] )
             if len(nodes)>=4:
-                g.add_cell_and_edges(nodes=nodes[ [0,2,3] ] )
+                self.add_cell_and_edges(nodes=nodes[ [0,2,3] ] )
             if len(nodes)>=5: # a few of these...
-                g.add_cell_and_edges(nodes=nodes[ [0,3,4] ] )
+                self.add_cell_and_edges(nodes=nodes[ [0,3,4] ] )
             # too lazy to be generic about it...
             # also note that the above only work for convex cells.
 
@@ -2968,7 +2969,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         centers = self.cells_center()[cells]
         errors=np.zeros( len(self.cells[cells]),'f8')
 
-        for nsi in xrange(3,self.max_sides+1):
+        for nsi in six.range(3,self.max_sides+1):
             sel = (self.cells['nodes'][cells,nsi-1]>=0) & (~self.cells['deleted'][cells])
             if nsi<self.max_sides:
                 sel = sel&(self.cells['nodes'][cells,nsi]<0)
