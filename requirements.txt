@@ -1,6 +1,6 @@
 cmocean
 future
-GDAL
+# GDAL # this is failing the build
 matplotlib
 netCDF4
 numpy
