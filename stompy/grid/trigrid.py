@@ -267,7 +267,7 @@ class TriGrid(object):
     def set_edge_neighbors_from_cells(self):
         iip = np.array([[0,1],[1,2],[2,0]])
 
-        for c in six.range(self.Ncells()):
+        for c in six.moves.range(self.Ncells()):
             for pair in iip:
                 nodes = self.cells[c,pair]
                 j = self.find_edge(nodes)
@@ -641,10 +641,10 @@ class TriGrid(object):
 
         scaled_points = (self.points - pmin)*(10/rng)
 
-        for i in six.range(self.Npoints()):
+        for i in six.moves.range(self.Npoints()):
             fp.write("v %f %f 0.0\n"%(scaled_points[i,0],scaled_points[i,1]))
 
-        for i in six.range(self.Ncells()):
+        for i in six.move.range(self.Ncells()):
             fp.write("f %d %d %d\n"%(self.cells[i,0]+1,
                                      self.cells[i,1]+1,
                                      self.cells[i,2]+1))
@@ -662,19 +662,19 @@ class TriGrid(object):
         
         fp.write("(nodes ")
 
-        for i in six.range(self.Npoints()):
+        for i in six.moves.range(self.Npoints()):
             if not np.isnan(self.points[i,0]):
                 fp.write(" %i"%i )
 
         fp.write(")\n")
 
-        for e in six.range(self.Nedges()):
+        for e in six.moves.range(self.Nedges()):
             if self.edges[e,0] >= 0:
                 fp.write("(edge %i %i %i)\n"%(e,self.edges[e,0],self.edges[e,1]))
 
         # and the locations of the nodes
         fp.write("(property 0 layout \"viewLayout\" \n")
-        for i in six.range(self.Npoints()):
+        for i in six.moves.range(self.Npoints()):
             if not np.isnan(self.points[i,0]):
                 fp.write("  (node %i \"(%f,%f,0)\")\n"%(i,self.points[i,0],self.points[i,1]))
 
@@ -1547,7 +1547,7 @@ class TriGrid(object):
         """
         if not adjacent_only:
             neighbors = [list(self.pnt2cells(p)) for p in self.cells[cell_id]]
-            return np.unique(six.reduce(lambda x,y: x+y,neighbors))
+            return np.unique(six.moves.reduce(lambda x,y: x+y,neighbors))
         else:
             nbrs = []
             for nc1,nc2 in self.edges[self.cell2edges(cell_id),3:5]:
@@ -1644,7 +1644,7 @@ class TriGrid(object):
         if self._cell_edge_map is None:
             cem = np.zeros( (self.Ncells(),3), np.int32)
 
-            for i in six.range(self.Ncells()):
+            for i in six.moves.range(self.Ncells()):
                 cem[i,:] = self.cell2edges(i)
             self._cell_edge_map = cem
         return self._cell_edge_map
@@ -2537,7 +2537,7 @@ class TriGrid(object):
 
         rings = []
         
-        for start_e in six.range(self.Nedges()):
+        for start_e in six.moves.range(self.Nedges()):
             if edges_used[start_e]:
                 continue
 
