@@ -1,0 +1,12 @@
+cmocean
+future
+GDAL
+matplotlib
+netCDF4
+numpy
+pandas==0.19.2
+requests
+scipy
+Shapely
+six
+xarray
