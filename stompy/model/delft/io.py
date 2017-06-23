@@ -417,6 +417,13 @@ def dfm_wind_to_nc(wind_u_fn,wind_v_fn,nc_fn):
     """
     Transcribe DFM 'arcinfo' style gridded wind to
     CF compliant netcdf file (ready for import to erddap)
+
+    wind_u_fn:
+      path to the amu file for eastward wind
+    wind_v_fn:
+      path to the amv file for northward wind
+    nc_fn:
+      path to the netcdf file which will be created.
     """
     fp_u=open(wind_u_fn,'rt')
     fp_v=open(wind_v_fn,'rt')
@@ -589,3 +596,92 @@ def dfm_wind_to_nc(wind_u_fn,wind_v_fn,nc_fn):
 
     nc.close()
 
+
+def dataset_to_dfm_wind(ds,period_start,period_stop,target_filename_base,
+                        extra_header=None):
+    """
+    Write wind in an xarray dataset to a pair of gridded meteo files for DFM.
+
+    ds:
+      xarray dataset.  Currently fairly brittle assumptions on the format of
+      this dataset, already in the proper coordinates system, coordinates of x and 
+      y, and the wind variables named wind_u and wind_v.
+    period_start,period_stop: 
+      include data from the dataset on or after period_start, and up to period_stop.
+    extra_header: 
+      extra text to place in the header.  This is included as is, with the exception that
+      a newline will be added if it's missing
+    """
+    time_idx_start, time_idx_stop = np.searchsorted(ds.time,[period_start,period_stop])
+    
+    # Sanity checks that there was actually some overlapping data.
+    assert time_idx_start+1<len(ds.time)
+    assert time_idx_stop>0
+    assert time_idx_start<time_idx_stop
+        
+    nodata=-999
+
+    if extra_header is None:
+        extra_header=""
+    else:
+        extra_header=extra_header.rstrip()+"\n"
+        
+    header_template="""### START OF HEADER
+# Created with %(creator)s
+%(extra_header)sFileVersion = 1.03
+Filetype = meteo_on_equidistant_grid
+NODATA_value = %(nodata)g
+n_cols = %(n_cols)d
+n_rows = %(n_cols)d
+grid_unit = m
+x_llcorner = %(x_llcorner)g
+y_llcorner = %(y_llcorner)g
+dx = %(dx)g
+dy = %(dy)g
+n_quantity = 1
+quantity1 = %(quantity)s
+unit1 = m s-1
+### END OF HEADER
+"""
+
+    fp_u=open(target_filename_base+".amu",'wt')
+    fp_v=open(target_filename_base+".amv",'wt')
+
+    base_fields=dict(creator="stompy",nodata=nodata,
+                     n_cols=len(ds.x),n_rows=len(ds.y),
+                     dx=np.median(np.diff(ds.x)),
+                     dy=np.median(np.diff(ds.y)),
+                     x_llcorner=ds.x[0],
+                     y_llcorner=ds.y[0],
+                     extra_header=extra_header,
+                     quantity='x_wind')
+
+    for fp,quant in [ (fp_u,'x_wind'),
+                      (fp_v,'y_wind') ]:
+        # Write the headers:
+        fields=dict(quantity=quant)
+        fields.update(base_fields)
+        header=header_template%fields
+        fp.write(header)
+
+    for time_idx in range(time_idx_start, time_idx_stop):
+        if (time_idx-time_idx_start) % 96 == 0:
+            print("Written %d/%d time steps"%( time_idx-time_idx_start,time_idx_stop-time_idx_start))
+        u=ds.wind_u.isel(time=time_idx)
+        v=ds.wind_v.isel(time=time_idx)
+        t=ds.time.isel(time=time_idx)
+
+        # write a time line formatted like this:
+        # TIME=00000.000000 hours since 2012-08-01 00:00:00 +00:00
+        time_line="TIME=%f seconds since 1970-01-01 00:00:00 +00:00"%utils.to_unix(t.values)
+
+        for fp,data in [ (fp_u,u),
+                         (fp_v,v) ]:
+            # double check order.
+            fp.write(time_line) ; fp.write("\n")
+            for row in data.values:
+                fp.write(" ".join(["%g"%rowcol for rowcol in row]))
+                fp.write("\n")
+
+    fp_u.close()
+    fp_v.close()
