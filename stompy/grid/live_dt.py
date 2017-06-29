@@ -8,6 +8,8 @@ from collections import defaultdict, Iterable
 import logging
 log = logging.getLogger('stompy.live_dt')
 
+import pdb
+
 import numpy as np
 from numpy.linalg import norm,solve
 
@@ -35,15 +37,42 @@ def distance_left_of_line(pnt, qp1, qp2):
 
 
 
+class LiveDtGridNull(orthomaker.OrthoMaker):
+    """ absolute minimum, do-nothing stand-in for LiveDtGrid implementations.
+    probably not useful, and definitely not complete
+    """
+    has_dt = 0
+    pending_conflicts = []
+
+    def hold(self):
+        pass
+    def release(self):
+        pass
+    def delaunay_neighbors(self,n):
+        return []
+
+LiveDtGrid=LiveDtGridNull # will be set to the "best" implementation below
+
 class LiveDtGridBase(orthomaker.OrthoMaker):
     """
     A mixin which adds a live-updated constrained Delaunay
     triangulation to shadow the grid, aiding in various geometric
-    queries.
+    queries.  Similar in spirit to ShadowCDT, but this is an older
+    code designed explicitly for use with paver, and originally
+    only using CGAL for the triangulation.
 
     This is the abstract base class, which can either use a CGAL
     implementation or a pure-python implementation in subclasses
     below.
+
+    This mixin maintains the mapping between nodes in self, and
+    the vertices in the shadow Delaunay triangulation.  
+
+    self.vh[n] maps a trigrid node n to the "handle" for a Delaunay
+    vertex.
+
+    self.vh_info[vh] provides the reverse mapping, from a Delaunay
+    vertex handle to a node
     """
     has_dt = 1
     # if true, skips graph API handling
@@ -67,6 +96,10 @@ class LiveDtGridBase(orthomaker.OrthoMaker):
     # at 2.0, you should get 2-3 cells across.
     scale_ratio_for_cutoff = 1.0
 
+    # even though in some cases the vertex handle type is more like int32,
+    # leave this as object so that None can be used as a special value.
+    vh_dtype='object' # used in allocating 
+    
     def __init__(self,*args,**kwargs):
         super(LiveDtGridBase,self).__init__(*args,**kwargs)
 
@@ -94,7 +127,7 @@ class LiveDtGridBase(orthomaker.OrthoMaker):
         """ Should be called when all internal state is changed outside
         the mechanisms of add_X, delete_X, move_X, etc.
         """
-        super(LiveDtGrid,self).refresh_metadata()
+        super(LiveDtGridBase,self).refresh_metadata()
 
         self.populate_dt()
 
@@ -120,8 +153,8 @@ class LiveDtGridBase(orthomaker.OrthoMaker):
                 
         print("populate_dt: add constraints")
         for e in range(self.Nedges()):
-            if e % 50000==0:
-                print("populate_dt: %d/%d"%(e,self.Nedges()))
+            #if e % 50000==0:
+            print("populate_dt: %d/%d"%(e,self.Nedges()))
             a,b = self.edges[e,:2]
             if a>=0 and b>=0: # make sure we don't insert deleted edges
                 self.safe_insert_constraint(a,b)
@@ -489,7 +522,7 @@ class LiveDtGridBase(orthomaker.OrthoMaker):
             self.dt_insert(i)
 
     def unmove_node(self,i,orig_val):
-        super(LiveDtGrid,self).unmove_node(i,orig_val)
+        super(LiveDtGridBase,self).unmove_node(i,orig_val)
         if self.freeze:
             pass
         elif self.holding:
@@ -823,580 +856,6 @@ class LiveDtGridBase(orthomaker.OrthoMaker):
     #-#-#
 
     # CGAL dependence removed from code above this line
-    
-    #-# Detecting self-intersections
-    def face_in_direction(self,vh,vec):
-        """ Starting at the vertex handle vh, look in the direction
-        of vec to choose a face adjacent to vh
-        """
-        # vh: vertex handle
-        # vec: search direction as array
-        theta = np.arctan2(vec[1],vec[0])
-
-        # choose a starting face
-        best_f = None
-        f_circ = self.DT.incident_faces(vh)
-        first_f = next(f_circ)
-        f = first_f
-        while 1:
-            # get the vertices of this face:
-            vlist=[f.vertex(i) for i in range(3)]
-            # rotate to make v1 first:
-            vh_index = vlist.index(vh)
-            vlist = vlist[vh_index:] + vlist[:vh_index]
-
-            # then check the relative angles of the other two - they are in CCW order
-            pnts = np.array( [ [v.point().x(),v.point().y()] for v in vlist] )
-            delta01 = pnts[1] - pnts[0]
-            delta02 = pnts[2] - pnts[0]
-            theta01 = np.arctan2( delta01[1], delta01[0] )
-            theta02 = np.arctan2( delta02[1], delta02[0] )
-
-            # 
-            d01 = (theta - theta01)%(2*np.pi)
-            d02 = (theta02 - theta)%(2*np.pi)
-
-            #print "starting point:",pnts[0]
-            #print "Theta01=%f  Theta=%f  Theta02=%f"%(theta01,theta,theta02)
-
-            if (d01 < np.pi) and (d02 < np.pi):
-                best_f = f
-                break
-
-            f = next(f_circ)
-            if f == first_f:
-                raise Exception("Went all the way around...")
-        return best_f
-
-    def next_face(self,f,p1,vec):
-        """ find the next face from f, along the line through v in the direction vec,
-        return the face and the edge that was crossed, where the edge is a face,i tuple
-        """
-        # First get the vertices that make up this face:
-
-        # look over the edges:
-        vlist=[f.vertex(i) for i in range(3)]
-        pnts = np.array( [ [v.point().x(),v.point().y()] for v in vlist] )
-
-        # check which side of the line each vertex is on:
-        left_vec = np.array( [-vec[1],vec[0]] )
-        left_distance = [ (pnts[i,0] - p1[0])*left_vec[0] + (pnts[i,1]-p1[1])*left_vec[1] for i in range(3)]
-
-        # And we want the edge that goes from a negative to positive left_distance.
-        # should end with i being the index of the start of the edge that we want
-        for i in range(3):
-            # This doesn't quite follow the same definitions as in CGAL -
-            # because we want to ensure that we get a consecutive list of edges
-
-            # The easy case - the query line exits through an edge that straddles
-            # the query line, that's the <
-            # the == part comes in where the query line exits through a vertex.
-            # in that case, we choose the edge to the left (arbitrary).
-            if left_distance[i] <= 0 and left_distance[(i+1)%3] > 0:
-                break
-        # so now the new edge is between vertex i,(i+1)%3, so in CGAL parlance
-        # that's
-        edge = (f,(i-1)%3)
-        new_face = f.neighbor( (i-1)%3 )
-        return edge,new_face
-
-    # like check_line_is_clear_new - this isn't used anywhere, but not sure if
-    # has some useful code.
-    
-    # def line_walk_edges_new(self,n1=None,n2=None,v1=None,v2=None,
-    #                         include_tangent=False,
-    #                         include_coincident=True):
-    #     # Use the CGAL primitives to implement this in a hopefully more
-    #     # robust way.
-    #     # unfortunately we can't use the line_walk() circulator directly
-    #     # because the bindings enumerate the whole list, making it potentially
-    #     # very expensive.
-    # 
-    #     # ultimately we want to know edges which straddle the query line
-    #     # as well as nodes that fall exactly on the line.
-    #     # is it sufficient to then return a mixed list of edges and vertices
-    #     # that fall on the query line?
-    #     # and any edge that is coincident with the query line will be included
-    #     # in the output.
-    # 
-    #     # but what is the appropriate traversal cursor?
-    #     # when no vertices fall exactly on the query line, tracking a face
-    #     #  is fine.
-    #     # but when the query line goes through a vertex, it's probably better
-    #     #  to just record the vertex.
-    #     # so for a first cut - make sure that we aren't just directly connected:
-    # 
-    #     if (n2 is not None) and (n1 is not None) and (n2 in self.delaunay_neighbors(n1)):
-    #         return []
-    # 
-    #     if v1 is None:
-    #         v1 = self.vh[n1]
-    #     if v2 is None:
-    #         v2 = self.vh[n2]
-    # 
-    #     # Get the points from the vertices, not self.points, because in some cases
-    #     # (adjust_move_node) we may be probing
-    #     p1 = np.array([ v1.point().x(), v1.point().y()] )
-    #     p2 = np.array([ v2.point().x(), v2.point().y()] )
-    # 
-    #     if self.verbose > 1:
-    #         print("Walking the line: ",p1,p2)
-    # 
-    #     hits = [ ['v',v1] ]
-    # 
-    #     # do the search:
-    #     # Note that we really need a better equality test here
-    #     # hits[-1][1] != v2 doesn't work beac
-    #     def obj_eq(a,b):
-    #         return type(a)==type(b) and a==b
-    # 
-    #     while not obj_eq(hits[-1][1], v2):
-    #         # if we just came from a vertex, choose a new face in the given direction
-    #         if hits[-1][0] == 'v':
-    #             if self.verbose > 1:
-    #                 print("Last hit was the vertex at %s"%(hits[-1][1].point()))
-    # 
-    #             # like face_in_direction, but also check for possibility that
-    #             # an edge is coincident with the query line.
-    # 
-    #             next_item = self.next_from_vertex( hits[-1][1],(p1,p2) )
-    # 
-    #             if self.verbose > 1:
-    #                 print("Moved from vertex to ",next_item)
-    # 
-    #             if next_item[0] == 'v':
-    #                 # Find the edge connecting these two:
-    #                 for e in self.DT.incident_edges( next_item[1] ):
-    #                     f,v_opp = e
-    # 
-    #                     if f.vertex( (v_opp+1)%3 ) == hits[-1][1] or \
-    #                        f.vertex( (v_opp+2)%3 ) == hits[-1][1]:
-    #                         hits.append( ['e', (f,v_opp)] )
-    #                         break
-    # 
-    #         elif hits[-1][0] == 'f':
-    #             # either we cross over an edge into another face, or we hit
-    #             # one of the vertices.
-    # 
-    #             next_item = self.next_from_face( hits[-1][1], (p1,p2) )
-    # 
-    #             # in case the next item is also a face, go ahead and insert
-    #             # the intervening edge
-    #             if next_item[0]=='f':
-    #                 middle_edge = None
-    # 
-    #                 for v_opp in range(3):
-    #                     if self.verbose > 1:
-    #                         print("Comparing %s to %s looking for the intervening edge"%(hits[-1][1].neighbor(v_opp),
-    #                                                                                      next_item[1]))
-    #                     if hits[-1][1].neighbor(v_opp) == next_item[1]:
-    #                         middle_edge = ['e', (hits[-1][1],v_opp)] 
-    #                         break
-    #                 if middle_edge is not None:
-    #                     hits.append( middle_edge )
-    #                 else:
-    #                     raise Exception("Two faces in a row, but couldn't find the edge between them")
-    # 
-    #         elif hits[-1][0] == 'e':
-    #             # This one is easy - just have to check which end of the edge is in the
-    #             # desired direction
-    #             next_item = self.next_from_edge( hits[-1][1], (p1,p2) )
-    # 
-    #         hits.append( next_item )
-    # 
-    #     if self.verbose > 1:
-    #         print("Got hits: ",hits)
-    # 
-    #     # but ignore the first and last, since they are the starting/ending points
-    #     hits = hits[1:-1]
-    # 
-    #     # and since some of those CGAL elements are going to disappear, translate everything
-    #     # into node references
-    #     for i in range(len(hits)):
-    #         if hits[i][0] == 'v':
-    #             hits[i][1] = [ self.vh_info[ hits[i][1] ] ]
-    #         elif hits[i][0] == 'e':
-    #             f,v_opp = hits[i][1]
-    # 
-    #             hits[i][1] = [ self.vh_info[ f.vertex( (v_opp+1)%3 ) ], self.vh_info[ f.vertex( (v_opp+2)%3 ) ] ]
-    #         elif hits[i][0] == 'f':
-    #             f = hits[i][1]
-    # 
-    #             hits[i][1] = [ self.vh_info[ f.vertex(0) ],
-    #                            self.vh_info[ f.vertex(1) ],
-    #                            f.vertex(2) ]
-    # 
-    #     # have to go back through, and where successive items are faces, we must
-    #     # have crossed cleanly through an edge, and that should be inserted, too
-    #     return hits
-
-    # ## steppers for line_walk_edges_new
-    # def next_from_vertex(self, vert, vec):
-    #     # from a vertex, we either go into one of the faces, or along an edge
-    #     qp1,qp2 = vec
-    # 
-    #     last_left_distance=None
-    #     last_nbr = None
-    # 
-    #     start = None
-    #     for nbr in self.DT.incident_vertices(vert):
-    #         pnt = np.array( [nbr.point().x(),nbr.point().y()] )
-    # 
-    #         left_distance = distance_left_of_line(pnt, qp1,qp2 )
-    # 
-    #         # This used to be inside the last_left_distance < 0 block, but it seems to me
-    #         # that if we find a vertex for which left_distance is 0, that's our man.
-    #         # NOPE - having it inside the block caused the code to discard a colinear vertex
-    #         # that was behind us.
-    #         # in the corner case of three colinear points, and we start from the center, both
-    #         # end points will have left_distance==0, and both will be preceeded by the infinite
-    #         # vertex.  So to distinguish colinear points it is necessary to check distance in the
-    #         # desired direction.
-    #         if left_distance==0.0:
-    #             dx = pnt[0] - vert.point().x()
-    #             dy = pnt[1] - vert.point().y()
-    #             progress = dx * (qp2[0] - qp1[0]) + dy * (qp2[1] - qp1[1])
-    #             if progress > 0:
-    #                 return ['v',nbr]
-    # 
-    #         # Note that it's also possible for the infinite vertex to come up.
-    #         # this should be okay when the left_distance==0.0 check is outside the
-    #         # block below.  If it were inside the block, then we would miss the
-    #         # case where we see the infinite vertex (which makes last_left_distance
-    #         # undefined), and then see the exact match.
-    # 
-    #         if last_left_distance is not None and last_left_distance < 0:
-    #             # left_distance == 0.0 used to be here.
-    #             if left_distance > 0:
-    #                 # what is the face between the last one and this one??
-    #                 # it's vertices are vert, nbr, last_nbr
-    #                 for face in self.DT.incident_faces(vert):
-    #                     for j in range(3):
-    #                         if face.vertex(j) == nbr:
-    #                             for k in range(3):
-    #                                 if face.vertex(k) == last_nbr:
-    #                                     return ['f',face]
-    #                 raise Exception("Found a good pair of incident vertices, but failed to find the common face.")
-    # 
-    #         # Sanity check - if we've gone all the way around
-    #         if start is None:
-    #             start = nbr
-    #         else: # must not be the first time through the loop:
-    #             if nbr == start:
-    #                 raise Exception("This is bad - we checked all vertices and didn't find a good neighbor")
-    # 
-    #         last_left_distance = left_distance
-    #         last_nbr = nbr
-    #         if self.DT.is_infinite(nbr):
-    #             last_left_distance = None
-    # 
-    #     raise Exception("Fell through!")
-
-    # def next_from_edge(self, edge, vec):
-    #     # vec is the tuple of points defining the query line
-    #     qp1,qp2 = vec
-    # 
-    #     # edge is a tuple of face and vertex index
-    #     v1 = edge[0].vertex( (edge[1]+1)%3 )
-    #     v2 = edge[0].vertex( (edge[1]+2)%3 )
-    # 
-    #     # this means the edge was coincident with the query line
-    #     p1 = v1.point()
-    #     p2 = v2.point()
-    # 
-    #     p1 = np.array( [p1.x(),p1.y()] )
-    #     p2 = np.array( [p2.x(),p2.y()] )
-    # 
-    #     line12 = p2 - p1
-    # 
-    #     if np.dot( line12, qp2-qp1 ) > 0:
-    #         return ['v',v2]
-    #     else:
-    #         return ['v',v1]
-
-    # def next_from_face(self, f, vec):
-    #     qp1,qp2 = vec
-    #     # stepping through a face, along the query line qp1 -> qp2
-    #     # we exit the face either via an edge, or possibly exactly through a
-    #     # vertex.
-    #     # A lot like next_face(), but hopefully more robust handling of
-    #     # exiting the face by way of a vertex.
-    # 
-    #     # First get the vertices that make up this face:
-    # 
-    #     # look over the edges:
-    #     vlist=[f.vertex(i) for i in range(3)]
-    #     pnts = np.array( [ [v.point().x(),v.point().y()] for v in vlist] )
-    # 
-    #     # check which side of the line each vertex is on:
-    # 
-    #     # HERE is where the numerical issues come up.
-    #     # could possibly do this in terms of the end points of the query line, in order to
-    #     # at least robustly handle the starting and ending points.
-    #     left_distance = [ distance_left_of_line(pnts[i], qp1,qp2 ) for i in range(3)]
-    # 
-    #     # And we want the edge that goes from a negative to positive left_distance.
-    #     # should end with i being the index of the start of the edge that we want
-    #     for i in range(3):
-    #         # This doesn't quite follow the same definitions as in CGAL -
-    #         # because we want to ensure that we get a consecutive list of edges
-    # 
-    #         # The easy case - the query line exits through an edge that straddles
-    #         # the query line, that's the <
-    #         # the == part comes in where the query line exits through a vertex.
-    #         # in that case, we choose the edge to the left (arbitrary).
-    #         if left_distance[i] <= 0 and left_distance[(i+1)%3] > 0:
-    #             break
-    # 
-    #         # sanity check
-    #         if i==2:
-    #             raise Exception("Trying to figure out how to get out of a face, and nothing looks good")
-    # 
-    #     # Two cases - leaving via vertex, or crossing an edge internally.
-    #     if left_distance[i]==0:
-    #         return ['v',vlist[i]]
-    #     else:
-    #         # so now the new edge is between vertex i,(i+1)%3, so in CGAL parlance
-    #         # that's
-    #         new_face = f.neighbor( (i-1)%3 )
-    #         return ['f',new_face]
-
-    ## 
-    def line_walk_edges(self,n1=None,n2=None,v1=None,v2=None,
-                        include_tangent=False,
-                        include_coincident=True):
-        """ for a line starting at node n1 or vertex handle v1 and
-        ending at node n2 or vertex handle v2, return all the edges
-        that intersect.
-        """
-        # this is a bit dicey in terms of numerical robustness - 
-        # face_in_direction is liable to give bad results when multiple faces are
-        # indistinguishable (like a colinear set of points with many degenerate faces
-        # basically on top of each other).
-
-        # How can this be made more robust?
-        # When the query line exactly goes through one or more vertex stuff starts
-        # going nuts.
-        # So is it possible to handle this more intelligently?
-        #   there are 3 possibilities for intersecting edges:
-        #    (1) intersect only at an end point, i.e. endpoint lies on query line
-        #    (2) intersect in interior of edge - one end point on one side, other endpoint
-        #        on the other side of the query line
-        #    (3) edge is coincident with query line
-
-
-        # so for a first cut - make sure that we aren't just directly connected:
-        if (n2 is not None) and (n1 is not None) and (n2 in self.delaunay_neighbors(n1)):
-            return []
-
-        if v1 is None:
-            v1 = self.vh[n1]
-        if v2 is None:
-            v2 = self.vh[n2]
-
-        # Get the points from the vertices, not self.points, because in some cases
-        # (adjust_move_node) we may be probing
-        p1 = np.array([ v1.point().x(), v1.point().y()] )
-        p2 = np.array([ v2.point().x(), v2.point().y()] )
-
-        # print "Walking the line: ",p1,p2
-
-        vec = p2 - p1
-        unit_vec = vec / norm(vec)
-
-        pnt = p1 
-
-        f1 = self.face_in_direction(v1,vec)
-        f2 = self.face_in_direction(v2,-vec)
-
-        # do the search:
-        f_trav = f1
-        edges = []
-        while 1:
-            # print "line_walk_edges: traversing face:"
-            # print [f_trav.vertex(i).point() for i in [0,1,2]]
-
-            # Stop condition: we're in a face containing the final vertex
-            # check the vertices directly, rather than the face
-            still_close = 0
-            for i in range(3):
-                if f_trav.vertex(i) == v2:
-                    return edges
-
-                if not still_close:
-                    # Check to see if this vertex is beyond the vertex of interest
-                    vertex_i_pnt = np.array( [f_trav.vertex(i).point().x(),f_trav.vertex(i).point().y()] )
-                    if norm(vec) > np.dot( vertex_i_pnt - p1, unit_vec):
-                        still_close = 1
-
-            if not still_close:
-                # We didn't find any vertices of this face that were as close to where we started
-                # as the destination was, so we must have passed it.
-                print("BAILING: n1=%s n2=%s v1=%s v2=%s"%(n1,n2,v1,v2))
-                raise Exception("Yikes - line_walk_edges exposed its numerical issues.  We traversed too far.")
-                return edges
-
-            edge,new_face = self.next_face(f_trav,pnt,vec)
-
-            edges.append(edge)
-
-            f_trav = new_face
-        return edges
-
-    def shoot_ray(self,n1,vec,max_dist=None):
-        """ Shoot a ray from self.points[n] in the given direction vec
-        returns (e_index,pnt), the first edge that it encounters and the location
-        of the intersection 
-
-        max_dist: stop checking beyond this distance -- currently doesn't make it faster
-          but will return None,None if the point that it finds is too far away
-        """
-
-        v1 = self.vh[n1]
-        vec = vec / norm(vec) # make sure it's a unit vector
-        pnt = self.points[n1]
-
-        f1 = self.face_in_direction(v1,vec)
-
-        # do the search:
-        f_trav = f1
-
-        while 1:
-            edge,new_face = self.next_face(f_trav,pnt,vec)
-            # make that into a cgal edge:
-            e = edge
-
-            if max_dist is not None:
-                # Test the distance as we go...
-                face,i = edge
-                va = face.vertex((i+1)%3)
-                vb = face.vertex((i-1)%3)
-                pa = va.point()
-                pb = vb.point()
-
-                d1a = np.array([pa.x()-pnt[0],pa.y() - pnt[1]])
-
-                # alpha * vec + beta * ab = d1a
-                # | vec[0] ab[0]   | | alpha | = |  d1a[0]  |
-                # | vec[1] ab[1]   | | beta  | = |  d1a[1]  |
-
-                A = np.array( [[vec[0],  pb.x() - pa.x()],
-                               [vec[1],  pb.y() - pa.y()]] )
-                alpha_beta = solve(A,d1a)
-
-                dist = alpha_beta[0]
-                if dist > max_dist:
-                    return None,None
-
-            if self.DT.is_constrained(e):
-                # print "Found a constrained edge"
-                break
-            f_trav = new_face
-
-
-        na = self.vh_info[va]
-        nb = self.vh_info[vb]
-
-        if (na is None) or (nb is None):
-            raise Exception("Constrained edge is missing at least one node index")
-
-        if max_dist is None:
-            # Compute the point at which they intersect:
-            ab = self.points[nb] - self.points[na]
-            d1a = self.points[na] - pnt
-
-            # alpha * vec + beta * ab = d1a
-            # | vec[0] ab[0]   | | alpha | = |  d1a[0]  |
-            # | vec[1] ab[1]   | | beta  | = |  d1a[1]  |
-
-            A = np.array( [[vec[0],ab[0]],[vec[1],ab[1]]] )
-            alpha_beta = solve(A,d1a)
-        else:
-            pass # already calculated alpha_beta
-
-        p_int = pnt + alpha_beta[0]*vec
-        edge_id = self.find_edge((na,nb))
-
-        return edge_id,p_int
-
-    def check_line_is_clear(self,n1=None,n2=None,v1=None,v2=None,p1=None,p2=None):
-        """ returns a list of vertex tuple for constrained segments that intersect
-        the given line
-        """
-
-        # if points were given, create some temporary vertices
-        if p1 is not None:
-            cp1 = Point_2( p1[0], p1[1] )
-            v1 = self.DT.insert(cp1) ; self.vh_info[v1] = 'tmp'
-
-        if p2 is not None:
-            cp2 = Point_2( p2[0], p2[1] )
-            v2 = self.DT.insert(cp2) ; self.vh_info[v2] = 'tmp'
-
-        edges = self.line_walk_edges(n1=n1,n2=n2,v1=v1,v2=v2)
-        constrained = []
-        for f,i in edges:
-            e = (f,i)
-
-            if self.DT.is_constrained(e):
-                vA = f.vertex( (i+1)%3 )
-                vB = f.vertex( (i+2)%3 )
-                print("Conflict info: ",self.vh_info[vA],self.vh_info[vB])
-                constrained.append( (vA,vB) )
-
-        if p1 is not None:
-            del self.vh_info[v1]
-            self.DT.remove( v1 )
-        if p2 is not None:
-            del self.vh_info[v2]
-            self.DT.remove( v2 )
-        return constrained
-
-    # Doesn't appear that any code is using this, but there may be some useful
-    # code here, so not removing yet.
-    
-    # def check_line_is_clear_new(self,n1=None,n2=None,v1=None,v2=None,p1=None,p2=None):
-    #     """ returns a list of vertex tuple for constrained segments that intersect
-    #     the given line.
-    #     in the case of vertices that are intersected, just a tuple of length 1
-    #     (and assumes that all vertices qualify as constrained)
-    #     """
-    # 
-    #     # if points were given, create some temporary vertices
-    #     if p1 is not None:
-    #         cp1 = Point_2( p1[0], p1[1] )
-    #         v1 = self.DT.insert(cp1) ; self.vh_info[v1] = 'tmp'
-    # 
-    #     if p2 is not None:
-    #         cp2 = Point_2( p2[0], p2[1] )
-    #         v2 = self.DT.insert(cp2) ; self.vh_info[v2] = 'tmp'
-    # 
-    #     crossings = self.line_walk_edges_new(n1=n1,n2=n2,v1=v1,v2=v2)
-    # 
-    #     constrained = []
-    #     for crossing_type,crossing in crossings:
-    #         if crossing_type == 'f':
-    #             continue
-    #         if crossing_type == 'v':
-    #             constrained.append( (crossing_type,crossing) )
-    #             continue
-    #         if crossing_type == 'e':
-    #             n1,n2 = crossing
-    #             if self.verbose > 1:
-    #                 print("Got potential conflict with edge",n1,n2)
-    #             try:
-    #                 self.find_edge( (n1,n2) )
-    #                 constrained.append( ('e',(n1,n2)) )
-    #             except trigrid.NoSuchEdgeError:
-    #                 pass
-    # 
-    #     if p1 is not None:
-    #         del self.vh_info[v1]
-    #         self.DT.remove( v1 )
-    #     if p2 is not None:
-    #         del self.vh_info[v2]
-    #         self.DT.remove( v2 )
-    #     return constrained
 
     ## DT-based "smoothing"
     # First, make sure the boundary is sufficiently sampled
@@ -1718,16 +1177,13 @@ try:
     from CGAL.CGAL_Triangulation_2 import Constrained_Delaunay_triangulation_2
     from CGAL.CGAL_Kernel import Point_2
 
-    class Edge(object):
-        def __init__(self,**kwargs):
-            self.__dict__.update(kwargs)
-        def vertices(self):
-            return self.f.vertex( (self.v+1)%3 ),self.f.vertex( (self.v+2)%3 )
-            
-
     class LiveDtCGAL(LiveDtGridBase):
-        vh_dtype='object' # used in allocating 
-        
+        class Edge(object):
+            def __init__(self,**kwargs):
+                self.__dict__.update(kwargs)
+            def vertices(self):
+                return self.f.vertex( (self.v+1)%3 ),self.f.vertex( (self.v+2)%3 )
+
         def dt_allocate(self):
             """ allocate both the triangulation and the vertex handle
             """ 
@@ -1768,10 +1224,13 @@ try:
         def dt_incident_constraints(self,vh):
             constraints = []
             self.DT.incident_constraints(vh,constraints)
-            return [Edge(f=e.first,v=e.second) for e in constraints]
+            # maybe I should keep a reference to the Edge object, too?
+            # that gets through some early crashes.
+            return [self.Edge(f=e.first,v=e.second,keepalive=[e]) for e in constraints]
         
         def delaunay_face(self, pnt):
             """ Returns node indices making up the face of the DT in which pnt lies.
+            Not explicitly tested, but this should return None for infinite nodes.
             """
             f = self.DT.locate( Point_2(pnt[0],pnt[1]) )
             n = [self.vh_info[f.vertex(i)] for i in [0,1,2]]
@@ -1911,36 +1370,732 @@ try:
             points = self.points[self.face_nodes(face)]
             ccenter = trigrid.circumcenter(points[0],points[1],points[2])
             return 2*norm(points[0] - ccenter)
+
+        #-# Detecting self-intersections
+        def face_in_direction(self,vh,vec):
+            """ 
+            Starting at the vertex handle vh, look in the direction
+            of vec to choose a face adjacent to vh.
+
+            Used for the CGAL implementation of line_walk_edges and shoot_ray()
+            """
+            # vh: vertex handle
+            # vec: search direction as array
+            theta = np.arctan2(vec[1],vec[0])
+
+            # choose a starting face
+            best_f = None
+            f_circ = self.DT.incident_faces(vh)
+            first_f = next(f_circ)
+            f = first_f
+            while 1:
+                # get the vertices of this face:
+                vlist=[f.vertex(i) for i in range(3)]
+                # rotate to make v1 first:
+                vh_index = vlist.index(vh)
+                vlist = vlist[vh_index:] + vlist[:vh_index]
+
+                # then check the relative angles of the other two - they are in CCW order
+                pnts = np.array( [ [v.point().x(),v.point().y()] for v in vlist] )
+                delta01 = pnts[1] - pnts[0]
+                delta02 = pnts[2] - pnts[0]
+                theta01 = np.arctan2( delta01[1], delta01[0] )
+                theta02 = np.arctan2( delta02[1], delta02[0] )
+
+                # 
+                d01 = (theta - theta01)%(2*np.pi)
+                d02 = (theta02 - theta)%(2*np.pi)
+
+                #print "starting point:",pnts[0]
+                #print "Theta01=%f  Theta=%f  Theta02=%f"%(theta01,theta,theta02)
+
+                if (d01 < np.pi) and (d02 < np.pi):
+                    best_f = f
+                    break
+
+                f = next(f_circ)
+                if f == first_f:
+                    raise Exception("Went all the way around...")
+            return best_f
+
+        def next_face(self,f,p1,vec):
+            """ find the next face from f, along the line through v in the direction vec,
+            return the face and the edge that was crossed, where the edge is a face,i tuple
+
+            Used for the CGAL implementation of line_walk_edges() and shoot_ray()
+            """
+            # First get the vertices that make up this face:
+
+            # look over the edges:
+            vlist=[f.vertex(i) for i in range(3)]
+            pnts = np.array( [ [v.point().x(),v.point().y()] for v in vlist] )
+
+            # check which side of the line each vertex is on:
+            left_vec = np.array( [-vec[1],vec[0]] )
+            left_distance = [ (pnts[i,0] - p1[0])*left_vec[0] + (pnts[i,1]-p1[1])*left_vec[1] for i in range(3)]
+
+            # And we want the edge that goes from a negative to positive left_distance.
+            # should end with i being the index of the start of the edge that we want
+            for i in range(3):
+                # This doesn't quite follow the same definitions as in CGAL -
+                # because we want to ensure that we get a consecutive list of edges
+
+                # The easy case - the query line exits through an edge that straddles
+                # the query line, that's the <
+                # the == part comes in where the query line exits through a vertex.
+                # in that case, we choose the edge to the left (arbitrary).
+                if left_distance[i] <= 0 and left_distance[(i+1)%3] > 0:
+                    break
+            # so now the new edge is between vertex i,(i+1)%3, so in CGAL parlance
+            # that's
+            edge = (f,(i-1)%3)
+            new_face = f.neighbor( (i-1)%3 )
+            return edge,new_face
+
+        # N.B.: the svn (and original git) versions of live_dt included
+        # a new set of check_line_is_clear_new, line_walk_edges_new, and
+        # various helpers, which made more extensive use of CGAL primitives
+        # 
+
+        ## 
+        def line_walk_edges(self,n1=None,n2=None,v1=None,v2=None,
+                            include_tangent=False,
+                            include_coincident=True):
+            """ for a line starting at node n1 or vertex handle v1 and
+            ending at node n2 or vertex handle v2, return all the edges
+            that intersect.
+
+            Used in the CGAL implementation of check_line_is_clear
+            """
+            # this is a bit dicey in terms of numerical robustness - 
+            # face_in_direction is liable to give bad results when multiple faces are
+            # indistinguishable (like a colinear set of points with many degenerate faces
+            # basically on top of each other).
+
+            # How can this be made more robust?
+            # When the query line exactly goes through one or more vertex stuff starts
+            # going nuts.
+            # So is it possible to handle this more intelligently?
+            #   there are 3 possibilities for intersecting edges:
+            #    (1) intersect only at an end point, i.e. endpoint lies on query line
+            #    (2) intersect in interior of edge - one end point on one side, other endpoint
+            #        on the other side of the query line
+            #    (3) edge is coincident with query line
+
+
+            # so for a first cut - make sure that we aren't just directly connected:
+            if (n2 is not None) and (n1 is not None) and (n2 in self.delaunay_neighbors(n1)):
+                return []
+
+            if v1 is None:
+                v1 = self.vh[n1]
+            if v2 is None:
+                v2 = self.vh[n2]
+
+            # Get the points from the vertices, not self.points, because in some cases
+            # (adjust_move_node) we may be probing
+            p1 = np.array([ v1.point().x(), v1.point().y()] )
+            p2 = np.array([ v2.point().x(), v2.point().y()] )
+
+            # print "Walking the line: ",p1,p2
+
+            vec = p2 - p1
+            unit_vec = vec / norm(vec)
+
+            pnt = p1 
+
+            f1 = self.face_in_direction(v1,vec)
+            f2 = self.face_in_direction(v2,-vec)
+
+            # do the search:
+            f_trav = f1
+            edges = []
+            while 1:
+                # print "line_walk_edges: traversing face:"
+                # print [f_trav.vertex(i).point() for i in [0,1,2]]
+
+                # Stop condition: we're in a face containing the final vertex
+                # check the vertices directly, rather than the face
+                still_close = 0
+                for i in range(3):
+                    if f_trav.vertex(i) == v2:
+                        return edges
+
+                    if not still_close:
+                        # Check to see if this vertex is beyond the vertex of interest
+                        vertex_i_pnt = np.array( [f_trav.vertex(i).point().x(),f_trav.vertex(i).point().y()] )
+                        if norm(vec) > np.dot( vertex_i_pnt - p1, unit_vec):
+                            still_close = 1
+
+                if not still_close:
+                    # We didn't find any vertices of this face that were as close to where we started
+                    # as the destination was, so we must have passed it.
+                    print("BAILING: n1=%s n2=%s v1=%s v2=%s"%(n1,n2,v1,v2))
+                    raise Exception("Yikes - line_walk_edges exposed its numerical issues.  We traversed too far.")
+                    return edges
+
+                edge,new_face = self.next_face(f_trav,pnt,vec)
+
+                edges.append(edge)
+
+                f_trav = new_face
+            return edges
+
+        def shoot_ray(self,n1,vec,max_dist=None):
+            """ Shoot a ray from self.points[n] in the given direction vec
+            returns (e_index,pnt), the first edge that it encounters and the location
+            of the intersection 
+
+            max_dist: stop checking beyond this distance -- currently doesn't make it faster
+              but will return None,None if the point that it finds is too far away
+            """
+
+            v1 = self.vh[n1]
+            vec = vec / norm(vec) # make sure it's a unit vector
+            pnt = self.points[n1]
+
+            f1 = self.face_in_direction(v1,vec)
+
+            # do the search:
+            f_trav = f1
+
+            while 1:
+                edge,new_face = self.next_face(f_trav,pnt,vec)
+                # make that into a cgal edge:
+                e = edge
+
+                if max_dist is not None:
+                    # Test the distance as we go...
+                    face,i = edge
+                    va = face.vertex((i+1)%3)
+                    vb = face.vertex((i-1)%3)
+                    pa = va.point()
+                    pb = vb.point()
+
+                    d1a = np.array([pa.x()-pnt[0],pa.y() - pnt[1]])
+
+                    # alpha * vec + beta * ab = d1a
+                    # | vec[0] ab[0]   | | alpha | = |  d1a[0]  |
+                    # | vec[1] ab[1]   | | beta  | = |  d1a[1]  |
+
+                    A = np.array( [[vec[0],  pb.x() - pa.x()],
+                                   [vec[1],  pb.y() - pa.y()]] )
+                    alpha_beta = solve(A,d1a)
+
+                    dist = alpha_beta[0]
+                    if dist > max_dist:
+                        return None,None
+
+                if self.DT.is_constrained(e):
+                    # print "Found a constrained edge"
+                    break
+                f_trav = new_face
+
+
+            na = self.vh_info[va]
+            nb = self.vh_info[vb]
+
+            if (na is None) or (nb is None):
+                raise Exception("Constrained edge is missing at least one node index")
+
+            if max_dist is None:
+                # Compute the point at which they intersect:
+                ab = self.points[nb] - self.points[na]
+                d1a = self.points[na] - pnt
+
+                # alpha * vec + beta * ab = d1a
+                # | vec[0] ab[0]   | | alpha | = |  d1a[0]  |
+                # | vec[1] ab[1]   | | beta  | = |  d1a[1]  |
+
+                A = np.array( [[vec[0],ab[0]],[vec[1],ab[1]]] )
+                alpha_beta = solve(A,d1a)
+            else:
+                pass # already calculated alpha_beta
+
+            p_int = pnt + alpha_beta[0]*vec
+            edge_id = self.find_edge((na,nb))
+
+            return edge_id,p_int
+
+
+        ## steppers for line_walk_edges_new
+        def next_from_vertex(self, vert, vec):
+            # from a vertex, we either go into one of the faces, or along an edge
+            qp1,qp2 = vec
+
+            last_left_distance=None
+            last_nbr = None
+            
+            start = None
+            for nbr in self.DT.incident_vertices(vert):
+                pnt = np.array( [nbr.point().x(),nbr.point().y()] )
+                
+                left_distance = distance_left_of_line(pnt, qp1,qp2 )
+
+                # This used to be inside the last_left_distance < 0 block, but it seems to me
+                # that if we find a vertex for which left_distance is 0, that's our man.
+                # NOPE - having it inside the block caused the code to discard a colinear vertex
+                # that was behind us.
+                # in the corner case of three colinear points, and we start from the center, both
+                # end points will have left_distance==0, and both will be preceeded by the infinite
+                # vertex.  So to distinguish colinear points it is necessary to check distance in the
+                # desired direction.
+                if left_distance==0.0:
+                    dx = pnt[0] - vert.point().x()
+                    dy = pnt[1] - vert.point().y()
+                    progress = dx * (qp2[0] - qp1[0]) + dy * (qp2[1] - qp1[1])
+                    if progress > 0:
+                        return ['v',nbr]
+
+                # Note that it's also possible for the infinite vertex to come up.
+                # this should be okay when the left_distance==0.0 check is outside the
+                # block below.  If it were inside the block, then we would miss the
+                # case where we see the infinite vertex (which makes last_left_distance
+                # undefined), and then see the exact match.
+                
+                if last_left_distance is not None and last_left_distance < 0:
+                    # left_distance == 0.0 used to be here.
+                    if left_distance > 0:
+                        # what is the face between the last one and this one??
+                        # it's vertices are vert, nbr, last_nbr
+                        for face in self.DT.incident_faces(vert):
+                            for j in range(3):
+                                if face.vertex(j) == nbr:
+                                    for k in range(3):
+                                        if face.vertex(k) == last_nbr:
+                                            return ['f',face]
+                        raise Exception("Found a good pair of incident vertices, but failed to find the common face.")
+                
+                # Sanity check - if we've gone all the way around
+                if start is None:
+                    start = nbr
+                else: # must not be the first time through the loop:
+                    if nbr == start:
+                        raise Exception("This is bad - we checked all vertices and didn't find a good neighbor")
+                
+                last_left_distance = left_distance
+                last_nbr = nbr
+                if self.DT.is_infinite(nbr):
+                    last_left_distance = None
+                
+            raise Exception("Fell through!")
+
+        def next_from_edge(self, edge, vec):
+            # vec is the tuple of points defining the query line
+            qp1,qp2 = vec
+            
+            # edge is a tuple of face and vertex index
+            v1 = edge[0].vertex( (edge[1]+1)%3 )
+            v2 = edge[0].vertex( (edge[1]+2)%3 )
+            
+            # this means the edge was coincident with the query line
+            p1 = v1.point()
+            p2 = v2.point()
+
+            p1 = np.array( [p1.x(),p1.y()] )
+            p2 = np.array( [p2.x(),p2.y()] )
+
+            line12 = p2 - p1
+
+            if np.dot( line12, qp2-qp1 ) > 0:
+                return ['v',v2]
+            else:
+                return ['v',v1]
+            
+        def next_from_face(self, f, vec):
+            qp1,qp2 = vec
+            # stepping through a face, along the query line qp1 -> qp2
+            # we exit the face either via an edge, or possibly exactly through a
+            # vertex.
+            # A lot like next_face(), but hopefully more robust handling of
+            # exiting the face by way of a vertex.
+
+            # First get the vertices that make up this face:
+
+            # look over the edges:
+            vlist=[f.vertex(i) for i in range(3)]
+            pnts = np.array( [ [v.point().x(),v.point().y()] for v in vlist] )
+
+            # check which side of the line each vertex is on:
+
+            # HERE is where the numerical issues come up.
+            # could possibly do this in terms of the end points of the query line, in order to
+            # at least robustly handle the starting and ending points.
+            left_distance = [ distance_left_of_line(pnts[i], qp1,qp2 ) for i in range(3)]
+
+            # And we want the edge that goes from a negative to positive left_distance.
+            # should end with i being the index of the start of the edge that we want
+            for i in range(3):
+                # This doesn't quite follow the same definitions as in CGAL -
+                # because we want to ensure that we get a consecutive list of edges
+
+                # The easy case - the query line exits through an edge that straddles
+                # the query line, that's the <
+                # the == part comes in where the query line exits through a vertex.
+                # in that case, we choose the edge to the left (arbitrary).
+                if left_distance[i] <= 0 and left_distance[(i+1)%3] > 0:
+                    break
+
+                # sanity check
+                if i==2:
+                    raise Exception("Trying to figure out how to get out of a face, and nothing looks good")
+
+            # Two cases - leaving via vertex, or crossing an edge internally.
+            if left_distance[i]==0:
+                return ['v',vlist[i]]
+            else:
+                # so now the new edge is between vertex i,(i+1)%3, so in CGAL parlance
+                # that's
+                new_face = f.neighbor( (i-1)%3 )
+                return ['f',new_face]
+
         
+        def line_walk_edges_new(self,n1=None,n2=None,v1=None,v2=None,
+                                include_tangent=False,
+                                include_coincident=True):
+            # Use the CGAL primitives to implement this in a hopefully more
+            # robust way.
+            # unfortunately we can't use the line_walk() circulator directly
+            # because the bindings enumerate the whole list, making it potentially
+            # very expensive.
+
+            # ultimately we want to know edges which straddle the query line
+            # as well as nodes that fall exactly on the line.
+            # is it sufficient to then return a mixed list of edges and vertices
+            # that fall on the query line?
+            # and any edge that is coincident with the query line will be included
+            # in the output.
+
+            # but what is the appropriate traversal cursor?
+            # when no vertices fall exactly on the query line, tracking a face
+            #  is fine.
+            # but when the query line goes through a vertex, it's probably better
+            #  to just record the vertex.
+            # so for a first cut - make sure that we aren't just directly connected:
+            
+            if (n2 is not None) and (n1 is not None) and (n2 in self.delaunay_neighbors(n1)):
+                return []
+
+            if v1 is None:
+                v1 = self.vh[n1]
+            if v2 is None:
+                v2 = self.vh[n2]
+
+            # Get the points from the vertices, not self.points, because in some cases
+            # (adjust_move_node) we may be probing
+            p1 = np.array([ v1.point().x(), v1.point().y()] )
+            p2 = np.array([ v2.point().x(), v2.point().y()] )
+
+            if self.verbose > 1:
+                print("Walking the line: ",p1,p2)
+            
+            hits = [ ['v',v1] ]
+            
+            # do the search:
+            # Note that we really need a better equality test here
+            # hits[-1][1] != v2 doesn't work beac
+            def obj_eq(a,b):
+                return type(a)==type(b) and a==b
+            
+            while not obj_eq(hits[-1][1], v2):
+                # if we just came from a vertex, choose a new face in the given direction
+                if hits[-1][0] == 'v':
+                    if self.verbose > 1:
+                        print("Last hit was the vertex at %s"%(hits[-1][1].point()))
+                    
+                    # like face_in_direction, but also check for possibility that
+                    # an edge is coincident with the query line.
+ 
+                    next_item = self.next_from_vertex( hits[-1][1],(p1,p2) )
+
+                    if self.verbose > 1:
+                        print("Moved from vertex to ",next_item)
+
+                    if next_item[0] == 'v':
+                        # Find the edge connecting these two:
+                        for e in self.DT.incident_edges( next_item[1] ):
+                            f,v_opp = e
+                                
+                            if f.vertex( (v_opp+1)%3 ) == hits[-1][1] or \
+                               f.vertex( (v_opp+2)%3 ) == hits[-1][1]:
+                                hits.append( ['e', (f,v_opp)] )
+                                break
+                        
+                elif hits[-1][0] == 'f':
+                    # either we cross over an edge into another face, or we hit
+                    # one of the vertices.
+
+                    next_item = self.next_from_face( hits[-1][1], (p1,p2) )
+
+                    # in case the next item is also a face, go ahead and insert
+                    # the intervening edge
+                    if next_item[0]=='f':
+                        middle_edge = None
+
+                        for v_opp in range(3):
+                            if self.verbose > 1:
+                                print("Comparing %s to %s looking for the intervening edge"%(hits[-1][1].neighbor(v_opp),
+                                                                                             next_item[1]))
+                            if hits[-1][1].neighbor(v_opp) == next_item[1]:
+                                middle_edge = ['e', (hits[-1][1],v_opp)] 
+                                break
+                        if middle_edge is not None:
+                            hits.append( middle_edge )
+                        else:
+                            raise Exception("Two faces in a row, but couldn't find the edge between them")
+                    
+                elif hits[-1][0] == 'e':
+                    # This one is easy - just have to check which end of the edge is in the
+                    # desired direction
+                    next_item = self.next_from_edge( hits[-1][1], (p1,p2) )
+
+                hits.append( next_item )
+
+            if self.verbose > 1:
+                print("Got hits: ",hits)
+
+            # but ignore the first and last, since they are the starting/ending points
+            hits = hits[1:-1]
+
+            # and since some of those CGAL elements are going to disappear, translate everything
+            # into node references
+            for i in range(len(hits)):
+                if hits[i][0] == 'v':
+                    hits[i][1] = [ self.vh_info[ hits[i][1] ] ]
+                elif hits[i][0] == 'e':
+                    f,v_opp = hits[i][1]
+                    
+                    hits[i][1] = [ self.vh_info[ f.vertex( (v_opp+1)%3 ) ], self.vh_info[ f.vertex( (v_opp+2)%3 ) ] ]
+                elif hits[i][0] == 'f':
+                    f = hits[i][1]
+
+                    hits[i][1] = [ self.vh_info[ f.vertex(0) ],
+                                   self.vh_info[ f.vertex(1) ],
+                                   f.vertex(2) ]
+                
+            # have to go back through, and where successive items are faces, we must
+            # have crossed cleanly through an edge, and that should be inserted, too
+            return hits
+        
+        def check_line_is_clear_new(self,n1=None,n2=None,v1=None,v2=None,p1=None,p2=None):
+            """ returns a list of vertex tuple for constrained segments that intersect
+            the given line.
+            in the case of vertices that are intersected, just a tuple of length 1
+            (and assumes that all vertices qualify as constrained)
+            """
+
+            # if points were given, create some temporary vertices
+            if p1 is not None:
+                cp1 = Point_2( p1[0], p1[1] )
+                v1 = self.DT.insert(cp1) ; self.vh_info[v1] = 'tmp'
+
+            if p2 is not None:
+                cp2 = Point_2( p2[0], p2[1] )
+                v2 = self.DT.insert(cp2) ; self.vh_info[v2] = 'tmp'
+
+            crossings = self.line_walk_edges_new(n1=n1,n2=n2,v1=v1,v2=v2)
+
+            constrained = []
+            for crossing_type,crossing in crossings:
+                if crossing_type == 'f':
+                    continue
+                if crossing_type == 'v':
+                    constrained.append( (crossing_type,crossing) )
+                    continue
+                if crossing_type == 'e':
+                    n1,n2 = crossing
+                    if self.verbose > 1:
+                        print("Got potential conflict with edge",n1,n2)
+                    try:
+                        self.find_edge( (n1,n2) )
+                        constrained.append( ('e',(n1,n2)) )
+                    except trigrid.NoSuchEdgeError:
+                        pass
+
+            if p1 is not None:
+                del self.vh_info[v1]
+                self.DT.remove( v1 )
+            if p2 is not None:
+                del self.vh_info[v2]
+                self.DT.remove( v2 )
+            return constrained
+        
+        def check_line_is_clear(self,n1=None,n2=None,v1=None,v2=None,p1=None,p2=None):
+            """ returns a list of vertex tuple for constrained segments that intersect
+            the given line
+            """
+
+            # if points were given, create some temporary vertices
+            if p1 is not None:
+                cp1 = Point_2( p1[0], p1[1] )
+                v1 = self.DT.insert(cp1) ; self.vh_info[v1] = 'tmp'
+
+            if p2 is not None:
+                cp2 = Point_2( p2[0], p2[1] )
+                v2 = self.DT.insert(cp2) ; self.vh_info[v2] = 'tmp'
+
+            edges = self.line_walk_edges(n1=n1,n2=n2,v1=v1,v2=v2)
+            constrained = []
+            for f,i in edges:
+                e = (f,i)
+
+                if self.DT.is_constrained(e):
+                    vA = f.vertex( (i+1)%3 )
+                    vB = f.vertex( (i+2)%3 )
+                    print("Conflict info: ",self.vh_info[vA],self.vh_info[vB])
+                    constrained.append( (vA,vB) )
+
+            if p1 is not None:
+                del self.vh_info[v1]
+                self.DT.remove( v1 )
+            if p2 is not None:
+                del self.vh_info[v2]
+                self.DT.remove( v2 )
+            return constrained
+
+    
+    LiveDtGrid=LiveDtCGAL
         
 except ImportError as exc:
     log.warning("CGAL unavailable.")
 
 
+# Seems like the Edge class is something provided by each
+# implementation, and is essentially opaque to LiveDtGridBase.
+# it just needs to supply a vertices() method which gives
+# the handles for the relevant vertices.
+    
 class LiveDtPython(LiveDtGridBase):
-    here
+    vh_dtype=object
 
-class LiveDtGridNull(orthomaker.OrthoMaker):
-    """ absolute minimum, do-nothing stand-in for LiveDtGrid implementations.
-    probably not useful
-    """
-    has_dt = 0
-    pending_conflicts = []
+    class Edge(object):
+        def __init__(self,g,j):
+            self.g=g
+            self.j=j
+        def vertices(self):
+            return self.g.edges['nodes'][self.j]
+        
+    def dt_allocate(self):
+        self.DT=exact_delaunay.Triangulation()
+    
+    def dt_insert_constraint(self, a, b):
+        self.DT.add_constraint(self.vh[a], self.vh[b])
+        
+    def dt_remove_constraints(self, n):
+        for e in self.incident_constraints(n):
+            self.DT.remove_constraint(e.j)
+            
+    def dt_insert(self, n):
+        """ Given a point that is correctly in self.points, and vh that
+        is large enough, do the work of inserting the node and updating
+        the vertex handle.
+        """
+        # pnt = Point_2( self.points[n,0], self.points[n,1] )
+        xy=[self.points[n,0],self.points[n,1]]
+        self.vh[n] = self.DT.add_node(x=xy)
+        self.vh_info[self.vh[n]] = n
+        if self.verbose > 2:
+            print("    dt_insert node %d"%n)
+            self.check()
+            
+    def dt_remove(self,n):
+        self.DT.delete_node( self.vh[n] )
+        del self.vh_info[self.vh[n]]
+        self.vh[n] = 0
+        if self.verbose > 2:
+            print("    dt_remove node %d"%n)
+            self.check()
+            
+    def dt_remove_constrained_edge(self,edge):
+        self.DT.remove_constrained_edge(edge.f,edge.v)
 
-    def hold(self):
-        pass
-    def release(self):
-        pass
+    def dt_incident_constraints(self,vh):
+        constraints = []
+        self.DT.node_to_constraints(vh)
+        return [self.Edge(g=self.DT,j=e) for e in constraints]
 
-    def delaunay_neighbors(self,n):
-        return []
+    def delaunay_face(self, pnt):
+        """ 
+        Returns node indices making up the face of the DT in which pnt lies.
+        Always returns 3 items, but any number of them could be None.
+        In the case that pnt is on an edge or vertex adjacent to a cell, 
+        then all three of the cell's nodes are returned, though the specific
+        choice of cell is arbitrary.  Not sure if that's the right behavior
+        for the current usage of delaunay_face()
+        """
+        face,loc_type,loc_index = self.DT.locate(pnt)
+        if face != self.DT.INF_CELL:
+            nodes = [self.vh_info[n] for n in self.DT.cells['nodes'][face]]
+        elif loc_type == self.DT.IN_VERTEX:
+            nodes = [self.vh_info[loc_index],None,None]
+        elif loc_type == self.DT.IN_EDGE:
+            e_nodes=self.DT.edges['nodes'][loc_index]
+            nodes = [self.vh_info[e_nodes[0]],
+                     self.vh_info[e_nodes[1]],
+                     None]
+        else:
+            return [None,None,None]
+        return n
 
+    def delaunay_neighbors(self, n):
+        """ returns an array of node ids that the DT connects the given node
+        to.  Includes existing edges
+        """
+        return [ self.vh_info[vh]
+                 for vh in self.DT.node_to_nodes(self.vh[n]) ]
 
+    def dt_interior_cells(self):
+        print("Finding interior cells from full Delaunay Triangulation")
+        
+        interior_cells = []
+        for c in self.DT.valid_cell_iter():
+            nodes=[self.vh_info[vh]
+                   for vh in self.DT.cells['nodes'][c]]
+            interior_cells.append(nodes)
+        return interior_cells
+
+    def plot_dt(self,clip=None):
+        self.DT.plot_edges(clip=clip,color='m')
+        
+    def shoot_ray(self,n1,vec,max_dist=None):
+        """ Shoot a ray from self.points[n] in the given direction vec
+        returns (e_index,pnt), the first edge that it encounters and the location
+        of the intersection 
+
+        max_dist: stop checking beyond this distance -- currently doesn't make it faster
+          but will return None,None if the point that it finds is too far away
+        """
+        raise NotImplemented("still working on pure python live_dt")
+        
+    def check_line_is_clear(self,n1=None,n2=None,v1=None,v2=None,p1=None,p2=None):
+        """ returns a list of vertex tuple for constrained segments that intersect
+        the given line
+        """
+        raise NotImplemented("still working on pure python live_dt")
+        
+
+if LiveDtGrid==LiveDtGridNull:
+    LiveDtGrid=LiveDtPython
+
+    
 # how many of these are actually used?
 # shoot_ray: definitely used in paver.py
 # line_walk_edges:
 # check_line_is_clear - seems like only this one is used.
+# oops - there are actually many uses of check_line_is_clear_new
 
-# line_walk_edges_new - comment out
-# check_line_is_clear_new - comment out
-# dt_clearance - not used anywhere
+# face_in_direction and next_face:
+#   used in
+#     shoot_ray, which is used in paver
+#     line_walk_edges, which itself is used in check_line_is_clear
+
+# What is an appropriate level for the abstraction?
+#   exact_delaunay has find_intersected_elements, which is basically line_walk_edges.
+#   can something be added to support shoot_ray?
+
+# Decide to use check_line_is_clear(), and shoot_ray() as the point of abstraction
+# the check_line_is_clear_new and line_walk_edges_new methods are commented but
+# temporarily kept around
+#
+
+# face_nodes, face_center, face_diameter?

@@ -333,8 +333,6 @@ class CList(object):
             # and update extra datastructures
             del self.heap[elt]
             
-
-
 def line_eq(pa,pb):
     """ returns coefficients a,b,c that describe the
     line through pa and pb as ax+by+c=0
@@ -648,7 +646,7 @@ class Paving(paving_base,OptimizeGridMixin):
         self.degenerate_rings = [] # ids into original_rings for degenerate rings.
 
         if rings is not None:
-            self.cells = zeros( (0,3), int32 )
+            self.cells = np.zeros( (0,3), int32 )
             self.initialize_rings(rings,degenerates)
         else:
             # probably loaded a pre-existing grid
@@ -1410,15 +1408,17 @@ class Paving(paving_base,OptimizeGridMixin):
         solid boundaries.
         if it is not inside a cell, but is bounded by exactly three existing edges,
         add a new cell using those edges.
-
-        requires CGAL
         """
         if p is not None:
             nodes = self.delaunay_face(p)
+            if None in nodes:
+                # it's not bounded by a cell - outside the convex hull
+                return False
         else:
             p = self.points[nodes].mean(axis=0)
-        
+            
         # Is it already a cell?
+        
         try:
             c = self.find_cell(nodes)
         except trigrid.NoSuchCellError:
@@ -2476,10 +2476,11 @@ class Paving(paving_base,OptimizeGridMixin):
         # i tracks the point that we're moving towards
         if direction > 0:
             # always the next higher whole number
-            i = (floor(alpha) + 1) % len_b
+            i = (np.floor(alpha) + 1) % len_b
         else:
-            i = (ceil(alpha) - 1) % len_b
+            i = (np.ceil(alpha) - 1) % len_b
 
+        i=int(i)
         start_i = i 
         oring = self.original_rings[ring_i]
         nring = self.oring_normals[ring_i]

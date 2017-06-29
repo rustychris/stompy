@@ -563,13 +563,13 @@ class TriGrid(object):
 
         # remove lonesome nodes
         active_nodes = np.unique(self.cells.ravel())
-        if any(active_nodes) <= 0:
+        if np.any(active_nodes) <= 0:
             raise Exception("renumber: Active nodes includes some negative indices")
 
         old_indices = -np.ones(self.Npoints(),np.int32)
         
         self.points = self.points[active_nodes]
-        if any(np.isnan(self.points)):
+        if np.any(np.isnan(self.points)):
             raise Exception("renumber: some points have NaNs!")
         
         # need a mapping from active node to its index -
@@ -579,7 +579,7 @@ class TriGrid(object):
         # map onto the new indices
         self.cells = old_indices[self.cells]
 
-        if any(self.cells) < 0:
+        if np.any(self.cells) < 0:
             raise Exception("renumber: after remapping indices, have negative node index in cells")
 
         # clear out stale data
