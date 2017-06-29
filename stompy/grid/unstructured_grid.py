@@ -1063,10 +1063,19 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         self._node_to_cells = None
 
     def Nnodes(self):
+        """
+        total number of allocated nodes -- may include deleted nodes
+        """
         return len(self.nodes)
     def Ncells(self):
+        """
+        total number of allocated cells -- may include deleted cells
+        """
         return len(self.cells)
     def Nedges(self):
+        """
+        total number of allocated edges -- may include deleted edges
+        """
         return len(self.edges)
 
     def Ncells_valid(self):
