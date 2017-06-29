@@ -1161,6 +1161,11 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
         if self.post_check:
             self.check_local_delaunay()
 
+    def node_to_constraints(self,n):
+        return [j
+                for j in self.node_to_edges(n)
+                if self.edges['constrained'][j]]
+
     def bulk_init_slow(self,points):
         raise Exception("No - it's really slow.  Don't do this.")
     
