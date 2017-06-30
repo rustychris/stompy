@@ -134,7 +134,7 @@ class LiveDtGridBase(orthomaker.OrthoMaker):
     def populate_dt(self):
         """ Initialize a triangulation with all current edges and nodes.
         """
-        print("populate_dt: top")
+        # print("populate_dt: top")
 
         self.dt_allocate()
         self.vh = np.zeros( (self.Npoints(),), self.vh_dtype)
@@ -143,22 +143,22 @@ class LiveDtGridBase(orthomaker.OrthoMaker):
         # having info == None
         self.vh_info = defaultdict(lambda:None)
 
-        print("populate_dt: adding points")
+        # print("populate_dt: adding points")
         for n in range(self.Npoints()):
             if n % 50000==0:
-                print("populate_dt: %d/%d"%(n,self.Npoints()))
+                log.info("populate_dt: %d/%d"%(n,self.Npoints()))
             # skip over deleted points:
             if np.isfinite(self.points[n,0]):
                 self.dt_insert_point(n)
                 
-        print("populate_dt: add constraints")
+        # print("populate_dt: add constraints")
         for e in range(self.Nedges()):
-            #if e % 50000==0:
-            print("populate_dt: %d/%d"%(e,self.Nedges()))
+            if e % 50000==0:
+                log.info("populate_dt: %d/%d"%(e,self.Nedges()))
             a,b = self.edges[e,:2]
             if a>=0 and b>=0: # make sure we don't insert deleted edges
                 self.safe_insert_constraint(a,b)
-        print("populate_dt: end")
+        # print("populate_dt: end")
 
     def safe_insert_constraint(self,a,b):
         """ adds a constraint to the DT, but does a few simple checks first

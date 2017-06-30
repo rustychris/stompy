@@ -1,21 +1,17 @@
-from __future__ import division
 from __future__ import print_function
-from future import standard_library
-standard_library.install_aliases()
-from builtins import str
-from builtins import range
-from past.utils import old_div
-from builtins import object
+
+import logging
+log=logging.getLogger('stompy.grid.paver')
+
 import sys, os
-from numpy import *
-from safe_pylab import *
-from matplotlib.collections import *
-from matplotlib.patches import Circle
+import numpy as np
+
+import matplotlib.pyplot as plt
+from matplotlib.collections import LineCollection
 from collections import Iterable
 
 from shapely import geometry as geo
 from shapely import wkb 
-from plot_wkb import *
 
 try:
     from osgeo import ogr
@@ -25,7 +21,6 @@ import priority_queue as pq
 
 import field
 
-#import cPickle as pickle
 import pickle
 
 import plot_wkb
@@ -202,9 +197,9 @@ class CList(object):
         if return weights is true, returns a second array of the values
         in the heap
         """
-        a = zeros(len(self),int32)
+        a = np.zeros(len(self),np.int32)
         if return_weights:
-            w = zeros(len(self),float64)
+            w = np.zeros(len(self),np.float64)
 
         trav = self.head
         for i in range(len(self)):
@@ -368,14 +363,14 @@ def point_in_triangle(pnt,tri):
     
     areas = []
 
-    all_points = concatenate( ([pnt],tri) )
+    all_points = np.concatenate( ([pnt],tri) )
 
 
     tris = [[0,1,2],
             [0,2,3],
             [0,3,1]]
     
-    i = arange(3)
+    i = np.arange(3)
     ip1 = (i+1)%3
 
     for t in tris:
@@ -390,22 +385,22 @@ def one_point_cost(pnt,edges,target_length=5.0):
     # of each edge
     penalty = 0
     
-    max_angle = 85.0*pi/180.
+    max_angle = 85.0*np.pi/180.
 
     # all_edges[triangle_i,{ab,bc,ca},{x,y}]
-    all_edges = zeros( (edges.shape[0], 3 ,2), float64 )
+    all_edges = np.zeros( (edges.shape[0], 3 ,2), np.float64 )
     
     # get the edges:
     all_edges[:,0,:] = edges[:,0] - pnt  # ab
     all_edges[:,1,:] = edges[:,1] - edges[:,0] # bc
     all_edges[:,2,:] = pnt - edges[:,1] # ca
 
-    i = arange(3)
+    i = np.arange(3)
     im1 = (i-1)%3
     
     ## cost based on angle:
-    abs_angles = arctan2( all_edges[:,:,1], all_edges[:,:,0] )
-    all_angles = (pi - (abs_angles[:,i] - abs_angles[:,im1]) % (2*pi)) % (2*pi)
+    abs_angles = np.arctan2( all_edges[:,:,1], all_edges[:,:,0] )
+    all_angles = (np.pi - (abs_angles[:,i] - abs_angles[:,im1]) % (2*np.pi)) % (2*np.pi)
         
     # a_angles = (pi - (ab_angles - ca_angles) % (2*pi)) % (2*pi)
     # b_angles = (pi - (bc_angles - ab_angles) % (2*pi)) % (2*pi)
@@ -417,8 +412,8 @@ def one_point_cost(pnt,edges,target_length=5.0):
         # tried considering just large angles, but that quickly blew up.
         # even just changing this to 50 still blows up.
         #  how about a small tweak - s/60/58/ ??
-        worst_angle = abs(all_angles - 60*pi/180.).max() 
-        alpha = worst_angle /(max_angle - 60*pi/180.0)
+        worst_angle = abs(all_angles - 60*np.pi/180.).max() 
+        alpha = worst_angle /(max_angle - 60*np.pi/180.0)
 
         # 10**alpha: edges got very short...
         # 5**alpha - 1: closer, but overall still short edges.
@@ -438,12 +433,12 @@ def one_point_cost(pnt,edges,target_length=5.0):
             # the exponential cuts in and will add a factor of e by the time the
             # triangles is invalid.
 
-            scale_rad = 3.0*pi/180. # radians - e-folding scale of the cost
+            scale_rad = 3.0*np.pi/180. # radians - e-folding scale of the cost
             # max_angle - 2.0*scale_rad works..
             thresh = max_angle - 1.0*scale_rad # angle at which the exponential 'cuts in'
-            big_angle_penalty = exp( (all_angles.max() - thresh) / scale_rad)
+            big_angle_penalty = np.exp( (all_angles.max() - thresh) / scale_rad)
     else:
-        alphas = (all_angles - 60*pi/180.) / (max_angle - 60*pi/180.)
+        alphas = (all_angles - 60*np.pi/180.) / (max_angle - 60*np.pi/180.)
         alphas = 10*alphas**4
         angle_penalty = alphas.sum()
     
@@ -475,8 +470,8 @@ def one_point_cost(pnt,edges,target_length=5.0):
         # just a wild guess here, that maybe the threshold needs to be larger.
         # well, how about the penalty kicks in at 3x
         thresh = 9.0 # 2.5*2.5
-        length_penalty = exp( rel_len_ab - thresh ).sum() + exp( 1.0/rel_len_ab - thresh).sum()
-        length_penalty += exp( rel_len_ca - thresh ).sum() + exp( 1.0/rel_len_ca - thresh).sum()
+        length_penalty = np.exp( rel_len_ab - thresh ).sum() + np.exp( 1.0/rel_len_ab - thresh).sum()
+        length_penalty += np.exp( rel_len_ca - thresh ).sum() + np.exp( 1.0/rel_len_ca - thresh).sum()
 
     else:
         rel_errs_ab = (ab_lens - target_length**2) / target_length**2
@@ -489,15 +484,6 @@ def one_point_cost(pnt,edges,target_length=5.0):
     # print "angle_penalty=%g  big_angle(%g)=%g length_penalty=%g"%(angle_penalty,biggest_angle,big_angle_penalty,length_penalty)
         
     return penalty
-
-# pnt = array([8,8])
-# edges = array([[ [0,0], [10,0]],
-#                [ [0,10], [0,0]]] )
-# 
-# one_point_cost(pnt,edges)
-
-
-# from density_field import *
 
         
 from linestring_utils import upsample_linearring,downsample_linearring,resample_linearring
@@ -514,18 +500,18 @@ def compute_ring_normals(ring,closed=1):
     return a similar structure, but has unit vectors perpendicular
     (positive to left of the boundary)
     """
-    i = arange(len(ring))
+    i = np.arange(len(ring))
     ip1 = (i+1)%len(ring)
     im1 = (i-1)%len(ring)
 
     diffs = ring[ip1] - ring[i]
     # rotation matrix for angle=pi/2
-    R = array( [[0,1],[-1,0]] )
+    R = np.array( [[0,1],[-1,0]] )
     
-    seg_normals = dot(diffs,R)
+    seg_normals = np.dot(diffs,R)
     
-    mags = sqrt( sum(seg_normals**2, axis=1) )
-    seg_unit_normals = seg_normals / mags[:,newaxis]
+    mags = np.sqrt( np.sum(seg_normals**2, axis=1) )
+    seg_unit_normals = seg_normals / mags[:,None]
 
     # now seg_unit_normals[i] is the normal for the edge between
     # i and ip1
@@ -534,14 +520,13 @@ def compute_ring_normals(ring,closed=1):
     
     # with open, degenerate lines, it is possible to wrap around the
     # end of a line, and vertex_normals will be 0.
-    degen = all(vertex_normals == 0,axis=1)
+    degen = np.all(vertex_normals == 0,axis=1)
     vertex_normals[degen] = seg_unit_normals[im1][degen]
 
-    mags = sqrt( sum(vertex_normals**2, axis=1) )
-    vertex_unit_normals = vertex_normals / mags[:,newaxis]
+    mags = np.sqrt( np.sum(vertex_normals**2, axis=1) )
+    vertex_unit_normals = vertex_normals / mags[:,None]
     
     return vertex_unit_normals
-
 
 
 def intersect_lines( AB, CD ):
@@ -629,7 +614,7 @@ class Paving(paving_base,OptimizeGridMixin):
 
         self.plot_history = []
         
-        self.hopeless_cells = array([])
+        self.hopeless_cells = np.array([])
         self.updated_cells = []
         
         self._vcenters = None
@@ -646,7 +631,7 @@ class Paving(paving_base,OptimizeGridMixin):
         self.degenerate_rings = [] # ids into original_rings for degenerate rings.
 
         if rings is not None:
-            self.cells = np.zeros( (0,3), int32 )
+            self.cells = np.zeros( (0,3), np.int32 )
             self.initialize_rings(rings,degenerates)
         else:
             # probably loaded a pre-existing grid
@@ -667,13 +652,13 @@ class Paving(paving_base,OptimizeGridMixin):
         # self.initialize_boundaries()
         self.poly = "N/A"
 
-        self.node_data = zeros( (self.Npoints(),4), float64 )
+        self.node_data = np.zeros( (self.Npoints(),4), np.float64 )
 
         # internal nodes are easy:
         self.node_data[:,STAT] = FREE
         self.node_data[:,ORIG_RING] = -1
-        self.node_data[:,ALPHA] = nan
-        self.node_data[:,BETA] = nan
+        self.node_data[:,ALPHA] = np.nan
+        self.node_data[:,BETA] = np.nan
 
         # boundary nodes -
         rings_and_children = self.edges_to_rings_and_holes(edgemask=(self.edges[:,4] == -1))
@@ -702,7 +687,7 @@ class Paving(paving_base,OptimizeGridMixin):
         # edge_data:
         #   0: step at which the edge was created
         #   1: original ring to which the edge belongs (only used for degenerate edges right now)
-        self.edge_data = zeros( (self.Nedges(),2), int32)
+        self.edge_data = np.zeros( (self.Nedges(),2), np.int32)
         
         # actually, I think this isn't necessary
         # no topology is changed here, only Paving-specific bookkeeping.
@@ -858,7 +843,7 @@ class Paving(paving_base,OptimizeGridMixin):
                     
 
                 okay_points.append( p_intersect )
-                sub_degen = array( okay_points )
+                sub_degen = np.array( okay_points )
                 print("Might be adding sub-degenerate ring: ",sub_degen)
 
                 # But it's possible that this polyline is not in the domain -
@@ -875,7 +860,7 @@ class Paving(paving_base,OptimizeGridMixin):
 
         # Take care of any left over points in okay_points -
         if len(okay_points) > 1:
-            sub_degen = array( okay_points )
+            sub_degen = np.array( okay_points )
             interior = 0.5*(sub_degen[0] + sub_degen[1])
             interior_pnt = geo.Point( interior )
             if self.poly.contains( interior_pnt ):
@@ -967,7 +952,7 @@ class Paving(paving_base,OptimizeGridMixin):
             degen_sampled,degen_alpha = upsample_linearring(degen,self.density,closed_ring=0,return_sources=True)
         else:
             degen_sampled = degen
-            degen_alpha = arange(float(len(degen)))
+            degen_alpha = np.arange(float(len(degen)))
         
         ## Create an original ring (slider) for this line
         oring_id = len(self.original_rings)
@@ -978,8 +963,8 @@ class Paving(paving_base,OptimizeGridMixin):
 
 
         ## Add the new nodes, setting them all to RIGID/HINT depending on self.slide_internal_guides
-        i_to_add = arange(len(degen_sampled))
-        node_ids = -1*ones( len(degen_sampled), int32)
+        i_to_add = np.arange(len(degen_sampled))
+        node_ids = -1*np.ones( len(degen_sampled), np.int32)
         
         if start_connects:
             i_to_add = i_to_add[1:]
@@ -1018,7 +1003,7 @@ class Paving(paving_base,OptimizeGridMixin):
                 # looking for an iter where the ray going to our next node falls between
                 # rays to next and prev.
                 asort = self.angle_sort_nodes(node_ids[0],
-                                              array( [ii.nxt.data,ii.prv.data,node_ids[1]]) )
+                                              np.array( [ii.nxt.data,ii.prv.data,node_ids[1]]) )
                 asort = asort.tolist()
                 nxt_i = asort.index( ii.nxt.data )
                 if asort[ (nxt_i+1)%3 ] == node_ids[1]:
@@ -1088,8 +1073,8 @@ class Paving(paving_base,OptimizeGridMixin):
     def geom_to_rings(self,geom):
         def dedupe(ring):
             # remove repeated vertices
-            jp1 = (arange(len(ring)) + 1)%len(ring)
-            dupes = all(ring == ring[jp1],axis=1)
+            jp1 = (np.arange(len(ring)) + 1)%len(ring)
+            dupes = np.all(ring == ring[jp1],axis=1)
             good = ~dupes
             return ring[~dupes]
             
@@ -1101,10 +1086,10 @@ class Paving(paving_base,OptimizeGridMixin):
             geom = old_geom.geoms[best]
         
         rings = []
-        rings.append( dedupe(array( geom.exterior.coords )) )
+        rings.append( dedupe(np.array( geom.exterior.coords )) )
 
         for i in range(len(geom.interiors)):
-            rings.append( dedupe( array( geom.interiors[i].coords )) )
+            rings.append( dedupe( np.array( geom.interiors[i].coords )) )
 
         return rings
 
@@ -1279,43 +1264,31 @@ class Paving(paving_base,OptimizeGridMixin):
             set up a boundary and unpaved CLists for each of the rings 
         """
         # initialize all of the points:
-        self.points = concatenate( self.rings )
+        self.points = np.concatenate( self.rings )
         # make sure it's floating point:
-        self.points = asarray(self.points,dtype=float64)
+        self.points = np.asarray(self.points,dtype=np.float64)
 
         if self.verbose > 1:
             print("Number of points: ",self.Npoints())
 
         shapely_rings = []
         for ri in range(len(self.rings)):
-            if ri not in self.degenerate_rings:
-                r = self.rings[ri]
-                # oddly, shapely likes outer *and* inner rings to be
-                # CCW
-                if not is_ccw(r):
-                    r = r[::-1]
+            assert ri not in self.degenerate_rings
+            
+            r = self.rings[ri]
+            # oddly, shapely likes outer *and* inner rings to be
+            # CCW
+            if not is_ccw(r):
+                r = r[::-1]
 
-                # also shapely likes rings to have the closing point.
-                # (though it doesn't complain if it's missing, it just
-                # gets flaky)
-                r = concatenate( (r,[r[0]]) )
+            # also shapely likes rings to have the closing point.
+            # (though it doesn't complain if it's missing, it just
+            # gets flaky)
+            r = np.concatenate( (r,[r[0]]) )
 
-                if self.verbose > 1:
-                    print("Ring is ",r)
-                    # plot( r[:,0], r[:,1] )
-            else:
-                ## OBSOLETE:
-                #  in the new code, degenerates are populated later, so at this point
-                #  we shouldn't have any.
-                raise Exception("This code is no longer run")
-                # if self.verbose > 0:
-                #     print "micro-buffering the degenerate ring"
-                # 
-                # degen_line = geo.LineString( self.rings[ri] )
-                # degen_poly = degen_line.buffer(0.001)
-                # r = array(degen_poly.exterior.coords)
-                # if not is_ccw(r): # i can't imagine this is actually necessary
-                #     r = r[::-1] 
+            if self.verbose > 1:
+                print("Ring is ",r)
+                # plot( r[:,0], r[:,1] )
 
             shapely_rings.append(r.copy())
 
@@ -1328,7 +1301,7 @@ class Paving(paving_base,OptimizeGridMixin):
             print("poly area:",self.poly.area)
         
         # node type, ring source, alpha, beta
-        self.node_data = zeros( (self.Npoints(),4), float64 )
+        self.node_data = np.zeros( (self.Npoints(),4), np.float64 )
         
         # data for the slider:
         self.original_rings = [r.copy() for r in self.rings]
@@ -1373,8 +1346,8 @@ class Paving(paving_base,OptimizeGridMixin):
 
     def initialize_edges(self):
         # set the stage:
-        self.edges = zeros( (0,5), int32 )
-        self.edge_data = zeros( (0,2), int32)
+        self.edges = np.zeros( (0,5), np.int32 )
+        self.edge_data = np.zeros( (0,2), np.int32)
 
         self._pnt2edges = {}
         
@@ -1392,7 +1365,7 @@ class Paving(paving_base,OptimizeGridMixin):
     def boundary_slider(self,ri,alpha,beta=0.0):
         len_b = len(self.original_rings[ri])
 
-        i = int(floor(alpha)) % len_b
+        i = int(np.floor(alpha)) % len_b
         frac = (alpha - i) % 1.0
         
         ip1 = (i+1) % len_b
@@ -1511,10 +1484,10 @@ class Paving(paving_base,OptimizeGridMixin):
             a = unpaved.to_array()
             # print "This ring is ",a
             if len(a) > 0:
-                a = concatenate( (a, [a[0]]) )
-                plot(self.points[a,0],self.points[a,1],'m-')
-                scatter(self.points[a,0],self.points[a,1], s=60,
-                        c=self.node_data[a,STAT], edgecolors='none')
+                a = np.concatenate( (a, [a[0]]) )
+                plt.plot(self.points[a,0],self.points[a,1],'m-')
+                plt.scatter(self.points[a,0],self.points[a,1], s=60,
+                            c=self.node_data[a,STAT], edgecolors='none')
 
     def tg_plot(self,*args,**kwargs):
         return trigrid.TriGrid.plot(self,*args,**kwargs)
@@ -2008,7 +1981,7 @@ class Paving(paving_base,OptimizeGridMixin):
         for unpaved in self.unpaved:
             # at least do the first step as vectorized ops
             n_list = unpaved.to_array()
-            i = arange(len(n_list))
+            i = np.arange(len(n_list))
             ip1 = (1+i) % len(n_list)
             N1 = n_list[i]
             N2 = n_list[ip1]
@@ -2022,14 +1995,12 @@ class Paving(paving_base,OptimizeGridMixin):
             
             PROD1 = D1*D2
 
-            possible = where(PROD1 < -self.TEST_SMALL)[0]
+            possible = np.where(PROD1 < -self.TEST_SMALL)[0]
             
             for pi in possible:
                 n1 = N1[pi]
                 n2 = N2[pi]
 
-
-                
                 p1 = P1[pi]
                 p2 = P2[pi]
                 prod1 = PROD1[pi]
@@ -2041,9 +2012,7 @@ class Paving(paving_base,OptimizeGridMixin):
                 a_12,b_12,c_12 = line_eq(p1,p2)
                 d1 = a_12*pa[0] + b_12*pa[1] + c_12
                 d2 = a_12*pb[0] + b_12*pb[1] + c_12
-
-
-                    
+  
                 if d1*d2 < -self.TEST_SMALL:
                     print("two-way intersection w/products %g and %g"%(prod1,d1*d2))
 
@@ -2215,11 +2184,11 @@ class Paving(paving_base,OptimizeGridMixin):
             # if nodes[-1] != to_elt.data:
             #     nodes.append( to_elt.data )
             plist = self.points[nodes]
-            dist_unpaved = sqrt( (diff(plist,axis=0)**2).sum(axis=1) ).sum()
+            dist_unpaved = np.sqrt( (np.diff(plist,axis=0)**2).sum(axis=1) ).sum()
 
             dist_sqr = ((self.points[from_elt.data] - self.points[nodes])**2).sum(axis=1)
             
-            return dist_unpaved,to_elt,sqrt(dist_sqr.max())
+            return dist_unpaved,to_elt,np.sqrt(dist_sqr.max())
         else:
             raise Exception("stale code")
             metrics = [ self.node_data[from_elt.data,ALPHA],
@@ -2229,8 +2198,9 @@ class Paving(paving_base,OptimizeGridMixin):
 
             # too lazy right now to compute max_dist when walking the original ring
             # no code should be using it right now anyway.
-            return self.coarse_boundary_length( orig_ring_i, metrics[0], metrics[1] ),to_elt,nan
-
+            return (self.coarse_boundary_length( orig_ring_i, metrics[0], metrics[1] ),
+                    to_elt,
+                    np.nan)
 
     def close_free_boundary(self,start_elt,end_elt,direction):
         """
@@ -2420,14 +2390,14 @@ class Paving(paving_base,OptimizeGridMixin):
                 else:
                     print("End of the degenerate line, just flipping direction")
             
-        to_move_i = where(start_nbrs==to_move)[0][0]
+        to_move_i = np.where(start_nbrs==to_move)[0][0]
 
         node_bounds = start_nbrs[ [(to_move_i-1)%len(start_nbrs),
                                    (to_move_i+1)%len(start_nbrs) ] ]
         deltas = self.points[node_bounds] - self.points[start_elt.data]
-        cw_ccw_angles = arctan2( deltas[:,1],deltas[:,0] )
+        cw_ccw_angles = np.arctan2( deltas[:,1],deltas[:,0] )
         cw_angle_bound = cw_ccw_angles[0]
-        angle_range = (cw_ccw_angles[1] - cw_ccw_angles[0]) % (2*pi)
+        angle_range = (cw_ccw_angles[1] - cw_ccw_angles[0]) % (2*np.pi)
 
         #-- This block used to be inside the try:except: block, but I don't think
         #   there's any reason for that.
@@ -2532,7 +2502,7 @@ class Paving(paving_base,OptimizeGridMixin):
 
             # multiply by direction b/c if we are moving backwards, starting at
             # alpha = 1, it's okay that we get new_alpha = 0.999
-            if floor(direction*new_alpha) != floor(direction*alpha):
+            if np.floor(direction*new_alpha) != np.floor(direction*alpha):
                 print(new_alpha, alpha)
                 raise Exception("Thought that we were on the same segment, but alphas are different")
         else:
@@ -2560,9 +2530,9 @@ class Paving(paving_base,OptimizeGridMixin):
         
         ## ANGLE CHECK
         if len(start_nbrs) > 2:
-            new_point_angle = arctan2( new_point[1] - start_point[1],
-                                       new_point[0] - start_point[0] )
-            past_cw = (new_point_angle - cw_angle_bound) % (2*pi)
+            new_point_angle = np.arctan2( new_point[1] - start_point[1],
+                                          new_point[0] - start_point[0] )
+            past_cw = (new_point_angle - cw_angle_bound) % (2*np.pi)
             if past_cw > angle_range:
                 print("Nope - the angle of the new point was bad relative to neighbors.")
                 print("  cw_angle_bound: %f"%(180*cw_angle_bound/pi))
@@ -2974,16 +2944,16 @@ class Paving(paving_base,OptimizeGridMixin):
                 removed_clists.append( right_clist )
                 
         elif left==trigrid.UNMESHED and right>=0:
-            node_c = setdiff1d(self.cells[right],self.edges[e,:2])[0]
+            node_c = np.setdiff1d(self.cells[right],self.edges[e,:2])[0]
             new_iter = left_iter.clist.append(node_c,after=left_iter)
             added_iters.append(new_iter)
         elif right==trigrid.UNMESHED and left>=0:
-            node_c = setdiff1d(self.cells[left],self.edges[e,:2])[0]
+            node_c = np.setdiff1d(self.cells[left],self.edges[e,:2])[0]
             new_iter = right_iter.clist.append(node_c,after=right_iter)
             added_iters.append(new_iter)
         elif left>=0 and right>=0:
-            node_c_right = setdiff1d(self.cells[right],self.edges[e,:2])[0]
-            node_c_left  = setdiff1d(self.cells[left],self.edges[e,:2])[0]
+            node_c_right = np.setdiff1d(self.cells[right],self.edges[e,:2])[0]
+            node_c_left  = np.setdiff1d(self.cells[left],self.edges[e,:2])[0]
             new_clist = CList()
             new_clist.append(self.edges[e,0])
             new_clist.append(node_c_right)
@@ -3019,8 +2989,8 @@ class Paving(paving_base,OptimizeGridMixin):
         """ given the two metrics (fractional indices into coarse_boundary points)
         find the length along the coarse boundary.
         """
-        start_i = int(ceil(alpha1))
-        end_i   = int(floor(alpha2))
+        start_i = int(np.ceil(alpha1))
+        end_i   = int(np.floor(alpha2))
 
         # those are indices into coarse_boundary
         # construct an index sequence that hits all of the points
@@ -3030,18 +3000,18 @@ class Paving(paving_base,OptimizeGridMixin):
         if alpha1 >= alpha2: # wraps around:
             end_i += len_b
 
-        ilist = arange(start_i,end_i) % len_b
+        ilist = np.arange(start_i,end_i) % len_b
 
         coarse_points = self.original_rings[ring_i][ilist]
 
         # add fractional points at either end - possible that they
         # are duplicates, but easier to just let that go
-        coarse_points = concatenate( ( [self.boundary_slider(ring_i, alpha1)],
-                                       coarse_points,
-                                       [self.boundary_slider(ring_i, alpha2)] ) )
+        coarse_points = np.concatenate( ( [self.boundary_slider(ring_i, alpha1)],
+                                          coarse_points,
+                                          [self.boundary_slider(ring_i, alpha2)] ) )
         
-        deltas = diff(coarse_points,axis=0)
-        return sqrt((deltas**2).sum(axis=1)).sum()
+        deltas = np.diff(coarse_points,axis=0)
+        return np.sqrt((deltas**2).sum(axis=1)).sum()
 
     def elt_smallest_internal_angle(self,ring_i):
         while 1:
@@ -3064,14 +3034,14 @@ class Paving(paving_base,OptimizeGridMixin):
                 return e
 
     def relax_around_cell(self,c,n_radius=2,use_beta=0):
-        c_list = array([c])
+        c_list = np.array([c])
         
         while n_radius > 0:
             new_c_list = c_list
             
             for cell in c_list:
-                new_c_list = concatenate([new_c_list,self.cell_neighbors(cell)])
-            c_list = unique(new_c_list)
+                new_c_list = np.concatenate([new_c_list,self.cell_neighbors(cell)])
+            c_list = np.unique(new_c_list)
             n_radius -= 1
 
         nbr_points = unique(self.cells[c_list].ravel())
@@ -3079,7 +3049,7 @@ class Paving(paving_base,OptimizeGridMixin):
         for n in nbr_points:
             self.safe_relax_one(n,use_beta=use_beta)
 
-    def safe_relax_one(self,n,use_beta=0,max_cost=inf):
+    def safe_relax_one(self,n,use_beta=0,max_cost=np.inf):
         stat = self.node_data[n,STAT]
 
         if stat == RIGID:
@@ -3096,16 +3066,16 @@ class Paving(paving_base,OptimizeGridMixin):
         apex node, which is an index into unpaved[ring_i]
         """
         
-        seq = array( [apex.prv.data,apex.data,apex.nxt.data] )
+        seq = np.array( [apex.prv.data,apex.data,apex.nxt.data] )
 
         diffs = self.points[seq[1:]] - self.points[seq[:-1]]
-        angles = arctan2( diffs[:,1], diffs[:,0] )
+        angles = np.arctan2( diffs[:,1], diffs[:,0] )
         # the difference gives the outside angle, so subtract from 180deg
-        d_angle = (pi - (angles[1] - angles[0])) % (2*pi)
+        d_angle = (np.pi - (angles[1] - angles[0])) % (2*np.pi)
 
         # degenerate rings can have 360 degree angles - 
         if d_angle == 0.0:
-            d_angle = 2*pi
+            d_angle = 2*np.pi
 
         return d_angle
     
@@ -3119,12 +3089,12 @@ class Paving(paving_base,OptimizeGridMixin):
 
         ab_perp = rot(pi/2,ab)
 
-        theta = arctan2( dot(bc,ab_perp), dot(bc,ab_parallel) )
+        theta = np.arctan2( np.dot(bc,ab_perp), np.dot(bc,ab_parallel) )
 
-        int_angle = pi - theta
+        int_angle = np.pi - theta
         
         if do_plot:
-            annotate("%.3g"%(180*int_angle/pi),pnts[1])
+            plt.annotate("%.3g"%(180*int_angle/np.pi),pnts[1])
 
         return int_angle
 
@@ -3138,7 +3108,7 @@ class Paving(paving_base,OptimizeGridMixin):
         # we can narrow the list by excluding anything that wouldn't
         # subtend our angle (is that the right way to use 'subtend'?)
         nxt_i = np.where( dt_ordered==elt.nxt.data )[0][0]
-        indices = (arange(len(dt_ordered)) + nxt_i)%len(dt_ordered)
+        indices = (np.arange(len(dt_ordered)) + nxt_i)%len(dt_ordered)
 
         dt_ordered = dt_ordered[indices]
 
@@ -3181,7 +3151,7 @@ class Paving(paving_base,OptimizeGridMixin):
             else:
                 local_nodes[n] = min(local_nodes[n],dist)
 
-        best_dist = inf
+        best_dist = np.inf
         best_nbr = None
 
         # Define vector along the edge, parallel to LR
@@ -3200,12 +3170,11 @@ class Paving(paving_base,OptimizeGridMixin):
                 # for a perfect, equilateral, this would be 2.0
                 # for a right-triangle, sqrt(2)
                 if d_boundary / dist < 1.25:
-                    if self.verbose > 1:
-                        print("Discarding local node because boundary distance less than 25% longer than straight line")
+                    log.debug("Discarding local node because boundary distance less than 25% longer than straight line")
                     continue
                 else:
-                    print("d_boundary %d => %d = %g vs line %g"%(n,nbr,d_boundary,dist))
-                    print("CAREFUL: allowing a nonlocal connection to a nearby node, but okay(?) b/c of distances")
+                    log.debug("d_boundary %d => %d = %g vs line %g"%(n,nbr,d_boundary,dist))
+                    log.debug("CAREFUL: allowing a nonlocal connection to a nearby node, but okay(?) b/c of distances")
 
             # For bisectors:
             #   1.3 seemed to reach a bit far.
@@ -3314,12 +3283,12 @@ class Paving(paving_base,OptimizeGridMixin):
         # only works if we have the live triangulation
         n = center_elt.data
 
-        best_dist = inf
+        best_dist = np.inf
         best_nbr = None
         
         # If the actual lengths are longer than local_scale, use their average
-        scale_left  = sqrt( sum( (self.points[center_elt.prv.data] - self.points[center_elt.data])**2))
-        scale_right = sqrt( sum( (self.points[center_elt.nxt.data] - self.points[center_elt.data])**2))
+        scale_left  = np.sqrt( np.sum( (self.points[center_elt.prv.data] - self.points[center_elt.data])**2))
+        scale_right = np.sqrt( np.sum( (self.points[center_elt.nxt.data] - self.points[center_elt.data])**2))
         scale_avg = 0.5*(scale_left+scale_right)
         if scale_avg > local_scale:
             local_scale = scale_avg
@@ -3341,11 +3310,11 @@ class Paving(paving_base,OptimizeGridMixin):
                     # for a perfect, equilateral, this would be 2.0
                     # for a right-triangle, sqrt(2)
                     if d_boundary / dist < 1.25:
-                        print("Discarding local node because boundary distance less than 25% longer than straight line")
+                        log.debug("Discarding local node because boundary distance less than 25% longer than straight line")
                         continue
                     else:
-                        print("d_boundary %d => %d = %g vs line %g"%(n,nbr,d_boundary,dist))
-                        print("CAREFUL: allowing a nonlocal connection to a nearby node, but okay(?) b/c of distances")
+                        log.debug("d_boundary %d => %d = %g vs line %g"%(n,nbr,d_boundary,dist))
+                        log.debug("CAREFUL: allowing a nonlocal connection to a nearby node, but okay(?) b/c of distances")
 
 
                 # 1.3 seemed to reach a bit far.
@@ -3354,8 +3323,8 @@ class Paving(paving_base,OptimizeGridMixin):
                 #  that going just from local_scale is right.
                 if dist > best_dist or dist > 1.25*local_scale:
                     if self.verbose>1:
-                        print("Discarding nonlocal because relative distance is %.3f, best is %.3f"%(dist/local_scale,
-                                                                                                     best_dist/local_scale))
+                        log.debug("Discarding nonlocal because relative distance is %.3f, best is %.3f"%(dist/local_scale,
+                                                                                                         best_dist/local_scale))
                     continue
 
                 best_dist = dist
@@ -3375,8 +3344,8 @@ class Paving(paving_base,OptimizeGridMixin):
             theta_ba = np.arctan2(a[1]-b[1],a[0]-b[0])
             theta_bc = np.arctan2(c[1]-b[1],c[0]-b[0])
             
-            theta = theta_bc + ((theta_ba - theta_bc)%(2*pi))/2.0
-            vec = np.array([cos(theta),sin(theta)])
+            theta = theta_bc + ((theta_ba - theta_bc)%(2*np.pi))/2.0
+            vec = np.array([np.cos(theta),np.sin(theta)])
 
             # 1.5 seems too far - we don't currently optimize this point to be
             # any closer after finding it, and we are already looking at a local
@@ -3446,13 +3415,13 @@ class Paving(paving_base,OptimizeGridMixin):
         theta = self.internal_angle(apex=center_elt)
 
         # in-order node indices of us and immediate neighbors
-        ordered = array( [center_elt.prv.data,center_elt.data,center_elt.nxt.data] )
+        ordered = np.array( [center_elt.prv.data,center_elt.data,center_elt.nxt.data] )
 
         local_length = self.density( self.points[ordered[1],:2] )
 
         edge_diffs = self.points[ordered[:-1]] - self.points[ordered[1:]]
 
-        edge_lengths = sqrt( (edge_diffs**2).sum(axis=1) )
+        edge_lengths = np.sqrt( (edge_diffs**2).sum(axis=1) )
         scale_factor = edge_lengths.mean() / local_length
 
         unpaved = center_elt.clist
@@ -3505,7 +3474,7 @@ class Paving(paving_base,OptimizeGridMixin):
         # 160 - (scale_factor-1.)*30 has worked well, but in the full-bay grid allows some growth
         # see how bad it gets if we go to *50 - wall is really just breaking the bisect process
         # into two steps, so results are probably robust against most changes here. 
-        elif theta > pi/180. * ( 160. - (scale_factor - 1.0)*50):
+        elif theta > np.pi/180. * ( 160. - (scale_factor - 1.0)*50):
             strategies = ['wall']
         # if we're getting too fine, scale_factor is small, so we
         # push towards cutoffs over bisection
@@ -3513,9 +3482,9 @@ class Paving(paving_base,OptimizeGridMixin):
         # 6/15/2010: trying linear, in hopes that it won't be so stiff when transitioning.
         # 7/8/2010: go back to 1.5 - it's too loose now, and while oscillations can be dealt with by
         #   repaving, regions of different scale are very hard to join.
-        elif theta > 85*pi/180. * ( 1.0 / scale_factor )**1.5:
+        elif theta > 85*np.pi/180. * ( 1.0 / scale_factor )**1.5:
             strategies = ['bisect','cutoff','wall']
-        elif theta > 30*pi/180.:
+        elif theta > 30*np.pi/180.:
             # in general, we want to try a cutoff
             strategies = ['cutoff','join','bisect']
 
@@ -3538,7 +3507,7 @@ class Paving(paving_base,OptimizeGridMixin):
                     #   implies 3 edges, so the node has to be at least degree 3.
                     # of course that assumes that we can exactly bisect the angle,
                     # which we won't, so include some wiggle room - wiggle.
-                    wiggle = 5*pi/180.
+                    wiggle = 5*np.pi/180.
                     min_degree = 1.0 + boundary_angle / (self.max_angle - wiggle)
 
                     # more of the example: the angle is 170, but we specify 5 degrees
@@ -3571,11 +3540,10 @@ class Paving(paving_base,OptimizeGridMixin):
         boundary_diffs = None # a record of the changes that will need to be made to unpaved
 
         if self.verbose > 1:
-            print("theta=%f  strategies=%s"%(theta*180/pi, strategies))
+            print("theta=%f  strategies=%s"%(theta*180/np.pi, strategies))
 
         # currently it is leaving an extra edge, and that edge along with 0 and 1
         #  have had their -2 flags set to 0
-
 
         self.last_fill_iter = center_elt
         self.last_strategies = strategies
@@ -3653,7 +3621,7 @@ class Paving(paving_base,OptimizeGridMixin):
                     new_unpaved = []
                     
                     # Either way, go ahead and include it for optimization:
-                    self.updated_cells.append( i )
+                    self.updated_cells.append(i)
                         
                 elif strategy == 'bisect_nonlocal':
                     n = self.nonlocal_bisector(center_elt,local_length)
@@ -3767,13 +3735,13 @@ class Paving(paving_base,OptimizeGridMixin):
 
                     # takes the length from AB, rotate through 90, scale down to
                     # make the triangle equi
-                    newB = pnts[0] + rot(60*pi/180.0,pnts[1] - pnts[0])
+                    newB = pnts[0] + rot(60*np.pi/180.0,pnts[1] - pnts[0])
 
                     new_node = self.add_node(newB,stat=FREE)
 
                     # and we just created edges:
-                    self.add_edge( ordered[0],new_node )
-                    self.add_edge( ordered[1],new_node )
+                    self.add_edge(ordered[0], new_node)
+                    self.add_edge(ordered[1], new_node)
                     self.updated_cells += self.cells_from_last_new_edge
 
                     new_unpaved = [(unpaved.append,new_node,center_elt.prv),
@@ -3894,8 +3862,8 @@ class Paving(paving_base,OptimizeGridMixin):
                     tk_nbrs = self.edges[self.pnt2edges(to_keep),:2].ravel()
 
                     # This is all the neighbors of the node that will be deleted
-                    td_nbrs = setdiff1d(td_nbrs,[to_delete])
-                    tk_nbrs = setdiff1d(tk_nbrs,[to_keep,b]) # remove common nbr, too
+                    td_nbrs = np.setdiff1d(td_nbrs,[to_delete])
+                    tk_nbrs = np.setdiff1d(tk_nbrs,[to_keep,b]) # remove common nbr, too
 
                     # get the starting angle-order for all_nbrs, starting with b
                     # in the old (<1/10/2013) code, all_nbrs was allowed to contain
@@ -3904,11 +3872,11 @@ class Paving(paving_base,OptimizeGridMixin):
                     # it in double_join
                     if at_risk == intervener:
                         double_join = True
-                        all_nbrs = concatenate( (setdiff1d(td_nbrs,[at_risk]),
-                                                 tk_nbrs) )
+                        all_nbrs = np.concatenate( (np.setdiff1d(td_nbrs,[at_risk]),
+                                                    tk_nbrs) )
                     else:
                         double_join = False
-                        all_nbrs = concatenate( (td_nbrs,tk_nbrs) )
+                        all_nbrs = np.concatenate( (td_nbrs,tk_nbrs) )
 
                     all_nbrs,all_angles = self.angle_sort_nodes(to_keep,all_nbrs,return_angles=True)
 
@@ -3918,12 +3886,12 @@ class Paving(paving_base,OptimizeGridMixin):
                     # repeated neighbor - i.e. when intervener and at_risk are the same.
                     # this is necessary in addition to the angle sort test below because often
                     # a number of nodes are lined up on a single straight edge of the boundary,
-                    if any( diff(all_angles)== 0.0 ):
+                    if np.any( np.diff(all_angles)== 0.0 ):
                         raise StrategyFailed("join would form degenerate triangle")
                     
-                    bi = where( all_nbrs == b)[0][0]
-                    all_nbrs = concatenate( (all_nbrs[bi:],all_nbrs[:bi]) )
-                    all_angles = concatenate( (all_angles[bi:],all_angles[:bi]) )
+                    bi = np.where( all_nbrs == b)[0][0]
+                    all_nbrs = np.concatenate( (all_nbrs[bi:],all_nbrs[:bi]) )
+                    all_angles = np.concatenate( (all_angles[bi:],all_angles[:bi]) )
 
                     if self.verbose > 1:
                         print("angle-sorted neighbors before join: ",all_nbrs)
@@ -3931,15 +3899,15 @@ class Paving(paving_base,OptimizeGridMixin):
 
                     def check_relaxation():
                         sorted_nbrs = self.angle_sort_nodes(to_keep,all_nbrs)
-                        bi = where( sorted_nbrs == b )[0][0]
-                        new_all_nbrs = concatenate( (sorted_nbrs[bi:],sorted_nbrs[:bi]) )
+                        bi = np.where( sorted_nbrs == b )[0][0]
+                        new_all_nbrs = np.concatenate( (sorted_nbrs[bi:],sorted_nbrs[:bi]) )
                         if self.verbose > 1:
                             print("Checking the relaxation")
                             print("---Comparing---")
                             print(new_all_nbrs)
                             print(all_nbrs)
                             print("---")
-                        return all(new_all_nbrs==all_nbrs)
+                        return np.all(new_all_nbrs==all_nbrs)
                     post_relax_check = check_relaxation
 
                     ## Trying a stricter test for angles -
@@ -3952,8 +3920,8 @@ class Paving(paving_base,OptimizeGridMixin):
                     #  we already have all_nbrs from A
                     if 1:
                         all_nbrs_from_tk = self.angle_sort_nodes(to_delete,all_nbrs,return_angles=False)
-                        bi = nonzero( all_nbrs_from_tk == b)[0][0]
-                        all_nbrs_from_tk = concatenate( (all_nbrs_from_tk[bi:], all_nbrs_from_tk[:bi]) )
+                        bi = np.nonzero( all_nbrs_from_tk == b)[0][0]
+                        all_nbrs_from_tk = np.concatenate( (all_nbrs_from_tk[bi:], all_nbrs_from_tk[:bi]) )
                         if any( all_nbrs_from_tk != all_nbrs ):
                             if self.verbose > 1:
                                 print("New angle sorting check raised the red flag")
@@ -3961,41 +3929,9 @@ class Paving(paving_base,OptimizeGridMixin):
                                 self.plot_nodes([to_keep,to_delete] + all_nbrs.tolist())
                             raise StrategyFailed("join would alter the angle sort")
 
-                    # The old approach (below) - this was overly restrictive - if a neighbor n of
-                    # to_delete "wraps" around to_keep, the angle n-b-c will be ~<2pi,
-                    # Better to look at the angle sort -
-                    # when to_keep==c, all of td_nbrs should be at the
-                    # end (since it's been ordered to start with b)
-                    # when to_keep==a,
-                    # For a while this code was still enabled, but I'm pretty sure that it was causing some
-                    # false-positives
-                    #  if to_keep == c:
-                    #      # print "Looking for intervener %d in "%intervener,all_nbrs
-                    #      # all of tk_nbrs should be at the beginning of the list, though tk_nbrs
-                    #      # does *not* include b, which is at index 0.
-                    #      if all_nbrs[ len(tk_nbrs) ] != intervener:
-                    #          print "Angle-sort comparision indicates that it's not a safe join"
-                    #          print "to_keep neighbors: ",tk_nbrs
-                    #          print "to_delete neighbors: ",td_nbrs
-                    #          raise Exception,"This test should have been superceded by the above test"
-                    #          # raise StrategyFailed,"join would form bad angle"
-                    #  
-                    #  if to_keep == a:
-                    #      # print "Looking for intervener %d in "%intervener,all_nbrs
-                    #      # it's possible that the only nbr of a is c - in which case there
-                    #      # won't be anything in tk_nbrs, and there's no worry that something
-                    #      # in tk_nbrs will get mixed up with something in td_nbrs.
-                    #      if len(tk_nbrs)>0 and all_nbrs[ len(td_nbrs) ] != intervener:
-                    #          print "Angle-sort comparison indicates conflict"
-                    #          print "to_keep neighbors: ",tk_nbrs
-                    #          print "to_delete neighbors: ",td_nbrs
-                    #          raise Exception,"This test should have been superceded by the above test"
-                    #          # raise StrategyFailed,"join would form bad angle"
-
                     if self.verbose > 2:
                         print("joining - need to move these neighbors over:",td_nbrs)
                         self.plot('step %d: about to join'%self.step)
-
 
                     for nbr in td_nbrs:
                         e = self.find_edge([to_delete,nbr])
@@ -4062,8 +3998,8 @@ class Paving(paving_base,OptimizeGridMixin):
                 # self.hold() # don't update the DT while relaxing.
                 try:
                     for i in range(4):
-                        cells_to_check = unique( array( self.updated_cells,int32) )
-                        nodes_to_check = unique( self.cells[cells_to_check,:] )
+                        cells_to_check = np.unique( np.array( self.updated_cells,np.int32) )
+                        nodes_to_check = np.unique( self.cells[cells_to_check,:] )
 
                         if self.verbose > 1: ## pre-check
                             cells_to_verify = cells_to_check
@@ -4130,16 +4066,16 @@ class Paving(paving_base,OptimizeGridMixin):
                                     raise Exception("Self-intersection!")
 
                         # check angles for any cells that were just tweaked, and including any
-                        cells_to_verify = union1d(cells_to_check,self.updated_cells)
+                        cells_to_verify = np.union1d(cells_to_check,self.updated_cells)
 
                         if self.verbose > 1:
                             print("Cells to verify: ",cells_to_verify)
 
                         angles = self.tri_angles(cells_to_verify)
 
-                        if any(angles > self.max_angle):
+                        if np.any(angles > self.max_angle):
                             if self.verbose > 1:
-                                failed = cells_to_verify[ any(angles>self.max_angle,axis=1) ]
+                                failed = cells_to_verify[ np.any(angles>self.max_angle,axis=1) ]
                                 print(" after optimization: bad cells: ",failed)
                             if self.verbose > 2:
                                 self.plot( plot_title="after optimization, still have some bad cells" )
@@ -4372,7 +4308,7 @@ class Paving(paving_base,OptimizeGridMixin):
             if min_dist > 0.95 * local_scale:
                 break
             
-            nn = array([n,best_nbr])
+            nn = np.array([n,best_nbr])
             xy = self.points[nn]
 
             ### There was at least one case of trying to make an edge with a node that
@@ -4389,8 +4325,8 @@ class Paving(paving_base,OptimizeGridMixin):
             if self.verbose > 2:
                 print("Checking if non-local edge [%d,%d], with dist=%g is within the domain"%(n,best_nbr,min_dist))
                 
-            pnts = array( [0.999*xy[0] + 0.001*xy[1],
-                           0.001*xy[0] + 0.999*xy[1]] )
+            pnts = np.array( [0.999*xy[0] + 0.001*xy[1],
+                              0.001*xy[0] + 0.999*xy[1]] )
             l = geo.LineString( pnts )
 
             if not self.poly.contains(l):
@@ -4447,7 +4383,7 @@ class Paving(paving_base,OptimizeGridMixin):
 
         # and their edges:
         edge_lists = [self.pnt2edges(n) for n in nearest]
-        edges = unique( concatenate( edge_lists ) )
+        edges = np.unique( np.concatenate( edge_lists ) )
 
         N1 = self.edges[edges,0]
         N2 = self.edges[edges,1]
@@ -4461,7 +4397,7 @@ class Paving(paving_base,OptimizeGridMixin):
             
         PROD1 = D1*D2
 
-        possible = where(PROD1 < -self.TEST_SMALL)[0]
+        possible = np.where(PROD1 < -self.TEST_SMALL)[0]
             
         for pi in possible:
             n1 = N1[pi]
@@ -4528,7 +4464,7 @@ class Paving(paving_base,OptimizeGridMixin):
                     else:
                         break
                     
-        return array(list(local_nodes.items()))
+        return np.array(list(local_nodes.items()))
         
     def all_iters_for_node(self,node):
         iters = []
@@ -4594,7 +4530,7 @@ class Paving(paving_base,OptimizeGridMixin):
 
         if a_iter.clist == b_iter.clist:
             old_clist = a_iter.clist
-            print("Iters are from the same ring - will split that ring in two")
+            log.debug("Iters are from the same ring - will split that ring in two")
 
             # build up a new clist, starting at a_iter, 
             new_clist = CList()
@@ -4688,8 +4624,8 @@ class Paving(paving_base,OptimizeGridMixin):
         # delta along each edge
         diffs = self.points[nbrs] - self.points[n]
         
-        angles = arctan2(diffs[:,1],diffs[:,0]) % (2*pi)
-        ordering = argsort(angles)
+        angles = np.arctan2(diffs[:,1],diffs[:,0]) % (2*np.pi)
+        ordering = np.argsort(angles)
         if return_angles:
             return nbrs[ordering], angles[ordering]
         else:
@@ -4701,7 +4637,7 @@ class Paving(paving_base,OptimizeGridMixin):
         """
         # print "Top of regenerate_unpaved_boundaries()"
 
-        candidate_edges = any( self.edges[:,3:5] == trigrid.UNMESHED, axis=1 )
+        candidate_edges = np.any( self.edges[:,3:5] == trigrid.UNMESHED, axis=1 )
         candidate_edges = candidate_edges & (self.edges[:,2] != trigrid.DELETED_EDGE)
         rings_and_holes = self.edges_to_rings_and_holes(candidate_edges)
 
@@ -4734,8 +4670,8 @@ class Paving(paving_base,OptimizeGridMixin):
             "Boundary edge"
             return False
 
-        all_points = unique( concatenate( [self.cells[nc1],
-                                           self.cells[nc2]] ) )
+        all_points = np.unique( np.concatenate( [self.cells[nc1],
+                                                 self.cells[nc2]] ) )
 
         new_edge_points = [v for v in all_points if v not in self.edges[e,:2]]
 
@@ -4758,7 +4694,7 @@ class Paving(paving_base,OptimizeGridMixin):
         if len(my_cells) == 0:
             return
 
-        my_cells = array(list(my_cells))
+        my_cells = np.array(list(my_cells))
         
         edges = self.cells[my_cells]
 
@@ -4781,7 +4717,7 @@ class Paving(paving_base,OptimizeGridMixin):
 
         return edge_points,local_length
     
-    def relax_one(self,i,boundary=False,use_beta=0,max_cost=inf):
+    def relax_one(self,i,boundary=False,use_beta=0,max_cost=np.inf):
         """
         boundary: node will be moved only along boundary (but see use_beta)
 
@@ -4961,9 +4897,9 @@ class Paving(paving_base,OptimizeGridMixin):
         # well, it's going to be slow...
         # this could probably be rewritten, if it ever proves to be a performance
         # bottleneck.
-        same_ring_nodes = where( (self.node_data[:,ORIG_RING] == ring_i) & \
-                                 (self.node_data[:,STAT] != HINT) & \
-                                 (self.node_data[:,STAT] != DELETED) )[0]
+        same_ring_nodes = np.where( (self.node_data[:,ORIG_RING] == ring_i) & \
+                                    (self.node_data[:,STAT] != HINT) & \
+                                    (self.node_data[:,STAT] != DELETED) )[0]
 
         self.node_data[i,STAT] = saved_node_stat
         
@@ -5238,7 +5174,7 @@ class Paving(paving_base,OptimizeGridMixin):
 
         # Copy the nodes over:
         for nB in range(gridB.Npoints()):
-            if isnan(gridB.points[nB,0]):
+            if np.isnan(gridB.points[nB,0]):
                 continue # node has been deleted...
             close_nA = self.closest_point( gridB.points[nB] )
             dist = norm( self.points[close_nA] - gridB.points[nB] )
@@ -5330,7 +5266,7 @@ class Paving(paving_base,OptimizeGridMixin):
         mappings = super(Paving,self).renumber()
 
         # try to map edge data
-        self.edge_data = zeros( (self.Nedges(),self.edge_data.shape[1]), float64)
+        self.edge_data = np.zeros( (self.Nedges(),self.edge_data.shape[1]), np.float64)
         self.edge_data[:,:] = -1 # in case the remapping doesn't work out.
         for e in range(self.Nedges()):
             n1,n2 = mappings['valid_nodes'][ self.edges[e,:2] ]
@@ -5343,13 +5279,15 @@ class Paving(paving_base,OptimizeGridMixin):
         return mappings
 
         
-    ### Reporting
+    #-#-# Reporting
     times = None
     def init_stats(self):
-        self.start_times = array( os.times() )
+        self.start_times = np.array( os.times() )
     def finish_stats(self):
-        ### Timing
-        self.finish_times = array( os.times() )
+        """
+        Timing
+        """
+        self.finish_times = np.array( os.times() )
         self.times = self.finish_times - self.start_times
 
         print("Renumbering in preparation for statistics")
@@ -5373,16 +5311,16 @@ class Paving(paving_base,OptimizeGridMixin):
         a = self.points[self.cells[:,0]]
         b = self.points[self.cells[:,1]]
         c = self.points[self.cells[:,2]]
-        ab = sqrt(((a-b)**2).sum( axis=1 ))
-        bc = sqrt(((c-b)**2).sum( axis=1 ))
-        ca = sqrt(((a-c)**2).sum( axis=1 ))
+        ab = np.sqrt(((a-b)**2).sum( axis=1 ))
+        bc = np.sqrt(((c-b)**2).sum( axis=1 ))
+        ca = np.sqrt(((a-c)**2).sum( axis=1 ))
         mean_length = (ab+bc+ca)/3
         scale_rel_error = mean_length / scales - 1.0
 
         self.mean_scale_rel_error = scale_rel_error.mean()
         self.min_scale_rel_error  = scale_rel_error.min()
         self.max_scale_rel_error  = scale_rel_error.max()
-        self.std_scale_rel_error  = std(scale_rel_error)
+        self.std_scale_rel_error  = np.std(scale_rel_error)
 
         # and the clearances - go by edges
         # NB: this is the dg distance - distance across the edge
@@ -5392,43 +5330,32 @@ class Paving(paving_base,OptimizeGridMixin):
         a = self.points[self.edges[:,0]]
         b = self.points[self.edges[:,1]]
         
-        edge_lengths = sqrt( ((a-b)**2).sum(axis=1) )
-        clearance_rel_error = edge_clearances / ( edge_lengths/2.0 / sqrt(3) ) - 1.0
+        edge_lengths = np.sqrt( ((a-b)**2).sum(axis=1) )
+        clearance_rel_error = edge_clearances / ( edge_lengths/2.0 / np.sqrt(3) ) - 1.0
         self.mean_clearance_rel_error = clearance_rel_error.mean()
         self.min_clearance_rel_error = clearance_rel_error.min()
         self.max_clearance_rel_error = clearance_rel_error.max()
-        self.std_clearance_rel_error = std( clearance_rel_error )
+        self.std_clearance_rel_error = np.std( clearance_rel_error )
         
         print("Relative scale error:      % .3f ---  % .3f+-% .3f  --- % .3f"%(self.min_scale_rel_error,
-                                                                       self.mean_scale_rel_error,
-                                                                       self.std_scale_rel_error,
-                                                                       self.max_scale_rel_error))
+                                                                               self.mean_scale_rel_error,
+                                                                               self.std_scale_rel_error,
+                                                                               self.max_scale_rel_error))
         
         print("Relative clearance error:  % .3f ---  % .3f+-% .3f  --- % .3f"%(self.min_clearance_rel_error,
-                                                                           self.mean_clearance_rel_error,
-                                                                           self.std_clearance_rel_error,
-                                                                           self.max_clearance_rel_error))
+                                                                               self.mean_clearance_rel_error,
+                                                                               self.std_clearance_rel_error,
+                                                                               self.max_clearance_rel_error))
         print(" ----- ---------- ----- ")
         
         
-
-# testcase = 'peanut'
-# testcase = 'tight-peanut'
-# testcase = 'tight-with-hole'
-# testcase = 'peninsula'
-# testcase = 'dumbarton'
-# testcase = 'long-channel'
-# testcase = 'long-channel-rigid'
-# testcase = 'narrow-channel'
-# testcase = 'small-island'
-
 # A circle - r = 100, C=628, n_points = 628
 def test_circle():
     r = 100
-    thetas = linspace(0,2*pi,200)[:-1]
-    circle = zeros((len(thetas),2),float64)
-    circle[:,0] = r*cos(thetas)
-    circle[:,1] = r*sin(thetas)
+    thetas = np.linspace(0,2*np.pi,200)[:-1]
+    circle = np.zeros((len(thetas),2),np.float64)
+    circle[:,0] = r*np.cos(thetas)
+    circle[:,1] = r*np.sin(thetas)
     class CircleDensityField(DensityField):
         # horizontally varying, from 5 to 20
         def scale(self,X):
@@ -5487,11 +5414,11 @@ def test_small_island():
     #                [55,40],
     #                [47.5,41]])
     r=10
-    theta = linspace(0,2*pi,30)
-    circle = r/sqrt(2) * swapaxes( array([cos(theta), sin(theta)]), 0,1)
-    island1 = circle + array([45,45])
-    island2 = circle + array([65,65])
-    island3 = circle + array([20,80])
+    theta = np.linspace(0,2*np.pi,30)
+    circle = r/np.sqrt(2) * np.swapaxes( np.array([np.cos(theta), np.sin(theta)]), 0,1)
+    island1 = circle + np.array([45,45])
+    island2 = circle + np.array([65,65])
+    island3 = circle + np.array([20,80])
     rings = [square,island1,island2,island3]
 
     density = ConstantDensityField( 10 )
@@ -5499,10 +5426,10 @@ def test_small_island():
 
 def test_tight_peanut():
     r = 100
-    thetas = linspace(0,2*pi,300)
-    peanut = zeros( (len(thetas),2), float64)
-    x = r*cos(thetas)
-    y = r*sin(thetas) * (0.9/10000 * x*x + 0.05)
+    thetas = np.linspace(0,2*np.pi,300)
+    peanut = np.zeros( (len(thetas),2), np.float64)
+    x = r*np.cos(thetas)
+    y = r*np.sin(thetas) * (0.9/10000 * x*x + 0.05)
     peanut[:,0] = x
     peanut[:,1] = y
     density = ConstantDensityField( 6.0 )
@@ -5511,23 +5438,23 @@ def test_tight_peanut():
 def test_tight_with_hole():
     # build a peanut first:
     r = 100
-    thetas = linspace(0,2*pi,250)
-    peanut = zeros( (len(thetas),2), float64)
-    x = r*cos(thetas)
-    y = r*sin(thetas) * (0.9/10000 * x*x + 0.05)
+    thetas = np.linspace(0,2*np.pi,250)
+    peanut = np.zeros( (len(thetas),2), np.float64)
+    x = r*np.cos(thetas)
+    y = r*np.sin(thetas) * (0.9/10000 * x*x + 0.05)
     peanut[:,0] = x
     peanut[:,1] = y
 
     # put two holes into it
-    thetas = linspace(0,2*pi,30)
+    thetas = np.linspace(0,2*np.pi,30)
 
-    hole1 = zeros( (len(thetas),2), float64)
-    hole1[:,0] = 10*cos(thetas) - 75
-    hole1[:,1] = 10*sin(thetas)
+    hole1 = np.zeros( (len(thetas),2), np.float64)
+    hole1[:,0] = 10*np.cos(thetas) - 75
+    hole1[:,1] = 10*np.sin(thetas)
 
-    hole2 = zeros( (len(thetas),2), float64)
-    hole2[:,0] = 20*cos(thetas) + 75
-    hole2[:,1] = 20*sin(thetas)
+    hole2 = np.zeros( (len(thetas),2), np.float64)
+    hole2[:,0] = 20*np.cos(thetas) + 75
+    hole2[:,1] = 20*np.sin(thetas)
 
     rings = [peanut,hole1,hole2]
 
@@ -5536,14 +5463,11 @@ def test_tight_with_hole():
 
 def test_peninsula():
     r = 100
-    thetas = linspace(0,2*pi,1000)
-    pen = zeros( (len(thetas),2), float64)
+    thetas = np.linspace(0,2*np.pi,1000)
+    pen = np.zeros( (len(thetas),2), np.float64)
 
-    pen[:,0] = r*(0.2+ abs(sin(2*thetas))**0.2)*cos(thetas)
-    pen[:,1] = r*(0.2+ abs(sin(2*thetas))**0.2)*sin(thetas)
-
-    #pen[:,0] = r*sin(thetas/2)**0.2*cos(thetas)
-    #pen[:,1] = r*sin(thetas/2)**0.2*sin(thetas)
+    pen[:,0] = r*(0.2+ np.abs(np.sin(2*thetas))**0.2)*np.cos(thetas)
+    pen[:,1] = r*(0.2+ np.abs(np.sin(2*thetas))**0.2)*np.sin(thetas)
 
     density = ConstantDensityField( 10.0 )
     pen2 = upsample_linearring(pen,density)
@@ -5554,11 +5478,11 @@ def test_peninsula():
 def test_peanut():
     # like a figure 8, or a peanut
     r = 100
-    thetas = linspace(0,2*pi,1000)
-    peanut = zeros( (len(thetas),2), float64)
+    thetas = np.linspace(0,2*np.pi,1000)
+    peanut = np.zeros( (len(thetas),2), np.float64)
 
-    peanut[:,0] = r*(0.5+0.3*cos(2*thetas))*cos(thetas)
-    peanut[:,1] = r*(0.5+0.3*cos(2*thetas))*sin(thetas)
+    peanut[:,0] = r*(0.5+0.3*np.cos(2*thetas))*np.cos(thetas)
+    peanut[:,1] = r*(0.5+0.3*np.cos(2*thetas))*np.sin(thetas)
 
     if 0:
         class PeanutDensityField(DensityField):
@@ -5570,35 +5494,34 @@ def test_peanut():
     else:
         min_pnt = peanut.min(axis=0)
         max_pnt = peanut.max(axis=0)
-        d_data = array([ [min_pnt[0],min_pnt[1], 1.5],
-                         [min_pnt[0],max_pnt[1], 1.5],
-                         [max_pnt[0],min_pnt[1], 8],
-                         [max_pnt[0],max_pnt[1], 8]])
+        d_data = np.array([ [min_pnt[0],min_pnt[1], 1.5],
+                            [min_pnt[0],max_pnt[1], 1.5],
+                            [max_pnt[0],min_pnt[1], 8],
+                            [max_pnt[0],max_pnt[1], 8]])
         density = XYZDensityField(X=d_data[:,:2],F=d_data[:,2])
-
 
     return Paving(peanut,density,label='peanut')
 
 def test_cul_de_sac():
     r=5
-    theta = linspace(-pi/2,pi/2,20)
-    cap = r * swapaxes( array([cos(theta), sin(theta)]), 0,1)
-    box = array([ [-3*r,r],
-                  [-4*r,-r] ])
-    ring = concatenate((box,cap))
+    theta = np.linspace(-np.pi/2,np.pi/2,20)
+    cap = r * np.swapaxes( np.array([np.cos(theta), np.sin(theta)]), 0,1)
+    box = np.array([ [-3*r,r],
+                     [-4*r,-r] ])
+    ring = np.concatenate((box,cap))
 
     density = ConstantDensityField(2*r/(sqrt(3)/2))
     return Paving(ring,density,label='cul_de_sac')
 
 
 def test_bow():
-    x = linspace(-100,100,50)
+    x = np.linspace(-100,100,50)
     # with /1000 it seems to do okay
     # with /500 it still looks okay
     y = x**2 / 250.0
-    bow =swapaxes( concatenate( (x[None,:],y[None,:]) ), 0,1)
-    height = array([0,20])
-    ring = concatenate( (bow+height,bow[::-1]-height) )
+    bow = np.swapaxes( np.concatenate( (x[None,:],y[None,:]) ), 0,1)
+    height = np.array([0,20])
+    ring = np.concatenate( (bow+height,bow[::-1]-height) )
     density = ConstantDensityField(2)
     return Paving(ring,density,label='bow')
 
@@ -5606,14 +5529,14 @@ def test_ngon(nsides=7):
     # hexagon works ok, though a bit of perturbation
     # septagon starts to show expansion issues, but never pronounced
     # octagon - works fine.
-    theta = linspace(0,2*pi,nsides+1)[:-1]
+    theta = np.linspace(0,2*np.pi,nsides+1)[:-1]
 
     r=100
     
-    x = r*cos(theta)
-    y = r*sin(theta)
+    x = r*np.cos(theta)
+    y = r*np.sin(theta)
     
-    poly =swapaxes( concatenate( (x[None,:],y[None,:]) ), 0,1)
+    poly = np.swapaxes( np.concatenate( (x[None,:],y[None,:]) ), 0,1)
     
     density = ConstantDensityField(6)
     return Paving(poly,density,label='ngon%02d'%nsides)
@@ -5624,12 +5547,12 @@ def test_expansion():
     # 35: starts to diverge, but recovers.
     # 37: too close to 120.
     d = 36
-    pnts = array([[0.,0.],
-                  [100,-d],
-                  [200,0],
-                  [200,100],
-                  [100,100+d],
-                  [0,100]])
+    pnts = np.array([[0.,0.],
+                     [100,-d],
+                     [200,0],
+                     [200,100],
+                     [100,100+d],
+                     [0,100]])
 
     density = ConstantDensityField(6)
     return Paving([pnts],density,label='expansion')
@@ -5646,9 +5569,9 @@ def test_embedded_channel():
                   [L,W],
                   [0,W]])
 
-    x = linspace(0.1*L,0.9*L,50)
-    y = W/2 + 0.1*W*cos(4*pi*x/L)
-    shore = swapaxes( concatenate( (x[None,:],y[None,:]) ), 0,1)
+    x = np.linspace(0.1*L,0.9*L,50)
+    y = W/2 + 0.1*W*np.cos(4*np.pi*x/L)
+    shore = np.swapaxes( np.concatenate( (x[None,:],y[None,:]) ), 0,1)
     
     density = ConstantDensityField(10)
     
@@ -5656,13 +5579,10 @@ def test_embedded_channel():
     # Note closed_ring=0 !
     shore = resample_linearring(shore,density,closed_ring=0)
 
-    south_shore = shore - array([0,0.1*W])
-    north_shore = shore + array([0,0.1*W])
-
+    south_shore = shore - np.array([0,0.1*W])
+    north_shore = shore + np.array([0,0.1*W])
 
     return Paving([rect],density,degenerates=[north_shore,south_shore],label='embedded_channel')
-    
-    
 
 # dumbarton...
 def test_dumbarton():
@@ -5690,26 +5610,25 @@ def test_dumbarton():
 # and put some islands in there.  having a wide range of scales looks
 # nice but isn't going to be a great test.
 def test_sine_sine():
-    t = linspace(1.0,12*pi,400)
+    t = np.linspace(1.0,12*np.pi,400)
     x1 = 100*t
-    y1 = 200*sin(t)
+    y1 = 200*np.sin(t)
     # each 2*pi, the radius gets bigger by exp(2pi*b)
     x2 = x1
     y2 = y1+50
     # now perturb both sides, but keep amplitude < 20
-    y1 = y1 + 20*sin(10*t)
-    y2 = y2 + 10*cos(5*t)
+    y1 = y1 + 20*np.sin(10*t)
+    y2 = y2 + 10*np.cos(5*t)
     
-    x = concatenate( (x1,x2[::-1]) )
-    y = concatenate( (y1,y2[::-1]) )
+    x = np.concatenate( (x1,x2[::-1]) )
+    y = np.concatenate( (y1,y2[::-1]) )
 
-    shore = swapaxes( concatenate( (x[None,:],y[None,:]) ), 0,1)
+    shore = np.swapaxes( np.concatenate( (x[None,:],y[None,:]) ), 0,1)
     rings = [shore]
 
     # and make some islands:
     north_island_shore = 0.4*y1 + 0.6*y2
     south_island_shore = 0.6*y1 + 0.4*y2
-
 
     Nislands = 20
     # islands same length as space between islands, so divide
@@ -5723,9 +5642,9 @@ def test_sine_sine():
         north_x = x1[i_start:i_stop]
         south_x = x2[i_start:i_stop]
         
-        x = concatenate( (north_x,south_x[::-1]) )
-        y = concatenate( (north_y,south_y[::-1]) )
-        island = swapaxes( concatenate( (x[None,:],y[None,:]) ), 0,1)
+        x = np.concatenate( (north_x,south_x[::-1]) )
+        y = np.concatenate( (north_y,south_y[::-1]) )
+        island = np.swapaxes( np.concatenate( (x[None,:],y[None,:]) ), 0,1)
 
         rings.append(island)
 
@@ -5745,10 +5664,6 @@ def test_sine_sine():
 
 
     
-
-
-
-
 all_tests = [ test_circle,test_long_channel,test_long_channel_rigid,test_narrow_channel,
               test_small_island,test_tight_peanut,test_tight_with_hole,test_peninsula,
               test_peanut,test_cul_de_sac,test_ngon,test_expansion]
@@ -5763,16 +5678,16 @@ def run_tests():
 
         angle = 85
 
-        p.max_angle = angle*pi/180.0
+        p.max_angle = angle*np.pi/180.0
 
         if 1:
             p.pave_all()
             # p.plot()
         elif 1:
-            clf()
+            plt.clf()
             # p.plot_boundary()
             p.plot()
-            axis('equal')
+            plt.axis('equal')
             while 1: # p.step < 34:
                 if not p.choose_and_fill():
                     p.plot(dyn_zoom=0)
@@ -5794,7 +5709,7 @@ def plot_cost_field(p,node,scale=None,samples=300):
         # choose the length of the longest edge adjacent to node
         edges = p.pnt2edges(node)
         points = p.points[ p.edges[edges,:2] ]
-        lengths = sqrt( sum( diff(points,axis=1)**2, axis=2) )
+        lengths = np.sqrt( np.sum( np.diff(points,axis=1)**2, axis=2) )
         scale = lengths.max()
         
     edge_points,local_length = p.cost_args_for_node(node)
@@ -5802,39 +5717,35 @@ def plot_cost_field(p,node,scale=None,samples=300):
     return plot_cost_field_at_point(p.points[node],edge_points,local_length,scale,samples)
 
 def plot_cost_field_at_point(pnt,edge_points,local_length,scale,samples):
-    x = linspace( pnt[0]-scale,pnt[0]+scale,samples)
-    y = linspace( pnt[1]-scale,pnt[1]+scale,samples)
+    x = np.linspace( pnt[0]-scale,pnt[0]+scale,samples)
+    y = np.linspace( pnt[1]-scale,pnt[1]+scale,samples)
 
-    costs = zeros( (len(x),len(y)), float64 )
+    costs = np.zeros( (len(x),len(y)), np.float64 )
     for r in range(len(y)):
         for c in range(len(x)):
-            costs[r,c] = one_point_cost( array([x[c],y[r]]),
+            costs[r,c] = one_point_cost( np.array([x[c],y[r]]),
                                          edge_points, local_length )
-    # pcolor(x,y,costs)
 
-    return imshow(log(costs),extent=(x[0],x[-1],y[0],y[-1]),origin='bottom',interpolation='nearest',
-                  vmax=10)
-
+    return plt.imshow(log(costs),extent=(x[0],x[-1],y[0],y[-1]),
+                      origin='bottom',interpolation='nearest',
+                      vmax=10)
 
     
 def plot_density( density, center=None, scale=None, samples=200 ):
     if center is None:
-        z = axis()
+        z = plt.axis()
         center = [0.5*(z[1]+z[0]),
                   0.5*(z[3]+z[2])]
         scale = 0.5*(z[1]-z[0])
-    x = linspace( center[0] - scale, center[0] + scale, samples)
-    y = linspace( center[1] - scale, center[1] + scale, samples)
-    X,Y = meshgrid(x,y)
-    XY = concatenate( (X[:,:,newaxis], Y[:,:,newaxis]), axis=2 )
+    x = np.linspace( center[0] - scale, center[0] + scale, samples)
+    y = np.linspace( center[1] - scale, center[1] + scale, samples)
+    X,Y = np.meshgrid(x,y)
+    XY = np.concatenate( (X[:,:,None], Y[:,:,None]), axis=2 )
     
     D = density(XY)
-    imshow(D,extent=[x[0],x[-1],y[0],y[-1]], origin='bottom',interpolation='nearest')
+    plt.imshow(D,extent=[x[0],x[-1],y[0],y[-1]],
+               origin='bottom',interpolation='nearest')
 
-    
-    
 
-if 1 and __name__ == '__main__':
-    run_tests()
 
 
