@@ -7,17 +7,9 @@ logging.basicConfig(level=logging.INFO)
 # wrap/adapt exact_delaunay to the point that it can stand in for
 # CGAL in paver.py.
 
-# who uses CGAL? 
-
-##
-
-# will have to return to CGAL, as the conda package is broken and I can't
-# update it right now.
-
 import CGAL
 from CGAL import CGAL_Triangulation_2
 
-# this was failing because of..
 
 # ImportError: dlopen(/Users/rusty/anaconda/lib/python2.7/site-packages/CGAL/_CGAL_Triangulation_2.so, 2): Library not loaded: @rpath/libgmp.10.dylib
 #   Referenced from: /Users/rusty/anaconda/lib/python2.7/site-packages/CGAL/_CGAL_Triangulation_2.so
@@ -53,6 +45,7 @@ rings=[boundary,island]
 scale=field.ConstantField(50)
 
 ##
+reload(paver)
 import pdb
 # It fails here, in initialize_rings, in Paving.__init__
 # initialize_boundaries survives, presumably it's the refresh_metadata
@@ -64,3 +57,16 @@ p=paver.Paving(rings=rings,density=scale)
 ##
 
 p.pave_all() # writes cryptic progress messages - takes about 30s
+
+# gets a fair number of warnings, starting at step=29, about:
+
+# While traversing the boundary in clear_boundary_range_by_alpha
+#   encountered non-HINT node 21 before alpha was reached
+
+
+# So it's trying to clear some boundary, but ends up with a SLIDE
+# node instead of a HINT node
+# node 16 has alpha of 2.10, but the request is for 2.15.
+# and starting alpha is 2.2.
+# so really we're okay, and node 40 is almost exactly the alpha we want
+# anyway.

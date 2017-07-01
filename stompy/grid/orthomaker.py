@@ -1,3 +1,7 @@
+"""
+Grid generation and modification related methods.  paver.py is the main
+user of these methods, and they may be folded into paver.py in the future.
+"""
 from __future__ import print_function
 
 import sys

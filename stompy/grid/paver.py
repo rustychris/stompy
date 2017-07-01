@@ -921,7 +921,7 @@ class Paving(paving_base,OptimizeGridMixin):
         #  4. Add the edges, doctoring up the clists as we go.
 
         if self.slide_internal_guides:
-            valid = ones(len(degen),bool8)
+            valid = np.ones(len(degen),np.bool8)
             l = self.density(degen[0])
             for i in range(1,len(degen)):
                 if norm(degen[0] - degen[i]) < l:
@@ -946,14 +946,14 @@ class Paving(paving_base,OptimizeGridMixin):
         start_twin = self.closest_point(p_start)
         end_twin   = self.closest_point(p_end)
 
-        if all(self.points[start_twin] == p_start):
+        if np.all(self.points[start_twin] == p_start):
             print("Internal edge starts on existing node.")
             start_connects = 1
         else:
             start_connects = 0
             start_twin = None
 
-        if all(self.points[end_twin] == p_end):
+        if np.all(self.points[end_twin] == p_end):
             print("Internal edge ends on existing node.")
             end_connects = 1
         else:
@@ -1542,13 +1542,13 @@ class Paving(paving_base,OptimizeGridMixin):
                 points_visible = (segments[...,0] >= clip[0]) & (segments[...,0]<=clip[1]) \
                                  & (segments[...,1] >= clip[2]) & (segments[...,1]<=clip[3])
                 # so now clip is a bool array of length Nedges
-                clip = any( points_visible, axis=1)
+                clip = np.any( points_visible, axis=1)
                 segments = segments[clip,...]
 
             if len(segments) == 0:
                 print("WARNING: no segments to display - maybe clip=%s is too strict"%str(clip))
                 return
-            lc_args = {'lw':0.5*ones(len(segments))}
+            lc_args = {'lw':0.5*np.ones(len(segments))}
             lc_args.update(line_collection_args)
             seg_coll = LineCollection( segments, **lc_args )
 
@@ -1561,7 +1561,7 @@ class Paving(paving_base,OptimizeGridMixin):
             if clip is not None:
                 age = age[clip]
                 
-            seg_coll.set_array( log(1+self.step - age) )
+            seg_coll.set_array( np.log(1+self.step - age) )
 
             if self.n_history>0: # save for later
                 self.plot_history.append([seg_coll,plot_title])
@@ -1577,26 +1577,26 @@ class Paving(paving_base,OptimizeGridMixin):
             self.showing_history = plot_step
 
         if not just_save:
-            ax = gca()
+            ax = plt.gca()
             if not hold:
                 ax.collections = []
         
             ax.add_collection( seg_coll )
-            title(plot_title)
+            ax.set_title(plot_title)
 
             if plot_step is None and dyn_zoom and len(self.cells)>0:
                 p = self.points[self.cells[-1,0],:2]
                 scale = self.density(p)
                 fact = 15 # the zoom size relative to the local scale
 
-                cur = axis()
+                cur = ax.axis()
                 if p[0] > cur[0] and p[0] < cur[1] and p[1] > cur[2] and p[1] < cur[3] and (cur[1] - cur[0]) < 3.5*fact*scale:
                     pass
                 else:
-                    axis([p[0]-fact*scale,p[0]+fact*scale,
-                          p[1]-fact*scale,p[1]+fact*scale])
+                    ax.axis([p[0]-fact*scale,p[0]+fact*scale,
+                             p[1]-fact*scale,p[1]+fact*scale])
                 
-            draw()
+            plt.draw()
             if self.n_history > 0:
                 self.install_click_handler()
         return seg_coll
@@ -1746,7 +1746,7 @@ class Paving(paving_base,OptimizeGridMixin):
                             break
                         
             if ri is None:
-                print("No more rings need paving!")
+                log.info("No more rings need paving -- we're done")
                 return False
 
             if self.verbose > 1:
@@ -1881,10 +1881,10 @@ class Paving(paving_base,OptimizeGridMixin):
                     n_segments = max(1,n_segments)
 
                     if end_elt == center_elt:
-                        print("Crazy - we're on a very small loop. Forcing 3 edges")
+                        log.info("We're on a very small loop. Forcing 3 edges")
                         n_segments = max(3,n_segments)
                     elif end_elt == prev_elt:
-                        print("We're on a very small loop, with one real edge.  Forcing remained to be 2 edges")
+                        log.info("We're on a very small loop, with one real edge.  Forcing remained to be 2 edges")
                         n_segments = max(2,n_segments)
 
                     # like local_scale, but "evenly" divides the remaining length
@@ -1893,17 +1893,15 @@ class Paving(paving_base,OptimizeGridMixin):
                     # look out for close quarters
                     if quant_scale >= max_dist:
                         if self.verbose > 0 and quant_scale >= 1.05*max_dist:
-                            print("Too tight.  We wanted to resample at a scale of %f, but the farthest away free point"%quant_scale)
-                            print("is %f away"%max_dist)
+                            log.info("Too tight.  We wanted to resample at a scale of %f, but the"%quant_scale)
+                            log.info("farthest away free point is %f away"%max_dist)
                         n_segments = 1
 
-                        
-
                     if self.verbose > 1:
-                        print("resample_neighbors: will try to make that into %d segments"%n_segments)
+                        log.info("resample_neighbors: will try to make that into %d segments"%n_segments)
                 else:
                     if self.verbose > 1:
-                        print("resample neighbors: looks wide open")
+                        log.info("resample neighbors: looks wide open")
                     n_segments=10 # just > 2
                     quant_scale=local_scale
                     
@@ -1912,11 +1910,11 @@ class Paving(paving_base,OptimizeGridMixin):
                     new_elt = self.resample_boundary(center_elt,direc,local_scale=quant_scale,
                                                      new_node_stat=new_node_stat)
                     if not new_elt:
-                        print("resample didn't return an element.  could be a problem")
+                        log.warning("resample didn't return an element.  could be a problem")
                     elif n_segments == 2:
                         if self.verbose > 1:
-                            print("resample_neighbors: n_segments is 2, so remove all nodes between new and end_elt")
-                            print("  resample_boundary, from %s in direction %s, returned %s"%(center_elt,direc,new_elt))
+                            log.info("resample_neighbors: n_segments is 2, so remove all nodes between new and end_elt")
+                            log.info("  resample_boundary, from %s in direction %s, returned %s"%(center_elt,direc,new_elt))
                         to_delete = []
                         trav = new_elt
                         while 1:
@@ -2788,10 +2786,18 @@ class Paving(paving_base,OptimizeGridMixin):
         last_dist = 0
         while 1:
             n = trav.data
-
-            if self.node_data[n,self.STAT] != self.HINT:
-                log.warning("While traversing the boundary in clear_boundary_range_by_alpha")
-                log.warning("   encountered non-HINT node %d before alpha was reached"%n )
+            n_stat=self.node_data[n,self.STAT]
+            if n_stat != self.HINT:
+                # This is generally not a problem.  Used to be reported
+                # as a warning, but frequently this just means that the "right"
+                # node is in to_delete, and will be chosen below.  It's possible
+                # that if keep_last is False, then we're going to try to monkey
+                # with this node and it's more fixed than a HINT
+                log.debug("While traversing the boundary in clear_boundary_range_by_alpha")
+                log.debug("   encountered non-HINT node %d before alpha was reached"%n )
+                if (not keep_last) and (n_stat != self.SLIDE):
+                    log.warning("Actually it's worse - this node has stat=%s and can't be moved at all"%n_stat)
+                    log.warning("   and keep_last is not set, so we're going to try to move it")
                 break
                 
             # Actually this could happen, once two rings are joined
@@ -3648,17 +3654,17 @@ class Paving(paving_base,OptimizeGridMixin):
                             print("No good bisector from %s, length=%g"%(str(center_elt),local_length))
                         raise StrategyFailed('No good bisector found from Delaunay')
 
-                    print("bisect_nonlocal is about to resample preemptively")
+                    log.debug("bisect_nonlocal is about to resample preemptively")
                     for it in self.all_iters_for_node(n):
                         # not entirely sure whether this should be HINT or SLIDE...
                         # used to be HINT, but it was possible to revert a SLIDE node
                         # into a HINT node that way..
                         self.resample_neighbors(it,self.SLIDE)
                         
-                    print("bisect_nonlocal is about to add an edge")
+                    log.debug("bisect_nonlocal is about to add an edge")
                     e=self.add_edge(center_elt.data,n)
                     self.updated_cells += self.cells_from_last_new_edge
-                    print("bisect_nonlocal got cells %s from new edge"%(self.cells_from_last_new_edge))
+                    log.debug("bisect_nonlocal got cells %s from new edge"%(self.cells_from_last_new_edge))
                     
                     # I was hoping to do this via new_unpaved, but the relaxing
                     # comes first, and we need to toggle these statuses before relaxing.
@@ -4589,7 +4595,7 @@ class Paving(paving_base,OptimizeGridMixin):
             self.unpaved = new_unpaved_list
             
         else:
-            print("Iters are from different rings - will join rings together")
+            log.debug("Iters are from different rings - will join rings together")
 
             if len(a_iter.clist) < len(b_iter.clist):
                 a_iter,b_iter = b_iter,a_iter
