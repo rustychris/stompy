@@ -1,11 +1,4 @@
-from __future__ import division
 from __future__ import print_function
-from future import standard_library
-standard_library.install_aliases()
-
-# from py2to3 - maybe unnecessary
-#from builtins import str
-#from builtins import range
 
 import sys
 try:

@@ -4,7 +4,16 @@ import logging
 log=logging.getLogger('stompy.grid.paver')
 
 import sys, os
+
+import pickle
+
+import pdb
+
 import numpy as np
+from numpy.linalg import norm
+from ..utils import array_append
+
+from scipy import optimize as opt
 
 import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
@@ -16,21 +25,20 @@ from shapely import wkb
 try:
     from osgeo import ogr
 except ImportError:
-    import ogr 
-import priority_queue as pq
+    import ogr
 
-import field
+    
+import stompy.priority_queue as pq
 
-import pickle
+from stompy.spatial import field
 
-import plot_wkb
+from ..spatial.linestring_utils import upsample_linearring,downsample_linearring,resample_linearring
 
-import pdb
+# if CGAL is unavailable, this will fall back to OrthoMaker
+from . import live_dt
+paving_base = live_dt.LiveDtGrid
 
-from numpy.linalg import norm
-from array_append import array_append
-
-from scipy import optimize as opt
+from .paver_opt_mixin import OptimizeGridMixin
 
 def my_fmin(f,x0,args=(),xtol=1e-4,disp=0):
     # The original, basic fmin -
@@ -40,15 +48,10 @@ def my_fmin(f,x0,args=(),xtol=1e-4,disp=0):
     #  in at least one case, this doesn't terminate...
     # return opt.fmin_cg(f,x0,args=args,gtol=xtol,disp=disp)
 
-
 import trigrid
 import orthomaker as om
 
-import code
-
 from trigrid import rot,ensure_ccw,ensure_cw,is_ccw
-
-from paver_constants import *
 
 class StrategyFailed(Exception):
     pass
@@ -486,13 +489,6 @@ def one_point_cost(pnt,edges,target_length=5.0):
     return penalty
 
         
-from linestring_utils import upsample_linearring,downsample_linearring,resample_linearring
-
-# if CGAL is unavailable, this will fall back to OrthoMaker
-import live_dt
-paving_base = live_dt.LiveDtGrid
-
-from optimize_grid_mixin import OptimizeGridMixin
 
 
 def compute_ring_normals(ring,closed=1):
@@ -545,6 +541,29 @@ def intersect_lines( AB, CD ):
 class Paving(paving_base,OptimizeGridMixin):
     """  Tracks state as paving progresses.
     """
+    # constants:
+    # Node data fields:
+    STAT = 0
+    ORIG_RING = 1 # only set for nodes on the original_ring
+    ALPHA = 2
+    BETA = 3
+
+    # Node statuses:
+    HINT = 555  # node is on boundary, but just a hint of where the boundary is
+    SLIDE = 666  #  attached, but allowed to move along boundary
+    FREE =  777  # internal node, can move in 2D
+    RIGID = 888 #  may not be moved
+    DELETED = 999
+
+    # Beta rules:
+    BETA_NEVER=0
+    BETA_RESCUE=1
+    BETA_ALWAYS=2
+
+    # Nonlocal methods:
+    PROACTIVE_DELAUNAY=1
+    SHEEPISH=2
+    
     # subject to tuning...
     # 0.22 is just high enough to even out angle creep from
     # channel ends.
@@ -597,9 +616,9 @@ class Paving(paving_base,OptimizeGridMixin):
         """
         super(Paving,self).__init__(**kwargs)
 
-        if resample == 'upsample' and initial_node_status == HINT:
+        if resample == 'upsample' and initial_node_status == self.HINT:
             print("Taking 'upsample' strategy to mean initial nodes are rigid")
-            initial_node_status = RIGID
+            initial_node_status = self.RIGID
             
         self.label = label
         self.slide_internal_guides = slide_internal_guides
@@ -655,10 +674,10 @@ class Paving(paving_base,OptimizeGridMixin):
         self.node_data = np.zeros( (self.Npoints(),4), np.float64 )
 
         # internal nodes are easy:
-        self.node_data[:,STAT] = FREE
-        self.node_data[:,ORIG_RING] = -1
-        self.node_data[:,ALPHA] = np.nan
-        self.node_data[:,BETA] = np.nan
+        self.node_data[:,self.STAT] = self.FREE
+        self.node_data[:,self.ORIG_RING] = -1
+        self.node_data[:,self.ALPHA] = np.nan
+        self.node_data[:,self.BETA] = np.nan
 
         # boundary nodes -
         rings_and_children = self.edges_to_rings_and_holes(edgemask=(self.edges[:,4] == -1))
@@ -671,10 +690,10 @@ class Paving(paving_base,OptimizeGridMixin):
         for i in range(len(node_rings)):
             for j in range(len(node_rings[i])):
                 n = node_rings[i][j]
-                self.node_data[n,STAT] = RIGID
-                self.node_data[n,ORIG_RING] = i # even though they are really from many rings
-                self.node_data[:,ALPHA] = j # 
-                self.node_data[:,BETA] = 0 # should be safe.
+                self.node_data[n,self.STAT] = self.RIGID
+                self.node_data[n,self.ORIG_RING] = i # even though they are really from many rings
+                self.node_data[:,self.ALPHA] = j # 
+                self.node_data[:,self.BETA] = 0 # should be safe.
 
         # And translate rings to actual coordinates, rather than node indices
         self.rings = [self.points[r] for r in node_rings]
@@ -811,8 +830,8 @@ class Paving(paving_base,OptimizeGridMixin):
                     # could populate ring, alpha, beta, too.  But it's rigid, why bother?
                     # because there are some sanity checks that at least want to know that
                     # the ring matches while marching along...
-                    orig_ring1 = int(self.node_data[conf_n1,ORIG_RING])
-                    orig_ring2 = int(self.node_data[conf_n2,ORIG_RING])
+                    orig_ring1 = int(self.node_data[conf_n1,self.ORIG_RING])
+                    orig_ring2 = int(self.node_data[conf_n2,self.ORIG_RING])
                     
                     # might as well fabricate an alpha, too.
                     if orig_ring1 >= 0 and (orig_ring1 == orig_ring2):
@@ -822,23 +841,23 @@ class Paving(paving_base,OptimizeGridMixin):
                         # assume that the direction between the two nodes is the same as the
                         # direction of smaller alpha span (fairly safe, but not bulletproof)
                         
-                        span12 = (self.node_data[conf_n2,ALPHA] - self.node_data[conf_n1,ALPHA]) % len(self.original_rings[orig_ring])
-                        span21 = (self.node_data[conf_n1,ALPHA] - self.node_data[conf_n2,ALPHA]) % len(self.original_rings[orig_ring])
+                        span12 = (self.node_data[conf_n2,self.ALPHA] - self.node_data[conf_n1,self.ALPHA]) % len(self.original_rings[orig_ring])
+                        span21 = (self.node_data[conf_n1,self.ALPHA] - self.node_data[conf_n2,self.ALPHA]) % len(self.original_rings[orig_ring])
 
                         if span12 > span21:
                             conf_n1,conf_n2 = conf_n2,conf_n1
                             span12 = span21
                         
-                        alpha = self.node_data[conf_n1,ALPHA] + \
+                        alpha = self.node_data[conf_n1,self.ALPHA] + \
                                 span12*  (norm(p_intersect-self.points[conf_n1]) / norm(self.points[conf_n2]-self.points[conf_n1]))
-                        print("n1 alpha=%g  new alpha=%g  n2 alpha=%g"%(self.node_data[conf_n1,ALPHA],
+                        print("n1 alpha=%g  new alpha=%g  n2 alpha=%g"%(self.node_data[conf_n1,self.ALPHA],
                                                                         alpha,
-                                                                        self.node_data[conf_n2,ALPHA]))
+                                                                        self.node_data[conf_n2,self.ALPHA]))
                     else:
                         orig_ring = -1 
                         alpha = -1
                     
-                    n_intersect = self.add_node( p_intersect, stat=RIGID,orig_ring=orig_ring,alpha=alpha )
+                    n_intersect = self.add_node( p_intersect, stat=self.RIGID,orig_ring=orig_ring,alpha=alpha )
                     self.split_edge(conf_n1,n_intersect,conf_n2)
                     
 
@@ -976,16 +995,16 @@ class Paving(paving_base,OptimizeGridMixin):
             # will be forced RIGID below
 
         if self.slide_internal_guides:
-            internal_node_stat = HINT
+            internal_node_stat = self.HINT
         else:
-            internal_node_stat = RIGID
+            internal_node_stat = self.RIGID
         for i in i_to_add:
             node_ids[i] = self.add_node(degen_sampled[i],stat=internal_node_stat,
                                         orig_ring=oring_id,alpha=degen_alpha[i])
 
         # endpoints are rigid regardless:
-        self.node_data[node_ids[0],STAT] = RIGID
-        self.node_data[node_ids[-1],STAT] = RIGID
+        self.node_data[node_ids[0],self.STAT] = self.RIGID
+        self.node_data[node_ids[-1],self.STAT] = self.RIGID
         
         if not start_connects:
             # have to create a new unpaved clist for the degenerate edge
@@ -1051,10 +1070,10 @@ class Paving(paving_base,OptimizeGridMixin):
         for ridx,rnodes in enumerate(ring_nodes):
             self.rings.append( self.points[rnodes] )
             for nidx,n in enumerate(rnodes):
-                self.node_data[n,ALPHA]=nidx
-                self.node_data[n,ORIG_RING] = ridx
-                self.node_data[n,STAT]=new_stat
-                self.node_data[n,BETA]=0.0
+                self.node_data[n,self.ALPHA]=nidx
+                self.node_data[n,self.ORIG_RING] = ridx
+                self.node_data[n,self.STAT]=new_stat
+                self.node_data[n,self.BETA]=0.0
 
         self.original_rings = [r.copy() for r in self.rings]
         self.oring_normals = [compute_ring_normals(r) for r in self.original_rings]
@@ -1321,14 +1340,14 @@ class Paving(paving_base,OptimizeGridMixin):
             for i in range(len(self.rings[ri])):
                 cl.append( ni, metric=0 )
                 if not degen:
-                    self.node_data[ni,STAT] = self.initial_node_status
+                    self.node_data[ni,self.STAT] = self.initial_node_status
                 else:
                     # new code! make them rigid for now.
-                    self.node_data[ni,STAT] = RIGID
+                    self.node_data[ni,self.STAT] = self.RIGID
                     
-                self.node_data[ni,ORIG_RING] = ri
-                self.node_data[ni,ALPHA] = i
-                self.node_data[ni,BETA] = 0.0
+                self.node_data[ni,self.ORIG_RING] = ri
+                self.node_data[ni,self.ALPHA] = i
+                self.node_data[ni,self.BETA] = 0.0
                 
                 ni += 1
             if degen:
@@ -1360,7 +1379,7 @@ class Paving(paving_base,OptimizeGridMixin):
                 c1 = -2 # to be meshed
                 c2 = -1 # outside the domain
 
-                self.add_edge(n1,n2,marker,c1,c2, oring = self.node_data[n1,ORIG_RING] )
+                self.add_edge(n1,n2,marker,c1,c2, oring = self.node_data[n1,self.ORIG_RING] )
 
     def boundary_slider(self,ri,alpha,beta=0.0):
         len_b = len(self.original_rings[ri])
@@ -1487,7 +1506,7 @@ class Paving(paving_base,OptimizeGridMixin):
                 a = np.concatenate( (a, [a[0]]) )
                 plt.plot(self.points[a,0],self.points[a,1],'m-')
                 plt.scatter(self.points[a,0],self.points[a,1], s=60,
-                            c=self.node_data[a,STAT], edgecolors='none')
+                            c=self.node_data[a,self.STAT], edgecolors='none')
 
     def tg_plot(self,*args,**kwargs):
         return trigrid.TriGrid.plot(self,*args,**kwargs)
@@ -1713,7 +1732,7 @@ class Paving(paving_base,OptimizeGridMixin):
                         if len(self.unpaved[i]) <= 3:
                             continue
                         maybe_elt = self.elt_smallest_internal_angle(i)
-                        if self.node_data[maybe_elt.data,ORIG_RING] >= 0:
+                        if self.node_data[maybe_elt.data,self.ORIG_RING] >= 0:
                             ri = i
                             center_elt = maybe_elt
                             break
@@ -1741,20 +1760,20 @@ class Paving(paving_base,OptimizeGridMixin):
             # dangerous territory - if this node appears more than once
             # in the ring or in multiple rings, seems like it could get
             # nasty if it or its neighbors are hint nodes.  beware...
-            if self.resample_neighbors(center_elt,new_node_stat=SLIDE) < 0:
+            if self.resample_neighbors(center_elt,new_node_stat=self.SLIDE) < 0:
                 print("resample_neighbors() made structural changes.  Choosing again")
                 continue
 
-            if self.beta_rule == BETA_NEVER:
+            if self.beta_rule == self.BETA_NEVER:
                 use_betas = [0]
-            elif self.beta_rule == BETA_ALWAYS:
+            elif self.beta_rule == self.BETA_ALWAYS:
                 use_betas = [1]
             else: # BETA_RESCUE
                 use_betas = [0,1]
                 
             for use_beta in use_betas:
                 if self.verbose > 0:
-                    if use_beta == 1 and self.beta_rule == BETA_RESCUE:
+                    if use_beta == 1 and self.beta_rule == self.BETA_RESCUE:
                         print("HEY!! RESCUE, maybe?!")
 
                 fill_status = self.fill(center_elt = center_elt,use_beta=use_beta)
@@ -1800,14 +1819,14 @@ class Paving(paving_base,OptimizeGridMixin):
         if not self.node_on_boundary(center_node):
             return status
 
-        ring_i = int( self.node_data[center_node,ORIG_RING] )
+        ring_i = int( self.node_data[center_node,self.ORIG_RING] )
 
         # print "top of resample neighbors"
         
         local_scale = self.density( self.points[center_node] )
 
-        if self.node_data[center_node,STAT] == HINT:
-            self.node_data[center_node,STAT] = SLIDE
+        if self.node_data[center_node,self.STAT] == self.HINT:
+            self.node_data[center_node,self.STAT] = self.SLIDE
 
         if self.stop_at =='resample_neighbors':
             pdb.set_trace()
@@ -1955,7 +1974,7 @@ class Paving(paving_base,OptimizeGridMixin):
     # that will handle the boundary.  This would provide for consistent
     # ways to track sources, boundary membership, and insert new nodes.
     def node_on_boundary(self,n):
-        return self.node_data[n,ORIG_RING] >= 0
+        return self.node_data[n,self.ORIG_RING] >= 0
 
     ## Self-intersection tests
     # 1e-12 is okay for domains O(100) units across with
@@ -2063,7 +2082,7 @@ class Paving(paving_base,OptimizeGridMixin):
           from from_elt 
         """
         
-        orig_ring_i = int(self.node_data[from_elt.data,ORIG_RING])
+        orig_ring_i = int(self.node_data[from_elt.data,self.ORIG_RING])
 
         unpaved = from_elt.clist
         
@@ -2128,13 +2147,13 @@ class Paving(paving_base,OptimizeGridMixin):
 
             # the edge check above isn't foolproof - we can have
             # edges that are internal, with -2 on both sides
-            if self.node_data[B.data,STAT] == FREE:
+            if self.node_data[B.data,self.STAT] == self.FREE:
                 # print "stopping - node A is FREE, discard AB"
                 to_elt = A
                 break
 
             # also, we may have jumped to another ring
-            if self.node_data[B.data,ORIG_RING] != orig_ring_i:
+            if self.node_data[B.data,self.ORIG_RING] != orig_ring_i:
                 # print "stopping - B is on a different ring"
                 to_elt = A
                 break
@@ -2155,7 +2174,7 @@ class Paving(paving_base,OptimizeGridMixin):
             # be sure to stop if we make it all the way around
             # 2011-01-29: shouldn't we stop at SLIDE nodes, too?
             #   adding that in, though I wonder why it wasn't there before.
-            if self.node_data[B.data,STAT] in [RIGID,SLIDE] or \
+            if self.node_data[B.data,self.STAT] in [self.RIGID,self.SLIDE] or \
                B==from_elt:
                 # print "Stopping - B is rigid"
                 to_elt = B
@@ -2191,8 +2210,8 @@ class Paving(paving_base,OptimizeGridMixin):
             return dist_unpaved,to_elt,np.sqrt(dist_sqr.max())
         else:
             raise Exception("stale code")
-            metrics = [ self.node_data[from_elt.data,ALPHA],
-                        self.node_data[to_elt.data,ALPHA] ]
+            metrics = [ self.node_data[from_elt.data,self.ALPHA],
+                        self.node_data[to_elt.data,self.ALPHA] ]
             if direc == 'backward':
                 metrics = metrics[::-1]
 
@@ -2359,7 +2378,7 @@ class Paving(paving_base,OptimizeGridMixin):
             # expected way, but we can flip to the other side to make it work out
             need_to_flip = 0
             
-            if (direction == 'forward') != (self.node_data[start_elt.data,ALPHA] < self.node_data[to_move,ALPHA]):
+            if (direction == 'forward') != (self.node_data[start_elt.data,self.ALPHA] < self.node_data[to_move,self.ALPHA]):
                 if self.verbose > 1:
                     print("Resampling degenerate: need to flip-flip")
 
@@ -2402,7 +2421,7 @@ class Paving(paving_base,OptimizeGridMixin):
         #-- This block used to be inside the try:except: block, but I don't think
         #   there's any reason for that.
         start_node = start_elt.data
-        ring_i = int( self.node_data[start_node,ORIG_RING] )
+        ring_i = int( self.node_data[start_node,self.ORIG_RING] )
 
         if self.verbose > 1:
             print("resample_boundary: start_elt=%s dir=%s scale=%f"%(start_elt,direction,
@@ -2416,8 +2435,8 @@ class Paving(paving_base,OptimizeGridMixin):
         else:
             raise "Bad direction %s"%direction
 
-        alpha = self.node_data[start_node, ALPHA]
-        beta  = self.node_data[start_node, BETA]
+        alpha = self.node_data[start_node, self.ALPHA]
+        beta  = self.node_data[start_node, self.BETA]
 
         if self.slide_internal_guides and self.verbose > 1:
             print("Starting alpha = %f  direction=%d"%(alpha,direction))
@@ -2573,19 +2592,19 @@ class Paving(paving_base,OptimizeGridMixin):
         # weed those out by consulting alpha values, and ignoring edges between nodes
         # that fall within the alpha range that we'll be tossing out
         if direction>0:
-            int_min_alpha = self.node_data[start_node, ALPHA]
+            int_min_alpha = self.node_data[start_node, self.ALPHA]
             alpha_span = (new_alpha - int_min_alpha) % len_b
         else:
             int_min_alpha = new_alpha
-            alpha_span = (self.node_data[start_node, ALPHA] - int_min_alpha) % len_b
+            alpha_span = (self.node_data[start_node, self.ALPHA] - int_min_alpha) % len_b
             
         for constr_type,nodes in constr_edges:
             if constr_type != 'e':
                 continue # potentially an issue, but I'm not going to get into dealing with it now.
             e = self.find_edge(nodes)
             # print "Checking on potential conflict with edge %d"%e
-            alphas = self.node_data[nodes,ALPHA]
-            if all( (alphas - int_min_alpha) % len_b > alpha_span):
+            alphas = self.node_data[nodes,self.ALPHA]
+            if np.all( (alphas - int_min_alpha) % len_b > alpha_span):
                 print("WARNING: looks like this would cause a self-intersection")
                 new_node_passes_checks = 0
         ## /INTERSECTION CHECK
@@ -2596,8 +2615,8 @@ class Paving(paving_base,OptimizeGridMixin):
             # need to update its status
             n = to_move
             # < just to avoid changing a SLIDE back into a HINT
-            if self.node_data[n,STAT] < new_node_stat:
-                print("Changing its status from %s to %s"%(self.node_data[n,STAT],
+            if self.node_data[n,self.STAT] < new_node_stat:
+                print("Changing its status from %s to %s"%(self.node_data[n,self.STAT],
                                                            new_node_stat))
                 self.change_node_stat(n,new_node_stat)
             print("Neighbor will be left as node %d"%n)
@@ -2634,7 +2653,7 @@ class Paving(paving_base,OptimizeGridMixin):
                 if self.verbose > 1:
                     print("resample_boundary: Sliding node %d instead of deleting and re-inserting"%n)
 
-                if self.node_data[n,STAT] != new_node_stat:
+                if self.node_data[n,self.STAT] != new_node_stat:
                     self.change_node_stat(n,new_node_stat)
 
                 if self.check_new_alpha(n,new_alpha):
@@ -2706,7 +2725,7 @@ class Paving(paving_base,OptimizeGridMixin):
         elt in the given direction, finding the new with an alpha closest to
         new_alpha.
         """
-        oring = int(self.node_data[start_elt.data,ORIG_RING])
+        oring = int(self.node_data[start_elt.data,self.ORIG_RING])
         len_b = len(self.original_rings[oring])
 
         # have to be careful with modulo distances
@@ -2716,7 +2735,7 @@ class Paving(paving_base,OptimizeGridMixin):
             return min(d1,d2)
         
         best_n = start_elt.data
-        best_diff = alpha_diff(self.node_data[best_n,ALPHA])
+        best_diff = alpha_diff(self.node_data[best_n,self.ALPHA])
         trav = start_elt
         
         while 1:
@@ -2724,7 +2743,7 @@ class Paving(paving_base,OptimizeGridMixin):
                 trav = trav.nxt
             else:
                 trav = trav.prv
-            this_diff = alpha_diff( self.node_data[trav.data,ALPHA] )
+            this_diff = alpha_diff( self.node_data[trav.data,self.ALPHA] )
             if this_diff < best_diff:
                 best_diff = this_diff
                 best_n = trav.data
@@ -2745,8 +2764,8 @@ class Paving(paving_base,OptimizeGridMixin):
           such that it can just be slid.
         """
         start_node = start_elt.data
-        start_alpha = self.node_data[start_node,ALPHA]
-        ring_i = int( self.node_data[start_node,ORIG_RING] )
+        start_alpha = self.node_data[start_node,self.ALPHA]
+        ring_i = int( self.node_data[start_node,self.ORIG_RING] )
 
         len_b = len( self.original_rings[ring_i] )
 
@@ -2770,36 +2789,35 @@ class Paving(paving_base,OptimizeGridMixin):
         while 1:
             n = trav.data
 
-            if self.node_data[n,STAT] != HINT:
-                print("WARNING: while traversing the boundary in clear_boundary_range_by_alpha, encountered")
-                print("  non-HINT node %d before alpha was reached"%n)
+            if self.node_data[n,self.STAT] != self.HINT:
+                log.warning("While traversing the boundary in clear_boundary_range_by_alpha")
+                log.warning("   encountered non-HINT node %d before alpha was reached"%n )
                 break
                 
-            
             # Actually this could happen, once two rings are joined
             # by non-local connection, we could take one step and be
             # on another ring.  the only reason it shouldn't is that
             # the free_distance_along_...() call should have figured
             # out that it's not valid to request an alpha this far away
-            if self.node_data[n,ORIG_RING] != ring_i:
-                print("Ring mismatch in clear_boundary_by_alpha")
-                print("  clearing from %f to %f"%(start_alpha, end_alpha))
-                print("  direction is ",direction)
-                print("  start node is ",start_elt.data)
-                print("  current node is",n)
-                print("  starting ring is ",ring_i)
-                print("  current ring is",self.node_data[n,ORIG_RING])
+            if self.node_data[n,self.ORIG_RING] != ring_i:
+                log.error("Ring mismatch in clear_boundary_by_alpha")
+                log.error("  clearing from %f to %f"%(start_alpha, end_alpha))
+                log.error("  direction is ",direction)
+                log.error("  start node is ",start_elt.data)
+                log.error("  current node is",n)
+                log.error("  starting ring is ",ring_i)
+                log.error("  current ring is",self.node_data[n,self.ORIG_RING])
 
                 raise Exception("rings don't match")
             
-            this_alpha = self.node_data[n,ALPHA]
+            this_alpha = self.node_data[n,self.ALPHA]
 
             # Similar to how span is calculated
             dist = (direction*(this_alpha-start_alpha)) % len_b
 
             if self.verbose > 1:
-                print("  stepping, got alpha=%f"%this_alpha)
-                print("  dist = %f, span = %f"%(dist,span))
+                log.debug("  stepping, got alpha=%f"%this_alpha)
+                log.debug("  dist = %f, span = %f"%(dist,span))
 
             # reach every so slightly farther to take care of some
             # floating point roundoff
@@ -2811,7 +2829,7 @@ class Paving(paving_base,OptimizeGridMixin):
             if dist > 1.001*span:
                 break
             elif self.verbose > 1 and dist > span:
-                print("clear_boundary_by_alpha: fudged the span to include an extra node")
+                log.debug("clear_boundary_by_alpha: fudged the span to include an extra node")
 
             if dist < last_dist:
                 raise Exception("Inf loop - distance along ring got smaller")
@@ -2858,7 +2876,7 @@ class Paving(paving_base,OptimizeGridMixin):
 
     def delete_node(self,n,remove_edges=1):
         self.push_op(self.undelete_node_paver,n,self.node_data[n].copy())
-        self.node_data[n,STAT] = DELETED
+        self.node_data[n,self.STAT] = self.DELETED
                      
         super(Paving,self).delete_node(n,remove_edges)
 
@@ -3023,7 +3041,7 @@ class Paving(paving_base,OptimizeGridMixin):
                 
             if self.unpaved[ring_i].metric(e) == 0.0: #need to recompute the angle
                 new_metric = self.internal_angle(apex=e)
-                if self.prefer_original_ring_nodes and self.node_data[e.data,ORIG_RING]<0:
+                if self.prefer_original_ring_nodes and self.node_data[e.data,self.ORIG_RING]<0:
                     new_metric += 10
                 self.unpaved[ring_i].update_metric(e,new_metric)
             else:
@@ -3050,13 +3068,13 @@ class Paving(paving_base,OptimizeGridMixin):
             self.safe_relax_one(n,use_beta=use_beta)
 
     def safe_relax_one(self,n,use_beta=0,max_cost=np.inf):
-        stat = self.node_data[n,STAT]
+        stat = self.node_data[n,self.STAT]
 
-        if stat == RIGID:
+        if stat == self.RIGID:
             return False
-        elif stat == SLIDE:
+        elif stat == self.SLIDE:
             self.relax_one(n,boundary=True,use_beta=use_beta,max_cost=max_cost)
-        elif stat == HINT:
+        elif stat == self.HINT:
             raise Exception("I don't think we should be relaxing HINT nodes.  Maybe forgot to update stat?")
         else:
             self.relax_one(n,max_cost=max_cost)
@@ -3440,7 +3458,7 @@ class Paving(paving_base,OptimizeGridMixin):
         #   bisect: two segments, add one point approx. bisecting the angle
         #   cutoff: two segments, join the endpoints with one new segment
 
-        join_okay = (FREE in [self.node_data[ordered[0],STAT],self.node_data[ordered[2],STAT]])
+        join_okay = (self.FREE in [self.node_data[ordered[0],self.STAT],self.node_data[ordered[2],self.STAT]])
 
         # figure out the prioritized list of possible next cells:
         if len(unpaved)==4:
@@ -3457,10 +3475,10 @@ class Paving(paving_base,OptimizeGridMixin):
             #   I don't think we have to worry about reverting it.  In a 4-node ring,
             #   sooner or later the 4th guy is going to get set to SLIDE 
             fourth = center_elt.nxt.nxt.data
-            if self.node_data[fourth,STAT] == HINT:
+            if self.node_data[fourth,self.STAT] == self.HINT:
                 if self.verbose > 1:
                     print("Making 4th node on ring into SLIDE")
-                self.node_data[fourth,STAT] = SLIDE
+                self.node_data[fourth,self.STAT] = self.SLIDE
             
             strategies = ['cutoff','join']
         elif len(unpaved)==3:
@@ -3526,7 +3544,7 @@ class Paving(paving_base,OptimizeGridMixin):
         if not join_okay and 'join' in strategies:
             strategies.remove('join')
 
-        if self.nonlocal_method & PROACTIVE_DELAUNAY:
+        if self.nonlocal_method & self.PROACTIVE_DELAUNAY:
             new_strategies = []
             for s in strategies:
                 if s == 'bisect':
@@ -3635,7 +3653,7 @@ class Paving(paving_base,OptimizeGridMixin):
                         # not entirely sure whether this should be HINT or SLIDE...
                         # used to be HINT, but it was possible to revert a SLIDE node
                         # into a HINT node that way..
-                        self.resample_neighbors(it,SLIDE)
+                        self.resample_neighbors(it,self.SLIDE)
                         
                     print("bisect_nonlocal is about to add an edge")
                     e=self.add_edge(center_elt.data,n)
@@ -3644,8 +3662,8 @@ class Paving(paving_base,OptimizeGridMixin):
                     
                     # I was hoping to do this via new_unpaved, but the relaxing
                     # comes first, and we need to toggle these statuses before relaxing.
-                    if self.node_data[n,STAT] == HINT:
-                        self.node_data[n,STAT] = SLIDE
+                    if self.node_data[n,self.STAT] == self.HINT:
+                        self.node_data[n,self.STAT] = self.SLIDE
                     
                     # not sure about the resample stuff - it does need to be before
                     # update_unpaved_boundaries, though, b/c center_elt is not going
@@ -3658,7 +3676,7 @@ class Paving(paving_base,OptimizeGridMixin):
 
                     # Was there a reason for not doing this before?
                     for n_iter in self.all_iters_for_node(n):
-                        new_unpaved.append( (self.resample_neighbors,n_iter,SLIDE) )
+                        new_unpaved.append( (self.resample_neighbors,n_iter,self.SLIDE) )
 
                     new_unpaved.append( (self.update_unpaved_boundaries,e) )
                     
@@ -3676,7 +3694,7 @@ class Paving(paving_base,OptimizeGridMixin):
                     else:
                         newB = pnts[1] + rot(-bisect_angle,pnts[0] - pnts[1])
 
-                    new_node = self.add_node(newB,stat=FREE)
+                    new_node = self.add_node(newB,stat=self.FREE)
 
                     # and we just created edges.  If we're closing
                     # the ring then the first node in ordered is repeated and
@@ -3714,18 +3732,18 @@ class Paving(paving_base,OptimizeGridMixin):
                     for it in self.all_iters_for_node(n):
                         # not entirely sure whether this should be HINT or SLIDE...
                         # see notes in bisect_nonlocal
-                        self.resample_neighbors(it,SLIDE)
+                        self.resample_neighbors(it,self.SLIDE)
 
                     e=self.add_edge(center_elt.data,n)
                     self.updated_cells += self.cells_from_last_new_edge
                     
-                    if self.node_data[n,STAT] == HINT:
-                        self.node_data[n,STAT] = SLIDE
+                    if self.node_data[n,self.STAT] == self.HINT:
+                        self.node_data[n,self.STAT] = self.SLIDE
                     
                     new_unpaved = []
 
                     for n_iter in self.all_iters_for_node(n):
-                        new_unpaved.append( (self.resample_neighbors,n_iter,SLIDE) )
+                        new_unpaved.append( (self.resample_neighbors,n_iter,self.SLIDE) )
 
                     new_unpaved.append( (self.update_unpaved_boundaries,e) )
 
@@ -3737,7 +3755,7 @@ class Paving(paving_base,OptimizeGridMixin):
                     # make the triangle equi
                     newB = pnts[0] + rot(60*np.pi/180.0,pnts[1] - pnts[0])
 
-                    new_node = self.add_node(newB,stat=FREE)
+                    new_node = self.add_node(newB,stat=self.FREE)
 
                     # and we just created edges:
                     self.add_edge(ordered[0], new_node)
@@ -3762,13 +3780,13 @@ class Paving(paving_base,OptimizeGridMixin):
                     # and at risk of intersecting neighbors of to_keep.
                     # intervener is the node adjacent to to_keep that is the first
                     # in line to cause a self-intersection with at_risk
-                    if self.node_data[a,STAT] == FREE:
+                    if self.node_data[a,self.STAT] == self.FREE:
                         to_delete = a
                         to_keep = c
                         at_risk = center_elt.prv.prv.data
                         intervener = center_elt.nxt.nxt.data
                         keep_dir = 'forward'
-                    elif self.node_data[c,STAT] == FREE:
+                    elif self.node_data[c,self.STAT] == self.FREE:
                         to_delete = c
                         to_keep = a
                         at_risk = center_elt.nxt.nxt.data
@@ -3840,7 +3858,7 @@ class Paving(paving_base,OptimizeGridMixin):
                         elif dist_to_resample > 0.0:
                             # really just want to clear out all nodes up to and including the
                             # last of elts_to_delete
-                            last_alpha = self.node_data[elts_to_delete[-1].data,ALPHA]
+                            last_alpha = self.node_data[elts_to_delete[-1].data,self.ALPHA]
                             
                             print("Okay - found some conflicting nodes ahead of a join.  Will clear them out")
                             for e in elts_to_delete:
@@ -4170,15 +4188,15 @@ class Paving(paving_base,OptimizeGridMixin):
             # self.plot(plot_title="post_fill: about to resample node %d"%node)
             for elt in self.all_iters_for_node(node):
                 # print "  post_fill: around iter %s"%elt
-                self.resample_neighbors(elt,new_node_stat = HINT )
+                self.resample_neighbors(elt,new_node_stat = self.HINT )
                 # self.plot(plot_title="post_fill: resampled elt %s"%elt)
 
 
         # The old resampling was easier:
-        # self.resample_neighbors(ordered[0],new_node_stat = HINT)
-        # self.resample_neighbors(ordered[-1],new_node_stat = HINT)
+        # self.resample_neighbors(ordered[0],new_node_stat = self.HINT)
+        # self.resample_neighbors(ordered[-1],new_node_stat = self.HINT)
 
-        if self.nonlocal_method & SHEEPISH:
+        if self.nonlocal_method & self.SHEEPISH:
             if self.verbose > 0:
                 print("Checking non-local connections to nodes: ",modified_nodes)
 
@@ -4247,7 +4265,7 @@ class Paving(paving_base,OptimizeGridMixin):
         not_connected = []
         
         for other in nearest:
-            if self.node_data[other,STAT] == DELETED:
+            if self.node_data[other,self.STAT] == self.DELETED:
                 continue
             try:
                 self.find_edge([n,other])
@@ -4359,7 +4377,7 @@ class Paving(paving_base,OptimizeGridMixin):
                 # if the resampled neighbors are HINTs, then this node may be
                 # slid around to the other side of the island, making our non-local
                 # edge actually cross over the island.  
-                self.resample_neighbors(elt,new_node_stat=SLIDE)
+                self.resample_neighbors(elt,new_node_stat=self.SLIDE)
             if 0:
                 # slow - this completely recomputes the unpaved boundaries from scratch
                 # remove soon.
@@ -4750,9 +4768,9 @@ class Paving(paving_base,OptimizeGridMixin):
             # xtol is a bit harder to quantify here -
             #  alpha scale varies with distance between nodes
             
-            ring_i = int(self.node_data[i,ORIG_RING])
-            starting_beta = self.node_data[i,BETA]
-            starting_alpha = self.node_data[i,ALPHA]
+            ring_i = int(self.node_data[i,self.ORIG_RING])
+            starting_beta = self.node_data[i,self.BETA]
+            starting_alpha = self.node_data[i,self.ALPHA]
             
             if not use_beta:
                 xtol = 0.01
@@ -4804,7 +4822,7 @@ class Paving(paving_base,OptimizeGridMixin):
                     c = one_point_cost(new_point,edge_points,local_length)
                     # print "cost=%f   at alpha=%g beta=%g"%(c,alpha_sbeta[0],local_length * (alpha_sbeta[1]-1.0) )
                     return c
-                starting_nd_alpha_beta = self.node_data[i,ALPHA:(BETA+1)].copy()
+                starting_nd_alpha_beta = self.node_data[i,self.ALPHA:(self.BETA+1)].copy()
                 starting_nd_alpha_beta[0] -= (starting_alpha - 1)
                 starting_nd_alpha_beta[1] = 1 + starting_beta / local_length 
                 new_nd_alpha_beta = my_fmin(bdry_point_cost_ab,starting_nd_alpha_beta,disp=0,
@@ -4831,7 +4849,7 @@ class Paving(paving_base,OptimizeGridMixin):
                     if self.check_new_alpha(i,new_alpha):
                         self.slide_node(i,new_alpha,new_beta)
                         # HERE is a problem - for now, maybe we don't even have to resample??
-                        # self.resample_neighbors(i,new_node_stat=HINT)
+                        # self.resample_neighbors(i,new_node_stat=self.HINT)
                     else:
                         if self.verbose > 0:
                             print("Not committing new alpha - it was out of bounds")
@@ -4847,7 +4865,7 @@ class Paving(paving_base,OptimizeGridMixin):
         lower_bound, upper_bound = self.node_alpha_bounds(i)
         # print "Node %d, new alpha = %.4f, alpha bounds = %.4f %.4f"%(i,new_alpha,lower_bound,upper_bound)
 
-        ri = int(self.node_data[i,ORIG_RING])
+        ri = int(self.node_data[i,self.ORIG_RING])
         
         len_b = len(self.original_rings[ri])
 
@@ -4883,27 +4901,27 @@ class Paving(paving_base,OptimizeGridMixin):
         # print "Searching for bounds for node %d"%i
 
         # new approach purely from node_data
-        ring_i = int( self.node_data[i,ORIG_RING] )
+        ring_i = int( self.node_data[i,self.ORIG_RING] )
 
         if ring_i < 0:
             raise Exception("Node alpha bounds called, but node not on original ring")
 
-        my_alpha = self.node_data[i,ALPHA]
+        my_alpha = self.node_data[i,self.ALPHA]
 
         # a cheap hack - in case node i is a hint node
-        saved_node_stat = self.node_data[i,STAT]
-        self.node_data[i,STAT] = RIGID # just temporary
+        saved_node_stat = self.node_data[i,self.STAT]
+        self.node_data[i,self.STAT] = self.RIGID # just temporary
         
         # well, it's going to be slow...
         # this could probably be rewritten, if it ever proves to be a performance
         # bottleneck.
-        same_ring_nodes = np.where( (self.node_data[:,ORIG_RING] == ring_i) & \
-                                    (self.node_data[:,STAT] != HINT) & \
-                                    (self.node_data[:,STAT] != DELETED) )[0]
+        same_ring_nodes = np.where( (self.node_data[:,self.ORIG_RING] == ring_i) & \
+                                    (self.node_data[:,self.STAT] != self.HINT) & \
+                                    (self.node_data[:,self.STAT] != self.DELETED) )[0]
 
-        self.node_data[i,STAT] = saved_node_stat
+        self.node_data[i,self.STAT] = saved_node_stat
         
-        same_ring_alphas = self.node_data[ same_ring_nodes, ALPHA ]
+        same_ring_alphas = self.node_data[ same_ring_nodes, self.ALPHA ]
 
         # look for the one closest to us in the CCW direction:
         len_b = len(self.original_rings[ring_i])
@@ -4976,12 +4994,12 @@ class Paving(paving_base,OptimizeGridMixin):
         # 
         # # print "Back node=%d  Forward node=%d"%(node_back,node_for)
         # 
-        # if self.node_data[node_back,ORIG_RING] != self.node_data[i,ORIG_RING]:
+        # if self.node_data[node_back,self.ORIG_RING] != self.node_data[i,self.ORIG_RING]:
         #     raise Exception,"Somehow we got a node on a different ring"
-        # if self.node_data[node_for,ORIG_RING] != self.node_data[i,ORIG_RING]:
+        # if self.node_data[node_for,self.ORIG_RING] != self.node_data[i,self.ORIG_RING]:
         #     raise Exception,"Somehow we got a node on a different ring"
         #     
-        # return self.node_data[node_back,ALPHA],self.node_data[node_for,ALPHA]
+        # return self.node_data[node_back,self.ALPHA],self.node_data[node_for,self.ALPHA]
         
     def slide_node(self,n,new_alpha,new_beta=None):
         """ update the location of a boundary node by it's alpha value.
@@ -4990,8 +5008,8 @@ class Paving(paving_base,OptimizeGridMixin):
 
         defaults to keeping the old beta
         """
-        old_alpha = self.node_data[n,ALPHA]
-        old_beta = self.node_data[n,BETA]
+        old_alpha = self.node_data[n,self.ALPHA]
+        old_beta = self.node_data[n,self.BETA]
         if new_beta is None:
             new_beta = old_beta
 
@@ -5007,7 +5025,7 @@ class Paving(paving_base,OptimizeGridMixin):
         if len(all_ui)>1 and self.verbose > 1:
             print("WARNING: sliding a node (%d) that belongs to multiple unpaved rings. "%n)
             
-        ri = int(self.node_data[n,ORIG_RING])
+        ri = int(self.node_data[n,self.ORIG_RING])
         len_b = len(self.original_rings[ri])
         
         # assumes that we slid in the shorter direction around the
@@ -5022,8 +5040,8 @@ class Paving(paving_base,OptimizeGridMixin):
                 next_n = elt.nxt.data
                 prev_n = elt.prv.data
 
-                forward_is_free = self.node_data[next_n,STAT] == HINT
-                backward_is_free = self.node_data[prev_n,STAT] == HINT
+                forward_is_free = self.node_data[next_n,self.STAT] == self.HINT
+                backward_is_free = self.node_data[prev_n,self.STAT] == self.HINT
 
                 # print "Forward is free: ",forward_is_free
                 # print "Backward is free: ",backward_is_free
@@ -5051,8 +5069,8 @@ class Paving(paving_base,OptimizeGridMixin):
 
         self.push_op(self.unslide_node, n, old_alpha, old_beta )
         
-        self.node_data[n,ALPHA] = new_alpha
-        self.node_data[n,BETA] = new_beta
+        self.node_data[n,self.ALPHA] = new_alpha
+        self.node_data[n,self.BETA] = new_beta
         new_pnt_i = self.boundary_slider(ri, new_alpha, new_beta)
 
         # new checking for collapsing endpoints on internal guides
@@ -5069,7 +5087,7 @@ class Paving(paving_base,OptimizeGridMixin):
                 else:
                     print("%d is trying to slide on top of the end node %d, with nbrs %s"%(n,replace,nbrs))
                     if len(nbrs)==1 and nbrs[0]==n:
-                        loner_stat = self.node_data[replace,STAT]
+                        loner_stat = self.node_data[replace,self.STAT]
                         # Remove replace from unpaved:
                         # note that we should get exactly two iters that point to
                         # replace
@@ -5100,15 +5118,15 @@ class Paving(paving_base,OptimizeGridMixin):
         # print "done"
 
     def unslide_node(self,n,old_alpha,old_beta):
-        self.node_data[n,ALPHA] = old_alpha
-        self.node_data[n,BETA]  = old_beta
+        self.node_data[n,self.ALPHA] = old_alpha
+        self.node_data[n,self.BETA]  = old_beta
 
     def unchange_node_stat(self,n,old_stat):
-        self.node_data[n,STAT] = old_stat
+        self.node_data[n,self.STAT] = old_stat
         
     def change_node_stat(self,n,new_stat):
-        self.push_op(self.unchange_node_stat, n, self.node_data[n,STAT] )
-        self.node_data[n,STAT] = new_stat
+        self.push_op(self.unchange_node_stat, n, self.node_data[n,self.STAT] )
+        self.node_data[n,self.STAT] = new_stat
                      
     def unmove_node(self,i,old_val):
         super(Paving,self).unmove_node(i,old_val)
@@ -5183,7 +5201,7 @@ class Paving(paving_base,OptimizeGridMixin):
                 nodeBtoA[nB] = close_nA
             else:
                 nodeBtoA[nB] = self.add_node( gridB.points[nB],
-                                              stat=RIGID )
+                                              stat=self.RIGID )
 
         ## EDGES
         edgeBtoA = {} # probably don't need this
@@ -5376,7 +5394,7 @@ def test_long_channel():
 
     # density = ConstantDensityField( w/sin(60*pi/180.) / 4 )
     density = ConstantDensityField( 19.245 )
-    return Paving(long_channel,density,initial_node_status=RIGID,label='long_channel')
+    return Paving(long_channel,density,initial_node_status=self.RIGID,label='long_channel')
 
 
 def test_long_channel_rigid():
@@ -5389,7 +5407,7 @@ def test_long_channel_rigid():
 
     # density = ConstantDensityField( w/sin(60*pi/180.) / 4 )
     density = ConstantDensityField( 19.245 )
-    return Paving(long_channel,density,initial_node_status=RIGID,label='long_channel_rigid')
+    return Paving(long_channel,density,initial_node_status=self.RIGID,label='long_channel_rigid')
 
 
 def test_narrow_channel():

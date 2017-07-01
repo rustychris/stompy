@@ -1,4 +1,6 @@
 from stompy.grid import paver
+import logging
+logging.basicConfig(level=logging.INFO)
 
 ##
 

@@ -12,7 +12,7 @@ import collections
 # from shapely import wkb
 # from osgeo import ogr
 from collections import defaultdict
-import priority_queue
+from .. import priority_queue
 
 from matplotlib.tri import Triangulation
 from matplotlib.collections import LineCollection

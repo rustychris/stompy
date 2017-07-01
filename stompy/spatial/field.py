@@ -30,7 +30,6 @@ except ImportError:
 
 from scipy import signal
 from scipy import ndimage
-from array_append import array_append
 
 from scipy.interpolate import RectBivariateSpline
 
@@ -41,6 +40,8 @@ except ImportError:
     from matplotlib import delaunay
 
 from . import wkb2shp
+from ..utils import array_append
+
 
 try:
     from matplotlib import cm
