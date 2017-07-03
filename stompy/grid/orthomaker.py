@@ -32,6 +32,7 @@ except:
 
 from . import trigrid
 from trigrid import rot
+from ..utils import point_in_polygon
 
 ### Some geometric utility functions ###
 
@@ -44,72 +45,6 @@ def intersect_geoms(glist):
             return g
     return g
 
-def point_in_polygon( pgeom, randomize=False ):
-    """ return a point that lies inside the given [multi]polygon
-    geometry
-    """
-    if randomize:
-        env = pgeom.envelope
-        if env.area/pgeom.area > 1e4:
-            print("Sliver! Going to non-random point_in_polygon code")
-            return point_in_polygon(pgeom,False)
-        
-        env_pnts = array(env.exterior.coords)
-        minx,miny = env_pnts.min(axis=0)
-        maxx,maxy = env_pnts.max(axis=0)
-
-        while 1:
-            x = minx + rand()*(maxx-minx)
-            y = miny + rand()*(maxy-miny)
-            pnt_geom = geometry.Point(x,y)
-            if pgeom.contains(pnt_geom):
-                return array([x,y])
-    elif 1:
-        # print "holding breath for point_in_polygon"
-        # Try a more robust way of choosing the point:
-        c = pgeom.centroid
-        min_x,min_y,max_x,max_y = pgeom.bounds
-        horz_line = geometry.LineString([[min_x-10.0,c.y],
-                                         [max_x+10.0,c.y]])
-        full_ix = horz_line.intersection( pgeom )
-
-        # intersect it with the polygon:
-        if full_ix.type == 'MultiLineString':
-            lengths = [l.length for l in full_ix.geoms]
-            best = argmax(lengths)
-            ix = full_ix.geoms[best]
-        else:
-            ix = full_ix
-        # then choose the midpoint:
-        midpoint = array(ix.coords).mean(axis=0)
-        # print "done with point_in_polygon"
-        return midpoint
-    else:
-        # first try the centroid
-        if pgeom.type == 'MultiPolygon':
-            pgeom = pgeom.geoms[0]
-
-        if pgeom.contains( pgeom.centroid ):
-            return array( pgeom.centroid )
-
-        n_points = len( pgeom.exterior.coords )
-                        
-        for i in range(n_points):
-            # choose a point just inside one of the vertices
-            pntA = array( pgeom.exterior.coords[i] )
-            pntB = array( pgeom.exterior.coords[(i+1)%n_points] )
-            pntC = array( pgeom.exterior.coords[(i+2)%n_points] )
-
-            delta = 0.001*(pntA-pntB) + 0.001*(pntC-pntB)
-
-            c = pntB+delta
-            if pgeom.contains( geometry.Point( c ) ):
-                return c
-            c = pntB-delta
-            if pgeom.contains( geometry.Point( c ) ):
-                return c
-        print("Failed to find a point inside ")
-        print(pgeom.wkt)
 
 def free_node_bounds(points,max_angle=85*pi/180. ):
     """ assumed that the first point can be moved and the

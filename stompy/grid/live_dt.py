@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt
 from .. import utils
 from ..utils import array_append
 from ..spatial import field
-from . import orthomaker,trigrid
+from . import orthomaker,trigrid,exact_delaunay
 
 class MissingConstraint(Exception):
     pass
@@ -138,6 +138,7 @@ class LiveDtGridBase(orthomaker.OrthoMaker):
 
         self.dt_allocate()
         self.vh = np.zeros( (self.Npoints(),), self.vh_dtype)
+        self.vh[:]=None # 0 isn't actually a good mark for unused.
         
         # sometimes CGAL creates vertices automatically, which are detected by
         # having info == None
@@ -149,7 +150,7 @@ class LiveDtGridBase(orthomaker.OrthoMaker):
                 log.info("populate_dt: %d/%d"%(n,self.Npoints()))
             # skip over deleted points:
             if np.isfinite(self.points[n,0]):
-                self.dt_insert_point(n)
+                self.dt_insert(n)
                 
         # print("populate_dt: add constraints")
         for e in range(self.Nedges()):
@@ -206,14 +207,18 @@ class LiveDtGridBase(orthomaker.OrthoMaker):
         if self.holding == 0:
             # First, make sure that we have enough room for new nodes:
             while len(self.vh) < self.Npoints():
-                self.vh = array_append(self.vh,0)
+                # This used to extend with 0, but None is a better option
+                self.vh = array_append(self.vh,None)
 
             held_nodes = list(self.holding_nodes.keys())
 
             # Remove all of the nodes that were alive when we started
             # the hold:
             for n in held_nodes:
-                if self.vh[n] is not 0: # used to != 0
+                # first, it was != 0.
+                # then it was "is not 0"
+                # but with exact_delaunay, 0 is a valid vertex handle.
+                if self.vh[n] is not None: # used to != 0
                     self.dt_remove_constraints(n)
                     self.dt_remove(n)
 
@@ -450,7 +455,7 @@ class LiveDtGridBase(orthomaker.OrthoMaker):
         elif self.holding:
             self.holding_nodes[n] = 'add_node'
         else:
-            self.vh = array_append(self.vh,0)
+            self.vh = array_append(self.vh,None)
             self.dt_insert(n)
             # tricky - a new node may interrupt some existing
             # constraint, but when the node is removed the
@@ -1174,6 +1179,14 @@ class LiveDtGridBase(orthomaker.OrthoMaker):
         return scale
     
 try:
+    # If CGAL gives import errors, it may be because gmp is outdated
+    # This got past conda because the build of mpfr isn't specific
+    # about the version of gmp, just says it depends on gmp.
+
+    # One fix in anaconda land is:
+    #   conda update gmp to install 6.1.2
+
+    
     from CGAL.CGAL_Triangulation_2 import Constrained_Delaunay_triangulation_2
     from CGAL.CGAL_Kernel import Point_2
 
@@ -1188,18 +1201,6 @@ try:
             """ allocate both the triangulation and the vertex handle
             """ 
             self.DT = Constrained_Delaunay_triangulation_2()
-            
-        def dt_insert_point(self,n):
-            """ insert a point from the grid into the triangulation,
-            updating vertex handle information
-            """
-            pnt = Point_2( self.points[n,0], self.points[n,1] )
-            self.vh[n] = self.DT.insert( pnt )
-            self.vh_info[self.vh[n]] = n
-        def dt_insert_constraint(self,a,b):
-            self.DT.insert_constraint( self.vh[a], self.vh[b] )
-        def dt_remove_constraints(self,n):
-            self.DT.remove_incident_constraints(self.vh[n])
         def dt_insert(self,n):
             """ Given a point that is correctly in self.points, and vh that
             is large enough, do the work of inserting the node and updating
@@ -1211,6 +1212,10 @@ try:
             if self.verbose > 2:
                 print("    dt_insert node %d"%n)
                 self.check()
+        def dt_insert_constraint(self,a,b):
+            self.DT.insert_constraint( self.vh[a], self.vh[b] )
+        def dt_remove_constraints(self,n):
+            self.DT.remove_incident_constraints(self.vh[n])
         def dt_remove(self,n):
             self.DT.remove( self.vh[n] )
             del self.vh_info[self.vh[n]]
@@ -1964,7 +1969,7 @@ except ImportError as exc:
 # implementation, and is essentially opaque to LiveDtGridBase.
 # it just needs to supply a vertices() method which gives
 # the handles for the relevant vertices.
-    
+
 class LiveDtPython(LiveDtGridBase):
     vh_dtype=object
 
@@ -1982,8 +1987,12 @@ class LiveDtPython(LiveDtGridBase):
         self.DT.add_constraint(self.vh[a], self.vh[b])
         
     def dt_remove_constraints(self, n):
-        for e in self.incident_constraints(n):
-            self.DT.remove_constraint(e.j)
+        """
+        remove all constraints in which node n participates
+        """
+        for e in self.dt_incident_constraints(n):
+            a,b = self.DT.edges['nodes'][e.j]
+            self.DT.remove_constraint(j=e.j)
             
     def dt_insert(self, n):
         """ Given a point that is correctly in self.points, and vh that
@@ -2007,12 +2016,11 @@ class LiveDtPython(LiveDtGridBase):
             self.check()
             
     def dt_remove_constrained_edge(self,edge):
-        self.DT.remove_constrained_edge(edge.f,edge.v)
+        self.DT.remove_constraint(j=edge.j)
 
     def dt_incident_constraints(self,vh):
-        constraints = []
-        self.DT.node_to_constraints(vh)
-        return [self.Edge(g=self.DT,j=e) for e in constraints]
+        return [self.Edge(g=self.DT,j=e)
+                for e in self.DT.node_to_constraints(vh)]
 
     def delaunay_face(self, pnt):
         """ 
@@ -2038,13 +2046,17 @@ class LiveDtPython(LiveDtGridBase):
         return n
 
     def delaunay_neighbors(self, n):
-        """ returns an array of node ids that the DT connects the given node
-        to.  Includes existing edges
+        """ returns an ndarray of node ids that the DT connects the given node
+        to.  Includes existing edges.
         """
-        return [ self.vh_info[vh]
-                 for vh in self.DT.node_to_nodes(self.vh[n]) ]
+        # some callers assume this is an ndarray
+        return np.array( [self.vh_info[vh]
+                          for vh in self.DT.node_to_nodes(self.vh[n]) ] )
 
     def dt_interior_cells(self):
+        """
+        Return a list of lists of nodes making up finite faces of the triangulation
+        """
         print("Finding interior cells from full Delaunay Triangulation")
         
         interior_cells = []
@@ -2060,19 +2072,93 @@ class LiveDtPython(LiveDtGridBase):
     def shoot_ray(self,n1,vec,max_dist=None):
         """ Shoot a ray from self.points[n] in the given direction vec
         returns (e_index,pnt), the first edge that it encounters and the location
-        of the intersection 
+        of the intersection. 
 
         max_dist: stop checking beyond this distance -- currently doesn't make it faster
           but will return None,None if the point that it finds is too far away
         """
+        # HERE!
+        # is it just constrained edges? yes -- just an "edge" in self, but a constrained
+        # edge in self.DT.
         raise NotImplemented("still working on pure python live_dt")
         
     def check_line_is_clear(self,n1=None,n2=None,v1=None,v2=None,p1=None,p2=None):
         """ returns a list of vertex tuple for constrained segments that intersect
-        the given line
+        the given line.
+
+        n1: specify one end of the segment by a node index in self
+        p1: specify one end of the segment by a point, which will be inserted as
+           as temporary vertex.
+        v1: specify one end of the segment by a vertex which is already in the DT.
         """
-        raise NotImplemented("still working on pure python live_dt")
+
+        # What are the options for implementing this in exact_delaunay?
+        # probably just go with find_intersected_elements, which takes
+        # a pair of nodes, and returns nodes, edges, cells which are intersected
+        # one quirk is that traversing along an edge is implied by sequential
+        # nodes.
+        # also edges are returned as half-edges
         
+        # from the CGAL implementation:
+        # if points were given, create some temporary vertices.
+        temp_dt_nodes=[]
+        
+        if p1 is not None:
+            assert n1 is None
+            assert v1 is None
+            v1 = self.DT.add_node(x=p1)
+            self.vh_info[v1] = 'tmp'
+            temp_dt_nodes.append(v1)
+
+        if p2 is not None:
+            assert n2 is None
+            assert v2 is None
+            v2 = self.DT.add_node(x=p2)
+            self.vh_info[v2] = 'tmp'
+            temp_dt_nodes.append(v2)
+
+        if v1 is None:
+            assert n1 is not None
+            v1=self.vh[n1]
+        if v2 is None:
+            assert n2 is not None
+            v2=self.vh[n2]
+        
+        crossings = self.DT.find_intersected_elements(v1,v2)
+
+        constr_pairs=[]
+
+        # crossings includes the starting and ending node, which we don't
+        # care about
+        for ctype,cindex in crossings[1:-1]:
+            if ctype=='node':
+                n=cindex
+                # may have to adjust this to be more in line with older code
+                # it's a conflict if a proposed edge goes exactly through an existing
+                # vertex, so we return a conflict based on the same vertex repeated
+                # this doesn't directly include the case where the query segment
+                # is coincident with an edge, but for the purpose of check_line_is_clear,
+                # it's enough to avoid vertices and crossing constrained edges.
+                constr_pairs.append( [self.vh_info[n],self.vh_info[n]] )
+            elif ctype=='edge':
+                j=cindex.j
+                if self.DT.edges['constrained'][cindex.j]:
+                    # yep, crossing a constrained edge
+                    pair=[self.vh_info[vh]
+                          for vh in self.DT.edges['nodes'][cindex.j]]
+                    constr_pairs.append(pair)
+            elif ctype=='cell':
+                # don't care about passing through cells
+                pass
+            else:
+                assert False
+        
+        # clean up
+        for v in temp_dt_nodes:
+            self.DT.delete_node(v)
+            del self.vh_info[v]
+
+        return constr_pairs
 
 if LiveDtGrid==LiveDtGridNull:
     LiveDtGrid=LiveDtPython

@@ -1514,3 +1514,47 @@ def group_by_sign_hysteresis(Q,Qlow=0,Qhigh=0):
     pos_windows=np.array(list(pos_windows))
     neg_windows=np.array(list(neg_windows))
     return pos_windows,neg_windows
+
+
+def point_in_polygon( pgeom, randomize=False ):
+    """ return a point that lies inside the given [multi]polygon
+    geometry
+
+    randomize: if True, pick points randomly, but fallback to deterministic
+    approach when the geometry is to sparse
+    """
+    if randomize:
+        env = pgeom.envelope
+        if env.area/pgeom.area > 1e4:
+            print("Sliver! Going to non-random point_in_polygon code")
+            return point_in_polygon(pgeom,False)
+        
+        env_pnts = np.array(env.exterior.coords)
+        minx,miny = env_pnts.min(axis=0)
+        maxx,maxy = env_pnts.max(axis=0)
+
+        while 1:
+            x = minx + np.random.random()*(maxx-minx)
+            y = miny + np.random.random()*(maxy-miny)
+            pnt_geom = geometry.Point(x,y)
+            if pgeom.contains(pnt_geom):
+                return np.array([x,y])
+    else:
+        # print "holding breath for point_in_polygon"
+        # Try a more robust way of choosing the point:
+        c = pgeom.centroid
+        min_x,min_y,max_x,max_y = pgeom.bounds
+        horz_line = geometry.LineString([[min_x-10.0,c.y],
+                                         [max_x+10.0,c.y]])
+        full_ix = horz_line.intersection( pgeom )
+
+        # intersect it with the polygon:
+        if full_ix.type == 'MultiLineString':
+            lengths = [l.length for l in full_ix.geoms]
+            best = np.argmax(lengths)
+            ix = full_ix.geoms[best]
+        else:
+            ix = full_ix
+        # then choose the midpoint:
+        midpoint = np.array(ix.coords).mean(axis=0)
+        return midpoint

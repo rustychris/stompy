@@ -30,6 +30,16 @@ class IntersectingConstraints(BadConstraint):
 class ConstraintCollinearNode(BadConstraint):
     pass
 
+def ordered(x1,x2,x3):
+    # given collinear points, return true if they are in order
+    # along that line
+    if x1[0]!=x2[0]:
+        i=0
+    else:
+        i=1
+    return (x1[i]<x2[i]) == (x2[i]<x3[i])
+
+
 class Triangulation(unstructured_grid.UnstructuredGrid):
     """ 
     Mimics the Triangulation_2 class of CGAL.
@@ -1004,9 +1014,9 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
                 if n_nbr==nB:
                     history.append( ('node',nB) )
                     return history
-                if ordered( self.nodes['x'][nA],
+                if ordered( A,
                             self.nodes['x'][n_nbr],
-                            self.nodes['x'][nB] ):
+                            B ):
                     trav=('node',n_nbr)
                     history.append( trav )
                     he=self.nodes_to_halfedge(nA,n_nbr)
@@ -1093,6 +1103,412 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
                 history.append(trav)
         return history
 
+    def locate_for_traversal_outside(self,p,p_other,loc_face,loc_type,loc_index):
+        """ 
+        Helper method for locate_for_traversal()
+        handle the case where p is outside the triangulation, so loc_type
+        is either OUTSIDE_AFFINE_HULL or OUTSIDE_CONVEX_HULL
+        returns 
+          ('edge',<half-edge>)
+          ('node',<node>)
+          (None,None) -- the line between p and p_other doesn't intersect the triangulation
+        """
+        dim=self.dim()
+        if dim<0:
+            # there are no nodes, no work to be done
+            return (None,None)
+        elif dim==0:
+            # a single node. either we'll intersect it, or not.
+            N=six.next(self.valid_node_iter()) # get the only valid node
+            pN=self.nodes['x'][N]
+            # p_other could be coincident with N:
+            if (pN[0]==p_other[0]) and (pN[1]==p_other[1]):
+                return ('node',N)
+            # or we have to test for pN falling on the line between p,p_other
+            oN=robust_predicates.orientation(p, pN, p_other)
+            # either the segment passes through the one node, or doesn't intersect
+            # at all:
+            if oN==0 and ordered(p, pN, p_other):
+                return ('node',N)
+            else:
+                return (None,None)
+        elif dim==1:
+            # This could be much smarter, but current use case has this as a rare
+            # occasion, so just brute force it.  find a half-edge, make sure it points
+            # towards us, and go.
+            if loc_type==self.OUTSIDE_AFFINE_HULL:
+                # we know that p is not on the line, but p_other could be.
+                # get an edge:
+                j=six.next(self.valid_edge_iter())
+                he=self.halfedge(j,0)
+
+                # get a half-edge facing p:
+                oj=robust_predicates.orientation(p,
+                                                 self.nodes['x'][he.node_rev()],
+                                                 self.nodes['x'][he.node_fwd()])
+                assert oj!=0.0 # that would mean we're collinear
+                # if the left side of he is facing us, 
+                if oj>0:
+                    # good - the left side of he, from rev to fwd, is facing p.
+                    pass
+                else:
+                    # flip it.
+                    he=he.opposite()
+
+                # first - check against p_other - it could be on the same side
+                # of the line, on the line, or on the other side of the line.
+                ojo=robust_predicates.orientation(p_other,
+                                                  self.nodes['x'][he.node_rev()],
+                                                  self.nodes['x'][he.node_fwd()])
+                if ojo>0:
+                    # p_other is on the same side of the line as p
+                    return (None,None)
+                elif ojo==0:
+                    # still have to figure out whether p_other is in the line or
+                    # off the end.
+                    o_loc_face,o_loc_type,o_loc_index=self.locate(p_other)
+                    # just saw that it was in line, so better not be outside affine hull
+                    assert o_loc_type!=self.OUTSIDE_AFFINE_HULL
+                    if o_loc_type==self.OUTSIDE_CONVEX_HULL:
+                        # a point off the line to a point beyond the ends of the line -
+                        # no intersection.
+                        return (None,None)
+                    else:
+                        if o_loc_type==self.IN_VERTEX:
+                            return ('node',o_loc_index)
+                        elif o_loc_type==self.IN_EDGE:
+                            return ('edge',o_loc_index)
+                    # shouldn't be possible
+                    assert False
+                else: # p_other is on the other side
+                    o_rev=robust_predicates.orientation(p,
+                                                        self.nodes['x'][he.node_rev()],
+                                                        p_other)
+                    if o_rev==0.0:
+                        return ('node',he.node_rev())
+                    if o_rev > 0:
+                        # rev is to the right of the p--p_other line,
+                        # so walk forward...
+                        A=p ; B=p_other
+                    else:
+                        # flip it around to keep the loop logic the same.
+                        # note that this results in one extra loop, since rev
+                        # becomes fwd and we already know that rev is not
+                        # far enough over.  whatever.
+                        A=p_other ; B=p
+                        he=he.opposite()
+                    while 1:
+                        n_fwd=he.node_fwd()
+                        o_fwd=robust_predicates.orientation(A,
+                                                            self.nodes['x'][n_fwd],
+                                                            B)
+                        if o_fwd==0.0:
+                            return ('node',n_fwd)
+                        if o_fwd<0:
+                            return ('edge',he.j)
+                        # must go further!
+                        he_opp=he.opposite()
+                        he=he.fwd()
+                        if he == he_opp: # went round the end - no intersection.
+                            return (None,None)
+            else: # OUTSIDE_CONVEX_HULL
+                # points are in a line, and we're on that line but off the end.
+                # in this case, loc_index gives a nearby node
+                # so either p_other is also on the line, and the answer
+                # is ('node',loc_index)
+                # or it's not on the line, and the answer is (None,None)
+                orient = robust_predicates.orientation(p,
+                                                       self.nodes['x'],
+                                                       p_other)
+                if orient!=0.0:
+                    return (None,None)
+                if ordered(p,self.nodes['x'][loc_index],p_other):
+                    return ('node',loc_index)
+                else:
+                    return (None,None)
+
+        elif dim==2:
+            j=loc_index
+            # use that to get a half-edge facing p...
+            he_original = he = self.halfedge(j,0)
+
+            # make sure we got the one facing out
+            if he.cell()>=0:
+                he=he.opposite()
+
+            assert he.cell()<0
+
+            # brute force it
+            while 1:
+                # does this edge, or one of it's nodes, fit the bill?
+                n_rev=he.node_rev()
+                n_fwd=he.node_fwd()
+
+                o_j=robust_predicates.orientation(p,
+                                                  self.nodes['x'][n_rev],
+                                                  self.nodes['x'][n_fwd])
+                if o_j<0:
+                    # this edge is facing away from p - not a candidate.
+                    pass
+                else:
+                    # note that we could be collinear, o_j==0.0.
+                    o_rev=robust_predicates.orientation(p,self.nodes['x'][n_rev],p_other)
+                    o_fwd=robust_predicates.orientation(p,self.nodes['x'][n_fwd],p_other)
+                    if o_rev == 0.0:
+                        if o_fwd == 0.0:
+                            assert o_j==0.0
+                            if ordered(p,self.nodes['x'][n_rev],self.nodes['x'][n_fwd]):
+                                return ('node',n_rev)
+                            else:
+                                return ('node',n_fwd)
+                        else:
+                            return ('node',n_rev)
+                    elif o_rev>0:
+                        if o_fwd<0:
+                            # found the edge!
+                            return ('edge',he.j)
+                        elif o_fwd==0:
+                            return ('node',n_fwd)
+                        else:
+                            # the whole edge is on the wrong side of the segment
+                            pass
+                    else: # o_rev<0
+                        pass
+                he=he.fwd()
+                if he==he_original:
+                    # none satisfied the intersection
+                    return (None,None)
+
+    def locate_for_traversal(self,p,p_other):
+        """ Given a point [x,y], reformat the result of 
+        self.locate() to be compatible with the traversal 
+        algorithm below. In cases where p is outside the
+        existing cells/edges/nodes, use the combination of p and p_other
+        to figure out the first element which would be hit.
+        """
+        # Here - figure out which cell, edge or node corresponds to pB
+        loc_face,loc_type,loc_index=self.locate(p)
+        # not ready for ending point far away, outside
+        if loc_type in [self.OUTSIDE_AFFINE_HULL,self.OUTSIDE_CONVEX_HULL]:
+            return self.locate_for_traversal_outside(p,p_other,loc_face,loc_type,loc_index)
+        elif loc_type == self.IN_VERTEX:
+            if loc_face == self.INF_CELL:
+                feat=('node', loc_index)
+            else:
+                feat=('node', self.cells['nodes'][loc_face, loc_index])
+        elif loc_type == self.IN_EDGE:
+            # Hmm - this should generally a half-edge, but choosing which half-edge
+            # is more involved, and there is the chance that the edge is collinear
+            # with the direction, in which case we should report the node?  or
+            # revamp how collinear edges are handled.
+            feat=('edge', loc_index)
+        elif loc_type == self.IN_FACE:
+            feat=('cell', loc_face)
+        else:
+            assert False # shouldn't happen
+        return feat
+    
+    def gen_intersected_elements(self,nA=None,nB=None,pA=None,pB=None):
+        """ 
+        This is a new take on find_intersected_elements, with two changes:
+        1. Either nodes or arbitrary points can be given
+        2. Elements are returned as a generator, rather than compiled into a list
+        and returned all at once.
+
+        returns a history of the elements traversed.
+        this includes:
+          ('node',<node index>)
+          ('edge',<half edge>)
+          ('cell',<cell index>)
+
+        Notes:
+        Traversing along an edge is not included - but any
+        pair of nodes in sequence implies an edge between them.
+
+        The starting and ending features are included. If points were given
+        instead of nodes, then the feature here may be a cell, edge or node.
+        
+        When the point is outside the convex hull or affine hull, then there is not a
+        corresponding feature (since otherwise one would assume that the feature
+        is truly intersected).
+        """
+        
+
+        # verify that it was called correctly
+        if (nA is not None) and (nB is not None):
+            assert nA!=nB
+        assert (nA is None) or (not self.nodes['deleted'][nA])
+        assert (nB is None) or (not self.nodes['deleted'][nB])
+
+        assert (nA is None) != (pA is None)
+        assert (nB is None) != (pB is None) 
+
+        dim=self.dim()
+
+        if nA is not None:
+            A=self.nodes['x'][nA]
+            trav=('node',nA)
+        else:
+            A=pA # trav set below
+
+        if nB is not None:
+            B=self.nodes['x'][nB]
+            end=('node',nB)
+        else:
+            B=pB # trav set below
+        
+        if nA is None:
+            trav=self.locate_for_traversal(A,B)
+            if trav[0] is None:
+                return # there are not intersections
+            
+        if nB is None:
+            end=self.locate_for_traversal(B,A)
+                
+        # keep tracks of features crossed, including starting/ending
+        assert trav[0] is not None
+        history=[trav]
+        yield trav 
+
+        if dim==0:
+            # already yielded the one possible intersection
+            return
+        elif dim==1:
+            # will have to come back to fix this to include points
+            assert trav[0]=='node'
+            n_nbrs=self.node_to_nodes(trav[1])
+            for n_nbr in n_nbrs:
+                if n_nbr==nB:
+                    trav = ('node',nB)
+                    history.append( trav )
+                    yield trav # return history
+                    return
+                if ordered( A,
+                            self.nodes['x'][n_nbr],
+                            B ):
+                    trav=('node',n_nbr)
+                    history.append( trav )
+                    yield trav
+                    he=self.nodes_to_halfedge(nA,n_nbr)
+                    break
+            else:
+                # FAILING HERE
+                assert False # should never get here
+            
+            while trav!=('node',nB):
+                he=he.fwd()
+                trav=('node',he.node_fwd())
+                history.append(trav)
+                yield trav
+            #return history
+            return
+        else: # dim==2
+            while trav!=end:
+                if trav[0]=='node':
+                    # Crossing through a node
+                    ntrav=trav[1]
+                    for c in self.node_to_cells(ntrav):
+                        cn=self.cell_to_nodes(c)
+                        # print "At node %d, checking cell %d (%s)"%(ntrav,c,cn)
+                        ci_trav=list(cn).index(ntrav) # index of ntrav in cell c
+                        nD=cn[(ci_trav+1)%3]
+                        nE=cn[(ci_trav+2)%3]
+                        
+                        if end[0]=='node' and (end[1] in [nD,nE]):
+                            # trav=('node',nB)
+                            trav=end
+                            break
+
+                        # Here
+                        D=self.nodes['x'][nD]
+                        oD=robust_predicates.orientation( A,B,D )
+                        if oD>0:
+                            continue
+                        N=self.nodes['x'][ntrav]
+                        if oD==0 and ordered(N,D,B):
+                            # fell exactly on the A-B segment, and is in the
+                            # right direction
+                            # this is where we could also mention that we traversed
+                            # the edge (ntrav,nD)
+                            trav=('node',nD)
+                            break
+
+                        E=self.nodes['x'][nE]
+                        oE=robust_predicates.orientation( A,B,E )
+                        if oE<0:
+                            continue
+                        if oE==0 and ordered(N,E,B):
+                            # direction
+                            # again - fell exactly on the segment A-B, it's in the right
+                            # direction.  we *could* also mention that we traversed
+                            # the edge (ntrav,nE)
+                            trav=('node',nE)
+                            break
+                        j=self.cell_to_edges(c)[ (ci_trav+1)%3 ]
+                        j_nbrs=self.edge_to_cells(j)
+                        # AB crosses an edge - record the edge, and the side we are
+                        # approaching from:
+                        trav=('cell',c)
+
+                        if trav==end:
+                            # don't try to traverse the cell - we're done!
+                            # trav will get appended below
+                            break
+                        else:
+                            # note that we're passing right through
+                            history.append(trav)
+                            yield trav
+                            trav=None
+                        
+                            if j_nbrs[0]==c:
+                                trav=('edge',self.halfedge(j,0))
+                                # making sure I got the 0/1 correct
+                                assert trav[1].cell()==c
+                                break
+                            elif j_nbrs[1]==c:
+                                trav=('edge',self.halfedge(j,1))
+                                # ditto
+                                assert trav[1].cell()==c
+                                break
+                            else:
+                                assert False
+                elif trav[0]=='edge':
+                    # trav[1].cell() is the cell we just left
+                    # this then is the half-edge facing the cell we're
+                    # entering
+                    he=trav[1].opposite()
+                    
+                    # have to choose between the opposite two edges or their common
+                    # node:
+                    c_next=he.cell()
+                    trav=('cell',c_next)
+                    if trav==end:
+                        pass
+                    else:
+                        # record the cell we just passed through
+                        history.append(trav)
+                        yield trav
+
+                        # HERE
+                        nD=he.fwd().node_fwd()
+                        # print "Entering cell %d with nodes %s"%(c_next,self.cell_to_nodes(c_next))
+
+                        oD=robust_predicates.orientation( A,B, self.nodes['x'][nD] )
+                        if oD==0:
+                            trav=('node',nD)
+                        elif oD>0:
+                            # going to cross the edge "on the right" (I think)
+                            trav=('edge',he.fwd())
+                        else:
+                            # going to cross the edge "on the left"
+                            trav=('edge',he.rev())
+                else:
+                    assert False
+                history.append(trav)
+                yield trav
+        #return history
+        return
+    
     def add_constraint(self,nA,nB):
         jAB=self.nodes_to_edge([nA,nB])
         if jAB is not None:
@@ -1146,8 +1562,15 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
         self.fill_hole( left_nodes )
         self.fill_hole( right_nodes )
 
-    def remove_constraint(self,nA,nB):
-        j=self.nodes_to_edge([nA,nB])
+    def remove_constraint(self,nA=None,nB=None,j=None):
+        """ Assumes that there exists a constraint between nodes
+        nA and nB (or that the edge given by j is constrained).
+        The constrained flag is removed for the edge, and if
+        the Delaunay criterion is no longer satisfied edges are
+        flipped as needed.
+        """
+        if j is None:
+            j=self.nodes_to_edge([nA,nB])
         assert self.edges['constrained'][j]
         self.edges['constrained'][j]=False
 

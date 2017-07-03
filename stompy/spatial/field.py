@@ -10,9 +10,7 @@ from builtins import range
 from builtins import object
 # from past.utils import old_div
 
-# from numpy import *
 import numpy as np # to help in transition
-# from safe_pylab import *
 
 import glob,types
 
@@ -230,16 +228,16 @@ class Field(object):
         return self.value(X)
 
     def __mul__(self,other):
-        return BinopField(self,multiply,other)
+        return BinopField(self,np.multiply,other)
 
     def __rmul__(self,other):
-        return BinopField(other,multiply,self)
+        return BinopField(other,np.multiply,self)
 
     def __add__(self,other):
-        return BinopField(self,add,other)
+        return BinopField(self,np.add,other)
     
     def __sub__(self,other):
-        return BinopField(self,subtract,other)
+        return BinopField(self,np.subtract,other)
 
     def to_grid(self,nx=None,ny=None,interp='linear',bounds=None,dx=None,dy=None,valuator='value'):
         """ bounds is a 2x2 [[minx,miny],[maxx,maxy]] array, and is *required* for BlenderFields
@@ -264,12 +262,12 @@ class Field(object):
         if nx is None:
             nx=1+int(np.round((xmax-xmin)/dx))
             ny=1+int(np.round((ymax-ymin)/dy))
-        x = linspace( xmin,xmax, nx )
-        y = linspace( ymin,ymax, ny )
+        x = np.linspace( xmin,xmax, nx )
+        y = np.linspace( ymin,ymax, ny )
 
-        xx,yy = meshgrid(x,y)
+        xx,yy = np.meshgrid(x,y)
 
-        X = concatenate( (xx[...,None], yy[...,None]), axis=2)
+        X = np.concatenate( (xx[...,None], yy[...,None]), axis=2)
 
         if valuator=='value':
             newF = self.value(X)
@@ -279,11 +277,6 @@ class Field(object):
             
         return SimpleGrid(extents=[xmin,xmax,ymin,ymax],
                           F=newF,projection=self.projection())
-
-    
-        
-        
-                   
 
 
 # Different internal representations:
@@ -975,11 +968,11 @@ class XYZField(Field):
         X = np.asanyarray(X)
         orig_shape = X.shape
 
-        X = reshape(X,(-1,2))
+        X = X.reshape((-1,2))
 
         newF = self.interpolate(X)
         
-        newF = reshape( newF, orig_shape[:-1])
+        newF = newF.reshape(orig_shape[:-1])
         if newF.ndim == 0:
             return float(newF)
         else:
@@ -989,7 +982,7 @@ class XYZField(Field):
         # bdry is an array of vertices (presumbly on the boundary)
         l = np.zeros( len(bdry), np.float64 )
 
-        ax = gca()
+        ax = plt.gca()
         for i in range(len(bdry)):
             l[i] = self.value( bdry[i] )
 
@@ -1003,8 +996,10 @@ try:
     # And does it have Apollonius graph bindings?
     cgal_bindings = None
     try:
-        from CGAL import Point_2,Site_2
-        import CGAL.Apollonius_Graph_2 as Apollonius_Graph_2
+        # from CGAL import Point_2,Site_2
+        from CGAL.CGAL_Kernel import Point_2# , Site_2
+
+        import CGAL.CGAL_Apollonius_Graph_2 as Apollonius_Graph_2
         cgal_bindings = 'old'
     except ImportError:
         pass
@@ -3237,7 +3232,7 @@ class MultiRasterField(Field):
         X = np.array(X)
         orig_shape = X.shape
 
-        X = reshape(X,(-1,2))
+        X = X.reshape((-1,2))
 
         newF = np.zeros( X.shape[0],np.float64 )
         
@@ -3246,7 +3241,7 @@ class MultiRasterField(Field):
                 print("%d/%d"%(i,X.shape[0]))
             newF[i] = self.value_on_point( X[i] )
         
-        newF = reshape( newF, orig_shape[:-1])
+        newF = newF.reshape(orig_shape[:-1])
         
         if newF.ndim == 0:
             return float(newF)
