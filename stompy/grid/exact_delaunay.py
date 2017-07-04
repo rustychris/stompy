@@ -1297,11 +1297,26 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
             else:
                 feat=('node', self.cells['nodes'][loc_face, loc_index])
         elif loc_type == self.IN_EDGE:
-            # Hmm - this should generally a half-edge, but choosing which half-edge
-            # is more involved, and there is the chance that the edge is collinear
-            # with the direction, in which case we should report the node?  or
-            # revamp how collinear edges are handled.
-            feat=('edge', loc_index)
+            # This should be a half-edge.
+            # The half-edge is chosen such that it either faces p_other, or
+            # if all four points are collinear, the ordering is rev -- p -- fwd -- p_other
+            # or rev -- p -- p_other -- fwd.
+            
+            he=self.half_edge(loc_index,0) # start with arbitrary orientation
+            p_rev,p_fwd = self.nodes['x'][ he.nodes() ]
+
+            o_p_other = robust_predicates.orientation(p_other, p_rev, p_fwd)
+            if o_p==0.0:
+                if ordered(p_rev,p,p_other):
+                    # good - we're looking along, from rev to fwd
+                    pass
+                else:
+                    he=he.opposite()
+            elif o_p<0:
+                he=he.opposite()
+            else:
+                pass 
+            feat=('edge', he)
         elif loc_type == self.IN_FACE:
             feat=('cell', loc_face)
         else:
@@ -1310,10 +1325,12 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
     
     def gen_intersected_elements(self,nA=None,nB=None,pA=None,pB=None):
         """ 
-        This is a new take on find_intersected_elements, with two changes:
+        This is a new take on find_intersected_elements, with changes:
         1. Either nodes or arbitrary points can be given
         2. Elements are returned as a generator, rather than compiled into a list
-        and returned all at once.
+           and returned all at once.
+        3. Traversing along an edge was implied in the output of find_intersected_elements,
+           but is explicitly included here as a node--half_edge--node sequence.
 
         returns a history of the elements traversed.
         this includes:
@@ -1322,18 +1339,15 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
           ('cell',<cell index>)
 
         Notes:
-        Traversing along an edge is not included - but any
-        pair of nodes in sequence implies an edge between them.
-
         The starting and ending features are included. If points were given
         instead of nodes, then the feature here may be a cell, edge or node.
         
         When the point is outside the convex hull or affine hull, then there is not a
         corresponding feature (since otherwise one would assume that the feature
-        is truly intersected).
+        is truly intersected).  The first feature returned is simply the first feature
+        encountered along the path, necessarily an edge or node, not a face.
         """
         
-
         # verify that it was called correctly
         if (nA is not None) and (nB is not None):
             assert nA!=nB
@@ -1370,84 +1384,133 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
         history=[trav]
         yield trav 
 
+        if trav==end:
+            return
+        
         if dim==0:
             # already yielded the one possible intersection
+            # but this case should be caught by the return just above
+            assert False
             return
         elif dim==1:
-            # will have to come back to fix this to include points
-            assert trav[0]=='node'
-            n_nbrs=self.node_to_nodes(trav[1])
-            for n_nbr in n_nbrs:
-                if n_nbr==nB:
-                    trav = ('node',nB)
-                    history.append( trav )
-                    yield trav # return history
-                    return
-                if ordered( A,
-                            self.nodes['x'][n_nbr],
-                            B ):
-                    trav=('node',n_nbr)
-                    history.append( trav )
-                    yield trav
-                    he=self.nodes_to_halfedge(nA,n_nbr)
-                    break
-            else:
-                # FAILING HERE
-                assert False # should never get here
-            
-            while trav!=('node',nB):
-                he=he.fwd()
+            # in the case where p -- p_other crosses the 1-dimensional set of
+            # nodes, trav==end, and we already returned above.
+            # otherwise, we walk along the edges and nodes
+
+            if trav[0]=='node': # get a first half-edge going in the correct direction
+                n_nbrs=self.node_to_nodes(trav[1])
+                for n_nbr in n_nbrs:
+                    if (ordered( A,
+                                 self.nodes['x'][n_nbr],
+                                 B ) or
+                        np.all(B==self.nodes['x'][n_nbr])):
+                        he=self.nodes_to_halfedge(nA,n_nbr)
+                        break
+                else:
+                    assert False
+                trav=('edge',he)
+                history.append(trav)
+                yield trav
+                
+            while trav != end:
                 trav=('node',he.node_fwd())
                 history.append(trav)
                 yield trav
-            #return history
+
+                if trav==end:
+                    break
+                
+                he=he.fwd()
+                trav=('edge',he)
+                history.append(trav)
+                yield trav
             return
         else: # dim==2
             while trav!=end:
                 if trav[0]=='node':
                     # Crossing through a node
                     ntrav=trav[1]
+                    N=self.nodes['x'][ntrav]
+                    
                     for c in self.node_to_cells(ntrav):
                         cn=self.cell_to_nodes(c)
                         # print "At node %d, checking cell %d (%s)"%(ntrav,c,cn)
                         ci_trav=list(cn).index(ntrav) # index of ntrav in cell c
+                        # the other two nodes of the cell
                         nD=cn[(ci_trav+1)%3]
                         nE=cn[(ci_trav+2)%3]
-                        
-                        if end[0]=='node' and (end[1] in [nD,nE]):
-                            # trav=('node',nB)
-                            trav=end
-                            break
+
+                        # maybe this can be folded in below
+                        #if end[0]=='node' and (end[1] in [nD,nE]):
+                        #    # trav=('node',nB)
+                        #    trav=end
+                        #    break
 
                         # Here
                         D=self.nodes['x'][nD]
                         oD=robust_predicates.orientation( A,B,D )
                         if oD>0:
+                            # D is to the right of E, and our target, A is to the right
+                            # of both, so this cell is not good
                             continue
-                        N=self.nodes['x'][ntrav]
-                        if oD==0 and ordered(N,D,B):
+                        if oD==0 and np.dot(B-A,D-N)>0: # ordered(A,N,D):
+                            # used to test for ordered(N,D,B), but B could be on the
+                            # edge, at D, or beyond D.  Test with A to know that the 
+                            # edge is going in the right direction, then check for where
+                            # B might fall.
+                            # HERE: This is a problem, though, because it's possible for
+                            # A==N.
+                            # What I really want is for A-B to be in the same direction
+                            # as N-D.
+                            # could test a dot product, but that invites some roundoff
+                            # in sinister situations.  The differencing is probably not
+                            # a big deal - if we can represent the absolute values
+                            # distinctly, then we can certainly represent their differences.
+                            # the multiplication could lead to numbers which are too small
+                            # to represent.  Any of these issues require absurdly small
+                            # values/offsets in the input nodes, and we have already
+                            # established that these all lie on a line and are distinct.
+                            # 
+                            # The possible positive orderings
+                            #   [A=N] -- D -- B
+                            #   A -- N -- D -- B
+                            #   [A=N] -- [D==B]
+                            #   [A=N] -- B -- D
+                            # 
+                            
                             # fell exactly on the A-B segment, and is in the
                             # right direction
-                            # this is where we could also mention that we traversed
-                            # the edge (ntrav,nD)
+
+                            # Announce the edge, which could be the end of the traversal
+                            trav=('edge',self.nodes_to_halfedge(ntrav,nD))
+                            history.append(trav)
+                            yield trav
+                            if trav==end:
+                                return
+                            # And on to the node:
                             trav=('node',nD)
-                            break
+                            break # and we've completed this step
 
                         E=self.nodes['x'][nE]
                         oE=robust_predicates.orientation( A,B,E )
                         if oE<0:
+                            # A is to the left of E
                             continue
-                        if oE==0 and ordered(N,E,B):
-                            # direction
+                        if oE==0 and np.dot(B-A,E-N): # ordered(A,N,E):
+                            # Same as above - establish that it goes in the correct direction.
+                            # again, the dot product is mildly dangerous
                             # again - fell exactly on the segment A-B, it's in the right
-                            # direction.  we *could* also mention that we traversed
-                            # the edge (ntrav,nE)
+                            # direction.
+                            trav=('edge',self.nodes_to_halfedge(ntrav,nE))
+                            history.append(trav)
+                            yield trav
+                            if trav==end:
+                                return
                             trav=('node',nE)
                             break
-                        j=self.cell_to_edges(c)[ (ci_trav+1)%3 ]
-                        j_nbrs=self.edge_to_cells(j)
-                        # AB crosses an edge - record the edge, and the side we are
-                        # approaching from:
+                        
+                        # if we get to here, then A--B passes through the cell, and either
+                        # we stop at this cell, or A--B crosses the opposite edge:
                         trav=('cell',c)
 
                         if trav==end:
@@ -1455,41 +1518,44 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
                             # trav will get appended below
                             break
                         else:
-                            # note that we're passing right through
+                            # announce the cell, and move on to the edge
                             history.append(trav)
                             yield trav
-                            trav=None
-                        
+                            trav=None # avoid confusion, clear this out
+                            
+                            # AB crosses an edge - record the edge, and the side we are
+                            # approaching from:
+                            
+                            j=self.cell_to_edges(c)[ (ci_trav+1)%3 ]
+                            j_nbrs=self.edge_to_cells(j)
+                            
                             if j_nbrs[0]==c:
                                 trav=('edge',self.halfedge(j,0))
-                                # making sure I got the 0/1 correct
-                                assert trav[1].cell()==c
-                                break
                             elif j_nbrs[1]==c:
                                 trav=('edge',self.halfedge(j,1))
-                                # ditto
-                                assert trav[1].cell()==c
-                                break
                             else:
                                 assert False
+                            # making sure I got the 0/1 correct
+                            assert trav[1].cell()==c
+                            break
+                                
                 elif trav[0]=='edge':
                     # trav[1].cell() is the cell we just left
                     # this then is the half-edge facing the cell we're
                     # entering
                     he=trav[1].opposite()
                     
-                    # have to choose between the opposite two edges or their common
-                    # node:
                     c_next=he.cell()
                     trav=('cell',c_next)
                     if trav==end:
-                        pass
+                        pass # done!
                     else:
+                        # have to choose between the opposite two edges or their common
+                        # node.
                         # record the cell we just passed through
                         history.append(trav)
                         yield trav
 
-                        # HERE
                         nD=he.fwd().node_fwd()
                         # print "Entering cell %d with nodes %s"%(c_next,self.cell_to_nodes(c_next))
 
@@ -1506,7 +1572,6 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
                     assert False
                 history.append(trav)
                 yield trav
-        #return history
         return
     
     def add_constraint(self,nA,nB):
