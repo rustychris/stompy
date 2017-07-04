@@ -1271,7 +1271,7 @@ class Paving(paving_base,OptimizeGridMixin):
         self.ag_density = self.apollonius_scale(r=self.telescope_rate)
 
         # The realy density is then the lesser of the requested and the telescoped
-        self.density = field.BinopField( self.ag_density,minimum,self.requested_density )
+        self.density = field.BinopField( self.ag_density,np.minimum,self.requested_density )
         if self.verbose>0:
             print("done with adjust_scale")
 
