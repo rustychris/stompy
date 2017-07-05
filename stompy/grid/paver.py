@@ -1493,7 +1493,7 @@ class Paving(paving_base,OptimizeGridMixin):
     showing_history = None
     def plot_boundary(self):
         for r in self.original_rings:
-            fill(r[:,0], r[:,1], fc='none',ec='gray')
+            plt.fill(r[:,0], r[:,1], fc='none',ec='gray')
 
     def plot_unpaved(self):
         for unpaved in self.unpaved:

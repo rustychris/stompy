@@ -565,7 +565,8 @@ class LiveDtGridBase(orthomaker.OrthoMaker):
                 # why is this a warning here, but for unmove_node we bail out?
                 # I'm not really sure how this happens in the first place...
                 # this was a warning, but investigating...
-                # HERE: And now one of the tests is failing here.  
+                # HERE: And now test_sine_sine is failing here.
+                pdb.set_trace()
                 raise Exception("WARNING: move_node len(DT constraints) != len(pnt2edges(i))")
 
             for edge,a,b in to_remove:

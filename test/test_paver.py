@@ -36,7 +36,7 @@ def test_basic():
     p.pave_all()
 
 # failing with an attempt to insert node at [0,0] twice
-test_basic()    
+# test_basic()    
 
 ##     
 # A circle - r = 100, C=628, n_points = 628
@@ -297,7 +297,7 @@ def test_dumbarton():
 # hmm - maybe better just to have a sinusoid channel, then perturb it
 # and put some islands in there.  having a wide range of scales looks
 # nice but isn't going to be a great test.
-def test_sine_sine():
+def gen_sine_sine():
     t = np.linspace(1.0,12*np.pi,400)
     x1 = 100*t
     y1 = 200*np.sin(t)
@@ -348,8 +348,61 @@ def test_sine_sine():
     print("Adjusting other densities to local feature size")
     p.telescope_rate=1.1
     p.adjust_density_by_apollonius()
+
+    return p
+
+def test_sine_sine():
+    p=gen_sine_sine()
     p.pave_all()
 
 
+    
+# debugging the issue with sine_sine()
+# fails deep inside here, step 512
+# lots of crap coming from this one, too.
+# at some point, dt_incident_constraints reports only 1 constraint,
+# but it should have two, which happens because of a bad slide.
 
-test_sine_sine()
+# Tricky to guard against -
+# Several avenues to fix this:
+#   1. Make the resample_neighbors code (which I'm pretty sure is the culprit)
+#      more cautious and willing to accept a local maximum in distance instead
+#      of shoving a node far away.  This is a nice but incomplete solution.
+#   2. The resample code, which I think is responsible for adding the new node
+#      that screwed it all up, should check for self-intersections
+#      this is probably the appropriate thing to do.
+
+
+# test_sine_sine()
+
+p=gen_sine_sine()
+
+p.pave_all(n_steps=512)
+
+## 
+p.verbose=3
+
+p.pave_all(n_steps=513)
+##
+zoom=plt.axis()
+
+plt.figure(1).clf()
+p.plot()
+p.plot_boundary()
+plt.axis('equal')
+plt.axis(zoom)
+##
+
+# Step 510 really takes the end off an island
+# yep.
+p.pave_all(n_steps=512)
+
+##
+
+# node is 3626
+# to_remove: an edge with nodes 5374, 3626
+# pnt2edges: [3626, 5915]
+# part of the problem is that there is some sliding around
+# at the beginning of step 512 that really wreaks havoc on
+# what was already a dicey node.
+p.plot_nodes([3626,5374])
