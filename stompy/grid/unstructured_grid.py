@@ -77,6 +77,9 @@ class HalfEdge(object):
     def __str__(self):
         return "<HalfEdge %d -> %d>"%( self.node_rev(),self.node_fwd() )
 
+    def __repr__(self):
+        return self.__str__()
+
     def nbr(self,direc):
         """ direc: 0 means fwd, 1 is reverse
         This returns an adjacent half-edge
@@ -118,9 +121,16 @@ class HalfEdge(object):
         return HalfEdge(grid=self.grid,edge=self.j,orient=1-self.orient)
     
     def node_rev(self):
-        return self.grid.edges['nodes'][self.j,self.orient]
+        """ index of the node in the reverse direction of the halfedge """
+        return self.grid.edges['nodes'][self.j, self.orient]
     def node_fwd(self):
-        return self.grid.edges['nodes'][self.j,1-self.orient]
+        """ index of the node in the forward direction of the halfedge """
+        return self.grid.edges['nodes'][self.j, 1-self.orient]
+    def nodes(self):
+        """ 
+        equivalent to [node_rev(),node_fwd()]
+        """
+        return self.grid.edges['nodes'][self.j, [self.orient, 1-self.orient]]
 
     @staticmethod
     def from_nodes(grid,rev,fwd):

@@ -1271,7 +1271,7 @@ class Paving(paving_base,OptimizeGridMixin):
         self.ag_density = self.apollonius_scale(r=self.telescope_rate)
 
         # The realy density is then the lesser of the requested and the telescoped
-        self.density = field.BinopField( self.ag_density,minimum,self.requested_density )
+        self.density = field.BinopField( self.ag_density,np.minimum,self.requested_density )
         if self.verbose>0:
             print("done with adjust_scale")
 
@@ -1493,7 +1493,7 @@ class Paving(paving_base,OptimizeGridMixin):
     showing_history = None
     def plot_boundary(self):
         for r in self.original_rings:
-            fill(r[:,0], r[:,1], fc='none',ec='gray')
+            plt.fill(r[:,0], r[:,1], fc='none',ec='gray')
 
     def plot_unpaved(self):
         for unpaved in self.unpaved:

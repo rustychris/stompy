@@ -990,6 +990,133 @@ class XYZField(Field):
             ax.add_patch(cir)
 
 
+class PyApolloniusField(XYZField):
+    """ 
+    Takes a set of vertices and the allowed scale at each, and
+    extrapolates across the plane based on a uniform telescoping rate
+    """
+
+    # But it's okay if redundant factor is None
+
+    def __init__(self,X=None,F=None,r=1.1,redundant_factor=None):
+        """r: telescoping rate
+
+        redundant_factor: if a point being inserted has a scale which
+        is larger than the redundant_factor times the existing scale
+        at its location, then don't insert it.  So typically it would
+        be something like 0.95, which says that if the existing scale
+        at X is 100, and this point has a scale of 96, then we don't
+        insert.
+        """
+        if X is None:
+            assert F is None
+            X=np.zeros( (0,2), np.float64)
+            F=np.zeros( 0, np.float64)
+            
+        super(PyApolloniusField,self).__init__(X,F)
+        self.r = r
+        self.redundant_factor = redundant_factor
+        self.offset=np.array([0,0]) # not using an offset for now.
+        
+        # self.W = -(self.F / (self.r-1.0) ) # weights
+
+    def insert(self,xy,f):
+        """ directly insert a point into the Apollonius graph structure
+        note that this may be used to incrementally construct the graph,
+        if the caller doesn't care about the accounting related to the
+        field -
+        returns False if redundant checks are enabled and the point was
+        deemed redundant.
+        """
+        # w = -(f / (self.r-1.0) ) # the weight
+
+        self.X=array_append(self.X,xy)
+        self.F=array_append(self.F,f)
+        # self.W=array_append(self.W, -(f / (self.r-1.0) ))
+        
+        return True
+
+    def value(self,X):
+        return self.interpolate(X)
+    
+    def interpolate(self,X):
+        X=np.asanyarray(X)
+        newF = np.zeros( X.shape[:-1], np.float64 )
+        
+        if len(self.F)==0:
+            newF[:]=np.nan
+            return newF
+
+        # need to compute all pairs of distances:
+        # self.X ~ [N,2]
+        # X ~ [L,M,...,2]
+
+        # some manual index wrangling to get an outside-join-multiply
+        idx=(slice(None),) + tuple([None]*(X.ndim-1))
+
+        dx=X[None,...,0] - self.X[ idx + (0,)]
+        dy=X[None,...,1] - self.X[ idx + (1,)]
+        dist = np.sqrt(dx**2 + dy**2)
+
+        f = self.F[idx] + dist*(self.r-1.0)
+        
+        newF[:] = f.min(axis=0)
+        return newF
+
+    def to_grid(self,*a,**k):
+        # XYZField implementation is no good to us.
+        return Field.to_grid(self,*a,**k)
+
+    @staticmethod 
+    def read_shps(shp_names,value_field='value',r=1.1,redundant_factor=None):
+        """ Read points or lines from a list of shapefiles, and construct
+        an apollonius graph from the combined set of features.  Lines will be
+        downsampled at the scale of the line.
+        """
+        lines=[]
+        values=[]
+
+        for shp_name in shp_names:
+            print("Reading %s"%shp_name)
+
+            layer=wkb2shp.shp2geom(shp_name)
+            
+            for i in range(len(layer)):
+                geo = layer['geom'][i]
+
+                lines.append(np.array(geo.coords))
+                values.append(layer[value_field][i])
+        return PyApolloniusField.from_polylines(lines,values,
+                                                r=r,redundant_factor=redundant_factor)
+
+    @staticmethod
+    def from_polylines(lines,values,r=1.1,redundant_factor=None):
+        X = []
+        F = []
+        edges = []
+
+        for coords,value in zip(lines,values):
+            if len(coords) > 1: # it's a line - upsample
+                # need to say closed_ring=0 so it doesn't try to interpolate between
+                # the very last point back to the first
+                coords = upsample_linearring(coords,value,closed_ring=0)
+            if all(coords[-1]==coords[0]):
+                coords = coords[:-1]
+
+            # remove duplicates:
+            mask = np.all(coords[0:-1,:] == coords[1:,:],axis=1)
+            if np.sum(mask)>0:
+                print("WARNING: removing duplicate points in shapefile")
+                print(coords[mask])
+                coords = coords[~mask]
+
+            X.append( coords )
+            F.append( value*np.ones(len(coords)) )
+
+        X = np.concatenate( X )
+        F = np.concatenate( F )
+        return PyApolloniusField(X=X,F=F,r=r,redundant_factor=redundant_factor)
+
 has_apollonius=False
 try:
     import CGAL
@@ -1251,7 +1378,13 @@ except ImportError:
     #print "CGAL unavailable."
     pass
 except AttributeError:
-    print("You have CGAL, but no Apollonius Graph bindings - auto-telescoping won't work")
+    # print("You have CGAL, but no Apollonius Graph bindings - auto-telescoping won't work")
+    pass
+
+if not has_apollonius:
+    has_apollonius=True
+    log.info("Falling back to slow python implementation of ApolloniusField")
+    ApolloniusField=PyApolloniusField
 
 class ConstrainedScaleField(XYZField):
     """ Like XYZField, but when new values are inserted makes sure that
