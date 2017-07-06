@@ -1,4 +1,5 @@
 import os
+import io # python io.
 import numpy as np
 import pandas as pd
 import re
@@ -259,42 +260,100 @@ def parse_boundary_conditions(inp_file):
                 bcs.append( (bc_id,bc_typ,bc_grp) )
 
 
-def read_pli(fn):
+def read_pli(fn,one_per_line=True):
     """
     Parse a polyline file a la DFM inputs.
     Return a list of features:
-    [  (feature_label, N*M values), ... ]
+    [  (feature_label, N*M values, N labels), ... ]
     where the first two columns are typically x and y, but there may be
-    more columns depending on the usage.
-    """
-    with open(fn,'rt') as fp:
-        toker=inp_tok(fp)
-        token=lambda: six.next(toker)
+    more columns depending on the usage.  If no labels are in the file,
+    the list of labels will be all empty strings.
 
-        features=[]
-        while True:
-            try:
-                label=token()
-            except StopIteration:
-                break
-            nrows=int(token())
-            ncols=int(token())
-            geometry=[]
-            for row in range(nrows):
-                rec=[float(token()) for c in range(ncols)]
-                geometry.append(rec)
-            features.append( (label, np.array(geometry) ) )
+    Generally assumes that the file is honest about the number of fields,
+    but some files (like boundary condition pli) will add a text label for 
+    each node.
+
+    one_per_line: for files which add a label to each node but say nothing of 
+      this in the number of fields, one_per_line=True will assume that each line
+      of the text file has exactly one node, and any extra text becomes the label.
+    """
+    features=[]
+    
+    with open(fn,'rt') as fp:
+        if not one_per_line:
+            toker=inp_tok(fp)
+            token=lambda: six.next(toker)
+
+            while True:
+                try:
+                    label=token()
+                except StopIteration:
+                    break
+                nrows=int(token())
+                ncols=int(token())
+                geometry=[]
+                node_labels=[]
+                for row in range(nrows):
+                    rec=[float(token()) for c in range(ncols)]
+                    geometry.append(rec)
+                    node_labels.append("") 
+                features.append( (label, np.array(geometry), node_labels) )
+        else: # line-oriented approach which can handle unannounced node labels
+            while True:
+                label=fp.readline().strip()
+                if label=="":
+                    break
+                nrows,ncols = [int(s) for s in fp.readline().split()]
+                geometry=[]
+                node_labels=[]
+                for row in range(nrows):
+                    values=fp.readline().strip().split(maxsplit=ncols+1)
+                    geometry.append( [float(s) for s in values[:ncols]] )
+                    if len(values)>ncols:
+                        node_labels.append(values[ncols])
+                    else:
+                        node_labels.append("")
+                features.append( (label, np.array(geometry), node_labels) )
+                
     return features
 
-def write_pli(fn,pli_data):
-    with open(fn,'wt') as fp:
-        for label,data in pli_data:
+def write_pli(file_like,pli_data):
+    """
+    Reverse of read_pli.  
+    file_like: a string giving the name of a file to be opened (clobbering
+    an existing file), or a file-like object.
+    pli_data: [ (label, N*M values, [optional N labels]), ... ]
+    typically first two values of each row are x and y, and the rest depend on intended 
+    usage of the file
+    """
+    if hasattr(file_like,'write'):
+        fp=file_like
+        do_close=False
+    else:
+        fp=open(file_like,'wt')
+        do_close=True
+        
+    try:
+        for feature in pli_data:
+            label,data = feature[:2]
+            data=np.asanyarray(data)
+            if len(feature)==3:
+                node_labels=feature[2]
+            else:
+                node_labels=[""]*len(data)
+                
             fp.write("%s\n"%label)
             fp.write("     %d     %d\n"%data.shape)
-            block="\n".join( [ "  ".join(["%15s"%d for d in row])
-                               for row in data] )
+            if len(data) != len(node_labels):
+                raise Exception("%d nodes, but there are %d node labels"%(len(data),
+                                                                          len(node_labels)))
+            block="\n".join( [ "  ".join(["%15s"%d for d in row]) + "   " + node_label
+                               for row,node_label in zip(data,node_labels)] )
             fp.write(block)
             fp.write("\n")
+    finally:
+        if do_close:
+            fp.close()
 
 def grid_to_pli_data(g,node_fields,labeler=None):
     """
@@ -685,3 +744,170 @@ unit1 = m s-1
 
     fp_u.close()
     fp_v.close()
+
+
+class SectionedConfig(object):
+    """ 
+    Handles reading and writing of config-file like formatted files.
+    Follows some of the API of the standard python configparser
+    """
+    inline_comment_prefixes=('#',';')
+    
+    def __init__(self,filename=None,text=None):
+        """ 
+        filename: path to file to open and parse
+        text: a string containing the entire file to parse
+        """
+        self.sources=[] # maintain a list of strings identifying where values came from
+        self.rows=[]    # full text of each line
+        
+        if filename is not None:
+            self.read(filename)
+
+        if text is not None:
+            fp = StringIO(text)
+            self.read(fp,'text')
+
+    def read(self, filename, label=None):
+        if six.PY2:
+            file_base = file
+        else:
+            file_base = io.IOBase
+            
+        if isinstance(filename, file_base):
+            label = label or 'n/a'
+            fp=filename
+            filename=None
+        else:
+            fp = open(filename,'rt')
+            label=label or filename
+
+        self.sources.append(label)
+
+        for line in fp:
+            # save original text so we can write out a new suntans.dat with
+            # only minor changes
+            self.rows.append(line.rstrip("\n"))
+        if filename:
+            fp.close()
+
+    def entries(self):
+        """ 
+        Generator which iterates over rows, parsing them into index, section, key, value, comment.
+
+        key is always present, but might indicate a section by including square
+        brackets.
+        value may be a string, or None.  Strings will be trimmed
+        comment may be a string, or None.  It includes the leading comment character.
+        """
+        section=None
+        for idx,row in enumerate(self.rows):
+            parsed=self.parse_row(row)
+            
+            if parsed[0] is None: # blank line
+                continue # don't send back blank rows
+            
+            if parsed[0][0]=='[':
+                section=parsed[0]
+
+            yield [idx,section] + list(parsed)
+                
+    def parse_row(self,row):
+        section_patt=r'^(\[[A-Za-z0-9 ]+\])([#;].*)?$'
+        value_patt = r'^([A-Za-z0-9_]+)\s*=([^#;]*)([#;].*)?$'
+        blank_patt = r'^\s*([#;].*)?$'
+        
+        m_sec = re.match(section_patt, row)
+        if m_sec is not None:
+            return m_sec.group(1), None, m_sec.group(2)
+
+        m_val = re.match(value_patt, row)
+        if m_val is not None:
+            return m_val.group(1), m_val.group(2).strip(), m_val.group(3)
+
+        m_cmt = re.match(blank_patt, row)
+        if m_cmt is not None:
+            return None,None,m_cmt.group(1)
+
+        print("Failed to parse row:")
+        print(row)
+
+    def get_value(self,sec_key):
+        """
+        return the string-valued settings for a given key.  
+        if they key is not found, returns None.  
+        If the key is present but with no value, returns the empty string
+        """
+        section='[%s]'%sec_key[0].lower()
+        key = sec_key[1].lower()
+
+        for row_idx,row_sec,row_key,row_value,row_comment in self.entries():
+            if (row_key.lower() == key) and (section.lower() == row_sec.lower()):
+                return row_value
+        else:
+            return None
+
+    def set_value(self,sec_key,value):
+        # set value and optionally comment.
+        # sec_key: tuple of section and key (section without brackets)
+        # value: either the value (a string, or something that can be converted via str())
+        #   or a tuple of value and comment, without the leading comment character
+        section='[%s]'%sec_key[0].lower()
+        key=sec_key[1]
+        
+        if isinstance(value,tuple):
+            value,comment=value
+            comment='# ' + comment
+        else:
+            comment=None
+
+        value=self.val_to_str(value)
+        
+        for row_idx,row_sec,row_key,row_value,row_comment in self.entries():
+            if (row_key.lower() == key.lower()) and (section.lower() == row_sec.lower()):
+                comment = comment or row_comment or ""
+                self.rows[row_idx] = "%-18s= %-20s %s"%(row_key,value,comment)
+                return
+
+        # have to append it
+        if section!=row_sec:
+            self.rows.append(section)
+        self.rows.append("%s = %s %s"%(row_key,value,comment or ""))
+        
+    def __setitem__(self,sec_key,value):
+        self.set_value(sec_key,value)
+    def __getitem__(self,sec_key): 
+        return self.get_value(sec_key)
+    
+    def val_to_str(self,value):
+        # make sure that floats are formatted with plenty of digits:
+        # and handle annoyance of standard Python types vs. numpy types
+        # But None stays None, as it gets handled specially elsewhere
+        if value is None:
+            return None
+        if isinstance(value,float) or isinstance(value,np.floating):
+            return "%.12g"%value
+        else:
+            return str(value)
+
+    def write(self,filename):
+        """
+        Write this config out to a text file
+        filename: defaults to self.filename
+        check_changed: if True, and the file already exists and is not materially different,
+          then do nothing.  Good for avoiding unnecessary changes to mtimes.
+        backup: if true, copy any existing file to <filename>.bak
+        """
+        with open(filename,'wt') as fp:
+            for line in self.rows:
+                fp.write(line)
+                fp.write("\n")
+    
+class MDUFile(SectionedConfig):
+    """
+    Read/write MDU files, with an interface similar to python's
+    configparser, but better support for discerning and retaining
+    comments
+    """
+    pass
+    

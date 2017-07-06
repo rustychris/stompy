@@ -1,3 +1,8 @@
+import logging
+log=logging.getLogger('xr_utils')
+
+from collections import OrderedDict
+
 import xarray as xr
 import numpy as np
 
@@ -90,6 +95,9 @@ def redimension(ds,new_dims,
 
     save_mapping: create an additional variable in the output which stores the
     mapping of the linear dimension to the new, orthogonal dimensions
+
+    intragroup_dim: introduce an additional dimension to enumerate the original
+    data which map to the same new coordinates.
     """
     if not inplace:
         ds=ds.copy()
@@ -100,6 +108,10 @@ def redimension(ds,new_dims,
     Norig=len(orig_dims[0]) # length of the original, linear dimension
 
     uni_new_dims=[ np.unique(od) for od in orig_dims]
+
+    for und in uni_new_dims:
+        if np.any(und<0):
+            log.warning("New dimensions have negative values -- will continue but you probably want to drop those first")
 
     # note that this is just the shape that will replace occurences of lin_dim
     new_shape=[len(und) for und in uni_new_dims]
@@ -123,6 +135,8 @@ def redimension(ds,new_dims,
         new_idxs.append(intra_idx)
 
     # negative means missing.  at this point, intragroup_dim has not been taken care of
+    # mapper: array of the shape of the new dimensions, with each entry giving the linear
+    # index into the original dimension
     mapper=np.zeros(new_shape,'i4') - 1
     mapper[ tuple(new_idxs) ] = np.arange(Norig)
 
@@ -159,15 +173,19 @@ def redimension(ds,new_dims,
         # this is time x nSegment
         # ds[vname].values.shape # 10080,1494
 
-        # This is the beast:
+        # This is the beast: but now it's including some crap values at the beginning
         new_vals=ds[vname].values[var_new_slice]
         mask=np.zeros_like(new_vals,'b1')
         mask[mask_slice] = True
 
         new_vals=np.ma.array(new_vals,mask=mask)
 
-        # assumes a float-valued variable! maybe better to use masked array?
+        old_attrs=OrderedDict(ds[vname].attrs)
+        # This seems to be dropping the attributes
         ds[vname]=( var_new_dims, new_vals )
+        for k in old_attrs:
+            if k != '_FillValue':
+                ds[vname].attrs[k] = old_attrs[k]
 
     if save_mapping:
         ds['mapping']= ( new_dims, mapper)
