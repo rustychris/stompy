@@ -18,8 +18,21 @@ import matplotlib.pyplot as plt
 
 from .. import utils
 from ..utils import array_append
-from ..spatial import field
+from ..spatial import field,robust_predicates
 from . import orthomaker,trigrid,exact_delaunay
+
+def ray_intersection(p0,vec,pA,pB):
+    d1a = np.array([pA[0]-p0[0],pA[1]-p0[1]])
+
+    # alpha * vec + beta * ab = d1a
+    # | vec[0] ab[0]   | | alpha | = |  d1a[0]  |
+    # | vec[1] ab[1]   | | beta  | = |  d1a[1]  |
+
+    A = np.array( [[vec[0],  pB[0] - pA[0]],
+                   [vec[1],  pB[1] - pA[1]]] )
+    alpha_beta = solve(A,d1a)
+    return p0 + alpha_beta[0]*np.asarray(vec)
+
 
 class MissingConstraint(Exception):
     pass
@@ -628,7 +641,11 @@ class LiveDtGridBase(orthomaker.OrthoMaker):
 
             for nbr in nbrs:
                 valid=True
-                crossings = self.check_line_is_clear( n1=nbr, v2=probe )
+                #crossings = self.check_line_is_clear( n1=nbr, v2=probe )
+                # 20170709: was getting an error in line_walk_edges - not sure
+                #  why this hadn't been transitioned to check_line_is_clear_new, but
+                #  will try that now.
+                crossings = self.check_line_is_clear_new( n1=nbr, v2=probe )                
                 if len(crossings) > 0:
                     all_good = False
                     new_pnt = 0.5*(self.points[i]+new_pnt)
@@ -1422,7 +1439,10 @@ try:
 
                 f = next(f_circ)
                 if f == first_f:
-                    raise Exception("Went all the way around...")
+                    # raise Exception("Went all the way around...")
+                    # this can happen when starting from a vertex and aiming
+                    # outside the convex hull
+                    return None
             return best_f
 
         def next_face(self,f,p1,vec):
@@ -1511,6 +1531,8 @@ try:
 
             pnt = p1 
 
+            # NB: this can be None - though not sure whether the context can
+            # ensure that it never would be.
             f1 = self.face_in_direction(v1,vec)
             f2 = self.face_in_direction(v2,-vec)
 
@@ -1562,7 +1584,9 @@ try:
             pnt = self.points[n1]
 
             f1 = self.face_in_direction(v1,vec)
-
+            if f1 is None:
+                return None,None
+            
             # do the search:
             f_trav = f1
 
@@ -1570,12 +1594,12 @@ try:
                 edge,new_face = self.next_face(f_trav,pnt,vec)
                 # make that into a cgal edge:
                 e = edge
+                face,i = edge
+                va = face.vertex((i+1)%3)
+                vb = face.vertex((i-1)%3)
 
                 if max_dist is not None:
                     # Test the distance as we go...
-                    face,i = edge
-                    va = face.vertex((i+1)%3)
-                    vb = face.vertex((i-1)%3)
                     pa = va.point()
                     pb = vb.point()
 
@@ -1635,9 +1659,13 @@ try:
             
             start = None
             for nbr in self.DT.incident_vertices(vert):
+                if self.DT.is_infinite(nbr):
+                    continue
                 pnt = np.array( [nbr.point().x(),nbr.point().y()] )
-                
-                left_distance = distance_left_of_line(pnt, qp1,qp2 )
+
+                # fall back to robust_predicates for proper comparison
+                # when pnt is left of qp1 => qp2, result should be positive
+                left_distance = robust_predicates.orientation(pnt, qp1, qp2)
 
                 # This used to be inside the last_left_distance < 0 block, but it seems to me
                 # that if we find a vertex for which left_distance is 0, that's our man.
@@ -1648,10 +1676,10 @@ try:
                 # vertex.  So to distinguish colinear points it is necessary to check distance in the
                 # desired direction.
                 if left_distance==0.0:
-                    dx = pnt[0] - vert.point().x()
-                    dy = pnt[1] - vert.point().y()
-                    progress = dx * (qp2[0] - qp1[0]) + dy * (qp2[1] - qp1[1])
-                    if progress > 0:
+                    vert_xy=[vert.point().x(),vert.point().y()]
+                    progress=exact_delaunay.rel_ordered(vert_xy,pnt,qp1,qp2)
+                            
+                    if progress:
                         return ['v',nbr]
 
                 # Note that it's also possible for the infinite vertex to come up.
@@ -2071,7 +2099,7 @@ class LiveDtPython(LiveDtGridBase):
     def plot_dt(self,clip=None):
         self.DT.plot_edges(clip=clip,color='m')
         
-    def shoot_ray(self,n1,vec,max_dist=None):
+    def shoot_ray(self,n1,vec,max_dist=1e6):
         """ Shoot a ray from self.points[n] in the given direction vec
         returns (e_index,pnt), the first edge that it encounters and the location
         of the intersection. 
@@ -2079,10 +2107,78 @@ class LiveDtPython(LiveDtGridBase):
         max_dist: stop checking beyond this distance -- currently doesn't make it faster
           but will return None,None if the point that it finds is too far away
         """
-        # HERE!
         # is it just constrained edges? yes -- just an "edge" in self, but a constrained
         # edge in self.DT.
-        raise NotImplemented("still working on pure python live_dt")
+        nA=self.vh[n1] # map to DT node
+        # construct target point
+        probe=self.DT.nodes['x'][nA] + max_dist*utils.to_unit(vec)
+        
+        for elt_type,elt_idx in self.DT.gen_intersected_elements(nA=nA,pB=probe):
+            if elt_type=='node':
+                if elt_idx==nA:
+                    continue
+                else:
+                    # means that we went exactly through some node, and
+                    # the caller probably would just want one of the edges of that
+                    # node that is facing nA.
+                    X=self.DT.nodes['x'][elt_idx]
+                    # a bit awkward, as we likely have come in on an unconstrained
+                    # edge of the DT, so no cell info to help, and there could be
+                    # many constrained edges to choose from, but we want one of the
+                    # the two that face p
+                    n=self.vh_info[elt_idx] # get back to the grid's node index
+
+                    adj_nodes=self.DT.angle_sort_adjacent_nodes(elt_idx)
+                    # probably overkill -
+                    # iterate through adjacent DT nodes, checking orientation
+                    # relative to nA, stop when a pair of successive edges
+                    # brackets nA.
+                    orientations=[] #  [(adj_DT_node_index, orientation), ...]
+                    for i_adj,n_adj in enumerate(adj_nodes):
+                        j=self.DT.nodes_to_edge(elt_idx,n_adj)
+                        if not self.DT.edges['constrained'][j]:
+                            continue
+                        # looking for a transition from >0 to <=0
+                        ori=robust_predicates.orientation(self.DT.nodes['x'][nA],
+                                                          self.DT.nodes['x'][elt_idx],
+                                                          self.DT.nodes['x'][n_adj])
+                        if len(orientations):
+                            if orientations[-1][1]>0 and ori<=0:
+                                my_j = self.find_edge([n,self.vh_info[n_adj]])
+                                return (my_j,X)
+                        
+                        orientations.append( (n_adj,ori) )
+                    # node with no constrained edges -- we were called with bad
+                    # state?  shouldn't leave nodes hanging around
+                    assert len(orientations)>0
+                    if len(orientations)==1:
+                        sel=0
+                    else:
+                        # we checked all other pairs - must be this one
+                        assert orientations[-1][1]>0 and orientations[0][1]<=0
+                        sel=0
+                    my_j = self.find_edge([n,self.vh_info[orientations[sel][0]]])
+                    return (my_j,X)
+                        
+            elif elt_type=='cell':
+                continue
+            elif elt_type=='edge':
+                if self.DT.edges['constrained'][elt_idx.j]:
+                    he=elt_idx # pretty sure the half-edge is facing nA
+                    n_left=self.vh_info[he.node_fwd()]
+                    n_right=self.vh_info[he.node_rev()]
+
+                    j=self.find_edge([n_left,n_right])
+
+                    # Construct point of intersection
+                    X=ray_intersection(self.points[n1],vec,
+                                       self.points[n_left],self.points[n_right])
+                    return (j,X)
+                else:
+                    continue
+            else:
+                assert False # sanity...
+        return None,None # didn't hit any constrained edges or nodes within the alloted distance
         
     def check_line_is_clear(self,n1=None,n2=None,v1=None,v2=None,p1=None,p2=None):
         """ returns a list of vertex tuple for constrained segments that intersect

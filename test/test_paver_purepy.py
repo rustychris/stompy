@@ -17,6 +17,8 @@ from stompy.grid import paver
 
 reload(exact_delaunay)
 reload(live_dt)
+# monkey patch to use pure python triangulation
+live_dt.LiveDtGrid = live_dt.LiveDtPython
 reload(paver)
 
 ##

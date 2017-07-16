@@ -382,7 +382,8 @@ class XYZField(Field):
     def interpolate(self,X,interpolation=None):
         if interpolation is None:
             interpolation=self.default_interpolation
-        # X should be a (N,2) vectors
+        # X should be a (N,2) vectors - make it so
+        X=np.asanyarray(X).reshape([-1,2])
 
         newF = np.zeros( X.shape[0], np.float64 )
 
@@ -403,12 +404,17 @@ class XYZField(Field):
             # print "why aren't you using linear?!"
         elif interpolation=='linear':
             interper = self.lin_interper()
-            for i in range(len(X)):
-                if i>0 and i%100000==0:
-                    print("%d/%d"%(i,len(X)))
-                # remember, the slices are y, x
-                vals = interper[X[i,1]:X[i,1]:2j,X[i,0]:X[i,0]:2j]
-                newF[i] = vals[0,0]
+            if 0:
+                # old calling convention
+                for i in range(len(X)):
+                    if i>0 and i%100000==0:
+                        print("%d/%d"%(i,len(X)))
+                    # remember, the slices are y, x
+                    vals = interper[X[i,1]:X[i,1]:2j,X[i,0]:X[i,0]:2j]
+
+                    newF[i] = vals[0,0]
+            else:
+                newF[:] = interper(X[:,0],X[:,1])
         #elif interpolation=='delaunay':
         #    if self._voronoi is None:
         #        self._voronoi = self.calc_voronoi()
