@@ -7,6 +7,7 @@ import colorsys
 import os,glob
 
 import ggr
+import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib import colors
 
@@ -188,7 +189,7 @@ def cmap_discretize(cmap, N):
     """
     if type(cmap) == str:
         cmap = get_cmap(cmap)
-    colors_i = np.concatenate((linspace(0, 1., N), (0.,0.,0.,0.)))
+    colors_i = np.concatenate((np.linspace(0, 1., N), (0.,0.,0.,0.)))
     colors_rgba = cmap(colors_i)
     indices = np.linspace(0, 1., N+1)
     cdict = {}
@@ -212,7 +213,7 @@ def cmap_clip(cmap,low,high):
     else:
         N = 256  # conservative overkill
 
-    colors_i = np.concatenate( (linspace(float(low), float(high), N),[low]) )
+    colors_i = np.concatenate( (np.linspace(float(low), float(high), N),[low]) )
 
     colors_rgba = cmap(colors_i)
     indices = np.linspace(0, 1., N+1)
