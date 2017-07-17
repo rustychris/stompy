@@ -232,8 +232,8 @@ class LiveDtGridBase(orthomaker.OrthoMaker):
                 # then it was "is not 0"
                 # but with exact_delaunay, 0 is a valid vertex handle.
                 if self.vh[n] is not None: # used to != 0
-                    self.dt_remove_constraints(n)
-                    self.dt_remove(n)
+                    self.dt_remove_constraints(self.vh[n]) 
+                    self.dt_remove(n) # that's correct, pass trigrid node index
 
             # Add back the ones that are currently valid
             for n in held_nodes:
@@ -827,7 +827,7 @@ class LiveDtGridBase(orthomaker.OrthoMaker):
             self.holding_nodes[n] = 'delete_node_and_merge'
         else:
             # remove any constraints going to n -
-            self.dt_remove_constraints(n)
+            self.dt_remove_constraints(self.vh[n])
             self.dt_remove(n)
 
         # note that this is going to call merge_edges, before it
@@ -1216,8 +1216,8 @@ try:
                 self.check()
         def dt_insert_constraint(self,a,b):
             self.DT.insert_constraint( self.vh[a], self.vh[b] )
-        def dt_remove_constraints(self,n):
-            self.DT.remove_incident_constraints(self.vh[n])
+        def dt_remove_constraints(self,vh):
+            self.DT.remove_incident_constraints(vh)
         def dt_remove(self,n):
             self.DT.remove( self.vh[n] )
             del self.vh_info[self.vh[n]]
@@ -2023,11 +2023,12 @@ class LiveDtPython(LiveDtGridBase):
     def dt_insert_constraint(self, a, b):
         self.DT.add_constraint(self.vh[a], self.vh[b])
         
-    def dt_remove_constraints(self, n):
+    def dt_remove_constraints(self, vh):
         """
         remove all constraints in which node n participates
         """
-        for e in self.dt_incident_constraints(n):
+        # this used to pass the node, but it should be the vertex handle:
+        for e in self.dt_incident_constraints(vh):
             a,b = self.DT.edges['nodes'][e.j]
             self.DT.remove_constraint(j=e.j)
             
@@ -2047,7 +2048,7 @@ class LiveDtPython(LiveDtGridBase):
     def dt_remove(self,n):
         self.DT.delete_node( self.vh[n] )
         del self.vh_info[self.vh[n]]
-        self.vh[n] = 0
+        self.vh[n] = None # had been 0, but that's a valid index
         if self.verbose > 2:
             print("    dt_remove node %d"%n)
             self.check()

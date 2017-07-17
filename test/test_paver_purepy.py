@@ -22,6 +22,7 @@ live_dt.LiveDtGrid = live_dt.LiveDtPython
 reload(paver)
 
 ##
+
 def test_basic():
     # Define a polygon
     boundary=np.array([[0,0],[1000,0],[1000,1000],[0,1000]])
@@ -36,8 +37,6 @@ def test_basic():
 
     p.pave_all()
 
-
-test_basic()
 
 ##     
 # A circle - r = 100, C=628, n_points = 628
