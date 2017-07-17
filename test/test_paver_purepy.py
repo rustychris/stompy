@@ -36,6 +36,9 @@ def test_basic():
 
     p.pave_all()
 
+
+test_basic()
+
 ##     
 # A circle - r = 100, C=628, n_points = 628
 def test_circle():

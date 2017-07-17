@@ -617,6 +617,8 @@ class LiveDtGridBase(orthomaker.OrthoMaker):
         nbrs: list of neighbor node indices for checking edges
         """
 
+        # HERE -- not compatible with pure python code.
+        
         # find existing constrained edges
         # for each constrained edge:
         #   will the updated edge still be valid?
@@ -629,35 +631,16 @@ class LiveDtGridBase(orthomaker.OrthoMaker):
             # Create a probe vertex so we can call check_line_is_clear()
             # sort of winging it here for a measure of close things are.
             if abs(self.points[i] - new_pnt).sum() / (1.0+abs(new_pnt).max()) < 1e-8:
-                print("In danger of floating point roundoff issues")
+                self.log.warning("adjust_move_node: danger of roundoff issues")
                 all_good = False
                 break
 
-            # TODO - this needs to be made more generic
-            pnt = Point_2( new_pnt[0], new_pnt[1] )
-
-            probe = self.DT.insert(pnt)
-            self.vh_info[probe] = 'PROBE!'
-
-            for nbr in nbrs:
-                valid=True
-                #crossings = self.check_line_is_clear( n1=nbr, v2=probe )
-                # 20170709: was getting an error in line_walk_edges - not sure
-                #  why this hadn't been transitioned to check_line_is_clear_new, but
-                #  will try that now.
-                crossings = self.check_line_is_clear_new( n1=nbr, v2=probe )                
-                if len(crossings) > 0:
-                    all_good = False
-                    new_pnt = 0.5*(self.points[i]+new_pnt)
-                    break
-            del self.vh_info[probe]
-            self.DT.remove(probe)
-
+            all_good=self.check_line_is_clear_batch(p1=new_pnt,n2=nbrs)
             if all_good:
                 break
             else:
-                if self.verbose>0:
-                    log.debug('$') 
+                new_pnt = 0.5*(self.points[i]+new_pnt)
+                log.debug('adjust_move_node: adjusting') 
         if all_good:
             return new_pnt
         else:
@@ -1955,6 +1938,30 @@ try:
                 self.DT.remove( v2 )
             return constrained
         
+        def check_line_is_clear_batch(self,p1,n2):
+            """ 
+            When checking multiple nodes against the same point,
+            may be faster to insert the point just once.
+            p1: [x,y] 
+            n2: [ node, node, ... ]
+            Return true if segments from p1 to each node in n2 are
+            all clear of constrained edges
+            """
+            pnt = Point_2( p1[0], p1[1] )
+            probe = self.DT.insert(pnt)
+            self.vh_info[probe] = 'PROBE!'
+
+            try:
+                for nbr in n2:
+                    crossings = self.check_line_is_clear_new( n1=nbr, v2=probe )
+                    if len(crossings) > 0:
+                        return False
+            finally:
+                del self.vh_info[probe]
+                self.DT.remove(probe)
+                
+            return True
+        
         def check_line_is_clear(self,n1=None,n2=None,v1=None,v2=None,p1=None,p2=None):
             """ returns a list of vertex tuple for constrained segments that intersect
             the given line
@@ -2258,6 +2265,27 @@ class LiveDtPython(LiveDtGridBase):
 
         return constr_pairs
 
+    def check_line_is_clear_batch(self,p1,n2):
+        """ 
+        When checking multiple nodes against the same point,
+        may be faster to insert the point just once.
+        p1: [x,y] 
+        n2: [ node, node, ... ]
+        Return true if segments from p1 to each node in n2 are
+        all clear of constrained edges
+        """
+        for nbr in n2:
+            crossings = self.check_line_is_clear( n1=nbr, p2=p1 )
+            if len(crossings) > 0:
+                return False
+
+        return True
+
+    def check_line_is_clear_new(self,*a,**k):
+        # cruft, but not quite ready to get rid of this in CGAL
+        # before more testing
+        return self.check_line_is_clear(*a,**k)
+    
 if LiveDtGrid==LiveDtGridNull:
     LiveDtGrid=LiveDtPython
 
