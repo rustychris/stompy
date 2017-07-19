@@ -336,7 +336,8 @@ class LiveDtGridBase(orthomaker.OrthoMaker):
             if len(constr_edges)>0:
                 print("--=-=-=-=-=-= Inserting this edge %d-%d will cause an intersection -=-=-=-=-=-=-=--"%(a,b))
                 for v1,v2 in constr_edges:
-                    print("  intersects constrained edge: %d - %d"%(self.vh_info[v1],self.vh_info[v2]))
+                    # use %s formats as values could be None
+                    print("  intersects constrained edge: %s - %s"%(self.vh_info[v1],self.vh_info[v2]))
 
                 if self.verbose > 1:
                     if i==0:
@@ -631,7 +632,7 @@ class LiveDtGridBase(orthomaker.OrthoMaker):
             # Create a probe vertex so we can call check_line_is_clear()
             # sort of winging it here for a measure of close things are.
             if abs(self.points[i] - new_pnt).sum() / (1.0+abs(new_pnt).max()) < 1e-8:
-                self.log.warning("adjust_move_node: danger of roundoff issues")
+                log.warning("adjust_move_node: danger of roundoff issues")
                 all_good = False
                 break
 
@@ -859,11 +860,49 @@ class LiveDtGridBase(orthomaker.OrthoMaker):
             self.vh_info[self.vh[i]] = i
 
         return mappings
+        
+    def dt_interior_cells(self):
+        """
+        Only valid for a triangulation where all nodes lie on
+        the boundary.  there will be some
+        cells which fall inside the domain, others outside the
+        domain.
+        returns cells which are properly inside the domain as 
+        triples of nodes 
+        """
+        log.info("Finding interior cells from full Delaunay Triangulation")
+        interior_cells = []
 
-    #-#-#
+        for a,b,c in self.dt_cell_node_iter():
+            # going to be slow...
+            # How to test whether this face is internal:
+            #  Arbitrarily choose a vertex: a
+            #
+            # Find an iter for which the face abc lies to the left of the boundary
+            internal = 0
+            for elt in self.all_iters_for_node(a):
+                d = self.points[elt.nxt.data] - self.points[a]
+                theta_afwd = np.arctan2(d[1],d[0])
+                d = self.points[b] - self.points[a]
+                theta_ab   = np.arctan2(d[1],d[0])
+                d = self.points[elt.prv.data] - self.points[a]
+                theta_aprv = np.arctan2(d[1],d[0])
 
-    # CGAL dependence removed from code above this line
+                dtheta_b = (theta_ab - theta_afwd) % (2*np.pi)
+                dtheta_elt = (theta_aprv - theta_afwd) % (2*np.pi)
 
+                # if b==elt.nxt.data, then dtheta_b==0.0 - all good
+                if dtheta_b >= 0 and dtheta_b < dtheta_elt:
+                    internal = 1
+                    break
+            if internal:
+                interior_cells.append( [a,b,c] )
+
+        cells = np.array(interior_cells)
+        return cells
+
+
+    
     ## DT-based "smoothing"
     # First, make sure the boundary is sufficiently sampled
     def subdivide(self,min_edge_length=1.0,edge_ids=None):
@@ -1234,6 +1273,16 @@ try:
             # maybe I should keep a reference to the Edge object, too?
             # that gets through some early crashes.
             return [self.Edge(f=e.first,v=e.second,keepalive=[e]) for e in constraints]
+
+
+        def dt_cell_node_iter(self):
+            """ generator for going over finite cells, returning 
+            nodes as triples
+            """
+            face_it = self.DT.finite_faces()
+
+            for f in face_it:
+                yield [self.vh_info[f.vertex(i)] for i in [0,1,2]]
         
         def delaunay_face(self, pnt):
             """ Returns node indices making up the face of the DT in which pnt lies.
@@ -1313,41 +1362,6 @@ try:
             ax = plt.gca()
             ax.add_collection(coll)
 
-        def dt_interior_cells(self):
-            print("Finding interior cells from full Delaunay Triangulation")
-            interior_cells = []
-
-            face_it = self.DT.finite_faces()
-
-            for f in face_it:
-                a,b,c = [self.vh_info[f.vertex(i)] for i in [0,1,2]]
-
-                # going to be slow...
-                # How to test whether this face is internal:
-                #  Arbitrarily choose a vertex: a
-                #
-                # Find an iter for which the face abc lies to the left of the boundary
-                internal = 0
-                for elt in self.all_iters_for_node(a):
-                    d = self.points[elt.nxt.data] - self.points[a]
-                    theta_afwd = np.arctan2(d[1],d[0])
-                    d = self.points[b] - self.points[a]
-                    theta_ab   = np.arctan2(d[1],d[0])
-                    d = self.points[elt.prv.data] - self.points[a]
-                    theta_aprv = np.arctan2(d[1],d[0])
-
-                    dtheta_b = (theta_ab - theta_afwd) % (2*np.pi)
-                    dtheta_elt = (theta_aprv - theta_afwd) % (2*np.pi)
-
-                    # if b==elt.nxt.data, then dtheta_b==0.0 - all good
-                    if dtheta_b >= 0 and dtheta_b < dtheta_elt:
-                        internal = 1
-                        break
-                if internal:
-                    interior_cells.append( [a,b,c] )
-
-            cells = np.array(interior_cells)
-            return cells
 
         def dt_clearance(self,n):
             """POORLY TESTED
@@ -2060,6 +2074,13 @@ class LiveDtPython(LiveDtGridBase):
         return [self.Edge(g=self.DT,j=e)
                 for e in self.DT.node_to_constraints(vh)]
 
+    def dt_cell_node_iter(self):
+        """ generator for going over finite cells, returning 
+        nodes as triples
+        """
+        for c in self.DT.valid_cell_iter():
+            yield [self.vh_info[n] for n in self.DT.cells['nodes'][c,:3]]
+    
     def delaunay_face(self, pnt):
         """ 
         Returns node indices making up the face of the DT in which pnt lies.
@@ -2090,19 +2111,6 @@ class LiveDtPython(LiveDtGridBase):
         # some callers assume this is an ndarray
         return np.array( [self.vh_info[vh]
                           for vh in self.DT.node_to_nodes(self.vh[n]) ] )
-
-    def dt_interior_cells(self):
-        """
-        Return a list of lists of nodes making up finite faces of the triangulation
-        """
-        print("Finding interior cells from full Delaunay Triangulation")
-        
-        interior_cells = []
-        for c in self.DT.valid_cell_iter():
-            nodes=[self.vh_info[vh]
-                   for vh in self.DT.cells['nodes'][c]]
-            interior_cells.append(nodes)
-        return interior_cells
 
     def plot_dt(self,clip=None):
         self.DT.plot_edges(clip=clip,color='m')
