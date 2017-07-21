@@ -268,8 +268,8 @@ def test_actions():
 
 ##
 
-af=test_basic_setup()
-check0=af.grid.checkpoint()
+# af=test_basic_setup()
+# check0=af.grid.checkpoint()
 
 # #
 
@@ -482,37 +482,71 @@ def test_no_lookahead():
 
 ###
 
-# Does numba do anything now?
-# takes some work -
-# and it is having trouble with being called in the true context.
-# passing it basically the same values, but manually on the command
-# line appears to work just fine.
-# could be that this doesn't call it in quite the same way?
-# or that there is some nuance in the agruments, like not being
-# contiguous, C-style, etc.?
-
-
 # Bringing in the suite of test cases from test_paver*.py
 
-HERE - probably need a slightly refined wrapper on the above
-stuff to make these test cases (and actual use) less painful and
-arbitrary.
+# HERE - probably need a slightly refined wrapper on the above
+# stuff to make these test cases (and actual use) less painful and
+# arbitrary.
 
-##
 
-def test_basic():
+#def test_pave_quad():
+if 1:
     # Define a polygon
     boundary=np.array([[0,0],[1000,0],[1000,1000],[0,1000]])
-    island  =np.array([[200,200],[600,200],[200,600]])
-
-    rings=[boundary,island]
+    # island  =np.array([[200,200],[600,200],[200,600]])
 
     # And the scale:
     scale=field.ConstantField(50)
 
-    p=paver.Paving(rings=rings,density=scale)
+    af=front.AdvancingTriangles()
+    af.set_edge_scale(scale)
+    af.add_curve(boundary)
+    # af.add_curve(island)
+    af.initialize_boundaries()
 
-    p.pave_all()
+    # hmm -can this be wrapped up some?
+    # for the non-lookahead approach, no decision tree, then there
+    # is already a loop() method.
+    # the analog of that for decision-trees is missing, though.
+    af.loop()
+    
+test_pave_quad()
+
+# adding the island is the next challenge -
+# 1. communicate that the island is an island, and unpaved setting is on the inside.
+# 2. non-local connections needed! 
+
+
+    
+# What a DT-based loop would look like:
+#     af=test_basic_setup()
+#     af.log.setLevel(logging.INFO)
+#     af.cdt.post_check=False
+# 
+#     af.current=af.root=DTChooseSite(af)
+# 
+#     def cb():
+#         af.plot_summary(label_nodes=False)
+#         try:
+#             af.current.site.plot()
+#         except: # AttributeError:
+#             pass
+#         # fig.canvas.draw()
+#         plt.pause(0.01)
+# 
+#     while 1:
+#         if not af.current.children:
+#             break # we're done?
+# 
+#         for child_i in range(len(af.current.children)):
+#             if af.current.try_child(child_i):
+#                 # Accept the first child which returns true
+#                 break
+#         else:
+#             assert False # none of the children worked out
+#         #cb()
+#     af.plot_summary(ax=ax)
+
 
 
 ##     

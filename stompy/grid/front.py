@@ -861,8 +861,9 @@ class AdvancingFront(object):
         self.curves=[]
         
     def add_curve(self,curve):
-        assert isinstance(curve,Curve)
-
+        if not isinstance(curve,Curve):
+            curve=Curve(curve)
+            
         self.curves.append( curve )
         return len(self.curves)-1
 
