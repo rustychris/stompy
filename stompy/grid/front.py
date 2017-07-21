@@ -144,9 +144,21 @@ class Curve(object):
     class CurveException(Exception):
         pass
     
-    def __init__(self,points,closed=True):
+    def __init__(self,points,closed=True,ccw=None):
+        """
+        points: [N,2] 
+        closed: if True, treat this as a closed ring
+        ccw: if True, make sure the order is ccw,
+        False - make sure cw
+        None - leave as is.
+        """
+        if ccw is not None:
+            area=utils.signed_area(points)
+            if (area>0) != bool(ccw):
+                points=points[:,::-1]
+                
         self.points=np.asarray(points)
-        self.closed=closed
+        self.closed=bool(closed)
         if self.closed:
             self.points = np.concatenate( (self.points,
                                            self.points[:1,:] ) )
@@ -270,7 +282,13 @@ class Curve(object):
         return ((fb-fa) % d) < ((fc-fa)%d)
     def is_reverse(self,fa,fb,fc):
         return self.is_forward(fc,fb,fa)
-    
+
+    def signed_area(self):
+        assert self.closed
+        return utils.signed_area(self.points)
+    def reverse(self):
+        return Curve(points=self.points[::-1,:],
+                     closed=self.closed)
     def plot(self,ax=None,**kw):
         ax=ax or plt.gca()
         return ax.plot(self.points[:,0],self.points[:,1],**kw)[0]
@@ -860,9 +878,18 @@ class AdvancingFront(object):
 
         self.curves=[]
         
-    def add_curve(self,curve):
+    def add_curve(self,curve,interior=None):
         if not isinstance(curve,Curve):
-            curve=Curve(curve)
+            if interior is not None:
+                ccw=not interior
+            else:
+                ccw=None
+            curve=Curve(curve,ccw=ccw,closed=True)
+        elif interior is not None:
+            assert curve.closed
+            a=curve.signed_area()
+            if a>0 and interior:
+                curve=curve.reverse()
             
         self.curves.append( curve )
         return len(self.curves)-1

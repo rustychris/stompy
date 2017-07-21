@@ -512,13 +512,35 @@ if 1:
     
 test_pave_quad()
 
+## 
 # adding the island is the next challenge -
 # 1. communicate that the island is an island, and unpaved setting is on the inside.
-# 2. non-local connections needed! 
+# 2. non-local connections What! 
 
 
-    
-# What a DT-based loop would look like:
+# def test_pave_basic():
+if 1:
+    # Define a polygon
+    boundary=np.array([[0,0],[1000,0],[1000,1000],[0,1000]])
+    island  =np.array([[200,200],[600,200],[200,600]])
+
+    # And the scale:
+    scale=field.ConstantField(50)
+
+    af=front.AdvancingTriangles()
+    af.set_edge_scale(scale)
+    af.add_curve(boundary)
+    af.add_curve(island,interior=True)
+    af.initialize_boundaries()
+
+    af.loop()
+
+# HERE - reversing the island isn't working out...
+# test_pave_basic()
+
+
+## 
+# needed a DT-based loop would look like:
 #     af=test_basic_setup()
 #     af.log.setLevel(logging.INFO)
 #     af.cdt.post_check=False
