@@ -466,7 +466,6 @@ def test_no_lookahead():
 ## 
 
 # on sfei desktop, it's 41 cells/s.
-# any chance numba can help out here? too much of a pain for now.
 
 ##
 
@@ -488,9 +487,7 @@ def test_no_lookahead():
 # stuff to make these test cases (and actual use) less painful and
 # arbitrary.
 
-
-#def test_pave_quad():
-if 1:
+def test_pave_quad():
     # Define a polygon
     boundary=np.array([[0,0],[1000,0],[1000,1000],[0,1000]])
     # island  =np.array([[200,200],[600,200],[200,600]])
@@ -510,13 +507,12 @@ if 1:
     # the analog of that for decision-trees is missing, though.
     af.loop()
     
-test_pave_quad()
-
 ## 
 # adding the island is the next challenge -
 # 1. communicate that the island is an island, and unpaved setting is on the inside.
 # 2. non-local connections What! 
 
+reload(front)
 
 # def test_pave_basic():
 if 1:
@@ -533,12 +529,63 @@ if 1:
     af.add_curve(island,interior=True)
     af.initialize_boundaries()
 
-    af.loop()
 
-# HERE - reversing the island isn't working out...
-# test_pave_basic()
+plt.figure(2).clf()
+af.plot_summary()
 
 
+##
+
+# It continues to choose bad nonlocals.
+# - could go back to the approach of the old code, which made a more
+#   explicit list of local nodes based on distance traversed along edges.
+# - is there a way to use more of the geometry in the DT to direct this?
+#   cast a ray in only particular directions?
+#   a bit easier for a bisect.
+# - maybe testing for nonlocal neighbors should only happen when new nodes are
+#   created: bisect, wall.  At that point, there is a choice of whether the new
+#   node's ideal location is close enough to a nonlocal element that the new node
+#   should actually be a connection to that nonlocal element.
+# - back in paver - what are the details of how it worked?
+#   1. get a scale based on target scale and scale of the site.
+#   2. local_nodes() does some type of local area sort with a threshold
+#      distance.
+#   3. delaunay neighbors of the center of the element (node 'b') are
+#      queried -- are they close enough to 'b', and far enough away
+#      when traversing existing edges.
+#   4. If no nodes arose from step 3, then shoot a ray and potentially
+#      resample whatever is found.
+
+
+# following the paver approach to a lesser degree, some success when
+# only looking for nonlocals from the center of the site.
+# but a duplicate node when trying to insert a node in the ShadowCDT.
+# cdt node 88, g_n=88.
+# complains about Duplicate - who did we conflict with? node 2.
+# something is wacky, as it's trying to move something at [200,600]
+# to [250,200]
+# this almost certainly has to be a straight up bug, not problem in
+# algorithm.
+# okay - this is probably related to some confusion about rings.
+# we just joined two rings, and resample_neighbors doesn't understand.
+
+# Where is this breaking down?
+# - Is free_span wrong here?
+# - Should resample not even try this?
+
+# this is all happening on the next iteration - it's trying to
+# resample sites before taking action
+# the site is centered on 276, with one node ('a'?) on a separate
+# ring.
+
+for i in range(100):
+    af.loop(1)
+
+    plt.gca().collections=[] # plt.cla()
+    # af.plot_summary(label_nodes=False)
+    af.grid.plot_edges()
+    plt.pause(0.1)
+    
 ## 
 # needed a DT-based loop would look like:
 #     af=test_basic_setup()

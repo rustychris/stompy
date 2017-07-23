@@ -402,7 +402,7 @@ class BisectStrategy(Strategy):
         return {'nodes': [nd],
                 'cells': [new_c1,new_c2],
                 'edges': [j_cd,j_bd,j_ad] }
-
+    
     
 class CutoffStrategy(Strategy):
     def __str__(self):
@@ -571,11 +571,99 @@ class JoinStrategy(Strategy):
             raise StrategyFailed("Join created non-positive area cells")
 
         return edits
+
+class NonLocalStrategy(Strategy):
+    """ 
+    Add an edge to a nearby, but not locally connected, element.
+    Currently, this is not very strong in identifying whether a
+    nearby node.
+    """
+    def __str__(self):
+        return "<Nonlocal>"
+
+    def nonlocal_pair(self,site):
+        """
+        Nonlocal nodes for a site 
+        """
+        af=site.af
+        best_pair=None,None
+        best_dist=np.inf
+
+        # skip over neighbors of any of the sites nodes
+        
+        each_dt_nbrs=[af.cdt.node_to_nodes(n) for n in site.abc]
+
+        each_nbrs=[af.grid.node_to_nodes(n) for n in site.abc]
+
+        # flat list of grid neighbors.  note that since a-b-c are connected,
+        # this will include a,b,c, too.
+        all_nbrs=[n for l in each_nbrs for n in l]
+       
+        for n,dt_nbrs in zip(site.abc,each_dt_nbrs):
+            # DBG: maybe only DT neighbors of 'b' can be considered?
+            # when considering 'a' and 'c', too many possibilities
+            # of extraneous connections, which in the past were ruled
+            # out based on looking only at 'b', and by more explicitly
+            # enumerating local connections
+            if n!=site.abc[1]:
+                continue # TESTING
+            
+            # most of those we are already connected to, weed them out.
+            good_nbrs=[nbr
+                       for nbr in dt_nbrs
+                       if nbr not in all_nbrs]
+            if not good_nbrs:
+                continue
+            
+            dists=[utils.dist(af.grid.nodes['x'][n] - af.grid.nodes['x'][nbr])
+                   for nbr in good_nbrs]
+            idx=np.argmin(dists)
+            if dists[idx]<best_dist:
+                best_dist=dists[idx]
+                best_pair=(n,good_nbrs[idx])
+        # is the best nonlocal node connection good enough?
+        # not worrying about angles, just proximity
+        return best_pair[0],best_pair[1],best_dist
+
+    def metric(self,site):
+        # something high if it's bad.
+        # 0.0 if it looks good
+        site_node,nonlocal_node,dist = self.nonlocal_pair(site)
+
+        scale=site.local_length
+        if site_node is not None:
+            # score it such that if the nonlocal connection is
+            # less than or equal to the target scale away, then
+            # it gets the highest score, and linearly increasing
+            # based on being longer than that.
+            # This may reach too far in some cases, and will need to be
+            # scaled or have a nonlinear term.
+            return max(0.0, (dist - scale)/scale)
+        else:
+            return np.inf
+    
+    def execute(self,site):
+        site_node,nonlocal_node,dist = self.nonlocal_pair(site)
+        
+        if site_node is None:
+            raise StrategyFailed()
+        
+        grid=site.grid
+        
+        j=grid.add_edge(nodes=[site_node,nonlocal_node],
+                        cells=[grid.UNMESHED,grid.UNMESHED])
+
+        return {'nodes': [],
+                'cells': [],
+                'edges': [j] }
+
+
     
 Wall=WallStrategy()
 Cutoff=CutoffStrategy()
 Join=JoinStrategy()
 Bisect=BisectStrategy()
+NonLocal=NonLocalStrategy()
 
 class Site(object):
     """
@@ -633,7 +721,7 @@ class TriangleSite(FrontSite):
         return ax.plot( points[:,0],points[:,1],'r-o' )[0]
     def actions(self):
         theta=self.internal_angle
-        return [Wall,Cutoff,Join,Bisect]
+        return [Wall,Cutoff,Join,Bisect,NonLocal]
 
     def resample_neighbors(self):
         """ may update site! used to be part of AdvancingFront, but
@@ -1035,6 +1123,8 @@ class AdvancingFront(object):
             target_span=scale
 
         # first, find a point on the original ring which satisfies the target_span
+        # HERE - this assumes that 'n' is on the same curve as 'anchor' - which is not
+        # TRUE
         oring=self.grid.nodes['oring'][anchor]-1
         curve = self.curves[oring]
         anchor_f = self.grid.nodes['ring_f'][anchor]
