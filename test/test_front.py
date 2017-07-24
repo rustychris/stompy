@@ -77,6 +77,41 @@ def test_distance_away():
         #print "Okay"
         pass
 
+
+def test_distance_away2():
+    # Towards a smarter Curve::distance_away(), which understands
+    # piecewise linear geometry
+    island  =np.array([[200,200],[600,200],[200,600]])
+    curve=front.Curve(island)
+
+    anchor_f=919.3
+    signed_distance=50.0
+    res=distance_away(curve,anchor_f,signed_distance)
+    assert res[0]>anchor_f
+    anchor_pnt=curve(anchor_f)
+
+    rel_err=np.abs( utils.dist(anchor_pnt - res[1]) - abs(signed_distance)) / abs(signed_distance)
+    assert np.abs(rel_err)<=0.05
+
+    anchor_f=440
+    signed_distance=-50.0
+    res=distance_away(curve,anchor_f,signed_distance)
+
+    anchor_pnt=curve(anchor_f)
+
+    rel_err=np.abs( utils.dist(anchor_pnt - res[1]) - abs(signed_distance)) / abs(signed_distance)
+    assert res[0]<anchor_f
+    assert np.abs(rel_err)<=0.05
+    
+def test_distance3():
+    # Case where the return point is on the same segment as it starts
+    curve=front.Curve(np.array([[   0,    0],
+                                [1000,    0],
+                                [1000, 1000],
+                                [   0, 1000]]),closed=True)
+    res=curve.distance_away(3308.90,50.0)
+    res=curve.distance_away(3308.90,-50.0)
+    
 def test_is_forward():
     crv=hex_curve()
     assert crv.is_forward(5,6,50)
@@ -463,11 +498,7 @@ def test_no_lookahead():
 ## 
 # 6. Implement n-lookahead
 
-## 
-
 # on sfei desktop, it's 41 cells/s.
-
-##
 
 # I think the best plan of attack is to roughly replicate the way paver
 # worked, then extend with the graph search
@@ -487,54 +518,44 @@ def test_no_lookahead():
 # stuff to make these test cases (and actual use) less painful and
 # arbitrary.
 
+
+def trifront_wrapper(rings,scale,label=None):
+    af=front.AdvancingTriangles()
+    af.set_edge_scale(scale)
+    
+    af.add_curve(rings[0],interior=False)
+    for ring in rings[1:]:
+        af.add_curve(ring,interior=True)
+    af.initialize_boundaries()
+
+    try:
+        af.loop()
+    finally:
+        if label is not None:
+            plt.figure(1).clf()
+            af.grid.plot_edges()
+            plt.savefig('af-%s.png'%label)
+    return af
+    
 def test_pave_quad():
     # Define a polygon
-    boundary=np.array([[0,0],[1000,0],[1000,1000],[0,1000]])
-    # island  =np.array([[200,200],[600,200],[200,600]])
-
+    rings=[ np.array([[0,0],[1000,0],[1000,1000],[0,1000]]) ] 
     # And the scale:
     scale=field.ConstantField(50)
 
-    af=front.AdvancingTriangles()
-    af.set_edge_scale(scale)
-    af.add_curve(boundary)
-    # af.add_curve(island)
-    af.initialize_boundaries()
-
-    # hmm -can this be wrapped up some?
-    # for the non-lookahead approach, no decision tree, then there
-    # is already a loop() method.
-    # the analog of that for decision-trees is missing, though.
-    af.loop()
+    return trifront_wrapper(rings,scale,label='quad')
     
-## 
-# adding the island is the next challenge -
-# 1. communicate that the island is an island, and unpaved setting is on the inside.
-# 2. non-local connections What! 
-
-reload(front)
-
-# def test_pave_basic():
-if 1:
+def test_pave_basic():
+    # big square with right triangle inside
     # Define a polygon
     boundary=np.array([[0,0],[1000,0],[1000,1000],[0,1000]])
     island  =np.array([[200,200],[600,200],[200,600]])
-
+    rings=[boundary,island]
     # And the scale:
     scale=field.ConstantField(50)
 
-    af=front.AdvancingTriangles()
-    af.set_edge_scale(scale)
-    af.add_curve(boundary)
-    af.add_curve(island,interior=True)
-    af.initialize_boundaries()
+    return trifront_wrapper(rings,scale,label='basic_island')
 
-
-plt.figure(2).clf()
-af.plot_summary()
-
-
-##
 
 # It continues to choose bad nonlocals.
 # - could go back to the approach of the old code, which made a more
@@ -557,37 +578,8 @@ af.plot_summary()
 #      resample whatever is found.
 
 
-# following the paver approach to a lesser degree, some success when
-# only looking for nonlocals from the center of the site.
-# but a duplicate node when trying to insert a node in the ShadowCDT.
-# cdt node 88, g_n=88.
-# complains about Duplicate - who did we conflict with? node 2.
-# something is wacky, as it's trying to move something at [200,600]
-# to [250,200]
-# this almost certainly has to be a straight up bug, not problem in
-# algorithm.
-# okay - this is probably related to some confusion about rings.
-# we just joined two rings, and resample_neighbors doesn't understand.
-
-# Where is this breaking down?
-# - Is free_span wrong here?
-# - Should resample not even try this?
-
-# this is all happening on the next iteration - it's trying to
-# resample sites before taking action
-# the site is centered on 276, with one node ('a'?) on a separate
-# ring.
-
-for i in range(100):
-    af.loop(1)
-
-    plt.gca().collections=[] # plt.cla()
-    # af.plot_summary(label_nodes=False)
-    af.grid.plot_edges()
-    plt.pause(0.1)
-    
 ## 
-# needed a DT-based loop would look like:
+# a Decision-tree loop would look like:
 #     af=test_basic_setup()
 #     af.log.setLevel(logging.INFO)
 #     af.cdt.post_check=False
@@ -617,24 +609,60 @@ for i in range(100):
 #     af.plot_summary(ax=ax)
 
 
-
 ##     
 # A circle - r = 100, C=628, n_points = 628
-def test_circle():
-    r = 100
-    thetas = np.linspace(0,2*np.pi,200)[:-1]
-    circle = np.zeros((len(thetas),2),np.float64)
-    circle[:,0] = r*np.cos(thetas)
-    circle[:,1] = r*np.sin(thetas)
-    class CircleDensityField(field.Field):
-        # horizontally varying, from 5 to 20
-        def value(self,X):
-            X = np.array(X)
-            return 5 + 15 * (X[...,0] + 100) / 200.0
-    density = CircleDensityField()
-    p=paver.Paving(circle,density,label='circle')
-    p.pave_all()
+#def test_circle():
+r = 100
+thetas = np.linspace(0,2*np.pi,200)[:-1]
+circle = np.zeros((len(thetas),2),np.float64)
+circle[:,0] = r*np.cos(thetas)
+circle[:,1] = r*np.sin(thetas)
+class CircleDensityField(field.Field):
+    # horizontally varying, from 5 to 20
+    def value(self,X):
+        X = np.array(X)
+        return 5 + 15 * (X[...,0] + 100) / 200.0
+scale = CircleDensityField()
+rings=[circle]
 
+#    trifront_wrapper([circle],scale,label='circle')
+#def trifront_wrapper(rings,scale,label=None):
+af=front.AdvancingTriangles()
+af.set_edge_scale(scale)
+    
+af.add_curve(rings[0],interior=False)
+af.initialize_boundaries()
+
+## 
+
+plt.figure(2).clf()
+ax=plt.gca()
+
+while 1:
+    af.loop(1)
+    ax.collections=[]
+    af.grid.plot_edges(ax=ax)
+    af.cdt.plot_edges(ax=ax,color='m',lw=0.5)
+    plt.pause(0.01)
+
+# problem is that adding a single node requires recomputation of almost the
+# entire delaunay triangulation.
+# this is really finding some super slow part of the CDT code.
+
+## 
+    try:
+        af.loop()
+    finally:
+        if label is not None:
+            plt.figure(1).clf()
+            af.grid.plot_edges()
+            plt.savefig('af-%s.png'%label)
+    return af
+    
+
+
+
+## 
 def test_long_channel():
     l = 2000
     w = 50
@@ -644,10 +672,10 @@ def test_long_channel():
                              [0,w]], np.float64 )
 
     density = field.ConstantField( 19.245 )
-    p=paver.Paving(long_channel,density)
-    p.pave_all()
+    trifront_wrapper([long_channel],density,label='long_channel')
 
 def test_long_channel_rigid():
+    assert False # no RIGID initialization yet
     l = 2000
     w = 50
     long_channel = np.array([[0,0],
@@ -656,9 +684,8 @@ def test_long_channel_rigid():
                              [0,w]], np.float64 )
 
     density = field.ConstantField( 19.245 )
-    p=paver.Paving(long_channel,density,initial_node_status=paver.Paving.RIGID)
-    p.pave_all()
-
+    trifront_wrapper([long_channel],density,initial_node_status=paver.Paving.RIGID,
+                     label='long_channel_rigid')
 
 
 def test_narrow_channel():
@@ -670,8 +697,7 @@ def test_narrow_channel():
                              [0,w]], np.float64 )
 
     density = field.ConstantField( w/np.sin(60*np.pi/180.) / 4 )
-    p=paver.Paving(long_channel,density)
-    p.pave_all()
+    trifront_wrapper([long_channel],density,label='narrow_channel')
     
 def test_small_island():
     l = 100
@@ -689,8 +715,7 @@ def test_small_island():
     rings = [square,island1,island2,island3]
 
     density = field.ConstantField( 10 )
-    p=paver.Paving(rings,density)
-    p.pave_all()
+    trifront_wrapper(rings,density,label='small_island')
 
 def test_tight_peanut():
     r = 100
@@ -701,8 +726,7 @@ def test_tight_peanut():
     peanut[:,0] = x
     peanut[:,1] = y
     density = field.ConstantField( 6.0 )
-    p=paver.Paving(peanut,density,label='tight_peanut')
-    p.pave_all()
+    trifront_wrapper([peanut],density,label='tight_peanut')
 
 def test_tight_with_island():
     # build a peanut first:
@@ -728,8 +752,7 @@ def test_tight_with_island():
     rings = [peanut,hole1,hole2]
 
     density = field.ConstantField( 6.0 )
-    p=paver.Paving(rings,density,label='tight_with_island')
-    p.pave_all()
+    trifront_wrapper(rings,density,label='tight_with_island')
 
 def test_peninsula():
     r = 100
@@ -742,9 +765,7 @@ def test_peninsula():
     density = field.ConstantField( 10.0 )
     pen2 = upsample_linearring(pen,density)
     
-    p=paver.Paving(pen2,density,label='peninsula')
-    p.pave_all()
-
+    trifront_wrapper([pen2],density,label='peninsula')
 
 def test_peanut():
     # like a figure 8, or a peanut
@@ -763,8 +784,7 @@ def test_peanut():
                         [max_pnt[0],max_pnt[1], 8]])
     density = field.XYZField(X=d_data[:,:2],F=d_data[:,2])
 
-    p=paver.Paving(peanut,density)
-    p.pave_all()
+    trifront_wrapper([peanut],density,label='peanut')
 
 def test_cul_de_sac():
     r=5
@@ -775,8 +795,7 @@ def test_cul_de_sac():
     ring = np.concatenate((box,cap))
 
     density = field.ConstantField(2*r/(np.sqrt(3)/2))
-    p=paver.Paving(ring,density,label='cul_de_sac')
-    p.pave_all()
+    trifront_wrapper([ring],density,label='cul_de_sac')
 
 def test_bow():
     x = np.linspace(-100,100,50)
@@ -787,8 +806,7 @@ def test_bow():
     height = np.array([0,20])
     ring = np.concatenate( (bow+height,bow[::-1]-height) )
     density = field.ConstantField(2)
-    p=paver.Paving(ring,density,label='bow')
-    p.pave_all()
+    trifront_wrapper([ring],density,label='bow')
 
 def test_ngon(nsides=7):
     # hexagon works ok, though a bit of perturbation
@@ -804,8 +822,7 @@ def test_ngon(nsides=7):
     poly = np.swapaxes( np.concatenate( (x[None,:],y[None,:]) ), 0,1)
     
     density = field.ConstantField(6)
-    p=paver.Paving(poly,density,label='ngon%02d'%nsides)
-    p.pave_all()
+    trifront_wrapper([poly],density,label='ngon%02d'%nsides)
 
 def test_expansion():
     # 40: too close to a 120deg angle - always bisect on centerline
@@ -821,10 +838,10 @@ def test_expansion():
                      [0,100]])
 
     density = field.ConstantField(6)
-    p=paver.Paving([pnts],density,label='expansion')
-    p.pave_all()
+    trifront_wrapper([pnts],density,label='expansion')
 
 def test_embedded_channel():
+    assert False # no API yet.
     # trying out degenerate internal lines - the trick may be mostly in
     # how to specify them.
     # make a large rectangle, with a sinuous channel in the middle
@@ -852,8 +869,9 @@ def test_embedded_channel():
     p=paver.Paving([rect],density,degenerates=[north_shore,south_shore])
     p.pave_all()
 
-# dumbarton...
 def test_dumbarton():
+    assert False # hold off
+    
     shp=os.path.join( os.path.dirname(__file__), 'data','dumbarton.shp')
     features=wkb2shp.shp2geom(shp)
     geom = features['geom'][0]
@@ -925,6 +943,7 @@ def gen_sine_sine():
     return p
 
 def test_sine_sine():
+    assert False # meh.. 
     p=gen_sine_sine()
     p.pave_all()
 

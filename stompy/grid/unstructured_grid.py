@@ -1201,6 +1201,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         return self._node_to_cells[n]
 
     def node_to_nodes(self,n):
+        """ Return an ndarray of the node indices which share edges with 
+        node n.
+        """
         js = self.node_to_edges(n)
         all_nodes = self.edges['nodes'][js].ravel()
         # return np.setdiff1d(all_nodes,[n]) # significantly slower than lists

@@ -216,7 +216,7 @@ class Curve(object):
         else:
             return new_points
 
-    def distance_away(self,anchor_f,signed_distance,rtol=0.05):
+    def OLD_distance_away(self,anchor_f,signed_distance,rtol=0.05):
         """  Find a point on the curve signed_distance away from the
         point corresponding to anchor_f, within the given relative tolerance.
         returns new_f,new_x.
@@ -272,6 +272,80 @@ class Curve(object):
         else:
             raise self.CurveException("Binary search failed")
 
+    def distance_away(self,anchor_f,signed_distance,rtol=0.05):
+        """  Find a point on the curve signed_distance away from the
+        point corresponding to anchor_f, within the given relative tolerance.
+        returns new_f,new_x.
+
+        If a point could not be found within the requested tolerance, raises
+        a self.CurveException.
+        """
+        sign=int(np.sign(signed_distance))
+        abs_dist=np.abs(signed_distance)
+
+        anchor_pnt=self(anchor_f)
+        anchor_idx_a=np.searchsorted(self.distances,anchor_f,side='right') - 1
+        anchor_idx_b=(anchor_idx_a+1)%(len(self.points)-1)
+
+        if sign<0:
+            anchor_idx_a,anchor_idx_b=anchor_idx_b,anchor_idx_a
+
+        # How many segment of the curve are we willing to examine? all of them,
+        # but no more.
+        Npnts=len(self.points)-1 # duplicate for closed ring
+        max_segs=Npnts
+        for segi in range(max_segs):
+            idxa=anchor_idx_a+sign*segi
+            idxb=idxa+sign # +-1
+            idxa=idxa%Npnts
+            idxb=idxb%Npnts
+            if segi==0:
+                # only care about the portion of the first segment
+                # "ahead" of anchor (TODO: handle sign<0)
+                pnta=anchor_pnt
+            else:
+                pnta=self.points[idxa]
+            pntb=self.points[idxb]
+            dista=utils.dist(pnta - anchor_pnt)
+            distb=utils.dist(pntb - anchor_pnt)
+            if (dista<(1-rtol)*abs_dist) and (distb<(1-rtol)*abs_dist):
+                # No way this segment is good.
+                continue
+            else:
+                break
+        else:
+            # i.e. checked everybody, could never get far enough
+            # away
+            raise self.CurveException("Could not get far enough away")
+        assert dista<distb
+        assert dista<(1+rtol)*abs_dist
+        assert distb>(1-rtol)*abs_dist
+
+        if segi==0:
+            close_f=anchor_f
+        else:
+            close_f=self.distances[idxa]
+        far_f=self.distances[idxb]
+        if sign*far_f<sign*close_f:
+            far_f+=sign*self.distances[-1]
+
+        for maxit in range(10):
+            mid_f=0.5*(close_f+far_f)
+            pnt_mid=self(mid_f)
+            dist_mid=utils.dist(pnt_mid - anchor_pnt)
+            rel_err = (dist_mid-abs_dist)/abs_dist
+            if rel_err < -rtol:
+                close_f=mid_f
+            elif rel_err > rtol:
+                far_f=mid_f
+            else:
+                result=mid_f,pnt_mid
+                break
+        else:
+            assert False
+        return result
+
+        
     def is_forward(self,fa,fb,fc):
         """ return true if fa,fb and fc are distinct and
         ordered CCW around the curve
@@ -590,9 +664,31 @@ class NonLocalStrategy(Strategy):
         best_dist=np.inf
 
         # skip over neighbors of any of the sites nodes
-        
-        each_dt_nbrs=[af.cdt.node_to_nodes(n) for n in site.abc]
 
+        # take any neighbors in the DT.
+        each_dt_nbrs=[af.cdt.node_to_nodes(n) for n in site.abc]
+        if 1:
+            # filter out neighbors which are not within the 'sector'
+            # defined by the site.
+            apnt,bpnt,cpnt=af.grid.nodes['x'][site.abc]
+
+            ba_angle=np.arctan2(apnt[1] - bpnt[1],
+                                apnt[0] - bpnt[0])
+            bc_angle=np.arctan2(cpnt[1] - bpnt[1],
+                                cpnt[0] - bpnt[0])
+
+            old_each_dt_nbrs=each_dt_nbrs
+            each_dt_nbrs=[]
+            for nbrs in old_each_dt_nbrs:
+                nbrs_pnts=af.grid.nodes['x'][nbrs]
+                diffs=nbrs_pnts - bpnt
+                angles=np.arctan2(diffs[:,1], diffs[:,0])
+                # want to make sure that the angles from b to a,nbr,c
+                # are consecutive
+                angle_sum = (angles-bc_angle)%(2*np.pi) + (ba_angle-angles)%(2*np.pi)
+                valid=(angle_sum < 2*np.pi)
+                each_dt_nbrs.append(nbrs[valid])
+            
         each_nbrs=[af.grid.node_to_nodes(n) for n in site.abc]
 
         # flat list of grid neighbors.  note that since a-b-c are connected,
@@ -1096,6 +1192,9 @@ class AdvancingFront(object):
         as it stands, if this code creates a new node, it is given fixed=SLIDE.
         it is up to the caller to reset the fixed of the original
         node to HINT, if that is what is desired.  
+
+        Returns the resampled node index -- often same as n, but may be a different
+        node.
         """
         self.log.debug("resample %d to be %g away from %d in the %s direction"%(n,scale,anchor,
                                                                                 direction) )
@@ -1125,7 +1224,12 @@ class AdvancingFront(object):
         # first, find a point on the original ring which satisfies the target_span
         # HERE - this assumes that 'n' is on the same curve as 'anchor' - which is not
         # TRUE
-        oring=self.grid.nodes['oring'][anchor]-1
+        anchor_oring=self.grid.nodes['oring'][anchor]-1
+        oring=self.grid.nodes['oring'][n]-1
+        if anchor_oring != oring:
+            self.log.warning('resample: anchor and n on different rings.  Will not resample')
+            # could try to get clever and resample n in the "correct" direction.
+            return n
         curve = self.curves[oring]
         anchor_f = self.grid.nodes['ring_f'][anchor]
         try:
