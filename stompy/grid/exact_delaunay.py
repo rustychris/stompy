@@ -101,6 +101,19 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
         # the constraints, delete, add, add constraints.
         # be sped up
 
+        # handle a common case where the node is only moved a small
+        # distance, such that we only have to do a small amount of
+        # work to fix up the triangulation
+        # if the new location is inside a cell adjacent to n, then
+        # we can [probably?] move the node
+        my_cells=self.node_to_cells(n)
+        loc_face,loc_type,loc_index=self.locate(kwargs['x'],my_cells[0])
+        if loc_type==self.IN_FACE and loc_face in my_cells:
+            # should be able to take a shorter route here:
+            retval=super(Triangulation,self).modify_node(n,**kwargs)
+            self.restore_delaunay(n)
+            return retval
+        
         # but adding the constraints back can fail, in which case we should
         # roll back our state, and fire an exception.
 
@@ -1401,8 +1414,10 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
                 return # there are not intersections
             
         if nB is None:
-            # BUG: locate for traversal is returning edge index, not half-edge
             end=self.locate_for_traversal(B,A)
+            # but the orientation of an edge has to be flipped
+            if end[0]=='edge':
+                end=(end[0],end[1].opposite())
                 
         # keep tracks of features crossed, including starting/ending
         assert trav[0] is not None
@@ -1436,6 +1451,9 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
                 trav=('edge',he)
                 history.append(trav)
                 yield trav
+            else:
+                assert trav[0]=='edge'
+                he=trav[1]
                 
             while trav != end:
                 trav=('node',he.node_fwd())

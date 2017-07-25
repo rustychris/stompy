@@ -514,10 +514,6 @@ def test_no_lookahead():
 
 # Bringing in the suite of test cases from test_paver*.py
 
-# HERE - probably need a slightly refined wrapper on the above
-# stuff to make these test cases (and actual use) less painful and
-# arbitrary.
-
 
 def trifront_wrapper(rings,scale,label=None):
     af=front.AdvancingTriangles()
@@ -611,58 +607,25 @@ def test_pave_basic():
 
 ##     
 # A circle - r = 100, C=628, n_points = 628
-#def test_circle():
-r = 100
-thetas = np.linspace(0,2*np.pi,200)[:-1]
-circle = np.zeros((len(thetas),2),np.float64)
-circle[:,0] = r*np.cos(thetas)
-circle[:,1] = r*np.sin(thetas)
-class CircleDensityField(field.Field):
-    # horizontally varying, from 5 to 20
-    def value(self,X):
-        X = np.array(X)
-        return 5 + 15 * (X[...,0] + 100) / 200.0
-scale = CircleDensityField()
-rings=[circle]
+# This is super slow!  there are lot of manipulations to the cdt
+# which cause far-reaching changes.
+def test_circle():
+    r = 100
+    thetas = np.linspace(0,2*np.pi,200)[:-1]
+    circle = np.zeros((len(thetas),2),np.float64)
+    circle[:,0] = r*np.cos(thetas)
+    circle[:,1] = r*np.sin(thetas)
+    class CircleDensityField(field.Field):
+        # horizontally varying, from 5 to 20
+        def value(self,X):
+            X = np.array(X)
+            return 5 + 15 * (X[...,0] + 100) / 200.0
+    scale = CircleDensityField()
+    rings=[circle]
 
-#    trifront_wrapper([circle],scale,label='circle')
-#def trifront_wrapper(rings,scale,label=None):
-af=front.AdvancingTriangles()
-af.set_edge_scale(scale)
-    
-af.add_curve(rings[0],interior=False)
-af.initialize_boundaries()
-
-## 
-
-plt.figure(2).clf()
-ax=plt.gca()
-
-while 1:
-    af.loop(1)
-    ax.collections=[]
-    af.grid.plot_edges(ax=ax)
-    af.cdt.plot_edges(ax=ax,color='m',lw=0.5)
-    plt.pause(0.01)
-
-# problem is that adding a single node requires recomputation of almost the
-# entire delaunay triangulation.
-# this is really finding some super slow part of the CDT code.
-
-## 
-    try:
-        af.loop()
-    finally:
-        if label is not None:
-            plt.figure(1).clf()
-            af.grid.plot_edges()
-            plt.savefig('af-%s.png'%label)
-    return af
-    
+    return trifront_wrapper([circle],scale,label='circle')
 
 
-
-## 
 def test_long_channel():
     l = 2000
     w = 50
