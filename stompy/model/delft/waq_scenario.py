@@ -984,6 +984,13 @@ class Hydro(object):
                     raise
         return x
 
+    def timeline_data(self):
+        scu=self.scenario.scu
+        time_start = (self.time0+self.scen_t_secs[0] *scu)
+        time_stop  = (self.time0+self.scen_t_secs[-1]*scu)
+        timedelta  = (self.t_secs[1] - self.t_secs[0])*scu
+        return time_start,time_stop,timedelta
+    
     def write_hyd(self,fn=None):
         """ Write an approximation to the hyd file output by D-Flow FM
         for consumption by delwaq
@@ -1015,9 +1022,11 @@ class Hydro(object):
         name=self.scenario.name
 
         dfmt="%Y%m%d%H%M%S"
-        time_start = (self.time0+self.scen_t_secs[0]*self.scenario.scu)
-        time_stop  = (self.time0+self.scen_t_secs[-1]*self.scenario.scu)
-        timedelta = (self.t_secs[1] - self.t_secs[0])*self.scenario.scu
+
+        scu=self.scenario.scu
+
+        time_start,time_stop,timedelta = self.timeline_data()
+            
         timestep = timedelta_to_waq_timestep(timedelta)
 
         self.infer_2d_elements()
@@ -1467,6 +1476,16 @@ class HydroFiles(Hydro):
             self._t_secs=(start+np.arange(n_steps)*step_secs).astype('i4')
         return self._t_secs
 
+    def timeline_data(self):
+        # May need to be more clever about generated datasets
+        # probably needs to be sync'd with whether we symlink, reference
+        # original files, write out a subset...
+        scu=self.scenario.scu
+        time_start = (self.time0+self.t_secs[0]* scu)
+        time_stop  = (self.time0+self.t_secs[-1]*scu)
+        timedelta  = (self.t_secs[1]- self.t_secs[0])*scu
+        return time_start,time_stop,timedelta
+    
     @property
     def time0(self):
         return parse_datetime(self.hyd_toks['conversion-ref-time'])
@@ -1542,6 +1561,7 @@ class HydroFiles(Hydro):
                 # creates one fewer time-steps of exchange-related data
                 # than volume-related data.
                 # each step has 4 bytes per exchange, plus a 4 byte time stamp.
+                # 2017-07-20 RH: bigger problems, as the output number o
                 pred_n_steps = are_size/4./(self.n_exch+1)
 
                 if pred_n_steps==nsteps:

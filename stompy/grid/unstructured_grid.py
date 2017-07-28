@@ -414,6 +414,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             except AttributeError:
                 start_index=0
             idxs=ncvar[...] - start_index
+            # force the move to numpy land
+            idxs=np.asanyarray(idxs)
+            
             # but might still be masked -- change to unmasked,
             # but our own choice of the invalid value:
             try:
@@ -421,6 +424,13 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     idxs=idxs.filled(UnstructuredGrid.UNDEFINED)
             except AttributeError:
                 pass
+            # ideally this wouldn't be needed, but as an index, really
+            # any negative value is bad, and more likely to signal that
+            # masks or MissingValue attributes were lost, so better to
+            # fix those now
+            # so be proactive about various ways of undefined nodes coming in:
+            idxs[np.isnan(idxs)]=UnstructuredGrid.UNDEFINED
+            idxs[idxs<0]=UnstructuredGrid.UNDEFINED
             return idxs
 
         faces = process_as_index(mesh.face_node_connectivity)

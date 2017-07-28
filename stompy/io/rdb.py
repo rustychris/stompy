@@ -207,11 +207,15 @@ class Rdb(object):
 
 
 
-def rdb_to_dataset(usgs_fn):
+def rdb_to_dataset(filename=None,text=None):
     """
     Read an rdb file and return an xarray dataset.
     """
-    usgs_data=Rdb(source_file=usgs_fn)
+
+    if filename is not None:
+        usgs_data=Rdb(source_file=filename)
+    else:
+        usgs_data=Rdb(text=text)
 
     # Convert that xarray for consistency
     ds=xr.Dataset()
@@ -227,12 +231,15 @@ def rdb_to_dataset(usgs_fn):
         # attempt to find better name for the columns
         varname=key # default to original name
 
-        m=re.match(r'(\d+)_(\d+)_(\d+)(_cd)?$',key)
+        # first number is timeseries code, second is parameter,
+        # and third, optional, is statistic code
+        m=re.match(r'(\d+)_(\d+)(_(\d+))?(_cd)?$',key)
         meta={}
         if m:
             meta['ts_code']=m.group(1)
             meta['parm_code']=m.group(2)
-            meta['stat_code']=m.group(3)
+            if m.group(4):
+                meta['stat_code']=m.group(4)
             # print("ts: %s  parm: %s  stat: %s"%(meta['ts_code'],
             #                                     meta['parm_code'],
             #                                     meta['stat_code']))
@@ -248,11 +255,12 @@ def rdb_to_dataset(usgs_fn):
                 varname=varname.lower().replace(' ','_').replace(',','').replace('.','')
 
                 meta['units']=parameter['parameter_units']
-            statistic=rdb_codes.stat_code_lookup(meta['stat_code'])
-            if statistic is not None:
-                meta['statistic']=statistic['name']
+            if m.group(4):
+                statistic=rdb_codes.stat_code_lookup(meta['stat_code'])
+                if statistic is not None:
+                    meta['statistic']=statistic['name']
 
-            if m.group(4) is not None:
+            if m.group(5) is not None:
                 # TODO: save QA codes
                 continue 
 

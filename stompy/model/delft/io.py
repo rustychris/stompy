@@ -691,7 +691,7 @@ def dataset_to_dfm_wind(ds,period_start,period_stop,target_filename_base,
 Filetype = meteo_on_equidistant_grid
 NODATA_value = %(nodata)g
 n_cols = %(n_cols)d
-n_rows = %(n_cols)d
+n_rows = %(n_rows)d
 grid_unit = m
 x_llcorner = %(x_llcorner)g
 y_llcorner = %(y_llcorner)g
