@@ -3157,7 +3157,7 @@ class Paving(paving_base,OptimizeGridMixin):
         dt_ordered = [n for n in left_neighbors if n in right_neighbors]
         
         # If the actual length is longer than local_scale, use it
-        scale_avg = sqrt( sum( (self.points[left_elt.data] - self.points[right_elt.data])**2))
+        scale_avg = np.sqrt( np.sum( (self.points[left_elt.data] - self.points[right_elt.data])**2))
         if scale_avg > local_scale:
             local_scale = scale_avg
 
@@ -3206,10 +3206,10 @@ class Paving(paving_base,OptimizeGridMixin):
                 continue
 
             # make sure that it falls within the perpendicular range of this edge -
-            if dot(vec,self.points[nbr] - pL) < 0:
+            if np.dot(vec,self.points[nbr] - pL) < 0:
                 # too far back
                 continue
-            if dot(vec,self.points[nbr] - pR) > 0:
+            if np.dot(vec,self.points[nbr] - pR) > 0:
                 # too far ahead
                 continue
 
@@ -3218,7 +3218,7 @@ class Paving(paving_base,OptimizeGridMixin):
 
         if self.verbose > 2:
             if best_nbr is not None:
-                annotate('NL:%d'%best_nbr,self.points[best_nbr])
+                plt.annotate('NL:%d'%best_nbr,self.points[best_nbr])
 
         if best_nbr is None and shoot_ray:
             ## Try the ray shooting method

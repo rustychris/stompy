@@ -17,9 +17,12 @@ from stompy.grid import paver
 
 reload(exact_delaunay)
 reload(live_dt)
+# monkey patch to use pure python triangulation
+live_dt.LiveDtGrid = live_dt.LiveDtPython
 reload(paver)
 
 ##
+
 def test_basic():
     # Define a polygon
     boundary=np.array([[0,0],[1000,0],[1000,1000],[0,1000]])
@@ -33,6 +36,7 @@ def test_basic():
     p=paver.Paving(rings=rings,density=scale)
 
     p.pave_all()
+
 
 ##     
 # A circle - r = 100, C=628, n_points = 628

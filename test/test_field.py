@@ -22,7 +22,17 @@ def test_xyz():
 
 
 
+##
 
+def test_lin_interp():
+    X=np.array([[0.,0.],[10.,0.],[10.,10.],[0.,10.]])
+    F=np.array([1.,2.,3.,4.])
 
+    f = field.XYZField(X=X,F=F)
+
+    elev = f.interpolate( [2,3] )
+
+    out=f.interpolate(X)
+    assert np.allclose(out,F)
 
 

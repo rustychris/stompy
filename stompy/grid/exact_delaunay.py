@@ -31,13 +31,30 @@ class ConstraintCollinearNode(BadConstraint):
     pass
 
 def ordered(x1,x2,x3):
-    # given collinear points, return true if they are in order
-    # along that line
+    """
+    given collinear points, return true if they are in order
+    along that line
+    """
     if x1[0]!=x2[0]:
         i=0
     else:
         i=1
     return (x1[i]<x2[i]) == (x2[i]<x3[i])
+
+
+def rel_ordered(x1,x2,x3,x4):
+    """
+    given 4 collinear points, return true if the direction
+    from x1->x2 is the same as x3=>x4
+    requires x1!=x2, and x3!=x4
+    """
+    if x1[0]!=x2[0]:
+        i=0 # choose a coordinate which is varying
+    else:
+        i=1
+    assert x1[i]!=x2[i]
+    assert x3[i]!=x4[i]
+    return (x1[i]<x2[i]) == (x3[i]<x4[i])
 
 
 class Triangulation(unstructured_grid.UnstructuredGrid):
@@ -84,6 +101,19 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
         # the constraints, delete, add, add constraints.
         # be sped up
 
+        # handle a common case where the node is only moved a small
+        # distance, such that we only have to do a small amount of
+        # work to fix up the triangulation
+        # if the new location is inside a cell adjacent to n, then
+        # we can [probably?] move the node
+        my_cells=self.node_to_cells(n)
+        loc_face,loc_type,loc_index=self.locate(kwargs['x'],my_cells[0])
+        if loc_type==self.IN_FACE and loc_face in my_cells:
+            # should be able to take a shorter route here:
+            retval=super(Triangulation,self).modify_node(n,**kwargs)
+            self.restore_delaunay(n)
+            return retval
+        
         # but adding the constraints back can fail, in which case we should
         # roll back our state, and fire an exception.
 
@@ -991,15 +1021,6 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
         assert not self.nodes['deleted'][nA]
         assert not self.nodes['deleted'][nB]
 
-        def ordered(x1,x2,x3):
-            # given collinear points, return true if they are in order
-            # along that line
-            if x1[0]!=x2[0]:
-                i=0
-            else:
-                i=1
-            return (x1[i]<x2[i]) == (x2[i]<x3[i])
-        
         # traversal could encounter multiple types of elements
         trav=('node',nA)
         A=self.nodes['x'][nA]
@@ -1177,7 +1198,22 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
                         if o_loc_type==self.IN_VERTEX:
                             return ('node',o_loc_index)
                         elif o_loc_type==self.IN_EDGE:
-                            return ('edge',o_loc_index)
+                            # This had been just returning the index, but we should
+                            # be return half-edge.  
+                            # Make sure it faces p:
+                            he=self.halfedge(o_loc_index,0)
+                            oj2=robust_predicates.orientation(p,
+                                                              self.nodes['x'][he.node_rev()],
+                                                              self.nodes['x'][he.node_fwd()])
+                            assert oj2!=0.0 # that would mean we're collinear
+                            # if the left side of he is facing us, 
+                            if oj2>0:
+                                # good - the left side of he, from rev to fwd, is facing p.
+                                pass
+                            else:
+                                # flip it.
+                                he=he.opposite()
+                            return ('edge',he)
                     # shouldn't be possible
                     assert False
                 else: # p_other is on the other side
@@ -1205,7 +1241,7 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
                         if o_fwd==0.0:
                             return ('node',n_fwd)
                         if o_fwd<0:
-                            return ('edge',he.j)
+                            return ('edge',he) # had been he.j, but we should return half-edge
                         # must go further!
                         he_opp=he.opposite()
                         he=he.fwd()
@@ -1228,9 +1264,10 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
                     return (None,None)
 
         elif dim==2:
-            j=loc_index
             # use that to get a half-edge facing p...
-            he_original = he = self.halfedge(j,0)
+            # had done this, but loc_index is already a half edge
+            # he_original = he = self.halfedge(loc_index,0)
+            he_original = he = loc_index
 
             # make sure we got the one facing out
             if he.cell()>=0:
@@ -1266,7 +1303,7 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
                     elif o_rev>0:
                         if o_fwd<0:
                             # found the edge!
-                            return ('edge',he.j)
+                            return ('edge',he) # had been he.j
                         elif o_fwd==0:
                             return ('node',n_fwd)
                         else:
@@ -1307,6 +1344,7 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
 
             o_p_other = robust_predicates.orientation(p_other, p_rev, p_fwd)
             if o_p==0.0:
+                # should this use rel_ordered instead?
                 if ordered(p_rev,p,p_other):
                     # good - we're looking along, from rev to fwd
                     pass
@@ -1347,7 +1385,6 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
         is truly intersected).  The first feature returned is simply the first feature
         encountered along the path, necessarily an edge or node, not a face.
         """
-        
         # verify that it was called correctly
         if (nA is not None) and (nB is not None):
             assert nA!=nB
@@ -1378,6 +1415,9 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
             
         if nB is None:
             end=self.locate_for_traversal(B,A)
+            # but the orientation of an edge has to be flipped
+            if end[0]=='edge':
+                end=(end[0],end[1].opposite())
                 
         # keep tracks of features crossed, including starting/ending
         assert trav[0] is not None
@@ -1411,6 +1451,9 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
                 trav=('edge',he)
                 history.append(trav)
                 yield trav
+            else:
+                assert trav[0]=='edge'
+                he=trav[1]
                 
             while trav != end:
                 trav=('node',he.node_fwd())

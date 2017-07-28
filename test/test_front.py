@@ -1,3 +1,4 @@
+import os
 import time
 import logging
 import matplotlib.pyplot as plt
@@ -10,11 +11,20 @@ from stompy.spatial import field
 from stompy import utils
 
 from stompy.grid import (unstructured_grid, exact_delaunay, front)
+
+import logging
+logging.basicConfig(level=logging.INFO)
+
+from stompy.spatial.linestring_utils import upsample_linearring,resample_linearring
+from stompy.spatial import field,constrained_delaunay,wkb2shp
+
+##
+
 reload(unstructured_grid)
 reload(exact_delaunay)
 reload(front)
 
-#-# Curve -
+## Curve -
 
 def hex_curve():
     hexagon = np.array( [[0,11],
@@ -67,6 +77,41 @@ def test_distance_away():
         #print "Okay"
         pass
 
+
+def test_distance_away2():
+    # Towards a smarter Curve::distance_away(), which understands
+    # piecewise linear geometry
+    island  =np.array([[200,200],[600,200],[200,600]])
+    curve=front.Curve(island)
+
+    anchor_f=919.3
+    signed_distance=50.0
+    res=distance_away(curve,anchor_f,signed_distance)
+    assert res[0]>anchor_f
+    anchor_pnt=curve(anchor_f)
+
+    rel_err=np.abs( utils.dist(anchor_pnt - res[1]) - abs(signed_distance)) / abs(signed_distance)
+    assert np.abs(rel_err)<=0.05
+
+    anchor_f=440
+    signed_distance=-50.0
+    res=distance_away(curve,anchor_f,signed_distance)
+
+    anchor_pnt=curve(anchor_f)
+
+    rel_err=np.abs( utils.dist(anchor_pnt - res[1]) - abs(signed_distance)) / abs(signed_distance)
+    assert res[0]<anchor_f
+    assert np.abs(rel_err)<=0.05
+    
+def test_distance3():
+    # Case where the return point is on the same segment as it starts
+    curve=front.Curve(np.array([[   0,    0],
+                                [1000,    0],
+                                [1000, 1000],
+                                [   0, 1000]]),closed=True)
+    res=curve.distance_away(3308.90,50.0)
+    res=curve.distance_away(3308.90,-50.0)
+    
 def test_is_forward():
     crv=hex_curve()
     assert crv.is_forward(5,6,50)
@@ -111,7 +156,6 @@ def test_basic_setup():
         coll=g.plot_halfedges(values=g.edges['cells'])
         coll.set_lw(0)
         coll.set_cmap('winter')
-        
 
     return af
 
@@ -129,7 +173,7 @@ def test_basic_setup():
 
 def test_halfedge_traverse():
     af=test_basic_setup()
-    J,Orient = np.nonzero( (af.grid.edges['cells'][:,:]==self.grid.UNMESHED) )
+    J,Orient = np.nonzero( (af.grid.edges['cells'][:,:]==af.grid.UNMESHED) )
 
     # he=he0=HalfEdge(af.grid,J[0],Orient[0])
     he=he0=af.grid.halfedge(J[0],Orient[0])
@@ -140,7 +184,7 @@ def test_halfedge_traverse():
             break
     else:
         assert False
-    assert i==33 # pretty sure about that number...
+    assert i==31 # that had been 33, but now I'm getting 31.  may need to be smarter.
 
     he=he0=af.grid.halfedge(J[0],Orient[0])
 
@@ -150,8 +194,7 @@ def test_halfedge_traverse():
             break
     else:
         assert False
-    assert i==33 # pretty sure about that number...
-
+    assert i==31 # pretty sure about that number...
 
     assert he.fwd().rev() == he
     assert he.rev().fwd() == he
@@ -176,7 +219,6 @@ def test_merge_edges():
         if he==he0:
             break
 
-
     if plt:
         plt.clf()
         af.grid.plot_edges()
@@ -188,7 +230,6 @@ def test_merge_edges():
 # when resample nodes on a sliding boundary, want to calculate the available
 # span, and if it's small, start distributing the nodes evenly.
 # where small is defined by local_scale * max_span_factor
-
 
 def test_resample():
     af=test_basic_setup()
@@ -211,7 +252,6 @@ def test_resample():
     
     
 #-#     
-
 
 
 def test_resample_neighbors():
@@ -238,7 +278,6 @@ def test_resample_neighbors():
         plt.axis( [34.91, 42.182, 7.300, 12.97] )
     return af
         
-# af=test_resample_neighbors()
 
 # enumerate the strategies for a site:
 # paver preemptively resamples the neighbors
@@ -262,10 +301,10 @@ def test_actions():
     edits=actions[best].execute(site)
     af.optimize_edits(edits)
 
-# #
+##
 
-af=test_basic_setup()
-check0=af.grid.checkpoint()
+# af=test_basic_setup()
+# check0=af.grid.checkpoint()
 
 # #
 
@@ -308,209 +347,55 @@ check0=af.grid.checkpoint()
 # the tree should be held by af.
 # 
 
-# af2=test_basic_setup()
-# af2.log.setLevel(logging.INFO)
-# 
-# af2.cdt.post_check=False
-# af2.loop()
-# plt.figure(2).clf()
-# fig,ax=plt.subplots(num=2)
-# af2.plot_summary(ax=ax)
-# ax.set_title('loop()')
-
-
-
-class DTNode(object):
-    parent=None 
-    af=None # AdvancingTriangles object
-    cp=None # checkpoint
-    ops_parent=None # chunk of op_stack to get from parent to here.
-    options=None # node-specific list of data for child options
+def test_dt_one_loop():
+    """ fill a squat hex with triangles.
+    """
+    af2=test_basic_setup()
+    af2.log.setLevel(logging.INFO)
     
-    children=None # filled in by subclass [DTNode, ... ]
-    child_prior=None # est. cost for child
-    child_post =None # actual cost for child
-    
-    def __init__(self,af,parent=None):
-        self.af=af
-        self.parent=parent
-        # in cases where init of the node makes some changes,
-        # this should be updated
-        self.cp=af.grid.checkpoint() 
-        self.active_child=None
-    def set_options(self,options,priors):
-        self.options=options
-        self.child_prior=priors
-        
-        N=len(options)
-        self.children=[None] * N
-        self.child_post =[None]*N
-        self.child_order=np.argsort(self.child_prior) 
-        
-    def revert_to_parent(self):
-        if self.parent is None:
-            return False
-        return self.parent.revert_to_here()
-    def revert_to_here(self):
-        self.af.grid.revert(self.cp)
-        self.af.current=self
-        self.active_child=None
+    af2.cdt.post_check=False
+    af2.loop()
+    if plt:
+        plt.figure(2).clf()
+        fig,ax=plt.subplots(num=2)
+        af2.plot_summary(ax=ax)
+        ax.set_title('loop()')
 
-    def try_child(self,i):
-        assert False # implemented by subclass
+## 
+
+def test_dt_backtracking():
+    """
+    test a bit more of the decision tree.
+    tries all possible children, at least for strategies,
+    then goes with the "best" one.
+    """
+    if plt:
+        plt.figure(1).clf()
+        fig,ax=plt.subplots(num=1)
         
-    def best_child(self,count=0,cb=None):
-        """
-        Try all, (or up to count) children, 
-        use the best one based on post scores.
-        If no children succeeded, return False, otherwise True
-        """
-        if count:
-            count=min(count,len(self.options))
-        else:
-            count=len(self.options)
-
-        best=None
-        for i in range(count):
-            print("best_child: trying %d / %d"%(i,count))
-            
-            if self.try_child(i):
-                if cb: cb()
-                if best is None:
-                    best=i
-                elif self.child_post[i] < self.child_post[best]:
-                    best=i
-                if i<count-1: 
-                    self.revert_to_here()
-            else:
-                print("best_child: option %d did not succeed"%i)
-        if best is None:
-            # no children worked out -
-            print("best_child: no children worked")
-            return False
-        
-        # wait to see if the best was the last, in which case
-        # can save an undo/redo
-        if best!=count-1:
-            self.revert_to_here()
-            self.try_child(best)
-        return True
-
-class DTChooseSite(DTNode):
-    def __init__(self,af,parent=None):
-        super(DTChooseSite,self).__init__(af=af,parent=parent)
-        sites=af.enumerate_sites()
-        
-        priors=[ site.metric()
-                 for site in sites ]
-        
-        self.set_options(sites,priors)
-        
-    def try_child(self,i):
-        """ 
-        Assumes that af state is currently at this node,
-        try the decision of the ith child, create the new DTNode
-        for that, and shift af state to be that child.
-
-        Returns true if successful.  On failure (topological violation?)
-        return false, and state should be unchanged.
-        """
-        assert self.af.current==self
-        
-        site=self.options[self.child_order[i]]
-
-        self.children[i] = DTChooseStrategy(af=self.af,parent=self,site=site)
-        # nothing to update for posterior
-        self.child_post[i] = self.child_prior[i]
-        
-        af.current=self.children[i]
-        self.active_child=i
-        return True
-    
-    def best_child(self,count=0,cb=None):
-        """
-        For choosing a site, prior is same as posterior
-        """
-        if count:
-            count=min(count,len(self.options))
-        else:
-            count=len(self.options)
-
-        best=None
-        for i in range(count):
-            print("best_child: trying %d / %d"%(i,count))
-            if self.try_child(i):
-                if cb: cb()
-                # no need to go further
-                return True
-        return False
-        
-class DTChooseStrategy(DTNode):
-    def __init__(self,af,parent,site):
-        super(DTChooseStrategy,self).__init__(af=af,parent=parent)
-        self.site=site
-
-        self.af.resample_neighbors(site)
-        self.cp=af.grid.checkpoint() 
-
-        actions=site.actions()
-        priors=[a.metric(site)
-                for a in actions]
-        self.set_options(actions,priors)
-
-    def try_child(self,i):
-        try:
-            edits=self.options[self.child_order[i]].execute(self.site)
-            self.af.optimize_edits(edits)
-            # could commit?
-        except self.af.cdt.IntersectingConstraints as exc:
-            self.af.log.error("Intersecting constraints - rolling back")
-            self.af.grid.revert(self.cp)
-            return False
-        except self.af.StrategyFailed as exc:
-            self.af.log.error("Strategy failed - rolling back")
-            self.af.grid.revert(self.cp)
-            return False
-        
-        self.children[i] = DTChooseSite(af=self.af,parent=self)
-        self.active_edits=edits # not sure this is the right place to store this
-        self.af.current=self.children[i]
-
-        nodes=[]
-        for c in edits['cells']:
-            nodes += list(self.af.grid.cell_to_nodes(c))
-        for n in edits.get('nodes',[]):
-            nodes.append(n)
-        nodes=list(set(nodes))
-        cost = np.max( [self.af.eval_cost(n)
-                        for n in nodes] )
-        self.child_post[i]=cost
-        return True
-
-if 0: # manual testing
-    plt.figure(1).clf()
-    fig,ax=plt.subplots(num=1)
     af=test_basic_setup()
     af.log.setLevel(logging.INFO)
 
     af.cdt.post_check=False
     
-    af.root=DTChooseSite(af)
+    af.root=front.DTChooseSite(af)
     af.current=af.root
-    # af.plot_summary() ; plt.pause(1.0)
 
-    def cb():
-        print("tried...")
-        af.plot_summary()
-        fig.canvas.draw()
+    if plt:
+        def cb():
+            print("tried...")
+            af.plot_summary()
+            fig.canvas.draw()
+    else:
+        def cb():
+            pass
+        
     af.current.best_child()
     af.current.best_child(cb=cb)
     af.current.best_child()
     # This is leaving things in a weird place
+    # maybe fixed now?
     af.current.best_child(cb=cb)
-
-# af.plot_summary()    
-
 
 ## 
 # Single step lookahead:
@@ -527,35 +412,56 @@ if 0: # manual testing
 # hmm - this is now getting a DuplicatedNode error while trying some
 # terrible configuration
 
-plt.figure(1).clf()
-fig,ax=plt.subplots(num=1)
+def test_singlestep_lookahead():
+    #plt.figure(1).clf()
+    # fig,ax=plt.subplots(num=1)
 
-af=test_basic_setup()
-af.log.setLevel(logging.INFO)
-af.cdt.post_check=False
-af.current=af.root=DTChooseSite(af)
+    af=test_basic_setup()
+    af.log.setLevel(logging.INFO)
+    af.cdt.post_check=False
+    af.current=af.root=front.DTChooseSite(af)
 
-# the results are not that great, seems that Wall
-# wins out as much as possible, since it is least constrained
-# then it ends up using too many joins, where it should have
-# just used a bisect.
-# using Wall too much is inefficient, but I don't think that it
-# should lead to lower quality.  
+    # the results are not that great
 
-# also seems like the optimization is favoring angles over 
-# scale too much, such that the results stray too far from
-# a constant scale, and then it can't recover
+    while 1:
+        if not af.current.children:
+            break # we're done?
 
-# It now runs to completion, but the quality is low.
-# well, almost completion - fails at abs_serial: 21451
-# another fail in slide_node.
-# node 11? f => 32.571511772985957
-# probably moved it all the way to 12.
-# ah - maybe because slide_node_limits didn't check that first edge?
+        def cb():
+            af.plot_summary(label_nodes=False)
+            try:
+                af.current.site.plot()
+            except: # AttributeError:
+                pass
+            # fig.canvas.draw()
+            plt.pause(0.001)
 
-while 1:
-    if not af.current.children:
-        break # we're done?
+        if not af.current.best_child(): # cb=cb
+            assert False
+
+        # cb()
+        # break
+
+    # af.plot_summary()
+    return af
+    
+# af=test_singlestep_lookahead()
+# af.plot_summary()
+
+## 
+
+# Basic, no lookahead:
+# This produces better results because the metrics have been pre-tuned
+
+def test_no_lookahead():
+    #plt.figure(1).clf()
+    #fig,ax=plt.subplots(num=1)
+
+    af=test_basic_setup()
+    af.log.setLevel(logging.INFO)
+    af.cdt.post_check=False
+
+    af.current=af.root=DTChooseSite(af)
 
     def cb():
         af.plot_summary(label_nodes=False)
@@ -564,58 +470,22 @@ while 1:
         except: # AttributeError:
             pass
         # fig.canvas.draw()
-        plt.pause(0.001)
-    
-    if not af.current.best_child(): # cb=cb
-        assert False
-        
-    cb()
-    # break
+        plt.pause(0.01)
 
-af.plot_summary()
-    
+    while 1:
+        if not af.current.children:
+            break # we're done?
 
-
-## 
-
-# Basic, no lookahead:
-# This produces better results because the metrics have been pre-tuned
-
-plt.figure(1).clf()
-fig,ax=plt.subplots(num=1)
-
-af=test_basic_setup()
-af.log.setLevel(logging.INFO)
-af.cdt.post_check=False
-
-af.current=af.root=DTChooseSite(af)
-
-def cb():
-    af.plot_summary(label_nodes=False)
-    try:
-        af.current.site.plot()
-    except: # AttributeError:
-        pass
-    # fig.canvas.draw()
-    plt.pause(0.01)
-
-while 1:
-    if not af.current.children:
-        break # we're done?
-    
-    for child_i in range(len(af.current.children)):
-        if af.current.try_child(child_i):
-            # Accept the first child which returns true
-            break
-    else:
-        assert False # none of the children worked out
-    cb()
-af.plot_summary(ax=ax)
+        for child_i in range(len(af.current.children)):
+            if af.current.try_child(child_i):
+                # Accept the first child which returns true
+                break
+        else:
+            assert False # none of the children worked out
+        #cb()
+    af.plot_summary(ax=ax)
 
 ##
-
-af.grid.plot_nodes(labeler=lambda i,r: "   %s"%r['fixed'] )
-## 
 
 # Why does it divege from symmetry at the start?
 # part of this is because the combination of the original
@@ -625,72 +495,10 @@ af.grid.plot_nodes(labeler=lambda i,r: "   %s"%r['fixed'] )
 # is the potential to have a bistable minimization problem,
 # and the numerical optimization chooses in a non-symmetric way.
 
-
-plt.figure(1).clf()
-fig,ax=plt.subplots(num=1)
-
-af=test_basic_setup()
-af.log.setLevel(logging.INFO)
-af.cdt.post_check=False
-
-af.current=af.root=DTChooseSite(af)
-
-def cb():
-    af.plot_summary(label_nodes=False)
-    try:
-        af.current.site.plot()
-    except: # AttributeError:
-        pass
-    plt.pause(0.01)
-## 
-while 1:
-    if not af.current.children:
-        break # we're done?
-    
-    for child_i in range(len(af.current.children)):
-        if af.current.try_child(child_i):
-            # Accept the first child which returns true
-            break
-    else:
-        assert False # none of the children worked out
-    cb()
-    # break
-af.plot_summary(ax=ax)
-
-# on the right side, start with a Wall, and then Join shows
-# up first.
-# it's a numerical precision thing.
-# the internal angle is 30 degrees
-# scale_factor is 1.  Score == theta
-
-
-if isinstance( af.current,DTChooseStrategy ):
-    print af.current.site.abc
-    for i in af.current.child_order:
-        print "option %d: metric=%g  %s"%(i,af.current.child_prior[i],af.current.options[i])
-
 ## 
 # 6. Implement n-lookahead
 
-## 
 # on sfei desktop, it's 41 cells/s.
-# any chance numba can help out here? too much of a pain for now.
-
-af=test_basic_setup()
-af.log.setLevel(logging.INFO)
-
-af.cdt.post_check=False
-
-t_start=time.time()
-# # 
-af.loop()  
-elapsed=time.time() - t_start
-print "Elapsed: %.2fs, or %f cells/s"%(elapsed,af.grid.Ncells()/elapsed)
-
-plt.figure(1).clf()
-af.plot_summary(label_nodes=False)
-
-##
 
 # I think the best plan of attack is to roughly replicate the way paver
 # worked, then extend with the graph search
@@ -701,25 +509,404 @@ af.plot_summary(label_nodes=False)
 #   CDT is included now, and can trigger an alternate strategy when
 #   edges intersect.  No non-local connections, though.
 
-site3=af.choose_site()
-
-if plt:
-    plt.clf()
-    af.grid.plot_edges()
-
-    coll=af.grid.plot_halfedges(values=af.grid.edges['cells'])
-    coll.set_lw(0)
-    coll.set_cmap('winter')
-    site3.plot()
-
 
 ###
 
-# Does numba do anything now?
-# takes some work -
-# and it is having trouble with being called in the true context.
-# passing it basically the same values, but manually on the command
-# line appears to work just fine.
-# could be that this doesn't call it in quite the same way?
-# or that there is some nuance in the agruments, like not being
-# contiguous, C-style, etc.?
+# Bringing in the suite of test cases from test_paver*.py
+
+
+def trifront_wrapper(rings,scale,label=None):
+    af=front.AdvancingTriangles()
+    af.set_edge_scale(scale)
+    
+    af.add_curve(rings[0],interior=False)
+    for ring in rings[1:]:
+        af.add_curve(ring,interior=True)
+    af.initialize_boundaries()
+
+    try:
+        af.loop()
+    finally:
+        if label is not None:
+            plt.figure(1).clf()
+            af.grid.plot_edges()
+            plt.savefig('af-%s.png'%label)
+    return af
+    
+def test_pave_quad():
+    # Define a polygon
+    rings=[ np.array([[0,0],[1000,0],[1000,1000],[0,1000]]) ] 
+    # And the scale:
+    scale=field.ConstantField(50)
+
+    return trifront_wrapper(rings,scale,label='quad')
+    
+def test_pave_basic():
+    # big square with right triangle inside
+    # Define a polygon
+    boundary=np.array([[0,0],[1000,0],[1000,1000],[0,1000]])
+    island  =np.array([[200,200],[600,200],[200,600]])
+    rings=[boundary,island]
+    # And the scale:
+    scale=field.ConstantField(50)
+
+    return trifront_wrapper(rings,scale,label='basic_island')
+
+
+# It continues to choose bad nonlocals.
+# - could go back to the approach of the old code, which made a more
+#   explicit list of local nodes based on distance traversed along edges.
+# - is there a way to use more of the geometry in the DT to direct this?
+#   cast a ray in only particular directions?
+#   a bit easier for a bisect.
+# - maybe testing for nonlocal neighbors should only happen when new nodes are
+#   created: bisect, wall.  At that point, there is a choice of whether the new
+#   node's ideal location is close enough to a nonlocal element that the new node
+#   should actually be a connection to that nonlocal element.
+# - back in paver - what are the details of how it worked?
+#   1. get a scale based on target scale and scale of the site.
+#   2. local_nodes() does some type of local area sort with a threshold
+#      distance.
+#   3. delaunay neighbors of the center of the element (node 'b') are
+#      queried -- are they close enough to 'b', and far enough away
+#      when traversing existing edges.
+#   4. If no nodes arose from step 3, then shoot a ray and potentially
+#      resample whatever is found.
+
+
+## 
+# a Decision-tree loop would look like:
+#     af=test_basic_setup()
+#     af.log.setLevel(logging.INFO)
+#     af.cdt.post_check=False
+# 
+#     af.current=af.root=DTChooseSite(af)
+# 
+#     def cb():
+#         af.plot_summary(label_nodes=False)
+#         try:
+#             af.current.site.plot()
+#         except: # AttributeError:
+#             pass
+#         # fig.canvas.draw()
+#         plt.pause(0.01)
+# 
+#     while 1:
+#         if not af.current.children:
+#             break # we're done?
+# 
+#         for child_i in range(len(af.current.children)):
+#             if af.current.try_child(child_i):
+#                 # Accept the first child which returns true
+#                 break
+#         else:
+#             assert False # none of the children worked out
+#         #cb()
+#     af.plot_summary(ax=ax)
+
+
+##     
+# A circle - r = 100, C=628, n_points = 628
+# This is super slow!  there are lot of manipulations to the cdt
+# which cause far-reaching changes.
+def test_circle():
+    r = 100
+    thetas = np.linspace(0,2*np.pi,200)[:-1]
+    circle = np.zeros((len(thetas),2),np.float64)
+    circle[:,0] = r*np.cos(thetas)
+    circle[:,1] = r*np.sin(thetas)
+    class CircleDensityField(field.Field):
+        # horizontally varying, from 5 to 20
+        def value(self,X):
+            X = np.array(X)
+            return 5 + 15 * (X[...,0] + 100) / 200.0
+    scale = CircleDensityField()
+    rings=[circle]
+
+    return trifront_wrapper([circle],scale,label='circle')
+
+
+def test_long_channel():
+    l = 2000
+    w = 50
+    long_channel = np.array([[0,0],
+                             [l,0],
+                             [l,w],
+                             [0,w]], np.float64 )
+
+    density = field.ConstantField( 19.245 )
+    trifront_wrapper([long_channel],density,label='long_channel')
+
+def test_long_channel_rigid():
+    assert False # no RIGID initialization yet
+    l = 2000
+    w = 50
+    long_channel = np.array([[0,0],
+                             [l,0],
+                             [l,w],
+                             [0,w]], np.float64 )
+
+    density = field.ConstantField( 19.245 )
+    trifront_wrapper([long_channel],density,initial_node_status=paver.Paving.RIGID,
+                     label='long_channel_rigid')
+
+
+def test_narrow_channel():
+    l = 1000
+    w = 50
+    long_channel = np.array([[0,0],
+                             [l,0.375*w],
+                             [l,0.625*w],
+                             [0,w]], np.float64 )
+
+    density = field.ConstantField( w/np.sin(60*np.pi/180.) / 4 )
+    trifront_wrapper([long_channel],density,label='narrow_channel')
+    
+def test_small_island():
+    l = 100
+    square = np.array([[0,0],
+                       [l,0],
+                       [l,l],
+                       [0,l]], np.float64 )
+
+    r=10
+    theta = np.linspace(0,2*np.pi,30)
+    circle = r/np.sqrt(2) * np.swapaxes( np.array([np.cos(theta), np.sin(theta)]), 0,1)
+    island1 = circle + np.array([45,45])
+    island2 = circle + np.array([65,65])
+    island3 = circle + np.array([20,80])
+    rings = [square,island1,island2,island3]
+
+    density = field.ConstantField( 10 )
+    trifront_wrapper(rings,density,label='small_island')
+
+def test_tight_peanut():
+    r = 100
+    thetas = np.linspace(0,2*np.pi,300)
+    peanut = np.zeros( (len(thetas),2), np.float64)
+    x = r*np.cos(thetas)
+    y = r*np.sin(thetas) * (0.9/10000 * x*x + 0.05)
+    peanut[:,0] = x
+    peanut[:,1] = y
+    density = field.ConstantField( 6.0 )
+    trifront_wrapper([peanut],density,label='tight_peanut')
+
+def test_tight_with_island():
+    # build a peanut first:
+    r = 100
+    thetas = np.linspace(0,2*np.pi,250)
+    peanut = np.zeros( (len(thetas),2), np.float64)
+    x = r*np.cos(thetas)
+    y = r*np.sin(thetas) * (0.9/10000 * x*x + 0.05)
+    peanut[:,0] = x
+    peanut[:,1] = y
+
+    # put two holes into it
+    thetas = np.linspace(0,2*np.pi,30)
+
+    hole1 = np.zeros( (len(thetas),2), np.float64)
+    hole1[:,0] = 10*np.cos(thetas) - 75
+    hole1[:,1] = 10*np.sin(thetas)
+
+    hole2 = np.zeros( (len(thetas),2), np.float64)
+    hole2[:,0] = 20*np.cos(thetas) + 75
+    hole2[:,1] = 20*np.sin(thetas)
+
+    rings = [peanut,hole1,hole2]
+
+    density = field.ConstantField( 6.0 )
+    trifront_wrapper(rings,density,label='tight_with_island')
+
+def test_peninsula():
+    r = 100
+    thetas = np.linspace(0,2*np.pi,1000)
+    pen = np.zeros( (len(thetas),2), np.float64)
+
+    pen[:,0] = r*(0.2+ np.abs(np.sin(2*thetas))**0.2)*np.cos(thetas)
+    pen[:,1] = r*(0.2+ np.abs(np.sin(2*thetas))**0.2)*np.sin(thetas)
+
+    density = field.ConstantField( 10.0 )
+    pen2 = upsample_linearring(pen,density)
+    
+    trifront_wrapper([pen2],density,label='peninsula')
+
+def test_peanut():
+    # like a figure 8, or a peanut
+    r = 100
+    thetas = np.linspace(0,2*np.pi,1000)
+    peanut = np.zeros( (len(thetas),2), np.float64)
+
+    peanut[:,0] = r*(0.5+0.3*np.cos(2*thetas))*np.cos(thetas)
+    peanut[:,1] = r*(0.5+0.3*np.cos(2*thetas))*np.sin(thetas)
+
+    min_pnt = peanut.min(axis=0)
+    max_pnt = peanut.max(axis=0)
+    d_data = np.array([ [min_pnt[0],min_pnt[1], 1.5],
+                        [min_pnt[0],max_pnt[1], 1.5],
+                        [max_pnt[0],min_pnt[1], 8],
+                        [max_pnt[0],max_pnt[1], 8]])
+    density = field.XYZField(X=d_data[:,:2],F=d_data[:,2])
+
+    trifront_wrapper([peanut],density,label='peanut')
+
+def test_cul_de_sac():
+    r=5
+    theta = np.linspace(-np.pi/2,np.pi/2,20)
+    cap = r * np.swapaxes( np.array([np.cos(theta), np.sin(theta)]), 0,1)
+    box = np.array([ [-3*r,r],
+                     [-4*r,-r] ])
+    ring = np.concatenate((box,cap))
+
+    density = field.ConstantField(2*r/(np.sqrt(3)/2))
+    trifront_wrapper([ring],density,label='cul_de_sac')
+
+def test_bow():
+    x = np.linspace(-100,100,50)
+    # with /1000 it seems to do okay
+    # with /500 it still looks okay
+    y = x**2 / 250.0
+    bow = np.swapaxes( np.concatenate( (x[None,:],y[None,:]) ), 0,1)
+    height = np.array([0,20])
+    ring = np.concatenate( (bow+height,bow[::-1]-height) )
+    density = field.ConstantField(2)
+    trifront_wrapper([ring],density,label='bow')
+
+def test_ngon(nsides=7):
+    # hexagon works ok, though a bit of perturbation
+    # septagon starts to show expansion issues, but never pronounced
+    # octagon - works fine.
+    theta = np.linspace(0,2*np.pi,nsides+1)[:-1]
+
+    r=100
+    
+    x = r*np.cos(theta)
+    y = r*np.sin(theta)
+    
+    poly = np.swapaxes( np.concatenate( (x[None,:],y[None,:]) ), 0,1)
+    
+    density = field.ConstantField(6)
+    trifront_wrapper([poly],density,label='ngon%02d'%nsides)
+
+def test_expansion():
+    # 40: too close to a 120deg angle - always bisect on centerline
+    # 30: rows alternate with wall and bisect seams
+    # 35: starts to diverge, but recovers.
+    # 37: too close to 120.
+    d = 36
+    pnts = np.array([[0.,0.],
+                     [100,-d],
+                     [200,0],
+                     [200,100],
+                     [100,100+d],
+                     [0,100]])
+
+    density = field.ConstantField(6)
+    trifront_wrapper([pnts],density,label='expansion')
+
+def test_embedded_channel():
+    assert False # no API yet.
+    # trying out degenerate internal lines - the trick may be mostly in
+    # how to specify them.
+    # make a large rectangle, with a sinuous channel in the middle
+    L = 500.0
+    W = 300.0
+    
+    rect = np.array([[0,0],
+                  [L,0],
+                  [L,W],
+                  [0,W]])
+
+    x = np.linspace(0.1*L,0.9*L,50)
+    y = W/2 + 0.1*W*np.cos(4*np.pi*x/L)
+    shore = np.swapaxes( np.concatenate( (x[None,:],y[None,:]) ), 0,1)
+    
+    density = field.ConstantField(10)
+    
+    # this will probably get moved into Paver itself.
+    # Note closed_ring=0 !
+    shore = resample_linearring(shore,density,closed_ring=0)
+
+    south_shore = shore - np.array([0,0.1*W])
+    north_shore = shore + np.array([0,0.1*W])
+
+    p=paver.Paving([rect],density,degenerates=[north_shore,south_shore])
+    p.pave_all()
+
+def test_dumbarton():
+    assert False # hold off
+    
+    shp=os.path.join( os.path.dirname(__file__), 'data','dumbarton.shp')
+    features=wkb2shp.shp2geom(shp)
+    geom = features['geom'][0]
+    dumbarton = np.array(geom.exterior)
+    density = field.ConstantField(250.0)
+    p=paver.Paving(dumbarton, density,label='dumbarton')
+    p.pave_all()
+
+
+##
+
+# This is going to require a fair bit of porting --
+
+# hmm - maybe better just to have a sinusoid channel, then perturb it
+# and put some islands in there.  having a wide range of scales looks
+# nice but isn't going to be a great test.
+def gen_sine_sine():
+    t = np.linspace(1.0,12*np.pi,400)
+    x1 = 100*t
+    y1 = 200*np.sin(t)
+    # each 2*pi, the radius gets bigger by exp(2pi*b)
+    x2 = x1
+    y2 = y1+50
+    # now perturb both sides, but keep amplitude < 20
+    y1 = y1 + 20*np.sin(10*t)
+    y2 = y2 + 10*np.cos(5*t)
+    
+    x = np.concatenate( (x1,x2[::-1]) )
+    y = np.concatenate( (y1,y2[::-1]) )
+
+    shore = np.swapaxes( np.concatenate( (x[None,:],y[None,:]) ), 0,1)
+    rings = [shore]
+
+    # and make some islands:
+    north_island_shore = 0.4*y1 + 0.6*y2
+    south_island_shore = 0.6*y1 + 0.4*y2
+
+    Nislands = 20
+    # islands same length as space between islands, so divide
+    # island shorelines into 2*Nislands blocks
+    for i in range(Nislands):
+        i_start = int( (2*i+0.5)*len(t)/(2*Nislands) )
+        i_stop =  int( (2*i+1.5)*len(t)/(2*Nislands) )
+        
+        north_y = north_island_shore[i_start:i_stop]
+        south_y = south_island_shore[i_start:i_stop]
+        north_x = x1[i_start:i_stop]
+        south_x = x2[i_start:i_stop]
+        
+        x = np.concatenate( (north_x,south_x[::-1]) )
+        y = np.concatenate( (north_y,south_y[::-1]) )
+        island = np.swapaxes( np.concatenate( (x[None,:],y[None,:]) ), 0,1)
+
+        rings.append(island)
+
+    density = field.ConstantField(25.0)
+    min_density = field.ConstantField(2.0)
+    p = paver.Paving(rings,density=density,min_density=min_density)
+    
+    print("Smoothing to nominal 1.0m")
+    # mostly just to make sure that long segments are
+    # sampled well relative to the local feature scale.
+    p.smooth() 
+
+    print("Adjusting other densities to local feature size")
+    p.telescope_rate=1.1
+    p.adjust_density_by_apollonius()
+
+    return p
+
+def test_sine_sine():
+    assert False # meh.. 
+    p=gen_sine_sine()
+    p.pave_all()
+

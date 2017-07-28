@@ -219,8 +219,8 @@ class Field(object):
         """ Return the value averaged along an edge - the generic implementation
         just takes 5 samples evenly spaced along the line, using value()
         """
-        x=linspace(e[0,0],e[1,0],samples)
-        y=linspace(e[0,1],e[1,1],samples)
+        x=np.linspace(e[0,0],e[1,0],samples)
+        y=np.linspace(e[0,1],e[1,1],samples)
         X = np.array([x,y]).transpose()
         return reducer(self.value(X))
 
@@ -382,7 +382,8 @@ class XYZField(Field):
     def interpolate(self,X,interpolation=None):
         if interpolation is None:
             interpolation=self.default_interpolation
-        # X should be a (N,2) vectors
+        # X should be a (N,2) vectors - make it so
+        X=np.asanyarray(X).reshape([-1,2])
 
         newF = np.zeros( X.shape[0], np.float64 )
 
@@ -403,12 +404,17 @@ class XYZField(Field):
             # print "why aren't you using linear?!"
         elif interpolation=='linear':
             interper = self.lin_interper()
-            for i in range(len(X)):
-                if i>0 and i%100000==0:
-                    print("%d/%d"%(i,len(X)))
-                # remember, the slices are y, x
-                vals = interper[X[i,1]:X[i,1]:2j,X[i,0]:X[i,0]:2j]
-                newF[i] = vals[0,0]
+            if 0:
+                # old calling convention
+                for i in range(len(X)):
+                    if i>0 and i%100000==0:
+                        print("%d/%d"%(i,len(X)))
+                    # remember, the slices are y, x
+                    vals = interper[X[i,1]:X[i,1]:2j,X[i,0]:X[i,0]:2j]
+
+                    newF[i] = vals[0,0]
+            else:
+                newF[:] = interper(X[:,0],X[:,1])
         #elif interpolation=='delaunay':
         #    if self._voronoi is None:
         #        self._voronoi = self.calc_voronoi()
@@ -1307,8 +1313,8 @@ try:
                 print("NOTICE: Apollonius graph was asked to_grid using '%s'"%interp)
                 return XYZField.to_grid(self,nx,ny,interp)
             else:
-                x = linspace(extents[0],extents[1],nx)
-                y = linspace(extents[2],extents[3],ny)
+                x = np.linspace(extents[0],extents[1],nx)
+                y = np.linspace(extents[2],extents[3],ny)
 
                 griddedF = np.zeros( (len(y),len(x)), np.float64 )
 
@@ -1943,8 +1949,8 @@ class SimpleGrid(QuadrilateralGrid):
                    **kwargs)
 
     def xy(self):
-        x = linspace(self.extents[0],self.extents[1],self.F.shape[1])
-        y = linspace(self.extents[2],self.extents[3],self.F.shape[0])
+        x = np.linspace(self.extents[0],self.extents[1],self.F.shape[1])
+        y = np.linspace(self.extents[2],self.extents[3],self.F.shape[0])
         return x,y
     
     def XY(self):
@@ -2011,11 +2017,11 @@ class SimpleGrid(QuadrilateralGrid):
             xmin,xmax,ymin,ymax = rect
 
 
-            min_col = int( max( floor( (xmin - self.extents[0]) / dx ), 0) )
-            max_col = int( min( ceil( (xmax - self.extents[0]) / dx ), self.F.shape[1]-1) )
+            min_col = int( max( np.floor( (xmin - self.extents[0]) / dx ), 0) )
+            max_col = int( min( np.ceil( (xmax - self.extents[0]) / dx ), self.F.shape[1]-1) )
 
-            min_row = int( max( floor( (ymin - self.extents[2]) / dy ), 0) )
-            max_row = int( min( ceil( (ymax - self.extents[2]) / dy ), self.F.shape[0]-1) )
+            min_row = int( max( np.floor( (ymin - self.extents[2]) / dy ), 0) )
+            max_row = int( min( np.ceil( (ymax - self.extents[2]) / dy ), self.F.shape[0]-1) )
 
             # print(min_row, max_row, min_col, max_col)
             return self.crop(indexes=[min_row,max_row,min_col,max_col])
@@ -2108,13 +2114,13 @@ class SimpleGrid(QuadrilateralGrid):
         if samples is None:
             res = min(self.dx,self.dy)
             l = norm(e[1]-e[0])
-            samples = int(ceil(l/res))
+            samples = int(np.ceil(l/res))
 
         return Field.value_on_edge(self,e,samples=samples,**kw)
 
     def upsample(self,factor=2):
-        x = linspace(self.extents[0],self.extents[1],1+factor*(self.F.shape[1]-1))
-        y = linspace(self.extents[2],self.extents[3],1+factor*(self.F.shape[0]-1))
+        x = np.linspace(self.extents[0],self.extents[1],1+factor*(self.F.shape[1]-1))
+        y = np.linspace(self.extents[2],self.extents[3],1+factor*(self.F.shape[0]-1))
         
         new_F = np.zeros( (len(y),len(x)) , np.float64 )
 
@@ -3397,8 +3403,8 @@ class MultiRasterField(Field):
 
         samples = int( np.ceil( norm(e[0] - e[1])/res) )
         
-        x=linspace(e[0,0],e[1,0],samples)
-        y=linspace(e[0,1],e[1,1],samples)
+        x=np.linspace(e[0,0],e[1,0],samples)
+        y=np.linspace(e[0,1],e[1,1],samples)
 
         X = np.array([x,y]).transpose()
 
