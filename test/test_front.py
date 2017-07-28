@@ -86,7 +86,7 @@ def test_distance_away2():
 
     anchor_f=919.3
     signed_distance=50.0
-    res=distance_away(curve,anchor_f,signed_distance)
+    res=curve.distance_away(anchor_f,signed_distance)
     assert res[0]>anchor_f
     anchor_pnt=curve(anchor_f)
 
@@ -95,7 +95,7 @@ def test_distance_away2():
 
     anchor_f=440
     signed_distance=-50.0
-    res=distance_away(curve,anchor_f,signed_distance)
+    res=curve.distance_away(anchor_f,signed_distance)
 
     anchor_pnt=curve(anchor_f)
 
@@ -510,7 +510,7 @@ def test_no_lookahead():
 #   edges intersect.  No non-local connections, though.
 
 
-###
+### 
 
 # Bringing in the suite of test cases from test_paver*.py
 

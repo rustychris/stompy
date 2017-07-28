@@ -2134,8 +2134,6 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         labeler: callable taking (node index, node record), return string
         """
         ax=ax or plt.gca()
-        if values is None:
-            values=np.ones(self.Nnodes())
             
         if mask is None:
             mask=~self.nodes['deleted']
@@ -2143,7 +2141,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         if clip is not None: # convert clip to mask
             mask=mask & within_2d(self.nodes['x'],clip)
             
-        values=values[mask]
+        if values is None and 'color' not in kwargs:
+            values=np.ones(self.Nnodes())
+            values=values[mask]
+            kwargs['c']=values
 
         if labeler is not None:
             if labeler=='id':
@@ -2156,9 +2157,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                         labeler(n,self.nodes[n]))
 
         coll=ax.scatter(self.nodes['x'][mask][:,0],
-                          self.nodes['x'][mask][:,1],
-                          sizes,
-                          values,**kwargs)
+                        self.nodes['x'][mask][:,1],
+                        sizes,
+                        **kwargs)
         ax.axis('equal')
         return coll
     
