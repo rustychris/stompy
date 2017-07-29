@@ -539,7 +539,7 @@ def test_no_lookahead():
 #   edges intersect.  No non-local connections, though.
 
 
-###
+### 
 
 # Bringing in the suite of test cases from test_paver*.py
 

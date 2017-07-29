@@ -4,6 +4,7 @@ from matplotlib.path import Path
 from matplotlib.patches import PathPatch
 import matplotlib.pyplot as plt
 import numpy as np
+from .. import utils
 
 def plot_linestring(ls,**kwargs):
     ax=kwargs.pop('ax',plt.gca())
@@ -30,14 +31,31 @@ def ring_coding(ob):
     n = len(ob.coords)
     codes = np.ones(n, dtype=Path.code_type) * Path.LINETO
     codes[0] = Path.MOVETO
+    # unsure of difference between CLOSEPOLY and leaving as is.
+    # codes[-1] = Path.CLOSEPOLY # doesn't seem to make a difference
     return codes
 
 def pathify(polygon):
     # Convert coordinates to path vertices. Objects produced by Shapely's
     # analytic methods have the proper coordinate order, no need to sort.
+
+    # 20170707: matplotlib pickier about ordering of internal rings, may have
+    # reverse interiors.
+    # 20170719: shapely doesn't guarantee one order or the other
+    def ensure_orientation(a,ccw=True):
+        """
+        take an array-like [N,2] set of points defining a polygon,
+        return an array which is ordered ccw (or cw is ccw=False)
+        """
+        a=np.asarray(a)
+        area=utils.signed_area(a)
+        if ccw == (area<0):
+            a=a[::-1]
+        return a
+
     vertices = np.concatenate(
-        [np.asarray(polygon.exterior)]
-        + [np.asarray(r) for r in polygon.interiors])
+        [ ensure_orientation(polygon.exterior,ccw=True)]
+        + [ ensure_orientation(r,ccw=False) for r in polygon.interiors])
     codes = np.concatenate(
         [ring_coding(polygon.exterior)]
         + [ring_coding(r) for r in polygon.interiors])

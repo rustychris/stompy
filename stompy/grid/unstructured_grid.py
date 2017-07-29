@@ -414,6 +414,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             except AttributeError:
                 start_index=0
             idxs=ncvar[...] - start_index
+            # force the move to numpy land
+            idxs=np.asanyarray(idxs)
+            
             # but might still be masked -- change to unmasked,
             # but our own choice of the invalid value:
             try:
@@ -421,6 +424,13 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     idxs=idxs.filled(UnstructuredGrid.UNDEFINED)
             except AttributeError:
                 pass
+            # ideally this wouldn't be needed, but as an index, really
+            # any negative value is bad, and more likely to signal that
+            # masks or MissingValue attributes were lost, so better to
+            # fix those now
+            # so be proactive about various ways of undefined nodes coming in:
+            idxs[np.isnan(idxs)]=UnstructuredGrid.UNDEFINED
+            idxs[idxs<0]=UnstructuredGrid.UNDEFINED
             return idxs
 
         faces = process_as_index(mesh.face_node_connectivity)
@@ -2124,8 +2134,6 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         labeler: callable taking (node index, node record), return string
         """
         ax=ax or plt.gca()
-        if values is None and 'color' not in kwargs:
-            values=np.ones(self.Nnodes())
             
         if mask is None:
             mask=~self.nodes['deleted']
@@ -2135,6 +2143,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         if values is not None:
             values=values[mask]
+            kwargs['c']=values
 
         if labeler is not None:
             if labeler=='id':
@@ -2149,7 +2158,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         coll=ax.scatter(self.nodes['x'][mask][:,0],
                         self.nodes['x'][mask][:,1],
                         sizes,
-                        values,**kwargs)
+                        **kwargs)
         ax.axis('equal')
         return coll
     
