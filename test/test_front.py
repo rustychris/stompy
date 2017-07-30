@@ -344,53 +344,23 @@ def test_actions():
 # they are tried, then we populate the child nodes.
 
 
-# the tree should be held by af.
-# 
+def test_dt_one_loop():
+    """ fill a squat hex with triangles.
+    """
+    af2=test_basic_setup()
+    af2.log.setLevel(logging.INFO)
 
-# HERE - this falls into some sort of infinite loop
-# some definite bad edges, triangulation is not planar
-if 0:
-    def test_dt_one_loop():
-        """ fill a squat hex with triangles.
-        """
-        af2=test_basic_setup()
-        af2.log.setLevel(logging.INFO)
-
-        af2.cdt.post_check=False
-        af2.loop()
-        if 0:
-            plt.figure(2).clf()
-            fig,ax=plt.subplots(num=2)
-            af2.plot_summary(ax=ax)
-            ax.set_title('loop()')
+    af2.cdt.post_check=False
+    af2.loop()
+    if 0:
+        plt.figure(2).clf()
+        fig,ax=plt.subplots(num=2)
+        af2.plot_summary(ax=ax)
+        ax.set_title('loop()')
 
 
 ##
 
-af2=test_basic_setup()
-af2.log.setLevel(logging.INFO)
-
-af2.cdt.post_check=False
-
-af2.loop(17)
-# at this point, several edges on the outside are doubled up.
-# spot check on 20--19--18, and orientation is 1, as it "should" be.
-## 
-plt.clf()
-af2.cdt.plot_edges(alpha=0.3)
-af2.cdt.plot_nodes(labeler=lambda i,r:str(i))
-
-##
-# stuck while sliding node 20 in this next call
-af2.loop(1)
-# gets stuck in the "fire_before" method in slide_node=>modify_node()
-# modify_node(n=20,{'x': np.array([ 31.65118602,  18.18369538])})
-# okay, by this point the CDT is already nonplanar, due to 17--21.
-plt.figure(1).clf()
-af2.grid.plot_edges()
-
-
-## 
 
 def test_dt_backtracking():
     """

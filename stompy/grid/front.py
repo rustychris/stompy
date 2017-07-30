@@ -1534,9 +1534,6 @@ class AdvancingFront(object):
         new_f=n_f + delta_f
         curve=self.curves[n_ring]
 
-        if n==20:
-            import pdb
-            pdb.set_trace()
         self.grid.modify_node(n,x=curve(new_f),ring_f=new_f)
 
     def loop(self,count=0):

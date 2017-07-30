@@ -91,7 +91,11 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
         self.tri_insert(n,loc)
         return n
 
-    def modify_node(self,n,**kwargs):
+    def modify_node(self,n,_brute_force=False,**kwargs):
+        """
+        _brute_force: if True, move node by delete/add, rather than trying
+          a short cut.
+        """
         if 'x' not in kwargs:
             return super(Triangulation,self).modify_node(n,**kwargs)
         old_rec=self.nodes[n]
@@ -106,14 +110,43 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
         # work to fix up the triangulation
         # if the new location is inside a cell adjacent to n, then
         # we can [probably?] move the node
-        my_cells=self.node_to_cells(n)
-        loc_face,loc_type,loc_index=self.locate(kwargs['x'],my_cells[0])
-        if loc_type==self.IN_FACE and loc_face in my_cells:
-            # should be able to take a shorter route here:
-            retval=super(Triangulation,self).modify_node(n,**kwargs)
-            self.restore_delaunay(n)
-            return retval
-        
+        if self.dim()<2:
+            # the short cuts are only written for the 2D case.
+            _brute_force=True
+            
+        if not _brute_force:
+            if 0:
+                # check to see if the new node location is within an adjacent face
+                # this has been shown not to work, at least not without further work.
+                my_cells=self.node_to_cells(n)
+                loc_face,loc_type,loc_index=self.locate(kwargs['x'],my_cells[0])
+                if loc_type==self.IN_FACE and loc_face in my_cells:
+                    # should be able to take a shorter route here:
+                    retval=super(Triangulation,self).modify_node(n,**kwargs)
+                    self.restore_delaunay(n)
+                    return retval
+            if self.dim()==2:
+                # check whether new node location is on the "right" side
+                # of all existing "opposite" edges (the edge of each cell
+                # which doesn't contain n.
+                my_cells=self.node_to_cells(n)
+                for c in my_cells:
+                    c_nodes=self.cells['nodes'][c]
+                    c_xy=self.nodes['x'][c_nodes]
+                    pnts=[]
+                    for i,c_node in enumerate(c_nodes):
+                        if c_node==n:
+                            pnts.append(kwargs['x'])
+                        else:
+                            pnts.append(c_xy[i])
+                    if robust_predicates.orientation(*pnts) <=0:
+                        break
+                else:
+                    # short cut should work:
+                    retval=super(Triangulation,self).modify_node(n,**kwargs)
+                    self.restore_delaunay(n)
+                    return retval
+                    
         # but adding the constraints back can fail, in which case we should
         # roll back our state, and fire an exception.
 
