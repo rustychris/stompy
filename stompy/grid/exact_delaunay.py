@@ -125,7 +125,7 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
                     retval=super(Triangulation,self).modify_node(n,**kwargs)
                     self.restore_delaunay(n)
                     return retval
-            if self.dim()==2:
+            if 1:
                 # check whether new node location is on the "right" side
                 # of all existing "opposite" edges (the edge of each cell
                 # which doesn't contain n.
@@ -145,6 +145,9 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
                     # short cut should work:
                     retval=super(Triangulation,self).modify_node(n,**kwargs)
                     self.restore_delaunay(n)
+                    # But this is screwing up -- so DBG checks:
+                    if self.check_convex_hull():
+                        pdb.set_trace()
                     return retval
                     
         # but adding the constraints back can fail, in which case we should
@@ -932,6 +935,45 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
                     bad_checks.append( (c,n) )
                     raise Exception('fail')
         return bad_checks
+
+    def check_orientations(self):
+        """
+        Checks all cells for proper CCW orientation,
+        return a list of cell indexes of failures.
+        """
+        bad_cells=[]
+        for c in self.valid_cell_iter():
+            node_xy=self.nodes['x'][self.cells['nodes'][c]]
+            if robust_predicates.orientation(*node_xy) <= 0:
+                bad_cells.append(c)
+        return bad_cells
+    def check_convex_hull(self):
+        # find an edge on the convex hull, walk the hull and check
+        # all consecutive orientations
+        e2c=self.edge_to_cells()
+        for j in self.valid_edge_iter():
+            if e2c[j,0]==self.INF_CELL:
+                he=self.halfedge(j,0)
+                break
+            elif e2c[j,1]==self.INF_CELL:
+                he=self.halfedge(j,1)
+                break
+        else:
+            assert False
+
+        he0=he
+
+        bad_hull=[]
+        while 1:
+            a=he.node_rev()
+            b=he.node_fwd()
+            he=he.fwd()
+            c=he.node_fwd()
+            if robust_predicates.orientation(*self.nodes['x'][[a,b,c]])>0:
+                bad_hull.append( [a,b,c])
+            if he==he0:
+                break
+        return bad_hull    
     
     def restore_delaunay(self,n):
         """ n: node that was just inserted and may have adjacent cells
@@ -1085,6 +1127,11 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
             return history
         else:
             while trav!=('node',nB):
+                # DBG!
+                if len(history)>1 and history[0]==history[1]:
+                    import pdb
+                    pdb.set_trace()
+                    
                 if trav[0]=='node':
                     ntrav=trav[1]
                     for c in self.node_to_cells(ntrav):
