@@ -115,72 +115,76 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
             _brute_force=True
             
         if not _brute_force:
-            if 0:
-                # check to see if the new node location is within an adjacent face
-                # this has been shown not to work, at least not without further work.
+            # check whether new node location is on the "right" side
+            # of all existing "opposite" edges (the edge of each cell
+            # which doesn't contain n.
+            shortcut=True
+            if shortcut:
                 my_cells=self.node_to_cells(n)
-                loc_face,loc_type,loc_index=self.locate(kwargs['x'],my_cells[0])
-                if loc_type==self.IN_FACE and loc_face in my_cells:
-                    # should be able to take a shorter route here:
-                    retval=super(Triangulation,self).modify_node(n,**kwargs)
-                    self.restore_delaunay(n)
-                    return retval
-            if 1:
-                # check whether new node location is on the "right" side
-                # of all existing "opposite" edges (the edge of each cell
-                # which doesn't contain n.
-                shortcut=True
-                if shortcut:
-                    my_cells=self.node_to_cells(n)
-                    for c in my_cells:
-                        c_nodes=self.cells['nodes'][c]
-                        c_xy=self.nodes['x'][c_nodes]
-                        pnts=[]
-                        for i,c_node in enumerate(c_nodes):
-                            if c_node==n:
-                                pnts.append(kwargs['x'])
-                            else:
-                                pnts.append(c_xy[i])
-                        if robust_predicates.orientation(*pnts) <=0:
-                            shortcut=False
-                if shortcut:
-                    # also check for this node being on the convex hull
-                    # find the pair of edges, if they exist, which have
-                    # n, and have the infinite cell to the left.
+                for c in my_cells:
+                    c_nodes=self.cells['nodes'][c]
+                    c_xy=self.nodes['x'][c_nodes]
+                    pnts=[]
+                    for i,c_node in enumerate(c_nodes):
+                        if c_node==n:
+                            pnts.append(kwargs['x'])
+                        else:
+                            pnts.append(c_xy[i])
+                    if robust_predicates.orientation(*pnts) <=0:
+                        shortcut=False
+            if shortcut:
+                # also check for this node being on the convex hull
+                # find the pair of edges, if they exist, which have
+                # n, and have the infinite cell to the left.
 
-                    he_rev=he_fwd=None
-                    for j in self.node_to_edges(n):
-                        if self.edges['cells'][j,1]==self.INF_CELL:
-                            he=self.halfedge(j,1)
-                        elif self.edges['cells'][j,0]==self.INF_CELL:
-                            he=self.halfedge(j,0)
-                        else:
-                            continue
-                        
-                        if he.node_fwd()==n:
-                            he_rev=he
-                        elif he.node_rev()==n:
-                            he_fwd=he
-                        else:
-                            assert False
-                    # can't have just one.
-                    assert (he_rev is None) == (he_fwd is None)
-                    if he_rev is not None:
-                        a=self.nodes['x'][he_rev.node_rev()]
-                        b=kwargs['x']
-                        c=self.nodes['x'][he_fwd.node_fwd()]
-                        # HERE - this still isn't fixing things
-                        if robust_predicates.orientation(a,b,c)>0:
-                            shortcut=False
-                        
-                if shortcut:
-                    # short cut should work:
-                    retval=super(Triangulation,self).modify_node(n,**kwargs)
-                    self.restore_delaunay(n)
-                    # But this is screwing up -- so DBG checks:
-                    if self.check_convex_hull():
-                        pdb.set_trace()
-                    return retval
+                he_rev=he_fwd=None
+                for j in self.node_to_edges(n):
+                    if self.edges['cells'][j,1]==self.INF_CELL:
+                        he=self.halfedge(j,1)
+                    elif self.edges['cells'][j,0]==self.INF_CELL:
+                        he=self.halfedge(j,0)
+                    else:
+                        continue
+
+                    if he.node_fwd()==n:
+                        he_rev=he
+                    elif he.node_rev()==n:
+                        he_fwd=he
+                    else:
+                        assert False
+                # can't have just one.
+                assert (he_rev is None) == (he_fwd is None)
+                if he_rev is not None:
+                    # need to check that the movement of this node does
+                    # not invalidate the orientation with respect to
+                    # neighboring edges of the convex hull.
+                    # get the five consecutive points, where c is the
+                    # node being moved.  make sure that a-b-c and c-d-e
+                    # are properly oriented
+                    cons_idxs=[he_rev.rev().node_rev(),
+                               he_rev.node_rev(),
+                               n,
+                               he_fwd.node_fwd(),
+                               he_fwd.fwd().node_fwd()]
+                    abcde=self.nodes['x'][cons_idxs]
+                    abcde[2]=kwargs['x']
+
+                    if robust_predicates.orientation(*abcde[:3])>0:
+                        shortcut=False
+                    elif robust_predicates.orientation(*abcde[2:])>0:
+                        shortcut=False
+                    elif robust_predicates.orientation(*abcde[1:4])>0:
+                        shortcut=False
+
+            if shortcut:
+                # short cut should work:
+                retval=super(Triangulation,self).modify_node(n,**kwargs)
+                self.restore_delaunay(n)
+                # when refining the above tests, uncomment this to increase
+                # the amount of validation
+                if self.check_convex_hull():
+                    pdb.set_trace()
+                return retval
                     
         # but adding the constraints back can fail, in which case we should
         # roll back our state, and fire an exception.

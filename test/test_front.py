@@ -397,13 +397,29 @@ def test_dt_backtracking():
 ## 
 # Single step lookahead:
 
-# Now failing here!  Gets stuck
 # def test_singlestep_lookahead():
 af=test_basic_setup()
 
 af.log.setLevel(logging.INFO)
 af.cdt.post_check=False
 af.current=af.root=front.DTChooseSite(af)
+
+# HERE -- at least getting a "new" bug.
+
+while 1:
+    if not af.current.children:
+        break # we're done?
+
+    if not af.current.best_child(): # cb=cb
+        assert False
+        
+af.plot_summary()
+
+
+##     
+
+
+
 
 site=af.current.options[15] # best option is our 15-16-17 site.
 # site.resample_neighbors()
