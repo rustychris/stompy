@@ -129,19 +129,51 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
                 # check whether new node location is on the "right" side
                 # of all existing "opposite" edges (the edge of each cell
                 # which doesn't contain n.
-                my_cells=self.node_to_cells(n)
-                for c in my_cells:
-                    c_nodes=self.cells['nodes'][c]
-                    c_xy=self.nodes['x'][c_nodes]
-                    pnts=[]
-                    for i,c_node in enumerate(c_nodes):
-                        if c_node==n:
-                            pnts.append(kwargs['x'])
+                shortcut=True
+                if shortcut:
+                    my_cells=self.node_to_cells(n)
+                    for c in my_cells:
+                        c_nodes=self.cells['nodes'][c]
+                        c_xy=self.nodes['x'][c_nodes]
+                        pnts=[]
+                        for i,c_node in enumerate(c_nodes):
+                            if c_node==n:
+                                pnts.append(kwargs['x'])
+                            else:
+                                pnts.append(c_xy[i])
+                        if robust_predicates.orientation(*pnts) <=0:
+                            shortcut=False
+                if shortcut:
+                    # also check for this node being on the convex hull
+                    # find the pair of edges, if they exist, which have
+                    # n, and have the infinite cell to the left.
+
+                    he_rev=he_fwd=None
+                    for j in self.node_to_edges(n):
+                        if self.edges['cells'][j,1]==self.INF_CELL:
+                            he=self.halfedge(j,1)
+                        elif self.edges['cells'][j,0]==self.INF_CELL:
+                            he=self.halfedge(j,0)
                         else:
-                            pnts.append(c_xy[i])
-                    if robust_predicates.orientation(*pnts) <=0:
-                        break
-                else:
+                            continue
+                        
+                        if he.node_fwd()==n:
+                            he_rev=he
+                        elif he.node_rev()==n:
+                            he_fwd=he
+                        else:
+                            assert False
+                    # can't have just one.
+                    assert (he_rev is None) == (he_fwd is None)
+                    if he_rev is not None:
+                        a=self.nodes['x'][he_rev.node_rev()]
+                        b=kwargs['x']
+                        c=self.nodes['x'][he_fwd.node_fwd()]
+                        # HERE - this still isn't fixing things
+                        if robust_predicates.orientation(a,b,c)>0:
+                            shortcut=False
+                        
+                if shortcut:
                     # short cut should work:
                     retval=super(Triangulation,self).modify_node(n,**kwargs)
                     self.restore_delaunay(n)

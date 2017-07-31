@@ -401,152 +401,22 @@ def test_dt_backtracking():
 # def test_singlestep_lookahead():
 af=test_basic_setup()
 
-print af.cdt.check_convex_hull()
-
-## 
-
 af.log.setLevel(logging.INFO)
 af.cdt.post_check=False
 af.current=af.root=front.DTChooseSite(af)
 
-#for i in range(9): # while 1:
-for i in range(1):
-    if not af.current.children:
-        break # we're done?
+site=af.current.options[15] # best option is our 15-16-17 site.
+# site.resample_neighbors()
 
-    if not af.current.best_child():
-        assert False
+# from 37.5,6.75 to this:
+af.cdt.modify_node(15,x=[37.81250000000000710543,
+                         7.03125000000000355271])
 
-    assert len(af.cdt.check_orientations())==0
-    assert len(af.cdt.check_convex_hull())==0
+#  maybe the issue is that restore_delauanay is not good with INF_CELLs?
+# ah - probably the issue is that my short-cut test only respects finite
+# cells, but it should respect any infinite cells, too.
 
 
-##     
-zoom=(30.775120355983098,
-      43.048804535952222,
-      4.9787754329346177,
-      14.124649773492258)
-
-fig=plt.figure(1)
-fig.clf()
-
-af.grid.plot_edges(color='k',lw=1,zorder=5)
-af.grid.plot_nodes(labeler=lambda i,r: str(i))
-ax=plt.gca()
-
-ax.axis(zoom)
-
-def plot():
-    plt.figure(1).clf()
-    ax=plt.gca()
-    #af.grid.plot_edges(color='k',lw=0.5,zorder=5)
-    af.cdt.plot_edges()
-    af.cdt.plot_nodes(labeler=lambda i,r: str(i))
-    ax.axis(zoom)
-    
-def announce(g,func_name,n,**k):
-    print "af.grid.modify_node(%d,x=[%.20f,%.20f])"%(n,
-                                                     # g.nodes['x'][n,0],g.nodes['x'][n,1],
-                                                     k['x'][0],k['x'][1])
-    #plot()
-    #plt.pause(0.5)
-                                             
-af.grid.subscribe_before('modify_node',announce)
-
-# This is the child that freezes, and it freezes even when run
-# without trying the other children.
-
-# af.current.try_child(3)
-
-front.Join.execute(af.current.site)
-
-af.grid.modify_node(15,x=[37.41066560124580320235,6.66959904112122359265])
-af.grid.modify_node(16,x=[37.41838020556581057008,6.67654218500923235524])
-af.grid.modify_node(18,x=[36.31602451319770352711,13.05237303548252114638])
-af.grid.modify_node(17,x=[39.99999975044644173749,9.00000027450891160186])
-af.grid.modify_node(15,x=[35.63328416747981464141,5.06995575073183069037])
-af.grid.modify_node(16,x=[39.47836565299623856617,8.53052908769661577537])
-af.grid.modify_node(18,x=[36.07803723653908178903,13.31415903980700576881])
-
-## 
-
-# is the CDT in a good state right now?
-# passes check_local_delaunay
-# passes all cells are oriented.
-from stompy.spatial import robust_predicates
-for c in af.cdt.valid_cell_iter():
-    print c
-    node_xy=af.cdt.nodes['x'][af.cdt.cells['nodes'][c]]
-    assert robust_predicates.orientation(*node_xy) > 0
-
-# find an edge on the convex hull, walk the hull and check
-# all consecutive orientations
-e2c=af.cdt.edge_to_cells()
-for j in af.cdt.valid_edge_iter():
-    if e2c[j,0]==af.cdt.INF_CELL:
-        he=af.cdt.halfedge(j,0)
-        break
-    elif e2c[j,1]==af.cdt.INF_CELL:
-        he=af.cdt.halfedge(j,1)
-        break
-else:
-    assert False
-
-he0=he
-
-bad_hull=[]
-while 1:
-    a=he.node_rev()
-    b=he.node_fwd()
-    he=he.fwd()
-    c=he.node_fwd()
-    if robust_predicates.orientation(*af.cdt.nodes['x'][[a,b,c]])>0:
-        bad_hull.append( [a,b,c])
-    if he==he0:
-        break
-print bad_hull    
-    
-##
-
-# the destroyer.  Definitely in the realm of the tiny numbers.
-# this didn't break until I had 20 digits on these.
-# the problem is in adding the constraint back to 17--18.
-# but 17 should be connected to 18 even without the constraint.
-
-# HERE - probably ought to step through this call, see why 17--18 is not
-# part of the DT without it being a constraint.
-# when brute_force moving of the nodes is used, this is NOT a problem.
-#pdb.run("""af.cdt.modify_node(17,
-#                   x=[39.99999984760419380336,
-#                      8.99999986284377406776])""")
-
-# it's always in find_intersected_elements, I think.
-# why using find_intersected_elements, instead of gen_intersected_elements?
-# Stuck on node 17, while trying to traverse from 17 to 18.
-# This is while trying to add a 17--18 constraint back in.
-
-# really seems like deleting and adding this node leads to a bad
-# DT.
-
-af.cdt.delete_node(17)
-
-plt.cla()
-af.cdt.plot_edges(lw=0.5)
-af.cdt.plot_nodes(labeler=lambda i,r: str(i))
-
-# This is problematic:
-pdb.run("af.cdt.add_node(_index=17,x=[39.99999984760419380336,8.99999986284377406776])")
-
-# tracing through to tri_insert_outside_convex_hull_2d(self,n,loc):
-# the locate query came up with 14->13 for the halfedge, a little weird.
-# also - is that the right orientation?  probably.  that would put
-# the inf cell on the left of the half-edge.
-
-# okay - problem arises when 14--13--17 is CCW
-#                            13--12--17 is CCW
-# but 15--14--17 is NOT.
-# 15--14--13 => CCW
-# 
 ## 
 
 # Basic, no lookahead:
