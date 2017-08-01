@@ -397,40 +397,22 @@ def test_dt_backtracking():
 ## 
 # Single step lookahead:
 
-# def test_singlestep_lookahead():
-af=test_basic_setup()
+def test_singlestep_lookahead():
+    af=test_basic_setup()
 
-af.log.setLevel(logging.INFO)
-af.cdt.post_check=False
-af.current=af.root=front.DTChooseSite(af)
+    af.log.setLevel(logging.INFO)
+    af.cdt.post_check=False
+    af.current=af.root=front.DTChooseSite(af)
 
-# HERE -- at least getting a "new" bug.
+    while 1:
+        if not af.current.children:
+            break # we're done?
 
-while 1:
-    if not af.current.children:
-        break # we're done?
-
-    if not af.current.best_child(): # cb=cb
-        assert False
+        if not af.current.best_child(): # cb=cb
+            assert False
         
-af.plot_summary()
-
-
-##     
-
-
-
-
-site=af.current.options[15] # best option is our 15-16-17 site.
-# site.resample_neighbors()
-
-# from 37.5,6.75 to this:
-af.cdt.modify_node(15,x=[37.81250000000000710543,
-                         7.03125000000000355271])
-
-#  maybe the issue is that restore_delauanay is not good with INF_CELLs?
-# ah - probably the issue is that my short-cut test only respects finite
-# cells, but it should respect any infinite cells, too.
+    # af.plot_summary()
+    return af
 
 
 ## 

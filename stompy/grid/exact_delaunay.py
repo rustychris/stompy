@@ -182,8 +182,8 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
                 self.restore_delaunay(n)
                 # when refining the above tests, uncomment this to increase
                 # the amount of validation
-                if self.check_convex_hull():
-                    pdb.set_trace()
+                # if self.check_convex_hull():
+                #     pdb.set_trace()
                 return retval
                     
         # but adding the constraints back can fail, in which case we should
