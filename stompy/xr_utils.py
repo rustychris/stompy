@@ -110,8 +110,13 @@ def redimension(ds,new_dims,
     uni_new_dims=[ np.unique(od) for od in orig_dims]
 
     for und in uni_new_dims:
-        if np.any(und<0):
-            log.warning("New dimensions have negative values -- will continue but you probably want to drop those first")
+        try:
+            if np.any(und<0):
+                log.warning("New dimensions have negative values -- will continue but you probably want to drop those first")
+        except TypeError:
+            # some versions of numpy/xarray will not compare times to 0,
+            # triggering a TypeError
+            pass
 
     # note that this is just the shape that will replace occurences of lin_dim
     new_shape=[len(und) for und in uni_new_dims]
