@@ -2482,8 +2482,30 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         # some grids don't abide by the boundary always being on the "right"
         # so use any()
         boundary_edges=(np.any(e2c<0,axis=1))&(~self.edges['deleted'])
-        segs=self.nodes['x'][self.edges['nodes'][boundary_edges]]
-        lines=join_features.merge_lines(segments=segs)
+
+        if 0: # old, slow implementation
+            segs=self.nodes['x'][self.edges['nodes'][boundary_edges]]
+            lines=join_features.merge_lines(segments=segs)
+        else:
+            marked=np.zeros(self.Nedges(),np.bool8)
+            lines=[]
+            for j in np.nonzero(boundary_edges)[0]:
+                if marked[j]:
+                    continue
+                trav=self.halfedge(j,0)
+                if trav.cell()>=0:
+                    trav=trav.opposite()
+                assert trav.cell()<0
+                start=trav
+                this_line_nodes=[trav.node_rev(),trav.node_fwd()]
+                while 1:
+                    this_line_nodes.append(trav.node_fwd())
+                    marked[trav.j]=True
+                    trav=trav.fwd()
+                    if trav==start:
+                        break
+                lines.append( self.nodes['x'][this_line_nodes] )
+
         return lines
 
     def boundary_polygon_by_edges(self):
