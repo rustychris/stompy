@@ -1977,7 +1977,12 @@ class DTChooseStrategy(DTNode):
             nodes += list(self.af.grid.cell_to_nodes(c))
         for n in edits.get('nodes',[]):
             nodes.append(n)
+        for j in edits.get('edges',[]):
+            # needed in particular for nonlocal, where nothing
+            # changes except the creation of an edge
+            nodes += list(self.af.grid.edges['nodes'][j])
         nodes=list(set(nodes))
+        assert len(nodes) # something had to change, right?
         cost = np.max( [self.af.eval_cost(n)
                         for n in nodes] )
         self.child_post[i]=cost

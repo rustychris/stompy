@@ -114,7 +114,8 @@ def redimension(ds,new_dims,
             if np.any(und<0):
                 log.warning("New dimensions have negative values -- will continue but you probably want to drop those first")
         except TypeError:
-            # probably und has a "datetime64" type which fails comparison to 0.
+            # some versions of numpy/xarray will not compare times to 0,
+            # triggering a TypeError
             pass
 
     # note that this is just the shape that will replace occurences of lin_dim

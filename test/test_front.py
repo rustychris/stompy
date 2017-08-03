@@ -18,8 +18,6 @@ logging.basicConfig(level=logging.INFO)
 from stompy.spatial.linestring_utils import upsample_linearring,resample_linearring
 from stompy.spatial import field,constrained_delaunay,wkb2shp
 
-##
-
 reload(unstructured_grid)
 reload(exact_delaunay)
 reload(front)
@@ -86,7 +84,7 @@ def test_distance_away2():
 
     anchor_f=919.3
     signed_distance=50.0
-    res=distance_away(curve,anchor_f,signed_distance)
+    res=curve.distance_away(anchor_f,signed_distance)
     assert res[0]>anchor_f
     anchor_pnt=curve(anchor_f)
 
@@ -95,7 +93,7 @@ def test_distance_away2():
 
     anchor_f=440
     signed_distance=-50.0
-    res=distance_away(curve,anchor_f,signed_distance)
+    res=curve.distance_away(anchor_f,signed_distance)
 
     anchor_pnt=curve(anchor_f)
 
@@ -344,24 +342,23 @@ def test_actions():
 # they are tried, then we populate the child nodes.
 
 
-# the tree should be held by af.
-# 
-
 def test_dt_one_loop():
     """ fill a squat hex with triangles.
     """
     af2=test_basic_setup()
     af2.log.setLevel(logging.INFO)
-    
+
     af2.cdt.post_check=False
     af2.loop()
-    if plt:
+    if 0:
         plt.figure(2).clf()
         fig,ax=plt.subplots(num=2)
         af2.plot_summary(ax=ax)
         ax.set_title('loop()')
 
-## 
+
+##
+
 
 def test_dt_backtracking():
     """
@@ -381,7 +378,7 @@ def test_dt_backtracking():
     af.root=front.DTChooseSite(af)
     af.current=af.root
 
-    if plt:
+    if 0:
         def cb():
             print("tried...")
             af.plot_summary()
@@ -399,54 +396,24 @@ def test_dt_backtracking():
 
 ## 
 # Single step lookahead:
-# This suffers from the unfair scoring of Wall.
-# Wall can often get a perfect score because it has so
-# much freedom.
-# Could look into ways of penalizing Wall - maybe because it
-# adds new unpaved edges (compared to a bisect for which the
-# unpaved is constant, and unpaved-paved goes down, or a cutoff
-# which decreases both, or a join...)
-# First, though, try an approach which takes the first successful
-# strategy.
-
-# hmm - this is now getting a DuplicatedNode error while trying some
-# terrible configuration
 
 def test_singlestep_lookahead():
-    #plt.figure(1).clf()
-    # fig,ax=plt.subplots(num=1)
-
     af=test_basic_setup()
+
     af.log.setLevel(logging.INFO)
     af.cdt.post_check=False
     af.current=af.root=front.DTChooseSite(af)
-
-    # the results are not that great
 
     while 1:
         if not af.current.children:
             break # we're done?
 
-        def cb():
-            af.plot_summary(label_nodes=False)
-            try:
-                af.current.site.plot()
-            except: # AttributeError:
-                pass
-            # fig.canvas.draw()
-            plt.pause(0.001)
-
         if not af.current.best_child(): # cb=cb
             assert False
-
-        # cb()
-        # break
-
+        
     # af.plot_summary()
     return af
-    
-# af=test_singlestep_lookahead()
-# af.plot_summary()
+
 
 ## 
 
@@ -510,7 +477,7 @@ def test_no_lookahead():
 #   edges intersect.  No non-local connections, though.
 
 
-###
+### 
 
 # Bringing in the suite of test cases from test_paver*.py
 

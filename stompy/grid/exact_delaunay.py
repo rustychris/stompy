@@ -91,7 +91,11 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
         self.tri_insert(n,loc)
         return n
 
-    def modify_node(self,n,**kwargs):
+    def modify_node(self,n,_brute_force=False,**kwargs):
+        """
+        _brute_force: if True, move node by delete/add, rather than trying
+          a short cut.
+        """
         if 'x' not in kwargs:
             return super(Triangulation,self).modify_node(n,**kwargs)
         old_rec=self.nodes[n]
@@ -106,14 +110,82 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
         # work to fix up the triangulation
         # if the new location is inside a cell adjacent to n, then
         # we can [probably?] move the node
-        my_cells=self.node_to_cells(n)
-        loc_face,loc_type,loc_index=self.locate(kwargs['x'],my_cells[0])
-        if loc_type==self.IN_FACE and loc_face in my_cells:
-            # should be able to take a shorter route here:
-            retval=super(Triangulation,self).modify_node(n,**kwargs)
-            self.restore_delaunay(n)
-            return retval
-        
+        if self.dim()<2:
+            # the short cuts are only written for the 2D case.
+            _brute_force=True
+            
+        if not _brute_force:
+            # check whether new node location is on the "right" side
+            # of all existing "opposite" edges (the edge of each cell
+            # which doesn't contain n.
+            shortcut=True
+            if shortcut:
+                my_cells=self.node_to_cells(n)
+                for c in my_cells:
+                    c_nodes=self.cells['nodes'][c]
+                    c_xy=self.nodes['x'][c_nodes]
+                    pnts=[]
+                    for i,c_node in enumerate(c_nodes):
+                        if c_node==n:
+                            pnts.append(kwargs['x'])
+                        else:
+                            pnts.append(c_xy[i])
+                    if robust_predicates.orientation(*pnts) <=0:
+                        shortcut=False
+            if shortcut:
+                # also check for this node being on the convex hull
+                # find the pair of edges, if they exist, which have
+                # n, and have the infinite cell to the left.
+
+                he_rev=he_fwd=None
+                for j in self.node_to_edges(n):
+                    if self.edges['cells'][j,1]==self.INF_CELL:
+                        he=self.halfedge(j,1)
+                    elif self.edges['cells'][j,0]==self.INF_CELL:
+                        he=self.halfedge(j,0)
+                    else:
+                        continue
+
+                    if he.node_fwd()==n:
+                        he_rev=he
+                    elif he.node_rev()==n:
+                        he_fwd=he
+                    else:
+                        assert False
+                # can't have just one.
+                assert (he_rev is None) == (he_fwd is None)
+                if he_rev is not None:
+                    # need to check that the movement of this node does
+                    # not invalidate the orientation with respect to
+                    # neighboring edges of the convex hull.
+                    # get the five consecutive points, where c is the
+                    # node being moved.  make sure that a-b-c and c-d-e
+                    # are properly oriented
+                    cons_idxs=[he_rev.rev().node_rev(),
+                               he_rev.node_rev(),
+                               n,
+                               he_fwd.node_fwd(),
+                               he_fwd.fwd().node_fwd()]
+                    abcde=self.nodes['x'][cons_idxs]
+                    abcde[2]=kwargs['x']
+
+                    if robust_predicates.orientation(*abcde[:3])>0:
+                        shortcut=False
+                    elif robust_predicates.orientation(*abcde[2:])>0:
+                        shortcut=False
+                    elif robust_predicates.orientation(*abcde[1:4])>0:
+                        shortcut=False
+
+            if shortcut:
+                # short cut should work:
+                retval=super(Triangulation,self).modify_node(n,**kwargs)
+                self.restore_delaunay(n)
+                # when refining the above tests, uncomment this to increase
+                # the amount of validation
+                # if self.check_convex_hull():
+                #     pdb.set_trace()
+                return retval
+                    
         # but adding the constraints back can fail, in which case we should
         # roll back our state, and fire an exception.
 
@@ -899,6 +971,45 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
                     bad_checks.append( (c,n) )
                     raise Exception('fail')
         return bad_checks
+
+    def check_orientations(self):
+        """
+        Checks all cells for proper CCW orientation,
+        return a list of cell indexes of failures.
+        """
+        bad_cells=[]
+        for c in self.valid_cell_iter():
+            node_xy=self.nodes['x'][self.cells['nodes'][c]]
+            if robust_predicates.orientation(*node_xy) <= 0:
+                bad_cells.append(c)
+        return bad_cells
+    def check_convex_hull(self):
+        # find an edge on the convex hull, walk the hull and check
+        # all consecutive orientations
+        e2c=self.edge_to_cells()
+        for j in self.valid_edge_iter():
+            if e2c[j,0]==self.INF_CELL:
+                he=self.halfedge(j,0)
+                break
+            elif e2c[j,1]==self.INF_CELL:
+                he=self.halfedge(j,1)
+                break
+        else:
+            assert False
+
+        he0=he
+
+        bad_hull=[]
+        while 1:
+            a=he.node_rev()
+            b=he.node_fwd()
+            he=he.fwd()
+            c=he.node_fwd()
+            if robust_predicates.orientation(*self.nodes['x'][[a,b,c]])>0:
+                bad_hull.append( [a,b,c])
+            if he==he0:
+                break
+        return bad_hull    
     
     def restore_delaunay(self,n):
         """ n: node that was just inserted and may have adjacent cells
@@ -1052,6 +1163,11 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
             return history
         else:
             while trav!=('node',nB):
+                # DBG!
+                if len(history)>1 and history[0]==history[1]:
+                    import pdb
+                    pdb.set_trace()
+                    
                 if trav[0]=='node':
                     ntrav=trav[1]
                     for c in self.node_to_cells(ntrav):
