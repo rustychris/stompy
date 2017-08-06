@@ -151,6 +151,11 @@ class HalfEdge(object):
                  (other.j      == self.j )   and
                  (other.orient == self.orient) )
 
+    def __ne__(self,other):
+        # per python data model, equals does not imply
+        # opposite of not equals, and must be explicitly handled.
+        return not self.__eq__(other)
+
 
 def rec_to_dict(r):
     d={}

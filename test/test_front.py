@@ -496,7 +496,7 @@ def trifront_wrapper(rings,scale,label=None):
     finally:
         if label is not None:
             plt.figure(1).clf()
-            af.grid.plot_edges()
+            af.grid.plot_edges(lw=0.5)
             plt.savefig('af-%s.png'%label)
     return af
     
@@ -617,8 +617,12 @@ def test_long_channel_rigid():
     trifront_wrapper([long_channel],density,initial_node_status=paver.Paving.RIGID,
                      label='long_channel_rigid')
 
+##
 
 def test_narrow_channel():
+    # This passes now, but the result looks like it could use better
+    # tuning of the parameters -- grid jumps from 1 to 3 cells across
+    # the channel.
     l = 1000
     w = 50
     long_channel = np.array([[0,0],
@@ -628,7 +632,9 @@ def test_narrow_channel():
 
     density = field.ConstantField( w/np.sin(60*np.pi/180.) / 4 )
     trifront_wrapper([long_channel],density,label='narrow_channel')
-    
+
+
+##     
 def test_small_island():
     l = 100
     square = np.array([[0,0],
@@ -658,6 +664,7 @@ def test_tight_peanut():
     density = field.ConstantField( 6.0 )
     trifront_wrapper([peanut],density,label='tight_peanut')
 
+    
 def test_tight_with_island():
     # build a peanut first:
     r = 100
@@ -877,3 +884,7 @@ def test_sine_sine():
     p=gen_sine_sine()
     p.pave_all()
 
+# Who is failing at this point?
+#   - narrow_channel - FIXED?
+#   - tight_peanut
+#   - not sure what's going on with tight_with_island.  Doesn't look right.

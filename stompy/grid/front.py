@@ -693,8 +693,36 @@ class NonLocalStrategy(Strategy):
 
         # flat list of grid neighbors.  note that since a-b-c are connected,
         # this will include a,b,c, too.
-        all_nbrs=[n for l in each_nbrs for n in l]
-       
+        if 0:
+            all_nbrs=[n for l in each_nbrs for n in l]
+        else:
+            all_nbrs=list(site.abc) # the way it's written, only c will be
+            # picked up by the loops below.
+            
+            # HERE - this needs to go back to something similar to the old
+            # code, where the neighbors to avoid are defined by being connected
+            # along local edges within the given straight-line distance.
+            he0=af.grid.nodes_to_halfedge(site.abc[0],site.abc[1])
+
+            for incr,node,ref_pnt in [ (lambda x: x.rev(),
+                                        lambda x: x.node_rev(),
+                                        apnt), # walk along b->a
+                                       (lambda x: x.fwd(),
+                                        lambda x: x.node_fwd(),
+                                        cpnt)]: # walk along b->c
+                trav=incr(he0)
+
+                while trav!=he0: # in case of small loops
+                    ntrav=node(trav)
+                    # some decision here about whether to calculate straight line
+                    # distance from a or b, and whether the threshold is
+                    # local_length or some factor thereof
+                    straight_dist=utils.dist(af.grid.nodes['x'][ntrav] - ref_pnt)
+                    if straight_dist > 1.0*site.local_length:
+                        break
+                    all_nbrs.append(ntrav)
+                    trav=incr(trav)
+            
         for n,dt_nbrs in zip(site.abc,each_dt_nbrs):
             # DBG: maybe only DT neighbors of 'b' can be considered?
             # when considering 'a' and 'c', too many possibilities
@@ -1183,7 +1211,9 @@ class AdvancingFront(object):
         move/replace n, such that from anchor to n/new_n the edge
         length is close to scale.
 
-        assumes that n is SLIDE, and has only 2 neighbors.
+        assumes that n is SLIDE or HINT.
+        If n has more than 2 neighbors, does nothing and returns n as is.
+
         normally, a SLIDE node cannot be deleted.  in some cases resample will
         create a new node for n, and it will be a SLIDE node.  in that case, should
         n retain SLIDE, too? is it the responsibility of resample(), or the caller?
@@ -1198,6 +1228,11 @@ class AdvancingFront(object):
         """
         self.log.debug("resample %d to be %g away from %d in the %s direction"%(n,scale,anchor,
                                                                                 direction) )
+        n_deg=self.grid.node_degree(n)
+        if n_deg!=2:
+            self.log.info("Will not resample node %d because degree=%d, not 2"%(n,n_deg))
+            return n
+        
         if direction==1: # anchor to n is t
             he=self.grid.nodes_to_halfedge(anchor,n)
         elif direction==-1:
