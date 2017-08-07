@@ -1,14 +1,10 @@
-import nose2
-import exact_delaunay
-try:
-    from importlib import reload
-except ImportError:
-    pass # must be py2
-reload(exact_delaunay)
-from exact_delaunay import Triangulation
-import robust_predicates
 import numpy as np
 
+import nose2
+
+from stompy.grid import exact_delaunay
+Triangulation=exact_delaunay.Triangulation
+from stompy.spatial import robust_predicates
 
 def test_find_intersected_elements():
     dt = Triangulation()

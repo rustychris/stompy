@@ -1,3 +1,8 @@
+"""
+Classes for hydrodynamic inputs (Hydro) and D-WAQ setup
+(Scenario) for using Delft Water Quality.
+"""
+
 from __future__ import print_function
 
 import os
@@ -11,15 +16,15 @@ import shutil
 import datetime
 import numpy as np
 import numpy.lib.recfunctions as rfn
-from scipy import sparse 
+from scipy import sparse
 from ... import filters
 from ... import utils
-forwardTo=utils.forwardTo
+forwardTo = utils.forwardTo
 import logging
 
 import time
 import pandas as pd
-from matplotlib.dates import num2date,date2num
+from matplotlib.dates import num2date, date2num
 import matplotlib.pyplot as plt
 from itertools import count
 from six import iteritems
@@ -34,9 +39,9 @@ from shapely import geometry
 try:
     from shapely.ops import cascaded_union
 except ImportError:
-    cascaded_union=None
+    cascaded_union = None
 
-from collections import defaultdict,OrderedDict,Iterable
+from collections import defaultdict, OrderedDict, Iterable
 import scipy.spatial
 
 from  ... import scriptable
@@ -53,25 +58,33 @@ from . import dfm_grid
 from . import process_diagram
 
 def waq_timestep_to_timedelta(s):
-    d,h,m,secs = [int(x) for x in [s[:-6],s[-6:-4],s[-4:-2],s[-2:]] ]
-    return datetime.timedelta(days=d,hours=h,minutes=m,seconds=secs)
+    """ parse a delwaq-style timestep (as string or integer) into a python timedelta object.
+    """
+    s="%09d"%int(s)
+    d, h, m, secs = [int(x) for x in [s[:-6], s[-6:-4], s[-4:-2], s[-2:]]]
+    return datetime.timedelta(days=d, hours=h, minutes=m, seconds=secs)
+
 def timedelta_to_waq_timestep(td):
-    total_seconds=td.total_seconds()
+    """
+    Convert a python timedelta into a DWAQ style timestep string as in
+    DDDHHMMSS
+    """
+    total_seconds = td.total_seconds()
     assert td.microseconds==0
-    secs=total_seconds % 60
-    mins=(total_seconds // 60) % 60
-    hours=(total_seconds // 3600) % 24
-    days=(total_seconds // 86400) 
+    secs = total_seconds % 60
+    mins = (total_seconds // 60) % 60
+    hours = (total_seconds // 3600) % 24
+    days = (total_seconds // 86400)
     
     #                                       seconds
     #                                     minutes
     #                                   hours
-    #                                days 
+    #                                days
     # hydrodynamic-timestep    '00000000 00 3000'
     
-    return "%08d%02d%02d%02d"%(days,hours,mins,secs)
+    return "%08d%02d%02d%02d"%(days, hours, mins, secs)
 
-def rel_symlink(src,dst):
+def rel_symlink(src, dst):
     """ Create a symlink, adjusting for a src path relative
     to cwd rather than the directory of dst. 
     """
@@ -79,10 +92,10 @@ def rel_symlink(src,dst):
     # pwd, create a symlink that includes the right number of
     # ../..'s
     if os.path.isabs(src): # no worries
-        os.symlink(src,dst)
+        os.symlink(src, dst)
     else:
-        pre = os.path.relpath(os.path.dirname(src),os.path.dirname(dst))
-        os.symlink( os.path.join(pre,os.path.basename(src)), dst )
+        pre = os.path.relpath(os.path.dirname(src), os.path.dirname(dst))
+        os.symlink(os.path.join(pre, os.path.basename(src)), dst)
 
 
 # Classes used in defining a water quality model scenario
@@ -90,8 +103,9 @@ def rel_symlink(src,dst):
 CLOSED=0
 BOUNDARY='boundary'
 
-def tokenize(fp,comment=';'):
-    """ tokenize waq inputs, handling comments, possibly include.
+def tokenize(fp, comment=';'):
+    """ 
+    tokenize waq inputs, handling comments, possibly include.
     no casting.
     """
     for line in fp:
@@ -101,7 +115,11 @@ def tokenize(fp,comment=';'):
 
             
 class MonTail(object):
-    def __init__(self,mon_fn,log=None,sim_time_seconds=None):
+    """
+    Helper class to watch output on a log file.  Used to track progress
+    while model is running.
+    """
+    def __init__(self, mon_fn, log=None, sim_time_seconds=None):
         """ 
         mon_fn: path to delwaq2 monitor file
         log: logging object to which messages are sent via .info()
@@ -111,7 +129,7 @@ class MonTail(object):
         self.sim_time_seconds=sim_time_seconds
         self.log=log
         if 1:
-            self.thr=threading.Thread(target=self.tail,args=[mon_fn])
+            self.thr=threading.Thread(target=self.tail, args=[mon_fn])
             self.thr.daemon=True
             self.thr.start()
         else:
@@ -120,7 +138,7 @@ class MonTail(object):
         self.signal_stop=True
         self.thr.join()
 
-    def msg(self,s):
+    def msg(self, s):
         if self.log is None:
             print(s)
         else:
@@ -128,7 +146,7 @@ class MonTail(object):
             # seeing warnings
             self.log.info(s)
 
-    def tail(self,mon_fn):
+    def tail(self, mon_fn):
         # We may have to wait for the file to exist...
         if not os.path.exists(mon_fn):
             self.msg("Waiting for %s to be created"%mon_fn)
@@ -156,19 +174,19 @@ class MonTail(object):
                 next_line=fp.readline()
                 if next_line=='':
                     # a punt on cases where the file has been truncated.
-                    fp.seek(0,2) # seek to end
+                    fp.seek(0, 2) # seek to end
                     time.sleep(0.1)
                 else:
                     last_line=next_line
                     if 'Completed' in last_line:
                         self.msg(last_line.strip())
                         try:
-                            pct_complete=float(re.match(r'([0-9\.]+).*',last_line.strip()).group(1))
+                            pct_complete=float(re.match(r'([0-9\.]+).*', last_line.strip()).group(1))
                             sample_pcts.append(pct_complete)
                             sample_secs.append(time.time())
                             if len(sample_pcts)>1:
                                 # pct/sec
-                                mb=np.polyfit(sample_secs,sample_pcts,1)
+                                mb=np.polyfit(sample_secs, sample_pcts, 1)
                                 if mb[0] != 0:
                                     time_remaining=(100 - sample_pcts[-1]) / mb[0]
                                     # mb[0] has units pct/sec
@@ -187,13 +205,24 @@ class MonTail(object):
 
 
 class WaqException(Exception):
+    """
+    Super class for exceptions specific to waq_scenario
+    """
     pass
 
 class Hydro(object):
-    time0=None # a datetime instance, for the *reference* time.
+    """
+    Read/write hydrodynamics data for use as input to Delwaq
+    """
+    time0 = None # a datetime instance, for the *reference* time.
     # note that a hydro object may start at some nonzero offset 
     # from this reference time.
 
+    # set by subclasses
+    n_exch_x = None
+    n_exch_y = None
+    n_exch_z = None
+    
     @property
     def fn_base(self): # base filename for output. typically com-<scenario name>
         return 'com-{}'.format(self.scenario.name)
@@ -207,25 +236,25 @@ class Hydro(object):
     BOUNDARY=BOUNDARY
 
 
-    def __init__(self,**kws):
+    def __init__(self, **kws):
         self.log=logging.getLogger(self.__class__.__name__)
 
-        for k,v in kws.items():
+        for k, v in kws.items():
             # if k in self.__dict__ or k in self.__class__.__dict__:
             #     self.__dict__[k]=v
             # else:
             #     raise Exception("Unknown keyword option: %s=%s"%(k,v))
             try:
                 getattr(self,k)
-                setattr(self,k,v)
+                setattr(self, k, v)
             except AttributeError:
-                raise Exception("Unknown keyword option: %s=%s"%(k,v))
+                raise Exception("Unknown keyword option: %s=%s"%(k, v))
 
     @property
     def t_dn(self):
         """ convert self.time0 and self.t_secs to datenums
         """
-        from matplotlib.dates import num2date,date2num
+        from matplotlib.dates import num2date, date2num
         return date2num(self.time0) + self.t_secs/86400.
 
     @property
@@ -237,9 +266,9 @@ class Hydro(object):
         dt_sec=dt_secs[0]
         assert np.all( dt_sec==dt_secs )
 
-        rest,seconds=divmod(dt_sec,60)
-        rest,minutes=divmod(rest,60)
-        days,hours=divmod(rest,24)
+        rest, seconds=divmod(dt_sec, 60)
+        rest, minutes=divmod(rest, 60)
+        days, hours=divmod(rest, 24)
         return ((days*100 + hours)*100 + minutes)*100 + seconds
 
     # num_exch => use n_exch
@@ -251,13 +280,13 @@ class Hydro(object):
     # num_seg => use n_seg
     n_seg=None # overridden in subclass or explicitly set.
     
-    def areas(self,t):
+    def areas(self, t):
         """ returns ~ np.zeros(self.n_exch,'f4'), for the timestep given by time t
         specified in seconds from time0.  areas in m2.
         """
         raise WaqException("Implement in subclass")
 
-    def flows(self,t):
+    def flows(self, t):
         """ returns flow rates ~ np.zeros(self.n_exch,'f4'), for given timestep.
         flows in m3/s.
         """
@@ -270,9 +299,9 @@ class Hydro(object):
         this is the subset of times typically used when self.write() is called
         """
         hydro_datetimes=self.t_secs*self.scenario.scu + self.time0 
-        start_i,stop_i=np.searchsorted(hydro_datetimes,
-                                       [self.scenario.start_time,
-                                        self.scenario.stop_time])
+        start_i, stop_i=np.searchsorted(hydro_datetimes,
+                                        [self.scenario.start_time,
+                                         self.scenario.stop_time])
         if start_i>0:
             start_i-=1
         if stop_i < len(self.t_secs):
@@ -281,31 +310,31 @@ class Hydro(object):
 
     @property 
     def are_filename(self):
-        return os.path.join(self.scenario.base_path,self.fn_base+".are")
+        return os.path.join(self.scenario.base_path, self.fn_base+".are")
         
     def write_are(self):
         """
         Write are file
         """
-        with open(self.are_filename,'wb') as fp:
+        with open(self.are_filename, 'wb') as fp:
             for t_sec in self.scen_t_secs.astype('i4'):
                 fp.write(t_sec.tobytes()) # write timestamp
                 fp.write(self.areas(t_sec).astype('f4').tobytes())
 
     @property
     def flo_filename(self):
-        return os.path.join(self.scenario.base_path,self.fn_base+".flo")
+        return os.path.join(self.scenario.base_path, self.fn_base+".flo")
 
     def write_flo(self):
         """
         Write flo file
         """
-        with open(self.flo_filename,'wb') as fp:
+        with open(self.flo_filename, 'wb') as fp:
             for t_sec in self.scen_t_secs.astype('i4'):
                 fp.write(t_sec.tobytes()) # write timestamp
                 fp.write(self.flows(t_sec).astype('f4').tobytes())
 
-    def seg_attrs(self,number):
+    def seg_attrs(self, number):
         """ 
         1: active/inactive
           defaults to all active
@@ -314,14 +343,14 @@ class Hydro(object):
         """
         if number==1:
             # default, all active. may need to change this?
-            return np.ones(self.n_seg,'i4')
+            return np.ones(self.n_seg, 'i4')
         if number==2:
             self.infer_2d_elements()
 
             # 0: single layer, 1: surface, 2: mid-water column, 3: bed
-            attrs=np.zeros(self.n_seg,'i4')
+            attrs=np.zeros(self.n_seg, 'i4')
 
-            for elt_i,sel in utils.enumerate_groups(self.seg_to_2d_element):
+            for elt_i, sel in utils.enumerate_groups(self.seg_to_2d_element):
                 if elt_i<0:
                     continue # inactive segments
 
@@ -366,7 +395,7 @@ class Hydro(object):
         write atr file
         """
         # might need to change with z-level aggregation
-        with open(os.path.join(self.scenario.base_path,self.fn_base+".atr"),'wt') as fp:
+        with open(os.path.join(self.scenario.base_path, self.fn_base+".atr"), 'wt') as fp:
             fp.write(self.text_atr())
 
     # lengths from src segment to face, face to destination segment. 
@@ -377,8 +406,8 @@ class Hydro(object):
         """
         write len file
         """
-        with open(os.path.join(self.scenario.base_path,self.fn_base+".len"),'wb') as fp:
-            fp.write( np.array(self.n_exch,'i4').tobytes() )
+        with open(os.path.join(self.scenario.base_path, self.fn_base+".len"),'wb') as fp:
+            fp.write( np.array(self.n_exch, 'i4').tobytes() )
             fp.write(self.exchange_lengths.astype('f4').tobytes())
 
     # like np.zeros( (n_exch,4),'i4')
@@ -390,27 +419,27 @@ class Hydro(object):
         """
         write poi file
         """
-        with open(os.path.join(self.scenario.base_path,self.fn_base+".poi"),'wb') as fp:
+        with open(os.path.join(self.scenario.base_path, self.fn_base+".poi"), 'wb') as fp:
             fp.write(self.pointers.astype('i4').tobytes())
 
-    def volumes(self,t):
+    def volumes(self, t):
         """ segment volumes in m3, [n_seg]*'f4'
         """
         raise WaqException("Implement in subclass")
 
     @property
     def vol_filename(self):
-        return os.path.join(self.scenario.base_path,self.fn_base+".vol")
+        return os.path.join(self.scenario.base_path, self.fn_base+".vol")
 
     def write_vol(self):
         """ write vol file
         """
-        with open(self.vol_filename,'wb') as fp:
+        with open(self.vol_filename, 'wb') as fp:
             for t_sec in self.scen_t_secs.astype('i4'):
                 fp.write(t_sec.tobytes()) # write timestamp
                 fp.write(self.volumes(t_sec).astype('f4').tobytes())
 
-    def vert_diffs(self,t):
+    def vert_diffs(self, t):
         """ returns [n_segs]*'f4' vertical diffusivities in m2/s
         """
         raise WaqException("Implement in subclass")
@@ -444,14 +473,14 @@ class Hydro(object):
         if geom is None:
             return self.VERT_UNKNOWN
         for v in geom.variables:
-            standard_name=geom[v].attrs.get('standard_name',None)
+            standard_name=geom[v].attrs.get('standard_name', None)
             if standard_name == 'ocean_sigma_coordinate':
                 return self.SIGMA
             if standard_name == 'ocean_zlevel_coordinate':
                 return self.ZLAYER
         return self.VERT_UNKNOWN
     @vertical.setter
-    def vertical(self,v):
+    def vertical(self, v):
         self._vertical = v
     
     def grid(self):
@@ -463,13 +492,13 @@ class Hydro(object):
     _params=None
     # force had been false, but it doesn't play well with running multiple
     # scenarios with the same hydro.
-    def parameters(self,force=True):
+    def parameters(self, force=True):
         if force or (self._params is None):
             hyd=NamedObjects(scenario=self.scenario,cast_value=cast_to_parameter)
             self._params = self.add_parameters(hyd)
         return self._params
         
-    def add_parameters(self,hyd):
+    def add_parameters(self, hyd):
         """ Moved from waq_scenario init_hydro_parameters
         """
         self.log.debug("Adding planform areas parameter")
@@ -532,24 +561,24 @@ class Hydro(object):
             nelt=self.n_2d_elements
             
             # painful breaking of abstraction.
-            if isinstance(plan_areas,ParameterSpatioTemporal):
+            if isinstance(plan_areas, ParameterSpatioTemporal):
                 surfaces=plan_areas.evaluate(t=0).data
-            elif isinstance(plan_areas,ParameterSpatial):
+            elif isinstance(plan_areas, ParameterSpatial):
                 surfaces=plan_areas.data
-            elif isinstance(plan_areas,ParameterConstant):
-                surfaces=plan_areas.value * np.ones(nelt,'f4')
-            elif isinstance(plan_areas,ParameterTemporal):
-                surfaces=plan_areas.values[0] * np.ones(nelt,'f4')
+            elif isinstance(plan_areas, ParameterConstant):
+                surfaces=plan_areas.value * np.ones(nelt, 'f4')
+            elif isinstance(plan_areas, ParameterTemporal):
+                surfaces=plan_areas.values[0] * np.ones(nelt, 'f4')
             else:
                 raise Exception("plan areas is %s - unhandled"%(str(plan_areas)))
 
             # this needs to be in sync with what write_hyd writes, and
             # the supporting_file statement in the hydro_parameters
-            fn=os.path.join(self.scenario.base_path,self.surf_filename)
+            fn=os.path.join(self.scenario.base_path, self.surf_filename)
             
-            with open(fn,'wb') as fp:
+            with open(fn, 'wb') as fp:
                 # shape, shape, count, x,x,x according to waqfil.m
-                hdr=np.zeros(6,'i4')
+                hdr=np.zeros(6, 'i4')
                 hdr[0]=hdr[2]=hdr[3]=hdr[4]=nelt
                 hdr[1]=1
                 hdr[5]=0
@@ -594,10 +623,10 @@ class Hydro(object):
         """
         if self.seg_to_2d_element is None:
             n_2d_elements=0
-            seg_to_2d=np.zeros(self.n_seg,'i4')-1 # 0-based segment => 0-based 2d element.
+            seg_to_2d=np.zeros(self.n_seg, 'i4')-1 # 0-based segment => 0-based 2d element.
             # 0-based layer, k=0 is surface
             # accuracy seg_k depends on prismatic topology of cells
-            seg_k=np.zeros(self.n_seg,'i4')-1 
+            seg_k=np.zeros(self.n_seg, 'i4')-1 
 
             poi=self.pointers
             #poi_vert=poi[-self.n_exch_z:] # unsafe with 2D!
@@ -616,7 +645,7 @@ class Hydro(object):
             self.log.debug("Inferring 2D elements, preprocess adjacency")
 
             # all 0-based
-            for seg_from,seg_to in (poi_vert[:,:2] - 1):
+            for seg_from, seg_to in (poi_vert[:,:2] - 1):
                 nbr_up[seg_to].append(seg_from)
                 nbr_down[seg_from].append(seg_to)
 
@@ -955,6 +984,13 @@ class Hydro(object):
                     raise
         return x
 
+    def timeline_data(self):
+        scu=self.scenario.scu
+        time_start = (self.time0+self.scen_t_secs[0] *scu)
+        time_stop  = (self.time0+self.scen_t_secs[-1]*scu)
+        timedelta  = (self.t_secs[1] - self.t_secs[0])*scu
+        return time_start,time_stop,timedelta
+    
     def write_hyd(self,fn=None):
         """ Write an approximation to the hyd file output by D-Flow FM
         for consumption by delwaq
@@ -986,9 +1022,11 @@ class Hydro(object):
         name=self.scenario.name
 
         dfmt="%Y%m%d%H%M%S"
-        time_start = (self.time0+self.scen_t_secs[0]*self.scenario.scu)
-        time_stop  = (self.time0+self.scen_t_secs[-1]*self.scenario.scu)
-        timedelta = (self.t_secs[1] - self.t_secs[0])*self.scenario.scu
+
+        scu=self.scenario.scu
+
+        time_start,time_stop,timedelta = self.timeline_data()
+            
         timestep = timedelta_to_waq_timestep(timedelta)
 
         self.infer_2d_elements()
@@ -1379,7 +1417,7 @@ def parse_datetime(s):
 
 class HydroFiles(Hydro):
     """ 
-    dwaq hydro data read from existing files, by parsing
+    DWAQ hydro data read from existing files, by parsing
     .hyd file.
     """
     # if True, allow symlinking to original files where possible.
@@ -1438,6 +1476,16 @@ class HydroFiles(Hydro):
             self._t_secs=(start+np.arange(n_steps)*step_secs).astype('i4')
         return self._t_secs
 
+    def timeline_data(self):
+        # May need to be more clever about generated datasets
+        # probably needs to be sync'd with whether we symlink, reference
+        # original files, write out a subset...
+        scu=self.scenario.scu
+        time_start = (self.time0+self.t_secs[0]* scu)
+        time_stop  = (self.time0+self.t_secs[-1]*scu)
+        timedelta  = (self.t_secs[1]- self.t_secs[0])*scu
+        return time_start,time_stop,timedelta
+    
     @property
     def time0(self):
         return parse_datetime(self.hyd_toks['conversion-ref-time'])
@@ -1513,6 +1561,7 @@ class HydroFiles(Hydro):
                 # creates one fewer time-steps of exchange-related data
                 # than volume-related data.
                 # each step has 4 bytes per exchange, plus a 4 byte time stamp.
+                # 2017-07-20 RH: bigger problems, as the output number o
                 pred_n_steps = are_size/4./(self.n_exch+1)
 
                 if pred_n_steps==nsteps:
@@ -1938,6 +1987,14 @@ class HydroFiles(Hydro):
 
 REINDEX=-9999
 class DwaqAggregator(Hydro):
+    """
+    Aggregate hydrodynamics from source data potentially spread across
+    many subdomains, and possibly only a spatial or temporal subset of
+    that data.
+    """
+
+    # a sentinel used to indicate that data has changed an index is no longer
+    # valid
     REINDEX=REINDEX
 
     # whether or not to force all layers to have the same number of
@@ -4135,6 +4192,10 @@ class HydroMultiAggregator(DwaqAggregator):
 
 
 class HydroStructured(Hydro):
+    """
+    INCOMPLETE.
+    Create a rectilinear, structured hydrodynamic input set.
+    """
     n_x=n_y=n_z=None # number of cells in three directions
 
     def __init__(self,**kws):
@@ -4206,13 +4267,8 @@ class HydroStructured(Hydro):
 
 class FilterHydroBC(Hydro):
     """ 
-    Wrapper around a Hydro instance, shift tidal fluxes into changing volumes, with
+    Subclass of Hydro which shifts tidal fluxes into changing volumes, with
     only subtidal fluxes.
-    not a Hydro subclass to make it easier to forward attributes on to the underlying
-    Hydro instance.
-
-    Actually - will switch it back to a subclass, and just forward 
-    attributes as needed
     """
     def __init__(self,original,lp_secs=86400*36./24,selection='boundary'):
         """
@@ -5327,7 +5383,7 @@ class BoundaryCondition(ModelForcing):
         if self.bdefs is None:
             self.bdefs=self.scenario.hydro.boundary_defs()
         if isinstance(bdry,int):
-            bdry=bdefs[-1-bdry]['id']
+            bdry=self.bdefs[-1-bdry]['id']
         return bdry
         
 class Discharge(object):

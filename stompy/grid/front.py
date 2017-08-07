@@ -144,13 +144,30 @@ class Curve(object):
     class CurveException(Exception):
         pass
     
-    def __init__(self,points,closed=True):
+    def __init__(self,points,closed=True,ccw=None):
+        """
+        points: [N,2] 
+        closed: if True, treat this as a closed ring
+        ccw: if True, make sure the order is ccw,
+        False - make sure cw
+        None - leave as is.
+        """
+        if ccw is not None:
+            area=utils.signed_area(points)
+            if (area>0) != bool(ccw):
+                points=points[::-1,:]
+                
         self.points=np.asarray(points)
-        self.closed=closed
+        self.closed=bool(closed)
         if self.closed:
-            self.points = np.concatenate( (self.points,
-                                           self.points[:1,:] ) )
-        
+            if np.all(self.points[0]==self.points[-1]):
+                pass # already duplicated
+            else:
+                self.points = np.concatenate( (self.points,
+                                               self.points[:1,:] ) )
+        else:
+            assert not np.all(self.points[0]==self.points[-1])
+            
         self.distances=utils.dist_along(self.points)
     def __call__(self,f,metric='distance'):
         if metric=='distance':
@@ -204,7 +221,7 @@ class Curve(object):
         else:
             return new_points
 
-    def distance_away(self,anchor_f,signed_distance,rtol=0.05):
+    def OLD_distance_away(self,anchor_f,signed_distance,rtol=0.05):
         """  Find a point on the curve signed_distance away from the
         point corresponding to anchor_f, within the given relative tolerance.
         returns new_f,new_x.
@@ -260,6 +277,80 @@ class Curve(object):
         else:
             raise self.CurveException("Binary search failed")
 
+    def distance_away(self,anchor_f,signed_distance,rtol=0.05):
+        """  Find a point on the curve signed_distance away from the
+        point corresponding to anchor_f, within the given relative tolerance.
+        returns new_f,new_x.
+
+        If a point could not be found within the requested tolerance, raises
+        a self.CurveException.
+        """
+        sign=int(np.sign(signed_distance))
+        abs_dist=np.abs(signed_distance)
+
+        anchor_pnt=self(anchor_f)
+        anchor_idx_a=np.searchsorted(self.distances,anchor_f,side='right') - 1
+        anchor_idx_b=(anchor_idx_a+1)%(len(self.points)-1)
+
+        if sign<0:
+            anchor_idx_a,anchor_idx_b=anchor_idx_b,anchor_idx_a
+
+        # How many segment of the curve are we willing to examine? all of them,
+        # but no more.
+        Npnts=len(self.points)-1 # duplicate for closed ring
+        max_segs=Npnts
+        for segi in range(max_segs):
+            idxa=anchor_idx_a+sign*segi
+            idxb=idxa+sign # +-1
+            idxa=idxa%Npnts
+            idxb=idxb%Npnts
+            if segi==0:
+                # only care about the portion of the first segment
+                # "ahead" of anchor (TODO: handle sign<0)
+                pnta=anchor_pnt
+            else:
+                pnta=self.points[idxa]
+            pntb=self.points[idxb]
+            dista=utils.dist(pnta - anchor_pnt)
+            distb=utils.dist(pntb - anchor_pnt)
+            if (dista<(1-rtol)*abs_dist) and (distb<(1-rtol)*abs_dist):
+                # No way this segment is good.
+                continue
+            else:
+                break
+        else:
+            # i.e. checked everybody, could never get far enough
+            # away
+            raise self.CurveException("Could not get far enough away")
+        assert dista<distb
+        assert dista<(1+rtol)*abs_dist
+        assert distb>(1-rtol)*abs_dist
+
+        if segi==0:
+            close_f=anchor_f
+        else:
+            close_f=self.distances[idxa]
+        far_f=self.distances[idxb]
+        if sign*far_f<sign*close_f:
+            far_f+=sign*self.distances[-1]
+
+        for maxit in range(10):
+            mid_f=0.5*(close_f+far_f)
+            pnt_mid=self(mid_f)
+            dist_mid=utils.dist(pnt_mid - anchor_pnt)
+            rel_err = (dist_mid-abs_dist)/abs_dist
+            if rel_err < -rtol:
+                close_f=mid_f
+            elif rel_err > rtol:
+                far_f=mid_f
+            else:
+                result=mid_f,pnt_mid
+                break
+        else:
+            assert False
+        return result
+
+        
     def is_forward(self,fa,fb,fc):
         """ return true if fa,fb and fc are distinct and
         ordered CCW around the curve
@@ -270,7 +361,13 @@ class Curve(object):
         return ((fb-fa) % d) < ((fc-fa)%d)
     def is_reverse(self,fa,fb,fc):
         return self.is_forward(fc,fb,fa)
-    
+
+    def signed_area(self):
+        assert self.closed
+        return utils.signed_area(self.points)
+    def reverse(self):
+        return Curve(points=self.points[::-1,:],
+                     closed=self.closed)
     def plot(self,ax=None,**kw):
         ax=ax or plt.gca()
         return ax.plot(self.points[:,0],self.points[:,1],**kw)[0]
@@ -384,7 +481,7 @@ class BisectStrategy(Strategy):
         return {'nodes': [nd],
                 'cells': [new_c1,new_c2],
                 'edges': [j_cd,j_bd,j_ad] }
-
+    
     
 class CutoffStrategy(Strategy):
     def __str__(self):
@@ -512,10 +609,29 @@ class JoinStrategy(Strategy):
 
         for j,data in edges_to_replace:
             nodes=data['nodes']
-            
+
             for i in [0,1]:
                 if nodes[i]==mover:
                     if (nodes[1-i]==nb) or (nodes[1-i]==nd):
+                        # While we don't add the edge itself, do need
+                        # to check whether the old edge,
+                        # which is adjacent to the "joined" areas which vanish, had
+                        # a relevant non-cell index on the other side, i.e. boundary vs.
+                        # unpaved.
+                        cells=data['cells']
+                        pdb.set_trace()
+
+                        # HERE - need code above, before we wreck the topology,
+                        # to find out
+                        # cell_outside_mover
+                        # he_anchor, with the he facing into the site.
+                        # he_d, from anchor to d, if exists, and again facing into the site.
+                        # cell_outside_mover_d
+                        #
+                        # Then here we can update the adjacent cells for he_anchor
+                        # if it is a mark and not a real cell which will be restored
+                        # below.
+
                         nodes=None # signal that we don't add it
                     else:
                         nodes[i]=anchor
@@ -539,6 +655,7 @@ class JoinStrategy(Strategy):
                     raise StrategyFailed("Edge was collinear with existing nodes")
                 edits['edges'].append(jnew)
 
+
         for c,data in cells_to_replace:
             nodes=data['nodes']
             for ni,n in enumerate(nodes):
@@ -553,11 +670,149 @@ class JoinStrategy(Strategy):
             raise StrategyFailed("Join created non-positive area cells")
 
         return edits
+
+class NonLocalStrategy(Strategy):
+    """ 
+    Add an edge to a nearby, but not locally connected, element.
+    Currently, this is not very strong in identifying whether a
+    nearby node.
+    """
+    def __str__(self):
+        return "<Nonlocal>"
+
+    def nonlocal_pair(self,site):
+        """
+        Nonlocal nodes for a site 
+        """
+        af=site.af
+        best_pair=None,None
+        best_dist=np.inf
+
+        # skip over neighbors of any of the sites nodes
+
+        # take any neighbors in the DT.
+        each_dt_nbrs=[af.cdt.node_to_nodes(n) for n in site.abc]
+        if 1:
+            # filter out neighbors which are not within the 'sector'
+            # defined by the site.
+            apnt,bpnt,cpnt=af.grid.nodes['x'][site.abc]
+
+            ba_angle=np.arctan2(apnt[1] - bpnt[1],
+                                apnt[0] - bpnt[0])
+            bc_angle=np.arctan2(cpnt[1] - bpnt[1],
+                                cpnt[0] - bpnt[0])
+
+            old_each_dt_nbrs=each_dt_nbrs
+            each_dt_nbrs=[]
+            for nbrs in old_each_dt_nbrs:
+                nbrs_pnts=af.grid.nodes['x'][nbrs]
+                diffs=nbrs_pnts - bpnt
+                angles=np.arctan2(diffs[:,1], diffs[:,0])
+                # want to make sure that the angles from b to a,nbr,c
+                # are consecutive
+                angle_sum = (angles-bc_angle)%(2*np.pi) + (ba_angle-angles)%(2*np.pi)
+                valid=(angle_sum < 2*np.pi)
+                each_dt_nbrs.append(nbrs[valid])
+            
+        each_nbrs=[af.grid.node_to_nodes(n) for n in site.abc]
+
+        # flat list of grid neighbors.  note that since a-b-c are connected,
+        # this will include a,b,c, too.
+        if 0:
+            all_nbrs=[n for l in each_nbrs for n in l]
+        else:
+            all_nbrs=list(site.abc) # the way it's written, only c will be
+            # picked up by the loops below.
+            
+            # HERE - this needs to go back to something similar to the old
+            # code, where the neighbors to avoid are defined by being connected
+            # along local edges within the given straight-line distance.
+            he0=af.grid.nodes_to_halfedge(site.abc[0],site.abc[1])
+
+            for incr,node,ref_pnt in [ (lambda x: x.rev(),
+                                        lambda x: x.node_rev(),
+                                        apnt), # walk along b->a
+                                       (lambda x: x.fwd(),
+                                        lambda x: x.node_fwd(),
+                                        cpnt)]: # walk along b->c
+                trav=incr(he0)
+
+                while trav!=he0: # in case of small loops
+                    ntrav=node(trav)
+                    # some decision here about whether to calculate straight line
+                    # distance from a or b, and whether the threshold is
+                    # local_length or some factor thereof
+                    straight_dist=utils.dist(af.grid.nodes['x'][ntrav] - ref_pnt)
+                    if straight_dist > 1.0*site.local_length:
+                        break
+                    all_nbrs.append(ntrav)
+                    trav=incr(trav)
+            
+        for n,dt_nbrs in zip(site.abc,each_dt_nbrs):
+            # DBG: maybe only DT neighbors of 'b' can be considered?
+            # when considering 'a' and 'c', too many possibilities
+            # of extraneous connections, which in the past were ruled
+            # out based on looking only at 'b', and by more explicitly
+            # enumerating local connections
+            if n!=site.abc[1]:
+                continue # TESTING
+            
+            # most of those we are already connected to, weed them out.
+            good_nbrs=[nbr
+                       for nbr in dt_nbrs
+                       if nbr not in all_nbrs]
+            if not good_nbrs:
+                continue
+            
+            dists=[utils.dist(af.grid.nodes['x'][n] - af.grid.nodes['x'][nbr])
+                   for nbr in good_nbrs]
+            idx=np.argmin(dists)
+            if dists[idx]<best_dist:
+                best_dist=dists[idx]
+                best_pair=(n,good_nbrs[idx])
+        # is the best nonlocal node connection good enough?
+        # not worrying about angles, just proximity
+        return best_pair[0],best_pair[1],best_dist
+
+    def metric(self,site):
+        # something high if it's bad.
+        # 0.0 if it looks good
+        site_node,nonlocal_node,dist = self.nonlocal_pair(site)
+
+        scale=site.local_length
+        if site_node is not None:
+            # score it such that if the nonlocal connection is
+            # less than or equal to the target scale away, then
+            # it gets the highest score, and linearly increasing
+            # based on being longer than that.
+            # This may reach too far in some cases, and will need to be
+            # scaled or have a nonlinear term.
+            return max(0.0, (dist - scale)/scale)
+        else:
+            return np.inf
+    
+    def execute(self,site):
+        site_node,nonlocal_node,dist = self.nonlocal_pair(site)
+        
+        if site_node is None:
+            raise StrategyFailed()
+        
+        grid=site.grid
+        
+        j=grid.add_edge(nodes=[site_node,nonlocal_node],
+                        cells=[grid.UNMESHED,grid.UNMESHED])
+
+        return {'nodes': [],
+                'cells': [],
+                'edges': [j] }
+
+
     
 Wall=WallStrategy()
 Cutoff=CutoffStrategy()
 Join=JoinStrategy()
 Bisect=BisectStrategy()
+NonLocal=NonLocalStrategy()
 
 class Site(object):
     """
@@ -615,7 +870,7 @@ class TriangleSite(FrontSite):
         return ax.plot( points[:,0],points[:,1],'r-o' )[0]
     def actions(self):
         theta=self.internal_angle
-        return [Wall,Cutoff,Join,Bisect]
+        return [Wall,Cutoff,Join,Bisect,NonLocal]
 
     def resample_neighbors(self):
         """ may update site! used to be part of AdvancingFront, but
@@ -860,9 +1115,19 @@ class AdvancingFront(object):
 
         self.curves=[]
         
-    def add_curve(self,curve):
-        assert isinstance(curve,Curve)
-
+    def add_curve(self,curve,interior=None):
+        if not isinstance(curve,Curve):
+            if interior is not None:
+                ccw=not interior
+            else:
+                ccw=None
+            curve=Curve(curve,ccw=ccw,closed=True)
+        elif interior is not None:
+            assert curve.closed
+            a=curve.signed_area()
+            if a>0 and interior:
+                curve=curve.reverse()
+            
         self.curves.append( curve )
         return len(self.curves)-1
 
@@ -971,7 +1236,9 @@ class AdvancingFront(object):
         move/replace n, such that from anchor to n/new_n the edge
         length is close to scale.
 
-        assumes that n is SLIDE, and has only 2 neighbors.
+        assumes that n is SLIDE or HINT.
+        If n has more than 2 neighbors, does nothing and returns n as is.
+
         normally, a SLIDE node cannot be deleted.  in some cases resample will
         create a new node for n, and it will be a SLIDE node.  in that case, should
         n retain SLIDE, too? is it the responsibility of resample(), or the caller?
@@ -980,9 +1247,17 @@ class AdvancingFront(object):
         as it stands, if this code creates a new node, it is given fixed=SLIDE.
         it is up to the caller to reset the fixed of the original
         node to HINT, if that is what is desired.  
+
+        Returns the resampled node index -- often same as n, but may be a different
+        node.
         """
         self.log.debug("resample %d to be %g away from %d in the %s direction"%(n,scale,anchor,
                                                                                 direction) )
+        n_deg=self.grid.node_degree(n)
+        if n_deg!=2:
+            self.log.info("Will not resample node %d because degree=%d, not 2"%(n,n_deg))
+            return n
+        
         if direction==1: # anchor to n is t
             he=self.grid.nodes_to_halfedge(anchor,n)
         elif direction==-1:
@@ -997,6 +1272,26 @@ class AdvancingFront(object):
 
         if span_length < self.max_span_factor*scale:
             n_segments = max(1,round(span_length / scale))
+
+            if n_segments==1:
+                # in tight situations, need to make sure
+                # that for a site a--b--c we're not trying
+                # move c all the way on top of a.
+                # it is not sufficient to just force two
+                # segments, as that just pushes the issue into
+                # the next iteration, but in an even worse state.
+                if direction==-1:
+                    he_other=he.fwd()
+                    opposite_node=he_other.node_fwd()
+                else:
+                    he_other=he.rev()
+                    opposite_node=he_other.node_rev()
+                if opposite_node==span_nodes[-1]:
+                    self.log.info("n_segment=1, but that would be an implicit join")
+                    
+                    # rather than force two segments, force it
+                    # to remove all but the last edge
+                    span_nodes=span_nodes[:-1]
             target_span = span_length / n_segments
             if n_segments==1:
                 self.log.debug("Only one space for 1 segment")
@@ -1007,7 +1302,12 @@ class AdvancingFront(object):
             target_span=scale
 
         # first, find a point on the original ring which satisfies the target_span
-        oring=self.grid.nodes['oring'][anchor]-1
+        anchor_oring=self.grid.nodes['oring'][anchor]-1
+        oring=self.grid.nodes['oring'][n]-1
+        if anchor_oring != oring:
+            self.log.warning('resample: anchor and n on different rings.  Will not resample')
+            # could try to get clever and resample n in the "correct" direction.
+            return n
         curve = self.curves[oring]
         anchor_f = self.grid.nodes['ring_f'][anchor]
         try:
@@ -1593,4 +1893,175 @@ class AdvancingQuads(AdvancingFront):
         # temporary hack - needed for relax_slide_node
         return 0.5*(self.para_scale+self.perp_scale)
 
+# Classes related to the decision tree
+class DTNode(object):
+    parent=None 
+    af=None # AdvancingTriangles object
+    cp=None # checkpoint
+    ops_parent=None # chunk of op_stack to get from parent to here.
+    options=None # node-specific list of data for child options
     
+    children=None # filled in by subclass [DTNode, ... ]
+    child_prior=None # est. cost for child
+    child_post =None # actual cost for child
+    
+    def __init__(self,af,parent=None):
+        self.af=af
+        self.parent=parent
+        # in cases where init of the node makes some changes,
+        # this should be updated
+        self.cp=af.grid.checkpoint() 
+        self.active_child=None
+    def set_options(self,options,priors):
+        self.options=options
+        self.child_prior=priors
+        
+        N=len(options)
+        self.children=[None] * N
+        self.child_post =[None]*N
+        self.child_order=np.argsort(self.child_prior) 
+        
+    def revert_to_parent(self):
+        if self.parent is None:
+            return False
+        return self.parent.revert_to_here()
+    def revert_to_here(self):
+        self.af.grid.revert(self.cp)
+        self.af.current=self
+        self.active_child=None
+
+    def try_child(self,i):
+        assert False # implemented by subclass
+        
+    def best_child(self,count=0,cb=None):
+        """
+        Try all, (or up to count) children, 
+        use the best one based on post scores.
+        If no children succeeded, return False, otherwise True
+        """
+        if count:
+            count=min(count,len(self.options))
+        else:
+            count=len(self.options)
+
+        best=None
+        for i in range(count):
+            print("best_child: trying %d / %d"%(i,count))
+            
+            if self.try_child(i):
+                if cb: cb()
+                if best is None:
+                    best=i
+                elif self.child_post[i] < self.child_post[best]:
+                    best=i
+                if i<count-1: 
+                    self.revert_to_here()
+            else:
+                print("best_child: option %d did not succeed"%i)
+        if best is None:
+            # no children worked out -
+            print("best_child: no children worked")
+            return False
+        
+        # wait to see if the best was the last, in which case
+        # can save an undo/redo
+        if best!=count-1:
+            self.revert_to_here()
+            self.try_child(best)
+        return True
+
+class DTChooseSite(DTNode):
+    def __init__(self,af,parent=None):
+        super(DTChooseSite,self).__init__(af=af,parent=parent)
+        sites=af.enumerate_sites()
+        
+        priors=[ site.metric()
+                 for site in sites ]
+        
+        self.set_options(sites,priors)
+        
+    def try_child(self,i):
+        """ 
+        Assumes that af state is currently at this node,
+        try the decision of the ith child, create the new DTNode
+        for that, and shift af state to be that child.
+
+        Returns true if successful.  On failure (topological violation?)
+        return false, and state should be unchanged.
+        """
+        assert self.af.current==self
+        
+        site=self.options[self.child_order[i]]
+
+        self.children[i] = DTChooseStrategy(af=self.af,parent=self,site=site)
+        # nothing to update for posterior
+        self.child_post[i] = self.child_prior[i]
+        
+        self.af.current=self.children[i]
+        self.active_child=i
+        return True
+    
+    def best_child(self,count=0,cb=None):
+        """
+        For choosing a site, prior is same as posterior
+        """
+        if count:
+            count=min(count,len(self.options))
+        else:
+            count=len(self.options)
+
+        best=None
+        for i in range(count):
+            print("best_child: trying %d / %d"%(i,count))
+            if self.try_child(i):
+                if cb: cb()
+                # no need to go further
+                return True
+        return False
+        
+class DTChooseStrategy(DTNode):
+    def __init__(self,af,parent,site):
+        super(DTChooseStrategy,self).__init__(af=af,parent=parent)
+        self.site=site
+
+        self.af.resample_neighbors(site)
+        self.cp=af.grid.checkpoint() 
+
+        actions=site.actions()
+        priors=[a.metric(site)
+                for a in actions]
+        self.set_options(actions,priors)
+
+    def try_child(self,i):
+        try:
+            edits=self.options[self.child_order[i]].execute(self.site)
+            self.af.optimize_edits(edits)
+            # could commit?
+        except self.af.cdt.IntersectingConstraints as exc:
+            self.af.log.error("Intersecting constraints - rolling back")
+            self.af.grid.revert(self.cp)
+            return False
+        except self.af.StrategyFailed as exc:
+            self.af.log.error("Strategy failed - rolling back")
+            self.af.grid.revert(self.cp)
+            return False
+        
+        self.children[i] = DTChooseSite(af=self.af,parent=self)
+        self.active_edits=edits # not sure this is the right place to store this
+        self.af.current=self.children[i]
+
+        nodes=[]
+        for c in edits['cells']:
+            nodes += list(self.af.grid.cell_to_nodes(c))
+        for n in edits.get('nodes',[]):
+            nodes.append(n)
+        for j in edits.get('edges',[]):
+            # needed in particular for nonlocal, where nothing
+            # changes except the creation of an edge
+            nodes += list(self.af.grid.edges['nodes'][j])
+        nodes=list(set(nodes))
+        assert len(nodes) # something had to change, right?
+        cost = np.max( [self.af.eval_cost(n)
+                        for n in nodes] )
+        self.child_post[i]=cost
+        return True

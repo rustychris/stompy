@@ -1,3 +1,8 @@
+"""
+Access SFEI ERDDAP copy of USGS SF Bay Water Quality data.
+
+Note that SFEI ERDDAP is not necessarily up to date!
+"""
 import os
 
 import numpy as np
@@ -69,7 +74,12 @@ def cruise_dataset(start,stop):
                  'latitude','longitude',
                  'StationName']
         for fld in spatial:
-            ds4[fld] = ds4[fld].isel(drop=True,date=0,prof_sample=0)
+            # This fails because if a cast has no surface sample, we get
+            # nan values.
+            # ds4[fld] = ds4[fld].isel(drop=True,date=0,prof_sample=0)
+            # Instead, aggregate over the dimension.  min() picks out nan
+            # values.  median can't handle strings.  max() appears ok.
+            ds4[fld] = ds4[fld].max(dim='date').max(dim='prof_sample')
             
         ds4=ds4.set_coords(spatial)
      

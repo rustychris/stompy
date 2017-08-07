@@ -18,9 +18,10 @@ from . import wkb2shp
 from .. import utils
 
 try:
-    if sys.platform == 'darwin':
-        print( "MacOS prepared geometries appear to be buggy.")
-        raise ImportError("Intential abort on OSX")
+    # 2017-07-01: RH - this is most likely not true any more
+    #if sys.platform == 'darwin':
+    #    print( "MacOS prepared geometries appear to be buggy.")
+    #    raise ImportError("Intential abort on OSX")
     from shapely import prepared
 except ImportError:
     prepared = None

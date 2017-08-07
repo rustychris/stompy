@@ -6,7 +6,11 @@
 # development of mimicking transects from profile data
 
 import sys
-from safe_pylab import *
+# from safe_pylab import *
+import matplotlib.pyplot as plt
+import numpy as np
+from numpy import ma
+
 import contour_transect
 from contour_transect import contourf_t,contour_t
 
@@ -49,8 +53,8 @@ class Transect(object):
                 raise Exception("1-D elevation array length doesn't match scalar")
             
             # duplicate for each watercolumn
-            elevations = repeat(elevations[:,newaxis], # 0 index is z, 1 index is xy
-                                [scalar.shape[1]],axis=1 )
+            elevations = np.repeat(elevations[:,None], # 0 index is z, 1 index is xy
+                                   [scalar.shape[1]],axis=1 )
 
         elif elevations.ndim == 2:
             pass
@@ -71,7 +75,7 @@ class Transect(object):
                                                       [ elevations[-1] ]) )
             # but that needs to be adjusted for watercolumns that don't span the whole range of z-levels
             for i in range(scalar.shape[1]):
-                valid = nonzero(~self.scalar.mask[:,i])[0]
+                valid = np.nonzero(~self.scalar.mask[:,i])[0]
                 if len(valid) > 1:
                     # if there is only one valid value, let it stand - there's no good way to dream up
                     # a nonzero dz for it
@@ -89,13 +93,13 @@ class Transect(object):
             
     def compute_distances(self):
         """populate self.dist with distance along transect"""
-        d = sqrt( (diff(self.xy,axis=0)**2).sum(axis=1) )
-        self.dists = concatenate( ([0.0], cumsum( d )) )
+        d = np.sqrt( (np.diff(self.xy,axis=0)**2).sum(axis=1) )
+        self.dists = np.concatenate( ([0.0], np.cumsum( d )) )
 
     def do_contour(self,plotter,*args,**kwargs):
         # D,X = meshgrid(self.center_elevations,self.dists)
         D = self.center_elevations
-        X = repeat(self.dists[newaxis,:],D.shape[0],axis=0)
+        X = np.repeat(self.dists[None,:],D.shape[0],axis=0)
         return plotter(X.T,D.T,self.scalar.T,*args,**kwargs)
             
     def contourf(self,*args,**kwargs):
@@ -111,29 +115,28 @@ class Transect(object):
         return self.do_contour(contour_t,*args,**kwargs)
         
     def plot_surface(self,labelA=True,labelB=True):
-        scatter(self.xy[:,0],self.xy[:,1],60,self.scalar[0,:],linewidth=0)
+        plt.scatter(self.xy[:,0],self.xy[:,1],60,self.scalar[0,:],linewidth=0)
         if labelA:
             if labelA == True:
                 labelA = str(self.dists[0])
-            annotate(labelA, self.xy[0,:] )
+            plt.annotate(labelA, self.xy[0,:] )
         if labelB:
             if labelB == True:
                 labelB = str(self.dists[-1])
-            annotate(labelB, self.xy[-1,:] )
+            plt.annotate(labelB, self.xy[-1,:] )
 
     def scatter(self,**kwargs):
         # D,X = meshgrid(self.elevations,self.dists)
         # WARNING: untested with new elevations code
-        X = repeat(self.dists[newaxis,:],D.shape[0],axis=0)
+        X = np.repeat(self.dists[None,:],D.shape[0],axis=0)
         x = X.ravel()
         y = self.center_elevations.ravel()
-        s = transpose(self.scalar).ravel()
+        s = np.transpose(self.scalar).ravel()
         
-        scatter(x,y,60,s,lw=0)
+        plt.scatter(x,y,60,s,lw=0)
 
     def trim_to_valid(self):
-        
-        valid_z_levels = nonzero( any(~self.scalar.mask,axis=1) )[0]
+        valid_z_levels = np.nonzero( np.any(~self.scalar.mask,axis=1) )[0]
         start_z = valid_z_levels[0]
         end_z = valid_z_levels[-1]
         
@@ -146,9 +149,9 @@ class Transect(object):
         """ Returns a vector of the best guess of the bed elevation
         at each cast
         """
-        elevs = zeros( self.scalar.shape[1], float64 )
+        elevs = np.zeros( self.scalar.shape[1], np.float64 )
         for i in range(len(elevs)):
-            k_bot = nonzero(isfinite(self.scalar[:,i]))[0][-1] # index inclusive!
+            k_bot = np.nonzero(np.isfinite(self.scalar[:,i]))[0][-1] # index inclusive!
             elevs[i] = self.interface_elevations[k_bot+1,i]
         return elevs
 
@@ -156,9 +159,9 @@ class Transect(object):
         """ Returns a vector of the best guess of the surface elevation
         at each cast.  For now, this is basically just 0.
         """
-        elevs = zeros( self.scalar.shape[1], float64 )
+        elevs = np.zeros( self.scalar.shape[1], np.float64 )
         for i in range(len(elevs)):
-            k_top = nonzero( isfinite(self.scalar[:,i] ) )[0][0]
+            k_top = np.nonzero( np.isfinite(self.scalar[:,i] ) )[0][0]
             elevs[i] = self.interface_elevations[k_top,i]
 
         return elevs
@@ -166,10 +169,10 @@ class Transect(object):
     def d_dz(self):
         """ Estimate the vertical gradient at each watercolumn by fitting a line 
         """
-        grads = zeros( self.scalar.shape[1], float64)
+        grads = np.zeros( self.scalar.shape[1], np.float64)
         for i in range(len(grads)):
             valid = ~self.scalar.mask[:,i]
-            [m,b] = polyfit( self.center_elevations[valid,i], self.scalar[valid,i],1 )
+            [m,b] = np.polyfit( self.center_elevations[valid,i], self.scalar[valid,i],1 )
             grads[i] = m
         return grads
 
@@ -190,7 +193,7 @@ class Transect(object):
         # and with the same lateral information as self.xy, but taken as the
         # average of the top dz of the watercolumn at each station.
 
-        vals = zeros( self.scalar.shape[1], float64 )
+        vals = np.zeros( self.scalar.shape[1], np.float64 )
 
         bed_elevations = self.bed_elevations()
         surface_elevations = self.surface_elevations()
@@ -221,29 +224,29 @@ class Transect(object):
                 this_wc = self.center_elevations[:,i]
                 eval_z = this_wc[  (this_wc <= elev_top ) & (this_wc>=elev_bot) ]
                 if len(eval_z) == 0 or eval_z[0] < elev_top:
-                    eval_z = concatenate( ([elev_top],eval_z) )
+                    eval_z = np.concatenate( ([elev_top],eval_z) )
 
                 if len(eval_z) == 0 or eval_z[-1] > elev_bot:
-                    eval_z = concatenate( (eval_z,[elev_bot]) )
+                    eval_z = np.concatenate( (eval_z,[elev_bot]) )
 
                 # interp likes increasing functions
                 eval_z = eval_z[::-1]
 
                 # limit this to the places in th water column that we have real data:
-                valid = nonzero(self.scalar.mask[:,0]==False)[0]
+                valid = np.nonzero(self.scalar.mask[:,0]==False)[0]
                 valid=valid[::-1]
 
                 # default for interp is to extrapolate constant value - just what we want.
-                eval_scal = interp(eval_z, self.center_elevations[valid,i], self.scalar[valid,i] )
+                eval_scal = np.interp(eval_z, self.center_elevations[valid,i], self.scalar[valid,i] )
 
-                vals[i] = trapz(eval_scal,eval_z) / (eval_z[-1] - eval_z[0])
+                vals[i] = np.trapz(eval_scal,eval_z) / (eval_z[-1] - eval_z[0])
             elif self.scalar_location == 'zones':
                 interfaces = self.interface_elevations[:,i].copy()
                 clipped = interfaces.clip(elev_bot,elev_top)
-                dzz = -diff(clipped) # negate since its stored surface to bed
+                dzz = -np.diff(clipped) # negate since its stored surface to bed
                 scal_column = self.scalar[:,i]
-                valid = isfinite(scal_column)
-                vals[i] = sum(scal_column[valid] * dzz[valid]) / sum(dzz[valid])
+                valid = np.isfinite(scal_column)
+                vals[i] = np.sum(scal_column[valid] * dzz[valid]) / np.sum(dzz[valid])
             else:
                 raise Exception("bad scalar location: %s"%self.scalar_location)
         return vals
@@ -265,10 +268,10 @@ class TransectTimeSeries(object):
     def index_transects(self):
         """ Extract a datenum for each transect
         """
-        self.transects_dnums = array( [tran.times[0] for tran in self.transects] )
+        self.transects_dnums = np.array( [tran.times[0] for tran in self.transects] )
         # so that we can run searchsorted directly and get the index of the nearest
         # transect
-        self.threshold_dnums = transect_dnums[:-1] + 0.5*diff(transect_dnums)
+        self.threshold_dnums = transect_dnums[:-1] + 0.5*np.diff(transect_dnums)
 
     def save(self,filename):
         fp = open(filename,"wb")
@@ -283,18 +286,18 @@ class TransectTimeSeries(object):
         return TransectTimeSeries(transects=transects)
 
     def fetch_by_date(self,dnum):
-        ti = searchsorted(self.threshold_dnums,dnum)
+        ti = np.searchsorted(self.threshold_dnums,dnum)
         return self.transects[ti]
         
 def isolate_downcasts(xy,times,z,scalar,z_surface='auto',min_cast_samples=10):
     if z_surface == 'auto':
         z_surface = percentile(z,95) - 0.3 # 0.3m slush factor
-    dz = concatenate( ([0],diff(z)) )
+    dz = np.concatenate( ([0],diff(z)) )
     mask = ((z<z_surface) & (dz<0))
 
     ## divide into individual casts
-    cast_starts = nonzero( mask[1:] & (~mask[:-1]))[0]
-    cast_ends = nonzero( mask[:-1] & (~mask[1:]))[0]
+    cast_starts = np.nonzero( mask[1:] & (~mask[:-1]))[0]
+    cast_ends = np.nonzero( mask[:-1] & (~mask[1:]))[0]
     # remove partials at start and end
     if mask[0]:
         cast_ends = cast_ends[1:]
@@ -320,13 +323,13 @@ def cast_timeseries_to_transect(xy,times,z,scalar,z_surface='auto',min_cast_samp
     min_cast_samples: casts with fewer than this number of samples are discarded
     """
     if z_surface == 'auto':
-        z_surface = percentile(z,95) - 0.3 # 0.3m slush factor
-    dz = concatenate( ([0],diff(z)) )
+        z_surface = np.percentile(z,95) - 0.3 # 0.3m slush factor
+    dz = np.concatenate( ([0],diff(z)) )
     mask = ((z<z_surface) & (dz<0))
 
     ## divide into individual casts
-    cast_starts = nonzero( mask[1:] & (~mask[:-1]))[0]
-    cast_ends = nonzero( mask[:-1] & (~mask[1:]))[0]
+    cast_starts = np.nonzero( mask[1:] & (~mask[:-1]))[0]
+    cast_ends = np.nonzero( mask[:-1] & (~mask[1:]))[0]
     # remove partials at start and end
     if mask[0]:
         cast_ends = cast_ends[1:]
@@ -342,12 +345,12 @@ def cast_timeseries_to_transect(xy,times,z,scalar,z_surface='auto',min_cast_samp
     Ncasts = len(cast_starts)
 
     # repackage scalar and z into MxN array
-    scalar_mn = zeros( (Ncasts,max_cast_samples), scalar.dtype)
-    z_mn = zeros( (Ncasts,max_cast_samples), float64)
+    scalar_mn = np.zeros( (Ncasts,max_cast_samples), scalar.dtype)
+    z_mn = np.zeros( (Ncasts,max_cast_samples), float64)
     scalar_mn[...] = nan
     z_mn[...] = nan
-    times_m = zeros(Ncasts,float64)
-    xy_m = zeros( (Ncasts,2), float64)
+    times_m = np.zeros(Ncasts, np.float64)
+    xy_m = np.zeros( (Ncasts,2), np.float64)
     for c,(s,e)in enumerate(zip(cast_starts,cast_ends)):
             scalar_mn[c,:e-s] = scalar[s:e]
             z_mn[c,:e-s] = z[s:e]

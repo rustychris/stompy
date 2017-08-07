@@ -60,12 +60,19 @@ def coops_json_to_ds(json,params):
     
     for row in data:
         # {'f': '0,0,0,0', 'q': 'v', 's': '0.012', 't': '2010-12-01 00:00', 'v': '0.283'}
-        values.append(float(row['v']))
+        try:
+            values.append(float(row['v']))
+        except ValueError:
+            values.append(np.nan)
         times.append( np.datetime64(row['t']) )
         # for now, ignore flags, verified status.
     ds['time']=( ('time',),times)
     ds[params['product']]=( ('station','time'), [values] )
 
+    bad_count=np.sum( np.isnan(values) )
+    if bad_count:
+        log.warning("%d of %d data values were missing"%(bad_count,len(values)))
+        
     if params['product'] == 'water_level':
         ds[params['product']].attrs['datum'] = params['datum']
         
@@ -92,9 +99,8 @@ def coops_dataset(station,start_date,end_date,products,
                                                      start_date=start_date,
                                                      end_date=end_date,
                                                      days_per_request=days_per_request) )
-    # punt for the moment - no real support for multiple datasets...
-    assert len(products)==1
-    return ds_per_product[0]
+    ds_merged=xr.merge(ds_per_product,join='outer')
+    return ds_merged
 
 def coops_dataset_product(station,product,
                           start_date,end_date,days_per_request=None):
@@ -102,9 +108,9 @@ def coops_dataset_product(station,product,
     Retrieve a single data product from a single station.
     station: string or numeric identifier for COOPS station
     product: string identifying the variable to retrieve.  See all_products at 
-      the top of this file.
+    the top of this file.
     start_date,end_date: period to retrieve, as python datetime, matplotlib datenum,
-      or numpy datetime64.
+    or numpy datetime64.
     days_per_request: batch the requests to fetch smaller chunks at a time.
 
     returns an xarray dataset
