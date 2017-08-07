@@ -1,5 +1,6 @@
 from __future__ import division
 from __future__ import print_function
+
 from future import standard_library
 standard_library.install_aliases()
 from builtins import zip
@@ -7,10 +8,9 @@ from builtins import str
 from builtins import map
 from builtins import range
 from builtins import object
-from past.utils import old_div
-from numpy import *
+# from past.utils import old_div
+
 import numpy as np # to help in transition
-from safe_pylab import *
 
 import glob,types
 
@@ -19,7 +19,6 @@ from numpy import ma
 from numpy.linalg import norm
 
 import tempfile
-import pdb
 
 from scipy import interpolate
 try:
@@ -29,7 +28,6 @@ except ImportError:
 
 from scipy import signal
 from scipy import ndimage
-from array_append import array_append
 
 from scipy.interpolate import RectBivariateSpline
 
@@ -40,6 +38,8 @@ except ImportError:
     from matplotlib import delaunay
 
 from . import wkb2shp
+from ..utils import array_append
+
 
 try:
     from matplotlib import cm
@@ -48,12 +48,15 @@ except ImportError:
     
 # load both types of indices, so we can choose per-field
 # which one to use
-import stree
-# from safe_rtree import Rtree
-from rtree.index import Rtree
+from .gen_spatial_index import PointIndex
 
-xxyy = array([0,0,1,1])
-xyxy = array([0,1,0,1])
+# Older code tried to use multiple implementations
+# import stree
+# from safe_rtree import Rtree
+# from rtree.index import Rtree
+
+xxyy = np.array([0,0,1,1])
+xyxy = np.array([0,1,0,1])
 
 def as_xxyy(p1p2):
     p1p2=np.asarray(p1p2)
@@ -95,14 +98,14 @@ except ImportError:
 import os.path
 
 if gdal:
-    numpy_type_to_gdal = {int8:gdal.GDT_Byte,
-                          float32:gdal.GDT_Float32,
-                          float64:gdal.GDT_Float64,
-                          int16:gdal.GDT_Int16,
-                          int32:gdal.GDT_Int32,
+    numpy_type_to_gdal = {np.int8:gdal.GDT_Byte,
+                          np.float32:gdal.GDT_Float32,
+                          np.float64:gdal.GDT_Float64,
+                          np.int16:gdal.GDT_Int16,
+                          np.int32:gdal.GDT_Int32,
                           int:gdal.GDT_Int32,
-                          uint16:gdal.GDT_UInt16,
-                          uint32:gdal.GDT_UInt32}
+                          np.uint16:gdal.GDT_UInt16,
+                          np.uint32:gdal.GDT_UInt32}
 
 
 
@@ -179,7 +182,7 @@ class Field(object):
                     [b[1],b[2]],
                     [b[1],b[3]] ]
 
-        new_corners = array( [xform.TransformPoint(c[0],c[1])[:2] for c in corners] )
+        new_corners = np.array( [xform.TransformPoint(c[0],c[1])[:2] for c in corners] )
 
         xmin = new_corners[:,0].min()
         xmax = new_corners[:,0].max()
@@ -209,32 +212,32 @@ class Field(object):
         to interpolate in various ways, but by default should do something reasonable
         """
         raise Exception("not implemented")
-        # X = array(X)
-        # return self.constant * ones(X.shape[:-1])
+        # X = np.array(X)
+        # return self.constant * np.ones(X.shape[:-1])
 
     def value_on_edge(self,e,samples=5,reducer=np.nanmean):
         """ Return the value averaged along an edge - the generic implementation
         just takes 5 samples evenly spaced along the line, using value()
         """
-        x=linspace(e[0,0],e[1,0],samples)
-        y=linspace(e[0,1],e[1,1],samples)
-        X = array([x,y]).transpose()
+        x=np.linspace(e[0,0],e[1,0],samples)
+        y=np.linspace(e[0,1],e[1,1],samples)
+        X = np.array([x,y]).transpose()
         return reducer(self.value(X))
 
     def __call__(self,X):
         return self.value(X)
 
     def __mul__(self,other):
-        return BinopField(self,multiply,other)
+        return BinopField(self,np.multiply,other)
 
     def __rmul__(self,other):
-        return BinopField(other,multiply,self)
+        return BinopField(other,np.multiply,self)
 
     def __add__(self,other):
-        return BinopField(self,add,other)
+        return BinopField(self,np.add,other)
     
     def __sub__(self,other):
-        return BinopField(self,subtract,other)
+        return BinopField(self,np.subtract,other)
 
     def to_grid(self,nx=None,ny=None,interp='linear',bounds=None,dx=None,dy=None,valuator='value'):
         """ bounds is a 2x2 [[minx,miny],[maxx,maxy]] array, and is *required* for BlenderFields
@@ -259,12 +262,12 @@ class Field(object):
         if nx is None:
             nx=1+int(np.round((xmax-xmin)/dx))
             ny=1+int(np.round((ymax-ymin)/dy))
-        x = linspace( xmin,xmax, nx )
-        y = linspace( ymin,ymax, ny )
+        x = np.linspace( xmin,xmax, nx )
+        y = np.linspace( ymin,ymax, ny )
 
-        xx,yy = meshgrid(x,y)
+        xx,yy = np.meshgrid(x,y)
 
-        X = concatenate( (xx[...,newaxis], yy[...,newaxis]), axis=2)
+        X = np.concatenate( (xx[...,None], yy[...,None]), axis=2)
 
         if valuator=='value':
             newF = self.value(X)
@@ -274,11 +277,6 @@ class Field(object):
             
         return SimpleGrid(extents=[xmin,xmax,ymin,ymax],
                           F=newF,projection=self.projection())
-
-    
-        
-        
-                   
 
 
 # Different internal representations:
@@ -384,9 +382,10 @@ class XYZField(Field):
     def interpolate(self,X,interpolation=None):
         if interpolation is None:
             interpolation=self.default_interpolation
-        # X should be a (N,2) vectors
+        # X should be a (N,2) vectors - make it so
+        X=np.asanyarray(X).reshape([-1,2])
 
-        newF = zeros( X.shape[0], float64 )
+        newF = np.zeros( X.shape[0], np.float64 )
 
         if interpolation=='nearest':
             for i in range(len(X)):
@@ -405,12 +404,17 @@ class XYZField(Field):
             # print "why aren't you using linear?!"
         elif interpolation=='linear':
             interper = self.lin_interper()
-            for i in range(len(X)):
-                if i>0 and i%100000==0:
-                    print("%d/%d"%(i,len(X)))
-                # remember, the slices are y, x
-                vals = interper[X[i,1]:X[i,1]:2j,X[i,0]:X[i,0]:2j]
-                newF[i] = vals[0,0]
+            if 0:
+                # old calling convention
+                for i in range(len(X)):
+                    if i>0 and i%100000==0:
+                        print("%d/%d"%(i,len(X)))
+                    # remember, the slices are y, x
+                    vals = interper[X[i,1]:X[i,1]:2j,X[i,0]:X[i,0]:2j]
+
+                    newF[i] = vals[0,0]
+            else:
+                newF[:] = interper(X[:,0],X[:,1])
         #elif interpolation=='delaunay':
         #    if self._voronoi is None:
         #        self._voronoi = self.calc_voronoi()
@@ -452,85 +456,45 @@ class XYZField(Field):
             raise Exception("Bad value for interpolation method %s"%interpolation)
         return newF
 
-    def build_index(self,index_type='rtree'):
-        # print "Building spatial index"
-        if index_type == 'stree':
-            self.index = stree.STree(self.X)
-            self.index_type = 'stree'
-        else:
-            self.index_type = 'rtree'
-            if self.X.shape[0] > 0:
-                # the easy way:
-                # tuples = [(i,self.X[i,xxyy],None) for i in range(self.X.shape[0])]
+    def build_index(self,index_type=None):
+        if index_type is not None:
+            log.warning("Ignoring request for specific index type")
 
-                # but this way we get some feedback
-                def gimme():
-                    i = gimme.i
-                    if i < self.X.shape[0]:
-                        if i %10000 == 0 and i>0:
-                            print("building index: %d  -  %.2f%%"%(i, 100.0 * i / self.X.shape[0] ))
-                        gimme.i = i+1
-                        return (i,self.X[i,xxyy],None)
-                    else:
-                        return None
-                gimme.i = 0
-
-                tuples = iter(gimme,None)
-
-                # If we can build the index on disk, go for it...
-                index_fname = self.index_fname()
-                if index_fname is not None:
-                    # See if the index is as new as the .bin file
-
-                    index_exists = os.path.exists(index_fname+".dat")
-                    if index_exists:
-                        index_mtime = os.stat(index_fname+".dat").st_mtime
-                        bin_mtime = os.stat(self.from_file).st_mtime
-
-                        if index_mtime < bin_mtime:
-                            print("Index is too old")
-                            os.unlink(index_fname+".dat")
-                            os.unlink(index_fname+".idx")
-                            index_exists = False
-
-                    if not index_exists:
-                        print("trying to build on-disk index in %s"%index_fname)
-                        tmp_index = Rtree(index_fname,tuples,interleaved=False)
-                        # weird, but we have to delete it to actually force the
-                        # data to be written out
-                        del tmp_index
-
-                    # Then open it again for read
-                    self.index = Rtree(index_fname,interleaved=False)
+        self.index_type = 'rtree'
+        if self.X.shape[0] > 0:
+            # this way we get some feedback
+            def gimme():
+                i = gimme.i
+                if i < self.X.shape[0]:
+                    if i %10000 == 0 and i>0:
+                        print("building index: %d  -  %.2f%%"%(i, 100.0 * i / self.X.shape[0] ))
+                    gimme.i = i+1
+                    return (i,self.X[i,xxyy],None)
                 else:
-                    #print "just building Rtree index in memory"
-                    self.index = Rtree(tuples,interleaved=False)
-            else:
-                self.index = Rtree(interleaved=False)
+                    return None
+            gimme.i = 0
+
+            tuples = iter(gimme,None)
+
+            #print "just building Rtree index in memory"
+            self.index = PointIndex(tuples,interleaved=False)
+        else:
+            self.index = PointIndex(interleaved=False)
                 
         #print "Done"
 
-    def index_fname(self):
-        """ Returns either the filename to hand off for storing an index
-        on disk, or None if an index is not desired
-        """
-        if self.from_file is not None:
-            return self.from_file + '.index'
-        else:
-            return None
-        
     def within_r(self,p,r):
         if self.index:
             if self.index_type == 'stree':
                 subset = self.index.within_ri(p,r)
             else: # rtree
                 # first query a rectangle
-                rect = array( [p[0]-r,p[0]+r,p[1]-r,p[1]+r] )
+                rect = np.array( [p[0]-r,p[0]+r,p[1]-r,p[1]+r] )
                 
                 subset = self.index.intersection( rect )
                 if isinstance(subset, types.GeneratorType):
                     subset = list(subset)
-                subset = array( subset )
+                subset = np.array( subset )
                 
                 if len(subset) > 0:
                     dsqr = ((self.X[subset]-p)**2).sum(axis=1)
@@ -544,7 +508,7 @@ class XYZField(Field):
 
     def inv_dist_interp(self,p,
                         min_radius=None,min_n_closest=None,
-                        clip_min=-inf,clip_max=inf,
+                        clip_min=-np.inf,clip_max=np.inf,
                         default=None):
         """ inverse-distance weighted interpolation
         This is a bit funky because it tries to be smart about interpolation
@@ -570,7 +534,7 @@ class XYZField(Field):
             # this is slow when we have no starting radius
             nearby = self.nearest(p,min_n_closest)
 
-        dists = sqrt( ((p-self.X[nearby])**2).sum(axis=1) )
+        dists = np.sqrt( ((p-self.X[nearby])**2).sum(axis=1) )
 
         # may have to trim back some of the extras:
         if r is not None and r > min_radius:
@@ -587,7 +551,7 @@ class XYZField(Field):
         weights = 1.0/dists
 
         vals = self.F[nearby]
-        vals = clip(vals,clip_min,clip_max)
+        vals = np.clip(vals,clip_min,clip_max)
 
         val = (vals * weights).sum() / weights.sum()
         return val
@@ -610,7 +574,7 @@ class XYZField(Field):
                 if count == 1:
                     return hits[0]
                 else:
-                    return array(hits)
+                    return np.array(hits)
         else:
             # straight up, it takes 50ms per query for a small
             # number of points
@@ -651,12 +615,12 @@ class XYZField(Field):
         # recalculate dx to be accurate over the whole range:
         dx = (xmax - xmin) / (ncols-1)
         dy = (ymax - ymin) / (nrows-1)
-        delta = array([dx,dy])
+        delta = np.array([dx,dy])
         
-        newF = nan*ones( (nrows,ncols), float64 )
+        newF = np.nan*np.ones( (nrows,ncols), np.float64 )
 
-        new_indices = (self.X - array([xmin,ymin])) / delta + 0.49
-        new_indices = new_indices.astype(int32)
+        new_indices = (self.X - np.array([xmin,ymin])) / delta + 0.49
+        new_indices = new_indices.astype(np.int32)
         new_indices = new_indices[:,::-1]
 
         newF[new_indices[:,0],new_indices[:,1]] = self.F
@@ -749,8 +713,8 @@ class XYZField(Field):
                 # fudge it and take the first one...
                 my_points.append(p[0])
                 new_F.append( op(self.F[p[0]],other.F[i] ) )
-        my_points = array(my_points)
-        new_F = array(new_F)
+        my_points = np.array(my_points)
+        new_F = np.array(new_F)
         
         new_X = self.X[ my_points ]
 
@@ -766,7 +730,7 @@ class XYZField(Field):
             self.build_index()
 
         if prep:
-            chooser = zeros(len(self.F),bool8)
+            chooser = np.zeros(len(self.F),bool8)
             
             prep_poly = prep(poly)
             for i in range(len(self.F)):
@@ -778,7 +742,7 @@ class XYZField(Field):
         if len(chooser) == 0:
             print("Clip to polygon got no points!")
             print("Returning empty field")
-            return XYZField( zeros((0,2),float64), zeros( (0,1), float64) )
+            return XYZField( np.zeros((0,2),np.float64), np.zeros( (0,1), np.float64) )
         else:
             return XYZField( self.X[chooser,:], self.F[chooser] )
 
@@ -812,7 +776,7 @@ class XYZField(Field):
         print("Finished writing")
         thr.join()
 
-        pnts = array(pnts)
+        pnts = np.array(pnts)
 
         if pnts.shape != self.X.shape:
             raise Exception('Size of converted points is %s, not %s'%( pnts.shape, self.X.shape ) )
@@ -850,8 +814,8 @@ class XYZField(Field):
             geo = feat.GetGeometryRef()
             
             X.append( geo.GetPoint_2D() )
-        X = array( X )
-        F = array( F )
+        X = np.array( X )
+        F = np.array( F )
         return XYZField(X=X,F=F,from_file=shp_name)
 
             
@@ -904,6 +868,9 @@ class XYZField(Field):
         
     @staticmethod
     def read(fname):
+        """
+        Read XYZField from a pickle file
+        """
         fp = file(fname,'rb')
         X,F = pickle.load( fp )
         fp.close()
@@ -965,8 +932,8 @@ class XYZField(Field):
                 coords = self.X[i,xxyy]
                 self.index.delete(i, coords )
             
-        self.X[i,0] = nan
-        self.F[i] = nan
+        self.X[i,0] = np.nan
+        self.F[i] = np.nan
         self.deleted_point(i)
 
     
@@ -1007,11 +974,11 @@ class XYZField(Field):
         X = np.asanyarray(X)
         orig_shape = X.shape
 
-        X = reshape(X,(-1,2))
+        X = X.reshape((-1,2))
 
         newF = self.interpolate(X)
         
-        newF = reshape( newF, orig_shape[:-1])
+        newF = newF.reshape(orig_shape[:-1])
         if newF.ndim == 0:
             return float(newF)
         else:
@@ -1019,9 +986,9 @@ class XYZField(Field):
 
     def plot_on_boundary(self,bdry):
         # bdry is an array of vertices (presumbly on the boundary)
-        l = zeros( len(bdry), float64 )
+        l = np.zeros( len(bdry), np.float64 )
 
-        ax = gca()
+        ax = plt.gca()
         for i in range(len(bdry)):
             l[i] = self.value( bdry[i] )
 
@@ -1029,14 +996,143 @@ class XYZField(Field):
             ax.add_patch(cir)
 
 
+class PyApolloniusField(XYZField):
+    """ 
+    Takes a set of vertices and the allowed scale at each, and
+    extrapolates across the plane based on a uniform telescoping rate
+    """
+
+    # But it's okay if redundant factor is None
+
+    def __init__(self,X=None,F=None,r=1.1,redundant_factor=None):
+        """r: telescoping rate
+
+        redundant_factor: if a point being inserted has a scale which
+        is larger than the redundant_factor times the existing scale
+        at its location, then don't insert it.  So typically it would
+        be something like 0.95, which says that if the existing scale
+        at X is 100, and this point has a scale of 96, then we don't
+        insert.
+        """
+        if X is None:
+            assert F is None
+            X=np.zeros( (0,2), np.float64)
+            F=np.zeros( 0, np.float64)
+            
+        super(PyApolloniusField,self).__init__(X,F)
+        self.r = r
+        self.redundant_factor = redundant_factor
+        self.offset=np.array([0,0]) # not using an offset for now.
+        
+        # self.W = -(self.F / (self.r-1.0) ) # weights
+
+    def insert(self,xy,f):
+        """ directly insert a point into the Apollonius graph structure
+        note that this may be used to incrementally construct the graph,
+        if the caller doesn't care about the accounting related to the
+        field -
+        returns False if redundant checks are enabled and the point was
+        deemed redundant.
+        """
+        # w = -(f / (self.r-1.0) ) # the weight
+
+        self.X=array_append(self.X,xy)
+        self.F=array_append(self.F,f)
+        # self.W=array_append(self.W, -(f / (self.r-1.0) ))
+        
+        return True
+
+    def value(self,X):
+        return self.interpolate(X)
+    
+    def interpolate(self,X):
+        X=np.asanyarray(X)
+        newF = np.zeros( X.shape[:-1], np.float64 )
+        
+        if len(self.F)==0:
+            newF[:]=np.nan
+            return newF
+
+        # need to compute all pairs of distances:
+        # self.X ~ [N,2]
+        # X ~ [L,M,...,2]
+
+        # some manual index wrangling to get an outside-join-multiply
+        idx=(slice(None),) + tuple([None]*(X.ndim-1))
+
+        dx=X[None,...,0] - self.X[ idx + (0,)]
+        dy=X[None,...,1] - self.X[ idx + (1,)]
+        dist = np.sqrt(dx**2 + dy**2)
+
+        f = self.F[idx] + dist*(self.r-1.0)
+        
+        newF[:] = f.min(axis=0)
+        return newF
+
+    def to_grid(self,*a,**k):
+        # XYZField implementation is no good to us.
+        return Field.to_grid(self,*a,**k)
+
+    @staticmethod 
+    def read_shps(shp_names,value_field='value',r=1.1,redundant_factor=None):
+        """ Read points or lines from a list of shapefiles, and construct
+        an apollonius graph from the combined set of features.  Lines will be
+        downsampled at the scale of the line.
+        """
+        lines=[]
+        values=[]
+
+        for shp_name in shp_names:
+            print("Reading %s"%shp_name)
+
+            layer=wkb2shp.shp2geom(shp_name)
+            
+            for i in range(len(layer)):
+                geo = layer['geom'][i]
+
+                lines.append(np.array(geo.coords))
+                values.append(layer[value_field][i])
+        return PyApolloniusField.from_polylines(lines,values,
+                                                r=r,redundant_factor=redundant_factor)
+
+    @staticmethod
+    def from_polylines(lines,values,r=1.1,redundant_factor=None):
+        X = []
+        F = []
+        edges = []
+
+        for coords,value in zip(lines,values):
+            if len(coords) > 1: # it's a line - upsample
+                # need to say closed_ring=0 so it doesn't try to interpolate between
+                # the very last point back to the first
+                coords = upsample_linearring(coords,value,closed_ring=0)
+            if all(coords[-1]==coords[0]):
+                coords = coords[:-1]
+
+            # remove duplicates:
+            mask = np.all(coords[0:-1,:] == coords[1:,:],axis=1)
+            if np.sum(mask)>0:
+                print("WARNING: removing duplicate points in shapefile")
+                print(coords[mask])
+                coords = coords[~mask]
+
+            X.append( coords )
+            F.append( value*np.ones(len(coords)) )
+
+        X = np.concatenate( X )
+        F = np.concatenate( F )
+        return PyApolloniusField(X=X,F=F,r=r,redundant_factor=redundant_factor)
+
 has_apollonius=False
 try:
     import CGAL
     # And does it have Apollonius graph bindings?
     cgal_bindings = None
     try:
-        from CGAL import Point_2,Site_2
-        import CGAL.Apollonius_Graph_2 as Apollonius_Graph_2
+        # from CGAL import Point_2,Site_2
+        from CGAL.CGAL_Kernel import Point_2# , Site_2
+
+        import CGAL.CGAL_Apollonius_Graph_2 as Apollonius_Graph_2
         cgal_bindings = 'old'
     except ImportError:
         pass
@@ -1105,14 +1201,14 @@ try:
             if len(self.X) > 0:
                 self.offset = self.X.mean(axis=0)
             else:
-                self.offset = zeros(2)
+                self.offset = np.zeros(2)
 
             print("Constructing Apollonius Graph.  quantize=%s"%quantize)
             self.ag = ag = Apollonius_Graph_2()
             self.last_inserted = None
 
             # if self.redundant_factor is not None:
-            self.redundant = zeros(len(self.X),bool8)
+            self.redundant = np.zeros(len(self.X),bool8)
                 
             for i in range(len(self.X)):
                 if i % 100 == 0:
@@ -1173,7 +1269,7 @@ try:
             skip_redundant option, and called inside interpolate()
             """
             if self.ag.number_of_vertices() == 0:
-                return nan
+                return np.nan
             
             if self.locality_on_query and self.last_query_vertex is not None:
                 # exploit query locality
@@ -1187,14 +1283,14 @@ try:
                 v = self.ag.nearest_neighbor(pnt)
             self.last_query_vertex = v
             site = v.site()
-            dist = sqrt( (pnt.x() - site.point().x())**2 +
-                         (pnt.y() - site.point().y())**2   )
+            dist = np.sqrt( (pnt.x() - site.point().x())**2 +
+                            (pnt.y() - site.point().y())**2   )
             # before this didn't have the factor dividing site.weight()
             f = -( site.weight() * (self.r-1.0) ) + dist*(self.r-1.0)
             return f
 
         def interpolate(self,X):
-            newF = zeros( X.shape[0], float64 )
+            newF = np.zeros( X.shape[0], np.float64 )
 
             for i in range(len(X)):
                 x,y = X[i] - self.offset
@@ -1217,10 +1313,10 @@ try:
                 print("NOTICE: Apollonius graph was asked to_grid using '%s'"%interp)
                 return XYZField.to_grid(self,nx,ny,interp)
             else:
-                x = linspace(extents[0],extents[1],nx)
-                y = linspace(extents[2],extents[3],ny)
+                x = np.linspace(extents[0],extents[1],nx)
+                y = np.linspace(extents[2],extents[3],ny)
 
-                griddedF = zeros( (len(y),len(x)), float64 )
+                griddedF = np.zeros( (len(y),len(x)), np.float64 )
 
                 for xi in range(len(x)):
                     for yi in range(len(y)):
@@ -1251,7 +1347,7 @@ try:
 
                     geo = wkb.loads(feat.GetGeometryRef().ExportToWkb())
 
-                    lines.append(array(geo.coords))
+                    lines.append(np.array(geo.coords))
                     values.append(feat.GetField(value_field))
             return ApolloniusField.from_polylines(lines,values,
                                                   r=r,redundant_factor=redundant_factor)
@@ -1278,7 +1374,7 @@ try:
                     coords = coords[~mask]
 
                 X.append( coords )
-                F.append( value*ones(len(coords)) )
+                F.append( value*np.ones(len(coords)) )
                 
             X = concatenate( X )
             F = concatenate( F )
@@ -1288,7 +1384,13 @@ except ImportError:
     #print "CGAL unavailable."
     pass
 except AttributeError:
-    print("You have CGAL, but no Apollonius Graph bindings - auto-telescoping won't work")
+    # print("You have CGAL, but no Apollonius Graph bindings - auto-telescoping won't work")
+    pass
+
+if not has_apollonius:
+    has_apollonius=True
+    log.info("Falling back to slow python implementation of ApolloniusField")
+    ApolloniusField=PyApolloniusField
 
 class ConstrainedScaleField(XYZField):
     """ Like XYZField, but when new values are inserted makes sure that
@@ -1307,8 +1409,8 @@ class ConstrainedScaleField(XYZField):
         t = self.tri()
         edges = t.edge_db
 
-        Ls = sqrt( (t.x[edges[:,0]] - t.x[edges[:,1]])**2 +
-                   (t.y[edges[:,0]] - t.y[edges[:,1]])**2  )
+        Ls = np.sqrt( (t.x[edges[:,0]] - t.x[edges[:,1]])**2 +
+                      (t.y[edges[:,0]] - t.y[edges[:,1]])**2  )
         dys = self.F[edges[:,0]] - self.F[edges[:,1]]
         
         slopes = abs(dys / Ls)
@@ -1322,7 +1424,7 @@ class ConstrainedScaleField(XYZField):
                 if self.F[a] > self.F[b]:
                     a,b = b,a
                 
-                L = sqrt( (t.x[a]-t.x[b])**2 + (t.y[a]-t.y[b])**2 )
+                L = np.sqrt( (t.x[a]-t.x[b])**2 + (t.y[a]-t.y[b])**2 )
                 allowed = self.F[a] + L*(self.r - 1.0)
                 print("%d:%f --[L=%g]-- %d:%f > %f"%(a,self.F[a],
                                                      L,
@@ -1371,7 +1473,7 @@ class ConstrainedScaleField(XYZField):
         print("-----------Adding point: %s %g=>%g-----------"%(pnt,old_value,value))
         
         j = self.nearest(pnt)
-        dist = sqrt( sum((self.X[j] - pnt)**2) )
+        dist = np.sqrt( sum((self.X[j] - pnt)**2) )
         if dist < 0.5*value:
             i = j
             print("add_point redirected, b/c a nearby point already exists.")
@@ -1411,7 +1513,7 @@ class ConstrainedScaleField(XYZField):
             if a==i:
                 continue
             
-            L= sqrt( (t.x[a] - t.x[b])**2 + (t.y[a] - t.y[b])**2 )
+            L= np.sqrt( (t.x[a] - t.x[b])**2 + (t.y[a] - t.y[b])**2 )
 
             A = self.F[a]
             B = self.F[b]
@@ -1451,8 +1553,8 @@ class ConstrainedScaleField(XYZField):
                 # ultimately we just care whether b is valid w.r.t orig_i
                 
                 # print "Checking on edge ",a,b
-                L = sqrt( (t.x[orig_i] - t.x[b])**2 + (t.y[orig_i] - t.y[b])**2 )
-                La    = sqrt( (t.x[a] - t.x[b])**2 + (t.y[a] - t.y[b])**2 )
+                L  = np.sqrt( (t.x[orig_i] - t.x[b])**2 + (t.y[orig_i] - t.y[b])**2 )
+                La = np.sqrt( (t.x[a] - t.x[b])**2 + (t.y[a] - t.y[b])**2 )
                 # print "    Length is ",L
 
                 ORIG = self.F[orig_i]
@@ -1482,7 +1584,7 @@ class ConstrainedScaleField(XYZField):
                         # another 0.99 just to be safe against rounding
                         # 
                         # New approach: use the distance to original point
-                        newL = sqrt( (t.x[orig_i] - new_point[0])**2 + (t.y[orig_i] - new_point[1])**2 )
+                        newL = np.sqrt( (t.x[orig_i] - new_point[0])**2 + (t.y[orig_i] - new_point[1])**2 )
 
                         # constrained by valid value based on distance from starting point as well as
                         # the old value 
@@ -1516,8 +1618,8 @@ class ConstrainedScaleField(XYZField):
             t = self.tri()
             edges = t.edge_db
 
-            Ls = sqrt( (t.x[edges[:,0]] - t.x[edges[:,1]])**2 +
-                       (t.y[edges[:,0]] - t.y[edges[:,1]])**2  )
+            Ls = np.sqrt( (t.x[edges[:,0]] - t.x[edges[:,1]])**2 +
+                          (t.y[edges[:,0]] - t.y[edges[:,1]])**2  )
             dys = self.F[edges[:,0]] - self.F[edges[:,1]]
 
             slopes = (dys / Ls)
@@ -1530,7 +1632,7 @@ class ConstrainedScaleField(XYZField):
                 break
             print("Removing %d of %d"%(len(bad_nodes),len(self.F)))
 
-            to_keep = ones(len(self.F),bool)
+            to_keep = np.ones(len(self.F),bool)
             to_keep[bad_nodes] = False
 
             self.F = self.F[to_keep]
@@ -1550,7 +1652,7 @@ class XYZText(XYZField):
         self.filename = fname
         fp = file(fname,'rt')
 
-        data = array([list(map(float,line.split(sep))) for line in fp])
+        data = np.array([list(map(float,line.split(sep))) for line in fp])
         fp.close()
 
         XYZField.__init__(self,data[:,:2],data[:,2],projection=projection)
@@ -1565,7 +1667,7 @@ class ConstantField(Field):
         
     def value(self,X):
         X=np.asanyarray(X)
-        return self.c * ones(X.shape[:-1])
+        return self.c * np.ones(X.shape[:-1])
         
 
 class BinopField(Field):
@@ -1623,7 +1725,7 @@ class ZLevelField(Field3D):
         self.F = ma.masked_invalid(F)
 
         # 2-D index:
-        self.surf_field = XYZField(self.X,arange(len(self.X)))
+        self.surf_field = XYZField(self.X,np.arange(len(self.X)))
         self.surf_field.build_index()
 
     def shift_z(self,delta_z):
@@ -1660,7 +1762,7 @@ class ZLevelField(Field3D):
 
     _cached = None # [(x,y),idxs]
     def extrapolate(self,x,y,z):
-        pnt = array([x,y])
+        pnt = np.array([x,y])
         if self._cached is not None  and (x,y) == self._cached[0]:
             idxs = self._cached[1]
         else:
@@ -1712,7 +1814,7 @@ class QuadrilateralGrid(Field):
     def to_xyz(self):
         xyz = self.xyz()
 
-        good = ~isnan(xyz[:,2])
+        good = ~np.isnan(xyz[:,2])
 
         return XYZField( xyz[good,:2], xyz[good,2], projection = self.projection() )
 
@@ -1730,7 +1832,7 @@ class CurvilinearGrid(QuadrilateralGrid):
     def xyz(self):
         """ unravel to a linear sequence of points
         """
-        xyz = zeros( (self.F.shape[0] * self.F.shape[1], 3), float64 )
+        xyz = np.zeros( (self.F.shape[0] * self.F.shape[1], 3), np.float64 )
         
         xyz[:,:2] = self.X.ravel()
         xyz[:,2] = self.F.ravel()
@@ -1831,7 +1933,7 @@ class SimpleGrid(QuadrilateralGrid):
         import pylab 
         dx,dy = self.delta()
 
-        maskedF = ma.array(self.F,mask=isnan(self.F))
+        maskedF = ma.array(self.F,mask=np.isnan(self.F))
 
         if 'ax' in kwargs:
             kwargs = dict(kwargs)
@@ -1847,8 +1949,8 @@ class SimpleGrid(QuadrilateralGrid):
                    **kwargs)
 
     def xy(self):
-        x = linspace(self.extents[0],self.extents[1],self.F.shape[1])
-        y = linspace(self.extents[2],self.extents[3],self.F.shape[0])
+        x = np.linspace(self.extents[0],self.extents[1],self.F.shape[1])
+        y = np.linspace(self.extents[2],self.extents[3],self.F.shape[0])
         return x,y
     
     def XY(self):
@@ -1860,7 +1962,7 @@ class SimpleGrid(QuadrilateralGrid):
         """
         X,Y = self.XY()
 
-        xyz = zeros( (self.F.shape[0] * self.F.shape[1], 3), float64 )
+        xyz = np.zeros( (self.F.shape[0] * self.F.shape[1], 3), np.float64 )
         
         xyz[:,0] = X.ravel()
         xyz[:,1] = Y.ravel()
@@ -1875,17 +1977,17 @@ class SimpleGrid(QuadrilateralGrid):
         x,y = self.xy()
 
         if hasattr(self.F,'mask') and self.F.mask is not False:
-            self.F._data[ self.F.mask ] = nan
+            self.F._data[ self.F.mask ] = np.nan
             self.F = self.F._data
 
-        if self.F.dtype in (int16,int32):
+        if self.F.dtype in (np.int16,np.int32):
             good = (self.F != self.int_nan)
         else:
-            good = ~isnan(self.F)
+            good = ~np.isnan(self.F)
 
         i,j = where(good)
 
-        X = zeros( (len(i),2), float64 )
+        X = np.zeros( (len(i),2), np.float64 )
         X[:,0] = x[j]
         X[:,1] = y[i]
               
@@ -1896,7 +1998,7 @@ class SimpleGrid(QuadrilateralGrid):
     def to_curvilinear(self):
         X,Y = self.XY()
         
-        XY = concatenate( ( X[:,:,newaxis], Y[:,:,newaxis]), axis=2)
+        XY = concatenate( ( X[:,:,None], Y[:,:,None]), axis=2)
 
         cgrid = CurvilinearGrid(XY,self.F)
         return cgrid
@@ -1915,11 +2017,11 @@ class SimpleGrid(QuadrilateralGrid):
             xmin,xmax,ymin,ymax = rect
 
 
-            min_col = int( max( floor( (xmin - self.extents[0]) / dx ), 0) )
-            max_col = int( min( ceil( (xmax - self.extents[0]) / dx ), self.F.shape[1]-1) )
+            min_col = int( max( np.floor( (xmin - self.extents[0]) / dx ), 0) )
+            max_col = int( min( np.ceil( (xmax - self.extents[0]) / dx ), self.F.shape[1]-1) )
 
-            min_row = int( max( floor( (ymin - self.extents[2]) / dy ), 0) )
-            max_row = int( min( ceil( (ymax - self.extents[2]) / dy ), self.F.shape[0]-1) )
+            min_row = int( max( np.floor( (ymin - self.extents[2]) / dy ), 0) )
+            max_row = int( min( np.ceil( (ymax - self.extents[2]) / dy ), self.F.shape[0]-1) )
 
             # print(min_row, max_row, min_col, max_col)
             return self.crop(indexes=[min_row,max_row,min_col,max_col])
@@ -1938,7 +2040,7 @@ class SimpleGrid(QuadrilateralGrid):
             raise Exception("must specify one of rect [default] or indexes")
 
     def bounds(self):
-        return array(self.extents)
+        return np.array(self.extents)
 
     def interpolate(self,X,interpolation=None,fallback=True):
         """ interpolation can be nearest or linear
@@ -1953,16 +2055,16 @@ class SimpleGrid(QuadrilateralGrid):
             # 0.49 will give us the nearest cell center.
             # recently changed X[:,1] to X[...,1] - hopefully will accomodate
             # arbitrary shapes for X
-            rows = (0.49 + (X[...,1] - ymin) / dy).astype(int32)
-            cols = (0.49 + (X[...,0] - xmin) / dx).astype(int32)
+            rows = (0.49 + (X[...,1] - ymin) / dy).astype(np.int32)
+            cols = (0.49 + (X[...,0] - xmin) / dx).astype(np.int32)
             bad = (rows<0) | (rows>=self.F.shape[0]) | (cols<0) | (cols>=self.F.shape[1])
         elif interpolation == 'linear':
             # for linear, we choose the floor() of both
             row_alpha = ((X[...,1] - ymin) / dy)
             col_alpha = ((X[...,0] - xmin) / dx)
 
-            rows = row_alpha.astype(int32)
-            cols = col_alpha.astype(int32)
+            rows = row_alpha.astype(np.int32)
+            cols = col_alpha.astype(np.int32)
 
             row_alpha -= rows # [0,1]
             col_alpha -= cols # [0,1]
@@ -1987,14 +2089,14 @@ class SimpleGrid(QuadrilateralGrid):
                      + self.F[rows+1,cols+1]*row_alpha      *col_alpha
 
         # It may have been an int field, and now we need to go to float and set some nans:
-        if result.dtype in (int,int8,int16,int32,int64):
+        if result.dtype in (int,int8,int16,np.int32,int64):
             print("Converting from %s to float"%result.dtype)
-            result = result.astype(float64)
-            result[ result==self.int_nan ] = nan
+            result = result.astype(np.float64)
+            result[ result==self.int_nan ] = np.nan
         if result.ndim>0:
-            result[bad] = nan
+            result[bad] = np.nan
         elif bad:
-            result = nan
+            result = np.nan
 
         # let linear interpolation fall back to nearest at the borders:
         if interpolation=='linear' and fallback and any(bad):
@@ -2012,15 +2114,15 @@ class SimpleGrid(QuadrilateralGrid):
         if samples is None:
             res = min(self.dx,self.dy)
             l = norm(e[1]-e[0])
-            samples = int(ceil(l/res))
+            samples = int(np.ceil(l/res))
 
         return Field.value_on_edge(self,e,samples=samples,**kw)
 
     def upsample(self,factor=2):
-        x = linspace(self.extents[0],self.extents[1],1+factor*(self.F.shape[1]-1))
-        y = linspace(self.extents[2],self.extents[3],1+factor*(self.F.shape[0]-1))
+        x = np.linspace(self.extents[0],self.extents[1],1+factor*(self.F.shape[1]-1))
+        y = np.linspace(self.extents[2],self.extents[3],1+factor*(self.F.shape[0]-1))
         
-        new_F = zeros( (len(y),len(x)) , float64 )
+        new_F = np.zeros( (len(y),len(x)) , np.float64 )
 
         for row in range(len(y)):
             for col in range(len(x)):
@@ -2040,7 +2142,7 @@ class SimpleGrid(QuadrilateralGrid):
 
         # use a really naive downsampling for now:
         if method=='decimate':
-            new_F = array(self.F[::factor,::factor])
+            new_F = np.array(self.F[::factor,::factor])
         elif method=='ma_mean':
             # if not isinstance(self.F,np.ma.core.MaskedArray):
             F=self.F
@@ -2075,7 +2177,7 @@ class SimpleGrid(QuadrilateralGrid):
         
         # Find pixels missing one or more neighbors:
         valid = isfinite(self.F)
-        all_valid_nbrs = ones(valid.shape,'bool')
+        all_valid_nbrs = np.ones(valid.shape,'bool')
         all_valid_nbrs[:-1,:] &= valid[1:,:] # to the west
         all_valid_nbrs[1:,:] &=  valid[:-1,:] # to east
         all_valid_nbrs[:,:-1] &= valid[:,1:] # to north
@@ -2085,8 +2187,8 @@ class SimpleGrid(QuadrilateralGrid):
 
         i,j = nonzero(missing_a_nbr)
 
-        x = arange(self.F.shape[0])
-        y = arange(self.F.shape[1])
+        x = np.arange(self.F.shape[0])
+        y = np.arange(self.F.shape[1])
 
         values = self.F[i,j]
 
@@ -2205,7 +2307,7 @@ class SimpleGrid(QuadrilateralGrid):
         new_raster=GdalGrid(target_ds)
         return new_raster.F>0
         
-    def mask_outside(self,poly,value=nan,invert=False,straddle=None):
+    def mask_outside(self,poly,value=np.nan,invert=False,straddle=None):
         """ Set the values that fall outside the given polygon to the
         given value.  Existing nan values are untouched.
 
@@ -2218,7 +2320,7 @@ class SimpleGrid(QuadrilateralGrid):
             poly = prep(poly)
             
         X,Y = self.xy()
-        rect=array([[-self.dx/2.0,-self.dy/2.0],
+        rect=np.array([[-self.dx/2.0,-self.dy/2.0],
                     [self.dx/2.0,-self.dy/2.0],
                     [self.dx/2.0,self.dy/2.0],
                     [-self.dx/2.0,self.dy/2.0]])
@@ -2231,7 +2333,7 @@ class SimpleGrid(QuadrilateralGrid):
                         if (not poly.contains(p)) ^ invert:# i hope that's the right logic
                             self.F[row,col] = value
                     elif straddle:
-                        p = geometry.Polygon( array([X[col],Y[row]])[None,:] + rect )
+                        p = geometry.Polygon( np.array([X[col],Y[row]])[None,:] + rect )
                         if (not poly.intersects(p)) ^ invert:
                             self.F[row,col] = value
 
@@ -2362,7 +2464,7 @@ class SimpleGrid(QuadrilateralGrid):
 
         if nodata is not None:
             raster = raster.copy()
-            raster[ isnan(raster) ] = nodata
+            raster[ np.isnan(raster) ] = nodata
 
         # top left x, w-e pixel resolution, rotation, top left y, rotation, n-s pixel resolution
         # Gdal wants pixel-edge extents, but what we store is pixel center extents...
@@ -2391,7 +2493,7 @@ class SimpleGrid(QuadrilateralGrid):
             b1.SetNoDataValue(nodata)
         else:
             # does this work?
-            b1.SetNoDataValue(nan)
+            b1.SetNoDataValue(np.nan)
         b1.WriteArray(raster)
         if not in_memory:
             dst_ds.FlushCache()
@@ -2402,7 +2504,7 @@ class SimpleGrid(QuadrilateralGrid):
         X=np.asarray(X)
         x = (X[...,0]-self.extents[0])/self.dx
         y = (X[...,1]-self.extents[2])/self.dy
-        return array([y,x]).T
+        return np.array([y,x]).T
 
     def extract_tile(self,xxyy=None,res=None,match=None,interpolation='linear',missing=np.nan):
         """ Create the requested tile
@@ -2428,8 +2530,8 @@ class SimpleGrid(QuadrilateralGrid):
             else:
                 resx = resy = res
             xxyy=as_xxyy(xxyy)
-            x = arange(xxyy[0],xxyy[1]+resx,resx)
-            y = arange(xxyy[2],xxyy[3]+resy,resy)
+            x = np.arange(xxyy[0],xxyy[1]+resx,resx)
+            y = np.arange(xxyy[2],xxyy[3]+resy,resy)
             
         myx,myy = self.xy()
 
@@ -2476,9 +2578,9 @@ class SimpleGrid(QuadrilateralGrid):
             k = ['constant','linear','quadratic','cubic'].index(interpolation)
 
             
-            if any(isnan(self.F)):
+            if any(np.isnan(self.F)):
                 F = self.F.copy()
-                F[ isnan(F) ] = 0.0
+                F[ np.isnan(F) ] = 0.0
             else:
                 F = self.F
 
@@ -2502,8 +2604,8 @@ class SimpleGrid(QuadrilateralGrid):
         returns fields: dFdx,dFdy
         """
         # make it the same size, but use one-sided stencils at the boundaries
-        dFdx = zeros(self.F.shape,float64)
-        dFdy = zeros(self.F.shape,float64)
+        dFdx = np.zeros(self.F.shape,np.float64)
+        dFdy = np.zeros(self.F.shape,np.float64)
 
         # central difference in interior:
         dFdx[:,1:-1] = (self.F[:,2:] - self.F[:,:-2]) /(2*self.dx)
@@ -2524,7 +2626,7 @@ class SimpleGrid(QuadrilateralGrid):
         azimuth_rad=azimuth_deg*np.pi/180
         zenith_rad=zenith_deg*np.pi/180
         
-        slope_rad = np.arctan( z_factor * sqrt( dx.F**2 + dy.F**2) )
+        slope_rad = np.arctan( z_factor * np.sqrt( dx.F**2 + dy.F**2) )
         aspect_rad = np.arctan2(dy.F,-dx.F)
         hillshade=np.cos(zenith_rad)*np.cos(slope_rad) + \
                    np.sin(zenith_rad)*np.sin(slope_rad)*np.cos(azimuth_rad - aspect_rad)
@@ -2560,15 +2662,15 @@ class GtxGrid(SimpleGrid):
         self.filename = filename
         fp=open(self.filename,'rb')
 
-        ll_lat,ll_lon,delta_lat,delta_lon = fromstring(fp.read(4*8),'>f8')
+        ll_lat,ll_lon,delta_lat,delta_lon = np.fromstring(fp.read(4*8),'>f8')
         ll_lon = (ll_lon + 180)%360. - 180
 
-        nrows,ncols = fromstring(fp.read(2*4),'>i4')
+        nrows,ncols = np.fromstring(fp.read(2*4),'>i4')
 
-        heights = fromstring(fp.read(nrows*ncols*8),'>f4').reshape( (nrows,ncols) )
-        heights = heights.byteswap().newbyteorder().astype(float64).copy() # does this fix byte order?
+        heights = np.fromstring(fp.read(nrows*ncols*8),'>f4').reshape( (nrows,ncols) )
+        heights = heights.byteswap().newbyteorder().astype(np.float64).copy() # does this fix byte order?
         
-        heights[ heights == missing ] = nan
+        heights[ heights == missing ] = np.nan
         if is_vertcon:
             heights *= 0.001 # vertcon heights in mm
 
@@ -2679,12 +2781,12 @@ class GdalGrid(SimpleGrid):
         nodata = b.GetNoDataValue()
 
         if nodata is not None:
-            if A.dtype in (int16,int32):
+            if A.dtype in (np.int16,np.int32):
                 A[ A==nodata ] = self.int_nan
-            elif A.dtype in (uint16,uint32):
+            elif A.dtype in (np.uint16,np.uint32):
                 A[ A==nodata ] = 0 # not great...
             else:
-                A[ A==nodata ] = nan
+                A[ A==nodata ] = np.nan
 
         SimpleGrid.__init__(self,
                             extents = [x0+0.5*dx,
@@ -2747,8 +2849,8 @@ if ogr:
             weights = self.ic.calc_weights(X)
             total_weights = weights.sum(axis=-1)
 
-            vals = zeros(X.shape[:-1],float64)
-            vals[total_weights==0.0] = nan
+            vals = np.zeros(X.shape[:-1],np.float64)
+            vals[total_weights==0.0] = np.nan
 
             # iterate over sources:
             for src_i in range(len(self.delegate_list)):
@@ -2771,7 +2873,7 @@ if ogr:
 
             weights = self.ic.calc_weights(c)
 
-            val = 0.0 # zeros(X.shape[:-1],float64)
+            val = 0.0 # np.zeros(X.shape[:-1],np.float64)
 
             # iterate over sources:
             for src_i in range(len(self.delegate_list)):
@@ -2794,7 +2896,7 @@ if ogr:
             """
             weights = self.ic.calc_weights(X)
 
-            vals = zeros(X.shape[:-1],float64)
+            vals = np.zeros(X.shape[:-1],np.float64)
 
             used = (weights!=0.0)
             n_sources = used.sum(axis=-1)
@@ -3130,7 +3232,7 @@ class MultiRasterField(Field):
     """
 
     # If finite, any point sample greater than this value will be clamped to this value
-    clip_max = inf
+    clip_max = np.inf
 
     order = 1 # interpolation order
     
@@ -3163,7 +3265,7 @@ class MultiRasterField(Field):
 
     def bounds(self):
         """ Aggregate bounds """
-        all_extents = array(self.extents)
+        all_extents = np.array(self.extents)
 
         return [ all_extents[:,0].min(),
                  all_extents[:,1].max(),
@@ -3245,16 +3347,16 @@ class MultiRasterField(Field):
     def value_on_point(self,xy):
         hits=self.ordered_hits(xy[xxyy])
         if len(hits) == 0:
-            return nan
+            return np.nan
 
-        v = nan
+        v = np.nan
         for hit in hits:
             src = self.source(hit)
             
             # Here we should be asking for some kind of basic interpolation
             v = src.interpolate( np.array([xy]), interpolation='linear' )[0]
 
-            if isnan(v):
+            if np.isnan(v):
                 continue
             if v > self.clip_max:
                 v = self.clip_max
@@ -3266,19 +3368,19 @@ class MultiRasterField(Field):
     def value(self,X):
         """ X must be shaped (...,2)
         """
-        X = array(X)
+        X = np.array(X)
         orig_shape = X.shape
 
-        X = reshape(X,(-1,2))
+        X = X.reshape((-1,2))
 
-        newF = zeros( X.shape[0],float64 )
+        newF = np.zeros( X.shape[0],np.float64 )
         
         for i in range(X.shape[0]):
             if i > 0 and i % 2000 == 0:
                 print("%d/%d"%(i,X.shape[0]))
             newF[i] = self.value_on_point( X[i] )
         
-        newF = reshape( newF, orig_shape[:-1])
+        newF = newF.reshape(orig_shape[:-1])
         
         if newF.ndim == 0:
             return float(newF)
@@ -3295,26 +3397,26 @@ class MultiRasterField(Field):
 
         hits=self.ordered_hits( [pmin[0],pmax[0],pmin[1],pmax[1]] )
         if len(hits) == 0:
-            return nan
+            return np.nan
 
         res = self.sources['resolution'][hits].min()
 
         samples = int( np.ceil( norm(e[0] - e[1])/res) )
         
-        x=linspace(e[0,0],e[1,0],samples)
-        y=linspace(e[0,1],e[1,1],samples)
+        x=np.linspace(e[0,0],e[1,0],samples)
+        y=np.linspace(e[0,1],e[1,1],samples)
 
-        X = array([x,y]).transpose()
+        X = np.array([x,y]).transpose()
 
         # old way - about 1.3ms per edge over 100 edges
         # return nanmean(self.value(X))
 
         # inlining -
         # in order of resolution, query all the points at once from each field.
-        edgeF = nan*ones( X.shape[0],float64 )
+        edgeF = np.nan*np.ones( X.shape[0],np.float64 )
 
         for hit in hits:
-            missing = isnan(edgeF)
+            missing = np.isnan(edgeF)
             src = self.source(hit)
 
             # for the moment, keep the nearest interpolation
@@ -3322,7 +3424,7 @@ class MultiRasterField(Field):
             if all(isfinite(edgeF)):
                 break
 
-        edgeF = np.clip(edgeF,-inf,self.clip_max) # ??
+        edgeF = np.clip(edgeF,-np.inf,self.clip_max) # ??
         return np.nanmean(edgeF)
 
     def ordered_hits(self,xxyy):
@@ -3330,7 +3432,7 @@ class MultiRasterField(Field):
         if isinstance(hits, types.GeneratorType):
             # so translate that into a list like we used to get.
             hits = list(hits)
-        hits = array(hits)
+        hits = np.array(hits)
 
         if len(hits) == 0:
             return []

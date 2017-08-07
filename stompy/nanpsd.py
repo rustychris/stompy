@@ -1,5 +1,9 @@
 import numpy as np
-from scipy.stats import nanmean
+try:
+    from numpy import nanmean
+except ImportError:
+    # obsolete location
+    from scipy.stats import nanmean
 
 # initial implementation 90ms for 1132 sample window,
 # compared to 0.258ms for holey_psd
@@ -18,11 +22,12 @@ def nan_detrend(x,order=1):
 
 
 def autocorrelation(x, maxlags=None):
-    """Correlation function - similar to xcorr.  Copied from
+    """
+    Correlation function - similar to xcorr.  Copied from
     spectrum.correlation.CORRELATION, and simplified for
     the present application.
     assumes autocorrelation, not cross-correlation.
-     norm is unbiased,x is real.
+    norm is unbiased,x is real.
     """
     N = len(x)
 
@@ -64,7 +69,8 @@ def autocorrelation(x, maxlags=None):
 
 
 def correlogrampsd(X, lag, NFFT=None):
-    """PSD estimate using correlogram method.
+    """
+    PSD estimate using correlogram method.
     taken from spectrum, simplified for real-valued autocorrelation
     """
     N = len(X)

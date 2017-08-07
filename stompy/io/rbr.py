@@ -1,8 +1,8 @@
 # Class for representing an RBR CTD
-from numpy import *
 import numpy as np
 import pdb
-from pylab import *
+# from pylab import *
+
 import re
 import seawater
 import copy
@@ -76,7 +76,7 @@ class Rbr(object):
                                   Pres )
             self.columns.append('Salinity')
             self.Ncolumns += 1
-            self.data = concatenate( (self.data,salt[:,newaxis]),axis=1)
+            self.data = np.concatenate( (self.data,salt[:,None]),axis=1)
             self.update_fields()
 
     def update_fields(self):
@@ -98,14 +98,14 @@ class Rbr(object):
         if 'Cond' in self.columns:
             p_anom = (self.Cond - median(self.Cond)) / self.Cond.std()
 
-            good = where(abs(p_anom) < 0.5)[0]
+            good = np.where(abs(p_anom) < 0.5)[0]
 
             start = good[0]
             stop =  good[-1]
         elif 'Pres' in self.columns:
             p_anom = (self.Pres - median(self.Pres)) / self.Pres.std()
 
-            good = where(abs(p_anom) < 0.1)[0]
+            good = np.where(abs(p_anom) < 0.1)[0]
 
             start = good[0]
             stop =  good[-1]
@@ -137,10 +137,10 @@ class Rbr(object):
 
         if method == 'd2':
             while 1:
-                d2 = diff(self.data[:,ci+1],2)
-                d2_norm = abs(d2 / d2.std())
+                d2 = np.diff(self.data[:,ci+1],2)
+                d2_norm = np.abs(d2 / d2.std())
 
-                bad = argmax(d2_norm)
+                bad = np.argmax(d2_norm)
                 if d2_norm[bad] > 30:
                     self.data[bad+1,ci+1] = nan
                 else:
@@ -332,7 +332,7 @@ class RbrHex(Rbr):
     def read_calibration(self):
         txt_cal = self.fp.readline() + self.fp.readline()+self.fp.readline()+self.fp.readline()
         parts = txt_cal.split()
-        coefs = array( map(float,parts[2:6]) )
+        coefs = np.array( map(float,parts[2:6]) )
         units = parts[6]
 
         return Calibration(txt_cal,coefs,units)
@@ -401,7 +401,7 @@ class RbrHex(Rbr):
         return self.instrument_tz.localize(dt).astimezone(self.target_tz).replace(tzinfo=None)
                                   
     def read_data(self):
-        self.data = zeros( (self.Nsamples,1+len(self.columns)),float64 )
+        self.data = np.zeros( (self.Nsamples,1+len(self.columns)),np.float64 )
 
         saved = self.fp.tell()
 
@@ -474,7 +474,7 @@ class RbrHex(Rbr):
         # includes some timestamps
         binary=self.raw.decode('hex')[self.num_bytes_header:]
 
-        bytes=np.fromstring(binary,'uint8')
+        bytes=np.fromstring(binary,np.uint8)
 
         # snip out the timestamp entries
         sel=ones(len(bytes),np.bool8)
@@ -551,8 +551,8 @@ class RbrHex(Rbr):
             # possibly one-off here:
             base_times.append( base_times[-1]+ self.dt_s*(base_samples[-1]-base_samples[-2])/86400. )
 
-        sample_i=arange(len(self.data)) # indices where we want times.
-        self.data[:,0]=interp(sample_i,base_samples,base_times,left=nan,right=nan)
+        sample_i=np.arange(len(self.data)) # indices where we want times.
+        self.data[:,0]=np.interp(sample_i,base_samples,base_times,left=nan,right=nan)
         
     @staticmethod
     def concatenate(Rs):

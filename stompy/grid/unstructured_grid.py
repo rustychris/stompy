@@ -77,6 +77,9 @@ class HalfEdge(object):
     def __str__(self):
         return "<HalfEdge %d -> %d>"%( self.node_rev(),self.node_fwd() )
 
+    def __repr__(self):
+        return self.__str__()
+
     def nbr(self,direc):
         """ direc: 0 means fwd, 1 is reverse
         This returns an adjacent half-edge
@@ -118,9 +121,16 @@ class HalfEdge(object):
         return HalfEdge(grid=self.grid,edge=self.j,orient=1-self.orient)
     
     def node_rev(self):
-        return self.grid.edges['nodes'][self.j,self.orient]
+        """ index of the node in the reverse direction of the halfedge """
+        return self.grid.edges['nodes'][self.j, self.orient]
     def node_fwd(self):
-        return self.grid.edges['nodes'][self.j,1-self.orient]
+        """ index of the node in the forward direction of the halfedge """
+        return self.grid.edges['nodes'][self.j, 1-self.orient]
+    def nodes(self):
+        """ 
+        equivalent to [node_rev(),node_fwd()]
+        """
+        return self.grid.edges['nodes'][self.j, [self.orient, 1-self.orient]]
 
     @staticmethod
     def from_nodes(grid,rev,fwd):
@@ -140,6 +150,11 @@ class HalfEdge(object):
         return ( (other.grid   == self.grid) and
                  (other.j      == self.j )   and
                  (other.orient == self.orient) )
+
+    def __ne__(self,other):
+        # per python data model, equals does not imply
+        # opposite of not equals, and must be explicitly handled.
+        return not self.__eq__(other)
 
 
 def rec_to_dict(r):
@@ -274,7 +289,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         edges: [N,2] indices into points, 0-based
         cells: [N,maxsides] indices into points, 0-based, -1 for missing nodes.
         """
-
+        cells=np.asanyarray(cells)
         super(UnstructuredGrid,self).__init__()
 
         self.init_log()
@@ -404,6 +419,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             except AttributeError:
                 start_index=0
             idxs=ncvar[...] - start_index
+            # force the move to numpy land
+            idxs=np.asanyarray(idxs)
+            
             # but might still be masked -- change to unmasked,
             # but our own choice of the invalid value:
             try:
@@ -411,6 +429,13 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     idxs=idxs.filled(UnstructuredGrid.UNDEFINED)
             except AttributeError:
                 pass
+            # ideally this wouldn't be needed, but as an index, really
+            # any negative value is bad, and more likely to signal that
+            # masks or MissingValue attributes were lost, so better to
+            # fix those now
+            # so be proactive about various ways of undefined nodes coming in:
+            idxs[np.isnan(idxs)]=UnstructuredGrid.UNDEFINED
+            idxs[idxs<0]=UnstructuredGrid.UNDEFINED
             return idxs
 
         faces = process_as_index(mesh.face_node_connectivity)
@@ -422,6 +447,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     def write_to_xarray(self,ds=None,mesh_name='mesh'):
         """ write grid definition, ugrid-ish, to a new xarray dataset
         """
+        import xarray as xr
         if ds is None:
             ds=xr.Dataset()
 
@@ -1062,10 +1088,19 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         self._node_to_cells = None
 
     def Nnodes(self):
+        """
+        total number of allocated nodes -- may include deleted nodes
+        """
         return len(self.nodes)
     def Ncells(self):
+        """
+        total number of allocated cells -- may include deleted cells
+        """
         return len(self.cells)
     def Nedges(self):
+        """
+        total number of allocated edges -- may include deleted edges
+        """
         return len(self.edges)
 
     def Ncells_valid(self):
@@ -1181,6 +1216,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         return self._node_to_cells[n]
 
     def node_to_nodes(self,n):
+        """ Return an ndarray of the node indices which share edges with 
+        node n.
+        """
         js = self.node_to_edges(n)
         all_nodes = self.edges['nodes'][js].ravel()
         # return np.setdiff1d(all_nodes,[n]) # significantly slower than lists
@@ -1228,7 +1266,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
     def build_node_to_edges(self):
         n2e = defaultdict(list)
-        for e in self.valid_edge_iter(): # xrange(self.Nedges()):
+        for e in self.valid_edge_iter(): 
             for i in [0,1]:
                 n2e[self.edges['nodes'][e,i]].append(e)
         self._node_to_edges = n2e
@@ -2101,16 +2139,16 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         labeler: callable taking (node index, node record), return string
         """
         ax=ax or plt.gca()
-        if values is None:
-            values=np.ones(self.Nnodes())
             
         if mask is None:
             mask=~self.nodes['deleted']
 
         if clip is not None: # convert clip to mask
             mask=mask & within_2d(self.nodes['x'],clip)
-            
-        values=values[mask]
+
+        if values is not None:
+            values=values[mask]
+            kwargs['c']=values
 
         if labeler is not None:
             if labeler=='id':
@@ -2123,9 +2161,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                         labeler(n,self.nodes[n]))
 
         coll=ax.scatter(self.nodes['x'][mask][:,0],
-                          self.nodes['x'][mask][:,1],
-                          sizes,
-                          values,**kwargs)
+                        self.nodes['x'][mask][:,1],
+                        sizes,
+                        **kwargs)
         ax.axis('equal')
         return coll
     
@@ -2296,12 +2334,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
             if len(nodes)==3:
                 continue
-            g.delete_cell(c)
-            g.add_cell_and_edges(nodes=nodes[ [0,1,2] ] )
+            self.delete_cell(c)
+            self.add_cell_and_edges(nodes=nodes[ [0,1,2] ] )
             if len(nodes)>=4:
-                g.add_cell_and_edges(nodes=nodes[ [0,2,3] ] )
+                self.add_cell_and_edges(nodes=nodes[ [0,2,3] ] )
             if len(nodes)>=5: # a few of these...
-                g.add_cell_and_edges(nodes=nodes[ [0,3,4] ] )
+                self.add_cell_and_edges(nodes=nodes[ [0,3,4] ] )
             # too lazy to be generic about it...
             # also note that the above only work for convex cells.
 
@@ -2449,8 +2487,30 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         # some grids don't abide by the boundary always being on the "right"
         # so use any()
         boundary_edges=(np.any(e2c<0,axis=1))&(~self.edges['deleted'])
-        segs=self.nodes['x'][self.edges['nodes'][boundary_edges]]
-        lines=join_features.merge_lines(segments=segs)
+
+        if 0: # old, slow implementation
+            segs=self.nodes['x'][self.edges['nodes'][boundary_edges]]
+            lines=join_features.merge_lines(segments=segs)
+        else:
+            marked=np.zeros(self.Nedges(),np.bool8)
+            lines=[]
+            for j in np.nonzero(boundary_edges)[0]:
+                if marked[j]:
+                    continue
+                trav=self.halfedge(j,0)
+                if trav.cell()>=0:
+                    trav=trav.opposite()
+                assert trav.cell()<0
+                start=trav
+                this_line_nodes=[trav.node_rev(),trav.node_fwd()]
+                while 1:
+                    this_line_nodes.append(trav.node_fwd())
+                    marked[trav.j]=True
+                    trav=trav.fwd()
+                    if trav==start:
+                        break
+                lines.append( self.nodes['x'][this_line_nodes] )
+
         return lines
 
     def boundary_polygon_by_edges(self):
@@ -2968,7 +3028,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         centers = self.cells_center()[cells]
         errors=np.zeros( len(self.cells[cells]),'f8')
 
-        for nsi in xrange(3,self.max_sides+1):
+        for nsi in six.range(3,self.max_sides+1):
             sel = (self.cells['nodes'][cells,nsi-1]>=0) & (~self.cells['deleted'][cells])
             if nsi<self.max_sides:
                 sel = sel&(self.cells['nodes'][cells,nsi]<0)
