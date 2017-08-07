@@ -421,14 +421,11 @@ def test_singlestep_lookahead():
 # This produces better results because the metrics have been pre-tuned
 
 def test_no_lookahead():
-    #plt.figure(1).clf()
-    #fig,ax=plt.subplots(num=1)
-
     af=test_basic_setup()
     af.log.setLevel(logging.INFO)
     af.cdt.post_check=False
 
-    af.current=af.root=DTChooseSite(af)
+    af.current=af.root=front.DTChooseSite(af)
 
     def cb():
         af.plot_summary(label_nodes=False)
@@ -436,8 +433,6 @@ def test_no_lookahead():
             af.current.site.plot()
         except: # AttributeError:
             pass
-        # fig.canvas.draw()
-        plt.pause(0.01)
 
     while 1:
         if not af.current.children:
@@ -449,8 +444,6 @@ def test_no_lookahead():
                 break
         else:
             assert False # none of the children worked out
-        #cb()
-    af.plot_summary(ax=ax)
 
 ##
 
@@ -653,6 +646,8 @@ def test_small_island():
     density = field.ConstantField( 10 )
     trifront_wrapper(rings,density,label='small_island')
 
+    
+##     
 def test_tight_peanut():
     r = 100
     thetas = np.linspace(0,2*np.pi,300)
@@ -664,7 +659,8 @@ def test_tight_peanut():
     density = field.ConstantField( 6.0 )
     trifront_wrapper([peanut],density,label='tight_peanut')
 
-    
+##
+
 def test_tight_with_island():
     # build a peanut first:
     r = 100
@@ -691,6 +687,7 @@ def test_tight_with_island():
     density = field.ConstantField( 6.0 )
     trifront_wrapper(rings,density,label='tight_with_island')
 
+##
 def test_peninsula():
     r = 100
     thetas = np.linspace(0,2*np.pi,1000)
@@ -723,6 +720,8 @@ def test_peanut():
 
     trifront_wrapper([peanut],density,label='peanut')
 
+##
+
 def test_cul_de_sac():
     r=5
     theta = np.linspace(-np.pi/2,np.pi/2,20)
@@ -734,6 +733,55 @@ def test_cul_de_sac():
     density = field.ConstantField(2*r/(np.sqrt(3)/2))
     trifront_wrapper([ring],density,label='cul_de_sac')
 
+
+##
+
+# what's up with this one?
+# works when single-stepping, fails when in the loop.
+
+r=5
+theta = np.linspace(-np.pi/2,np.pi/2,20)
+cap = r * np.swapaxes( np.array([np.cos(theta), np.sin(theta)]), 0,1)
+box = np.array([ [-3*r,r],
+                 [-4*r,-r] ])
+ring = np.concatenate((box,cap))
+
+density = field.ConstantField(2*r/(np.sqrt(3)/2))
+# trifront_wrapper([ring],density,label='cul_de_sac')
+scale=density
+rings=[ring]
+
+af=front.AdvancingTriangles()
+af.set_edge_scale(scale)
+
+af.add_curve(rings[0],interior=False)
+for ring in rings[1:]:
+    af.add_curve(ring,interior=True)
+af.initialize_boundaries()
+
+af.loop(3)
+##
+
+plt.clf()
+af.grid.plot_edges(lw=0.5)
+af.grid.plot_nodes(labeler=lambda i,r:str(i))
+af.grid.plot_halfedges(labeler=lambda j,side: str(af.grid.edges['cells'][j,side]))
+##
+
+site=af.choose_site()
+site.plot()
+# this is okay now, but the join leaves a bad cell index out there.
+af.resample_neighbors(site)
+
+        
+actions=site.actions()
+metrics=[a.metric(site) for a in actions]
+bests=np.argsort(metrics)
+
+pdb.run("actions[bests[0]].execute(site)")
+
+    
+##     
 def test_bow():
     x = np.linspace(-100,100,50)
     # with /1000 it seems to do okay
@@ -885,6 +933,6 @@ def test_sine_sine():
     p.pave_all()
 
 # Who is failing at this point?
-#   - narrow_channel - FIXED?
-#   - tight_peanut
-#   - not sure what's going on with tight_with_island.  Doesn't look right.
+# test_long_channel_rigid -
+# test_peanut: need to fix the bulk initialization of the CDT.
+#   way way slow.

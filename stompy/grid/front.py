@@ -155,14 +155,19 @@ class Curve(object):
         if ccw is not None:
             area=utils.signed_area(points)
             if (area>0) != bool(ccw):
-                points=points[:,::-1]
+                points=points[::-1,:]
                 
         self.points=np.asarray(points)
         self.closed=bool(closed)
         if self.closed:
-            self.points = np.concatenate( (self.points,
-                                           self.points[:1,:] ) )
-        
+            if np.all(self.points[0]==self.points[-1]):
+                pass # already duplicated
+            else:
+                self.points = np.concatenate( (self.points,
+                                               self.points[:1,:] ) )
+        else:
+            assert not np.all(self.points[0]==self.points[-1])
+            
         self.distances=utils.dist_along(self.points)
     def __call__(self,f,metric='distance'):
         if metric=='distance':
@@ -608,6 +613,20 @@ class JoinStrategy(Strategy):
             for i in [0,1]:
                 if nodes[i]==mover:
                     if (nodes[1-i]==nb) or (nodes[1-i]==nd):
+                        # While we don't add the edge itself, do need
+                        # to check whether the old edge,
+                        # which is adjacent to the "joined" areas which vanish, had
+                        # a relevant non-cell index on the other side, i.e. boundary vs.
+                        # unpaved.
+                        cells=data['cells']
+                        pdb.set_trace()
+
+                        # 4 cases...
+                        # HERE..  too tired to write this now.
+                        if nodes[1-i]==nb:
+                            # if i==0, then mover to b
+                            cell_outside=cells[
+
                         nodes=None # signal that we don't add it
                     else:
                         nodes[i]=anchor
@@ -630,6 +649,7 @@ class JoinStrategy(Strategy):
                 except exact_delaunay.ConstraintCollinearNode:
                     raise StrategyFailed("Edge was collinear with existing nodes")
                 edits['edges'].append(jnew)
+
 
         for c,data in cells_to_replace:
             nodes=data['nodes']
@@ -1247,6 +1267,26 @@ class AdvancingFront(object):
 
         if span_length < self.max_span_factor*scale:
             n_segments = max(1,round(span_length / scale))
+
+            if n_segments==1:
+                # in tight situations, need to make sure
+                # that for a site a--b--c we're not trying
+                # move c all the way on top of a.
+                # it is not sufficient to just force two
+                # segments, as that just pushes the issue into
+                # the next iteration, but in an even worse state.
+                if direction==-1:
+                    he_other=he.fwd()
+                    opposite_node=he_other.node_fwd()
+                else:
+                    he_other=he.rev()
+                    opposite_node=he_other.node_rev()
+                if opposite_node==span_nodes[-1]:
+                    self.log.info("n_segment=1, but that would be an implicit join")
+                    
+                    # rather than force two segments, force it
+                    # to remove all but the last edge
+                    span_nodes=span_nodes[:-1]
             target_span = span_length / n_segments
             if n_segments==1:
                 self.log.debug("Only one space for 1 segment")
@@ -1257,8 +1297,6 @@ class AdvancingFront(object):
             target_span=scale
 
         # first, find a point on the original ring which satisfies the target_span
-        # HERE - this assumes that 'n' is on the same curve as 'anchor' - which is not
-        # TRUE
         anchor_oring=self.grid.nodes['oring'][anchor]-1
         oring=self.grid.nodes['oring'][n]-1
         if anchor_oring != oring:
