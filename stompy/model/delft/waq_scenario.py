@@ -465,7 +465,7 @@ class Hydro(object):
     # scenarios with the same hydro.
     def parameters(self,force=True):
         if force or (self._params is None):
-            hyd=NamedObjects(scenario=self.scenario)
+            hyd=NamedObjects(scenario=self.scenario,cast_value=cast_to_parameter)
             self._params = self.add_parameters(hyd)
         return self._params
         
@@ -5511,6 +5511,11 @@ class ParameterTemporal(Parameter):
         for t,v in zip(self.times,self.values):
             lines.append("{}  {:e}".format(self.scenario.fmt_datetime(t),v) )
         return "\n".join(lines)
+    # @property
+    # def supporting_file(self):
+    #     """ base name of the supporting binary file, (no dir. name) """
+    #     return self.scenario.name + "-" + self.safe_name + ".seg"
+    
     def evaluate(self,**kws):
         if 't' in kws:
             t=kws.pop('t')
@@ -5742,6 +5747,16 @@ class ParameterSpatioTemporal(Parameter):
                                        name=self.name)
 
 
+def cast_to_parameter(v):
+    if isinstance(v,Parameter):
+        return v
+    else:
+        # casting rules:
+        # This may get fancier over time, with potential support for
+        # xarray, pandas, numpy, blah, blah.
+        # Not at this point, though.
+        return ParameterConstant(v)
+    
 # Options for defining parameters and substances:
 # 1. as before - list attributes of the class
 #    this is annoying because you can't alter the lists easily/safely 
@@ -5758,12 +5773,24 @@ class NamedObjects(OrderedDict):
     utility class for managing collections of objects which
     get a name and a reference to the scenario or hydro
     """
-    def __init__(self,sort_key=None,**kw):
+    def __init__(self,sort_key=None,
+                 cast_value=lambda x: x,
+                 **kw):
+        """
+        sort_key: when iterating over the items, return sorted based on this
+           attribute of each item.
+
+        cast_value: a function which is applied to all values coming in via __setitem__
+
+        a single additional keyword argument: a name-value pair which is set on 
+          incoming values, after cast_value is applied.
+        """
         super(NamedObjects,self).__init__()
         assert len(kw)==1
         
         self.parent_name=list(kw.keys())[0]
         self.parent=kw[self.parent_name]
+        self.cast_value=cast_value
         
         self.sort_key=sort_key
 
@@ -5772,11 +5799,12 @@ class NamedObjects(OrderedDict):
             return k.lower()
         except AttributeError:
             return k
-
+   
     def __contains__(self,k):
         return super(NamedObjects,self).__contains__(self.normalize_key(k))
     
     def __setitem__(self,k,v):
+        v=self.cast_value(v)
         v.name=k
         setattr(v,self.parent_name,self.parent) # v.scenario=self.scenario
         super(NamedObjects,self).__setitem__(self.normalize_key(k),v)
@@ -5973,7 +6001,7 @@ class Scenario(scriptable.Scriptable):
         # list of dicts.  moving towards standard setting of loads via src_tags
         # should be populated in init_substances(), gets used 
         self.src_tags=[]
-
+        
         self.dispersions=NamedObjects(scenario=self)
 
         if hydro:
@@ -6066,7 +6094,7 @@ END_MULTIGRID"""%num_layers
         self.stop_time =self.time0+self.scu*self.hydro.t_secs[-1]
 
     def init_parameters(self):
-        params=NamedObjects(scenario=self)
+        params=NamedObjects(scenario=self,cast_value=cast_to_parameter)
         params['ONLY_ACTIVE']=ParameterConstant(1) # almost always a good idea.
         
         return params
@@ -6082,7 +6110,7 @@ END_MULTIGRID"""%num_layers
         else:
             self.log.warning("Why requesting hydro parameters with no hydro?")
             assert False # too weird
-            return NamedObjects(scenario=self)
+            return NamedObjects(scenario=self,cast_value=cast_to_parameter)
 
     def init_substances(self):
         # sorts active substances first.
