@@ -1,19 +1,18 @@
 # A first cut at a class that embodies many simulations sharing the same
 # physical domain.
 import os, shutil, sys, getopt, glob, datetime
-
-from depender import rule,make,clear,DependencyGraph
-import paver
-import linestring_utils
-import orthomaker
-import sunreader, interp_depth,trigrid
-import parse_interval
-import instrument,adcp,forcing
-import wkb2shp
-import field
-import edge_depths
 from shapely import wkb, geometry
 import logging
+
+from .depender import rule,make,clear,DependencyGraph
+from ...grid import (paver,orthomaker,trigrid)
+from ...spatial import linestring_utils, wkb2shp
+from . import sunreader
+from ... import parse_interval
+import interp_depth
+import instrument,adcp,forcing
+import field
+import edge_depths
 
 import domain_plotting
 

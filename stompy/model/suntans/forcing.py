@@ -1,4 +1,7 @@
 """
+OLD -- this module has not been fully modernized, and most likely will not 
+import.
+
  forcing.py: construct forcing (and eventually initialization?) for suntans runs.
 
  the total process is something like this:
@@ -13,24 +16,19 @@
 
    done.
 """ 
-from __future__ import division
 from __future__ import print_function
-from builtins import zip
-from builtins import str
-from builtins import range
-from past.utils import old_div
-from builtins import object
 import sys, os, glob
 
-import sunreader
-import tidal_filter
-import timeseries
-import trigrid
-import lp_filter
-import wkb2shp
 import logging
 
 import netCDF4
+
+from . import sunreader
+from . import timeseries
+from ...grid import trigrid
+from ... import filters as lp_filter
+from ...spatial import wkb2shp
+
 
 try:
     if netCDF4.__version__ >= '1.2.6':
@@ -52,14 +50,14 @@ try:
 except ImportError:
     qnc=None
 
-import tide_consts
-from cache_handler import urlopen_delay as urlopen
+from ... import (tide_consts, utils)
+# cache_handler relies on some pieces which are no longer easily accessible.
+# from cache_handler import urlopen_delay as urlopen
 
 from copy import deepcopy
 
-import utils
-from numpy import *
-from safe_pylab import *
+import numpy as np
+import matplotlib.pyplot as plt
 
 from numpy.linalg import norm
 from scipy.interpolate import interp1d
@@ -1277,7 +1275,10 @@ class NoaaGage(Timeseries):
         self.raw_h = values
 
         # filter:
-        self.h = tidal_filter.filter_tidal_data(self.raw_h, absdays*24*3600)
+        #self.h = tidal_filter.filter_tidal_data(self.raw_h, absdays*24*3600)
+        self.h = lp_filter.lowpass(self.raw_h,
+                                   absdays*24, # Time in hours
+                                   cutoff=3.0) # cutoff of 3 hours
 
         if self.include_bathy_offset:
             self.h -= sunreader.read_bathymetry_offset()
@@ -1422,7 +1423,8 @@ class CompositeNoaaGage(NoaaGage):
         self.raw_h = values
 
         # filter:
-        self.h = tidal_filter.filter_tidal_data(self.raw_h, absdays*24*3600)
+        #self.h = tidal_filter.filter_tidal_data(self.raw_h, absdays*24*3600)
+        self.h = lp_filter.lowpass(self.raw_h, absdays*24, cutoff=3.0)        
 
         if self.include_bathy_offset:
             self.h -= sunreader.read_bathymetry_offset()

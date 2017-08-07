@@ -65,7 +65,7 @@ def as_xxyy(p1p2):
     else:
         return np.array(p1p2[xyxy,xxyy])
 
-from linestring_utils import upsample_linearring
+from .linestring_utils import upsample_linearring
 
 try:
     import cPickle as pickle
