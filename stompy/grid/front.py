@@ -609,7 +609,7 @@ class JoinStrategy(Strategy):
 
         for j,data in edges_to_replace:
             nodes=data['nodes']
-            
+
             for i in [0,1]:
                 if nodes[i]==mover:
                     if (nodes[1-i]==nb) or (nodes[1-i]==nd):
@@ -621,11 +621,16 @@ class JoinStrategy(Strategy):
                         cells=data['cells']
                         pdb.set_trace()
 
-                        # 4 cases...
-                        # HERE..  too tired to write this now.
-                        if nodes[1-i]==nb:
-                            # if i==0, then mover to b
-                            cell_outside=cells[
+                        # HERE - need code above, before we wreck the topology,
+                        # to find out
+                        # cell_outside_mover
+                        # he_anchor, with the he facing into the site.
+                        # he_d, from anchor to d, if exists, and again facing into the site.
+                        # cell_outside_mover_d
+                        #
+                        # Then here we can update the adjacent cells for he_anchor
+                        # if it is a mark and not a real cell which will be restored
+                        # below.
 
                         nodes=None # signal that we don't add it
                     else:
