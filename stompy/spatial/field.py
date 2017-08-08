@@ -2089,7 +2089,7 @@ class SimpleGrid(QuadrilateralGrid):
                      + self.F[rows+1,cols+1]*row_alpha      *col_alpha
 
         # It may have been an int field, and now we need to go to float and set some nans:
-        if result.dtype in (int,int8,int16,np.int32,int64):
+        if result.dtype in (int,np.int8,np.int16,np.int32,np.int64):
             print("Converting from %s to float"%result.dtype)
             result = result.astype(np.float64)
             result[ result==self.int_nan ] = np.nan
@@ -2353,7 +2353,7 @@ class SimpleGrid(QuadrilateralGrid):
             vmax = self.F.max()
             
         fscaled = (self.F-vmin)/(vmax-vmin)
-        frgba = (cm.jet(fscaled)*255).astype(uint8)
+        frgba = (cm.jet(fscaled)*255).astype(np.uint8)
 
         # Create gtif
         driver = gdal.GetDriverByName("GTiff")
