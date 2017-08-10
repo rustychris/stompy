@@ -701,25 +701,6 @@ def test_peninsula():
     
     trifront_wrapper([pen2],density,label='peninsula')
 
-def test_peanut():
-    # like a figure 8, or a peanut
-    r = 100
-    thetas = np.linspace(0,2*np.pi,1000)
-    peanut = np.zeros( (len(thetas),2), np.float64)
-
-    peanut[:,0] = r*(0.5+0.3*np.cos(2*thetas))*np.cos(thetas)
-    peanut[:,1] = r*(0.5+0.3*np.cos(2*thetas))*np.sin(thetas)
-
-    min_pnt = peanut.min(axis=0)
-    max_pnt = peanut.max(axis=0)
-    d_data = np.array([ [min_pnt[0],min_pnt[1], 1.5],
-                        [min_pnt[0],max_pnt[1], 1.5],
-                        [max_pnt[0],min_pnt[1], 8],
-                        [max_pnt[0],max_pnt[1], 8]])
-    density = field.XYZField(X=d_data[:,:2],F=d_data[:,2])
-
-    trifront_wrapper([peanut],density,label='peanut')
-
 ##
 
 def test_cul_de_sac():
@@ -733,54 +714,6 @@ def test_cul_de_sac():
     density = field.ConstantField(2*r/(np.sqrt(3)/2))
     trifront_wrapper([ring],density,label='cul_de_sac')
 
-
-##
-
-# what's up with this one?
-# works when single-stepping, fails when in the loop.
-
-r=5
-theta = np.linspace(-np.pi/2,np.pi/2,20)
-cap = r * np.swapaxes( np.array([np.cos(theta), np.sin(theta)]), 0,1)
-box = np.array([ [-3*r,r],
-                 [-4*r,-r] ])
-ring = np.concatenate((box,cap))
-
-density = field.ConstantField(2*r/(np.sqrt(3)/2))
-# trifront_wrapper([ring],density,label='cul_de_sac')
-scale=density
-rings=[ring]
-
-af=front.AdvancingTriangles()
-af.set_edge_scale(scale)
-
-af.add_curve(rings[0],interior=False)
-for ring in rings[1:]:
-    af.add_curve(ring,interior=True)
-af.initialize_boundaries()
-
-af.loop(3)
-##
-
-plt.clf()
-af.grid.plot_edges(lw=0.5)
-af.grid.plot_nodes(labeler=lambda i,r:str(i))
-af.grid.plot_halfedges(labeler=lambda j,side: str(af.grid.edges['cells'][j,side]))
-##
-
-site=af.choose_site()
-site.plot()
-# this is okay now, but the join leaves a bad cell index out there.
-af.resample_neighbors(site)
-
-        
-actions=site.actions()
-metrics=[a.metric(site) for a in actions]
-bests=np.argsort(metrics)
-
-pdb.run("actions[bests[0]].execute(site)")
-
-    
 ##     
 def test_bow():
     x = np.linspace(-100,100,50)
@@ -927,6 +860,26 @@ def gen_sine_sine():
 
     return p
 
+def test_peanut():
+    # like a figure 8, or a peanut
+    r = 100
+    thetas = np.linspace(0,2*np.pi,1000)
+    peanut = np.zeros( (len(thetas),2), np.float64)
+
+    peanut[:,0] = r*(0.5+0.3*np.cos(2*thetas))*np.cos(thetas)
+    peanut[:,1] = r*(0.5+0.3*np.cos(2*thetas))*np.sin(thetas)
+
+    min_pnt = peanut.min(axis=0)
+    max_pnt = peanut.max(axis=0)
+    d_data = np.array([ [min_pnt[0],min_pnt[1], 1.5],
+                        [min_pnt[0],max_pnt[1], 1.5],
+                        [max_pnt[0],min_pnt[1], 8],
+                        [max_pnt[0],max_pnt[1], 8]])
+    density = field.XYZField(X=d_data[:,:2],F=d_data[:,2])
+
+    trifront_wrapper([peanut],density,label='peanut')
+
+
 def test_sine_sine():
     assert False # meh.. 
     p=gen_sine_sine()
@@ -934,5 +887,6 @@ def test_sine_sine():
 
 # Who is failing at this point?
 # test_long_channel_rigid -
+# test_cul_de_sac? - maybe fixed
 # test_peanut: need to fix the bulk initialization of the CDT.
 #   way way slow.
