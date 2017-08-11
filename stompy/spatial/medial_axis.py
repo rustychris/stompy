@@ -1,16 +1,16 @@
 from __future__ import print_function
 
 import os
+import subprocess,os.path
+
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 from matplotlib.collections import LineCollection
 
-import subprocess,os.path
-
-# import load_shp
-import field
 from shapely import geometry
+
+from . import field
 
 from ..utils import point_in_polygon
 

@@ -49,10 +49,10 @@ def my_fmin(f,x0,args=(),xtol=1e-4,disp=0):
     #  in at least one case, this doesn't terminate...
     # return opt.fmin_cg(f,x0,args=args,gtol=xtol,disp=disp)
 
-import trigrid
-import orthomaker as om
+from . import trigrid
+from . import orthomaker as om
 
-from trigrid import rot,ensure_ccw,ensure_cw,is_ccw
+from .trigrid import rot,ensure_ccw,ensure_cw,is_ccw
 
 class StrategyFailed(Exception):
     pass

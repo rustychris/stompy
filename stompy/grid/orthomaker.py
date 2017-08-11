@@ -22,16 +22,15 @@ try:
     from numpy.linalg import norm
 except ImportError:
     print("Missing numpy library.  Please install it")
-    sys.exit(1)
+    raise
 
 try:
     from shapely import geometry
 except:
     print("Missing shapely library.  Please install it")
-    # sys.exit(1)
 
 from . import trigrid
-from trigrid import rot
+from .trigrid import rot
 from ..utils import point_in_polygon
 
 ### Some geometric utility functions ###

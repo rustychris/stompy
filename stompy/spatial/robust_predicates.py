@@ -1,3 +1,5 @@
+from __future__ import print_function
+
 # Pure python implementation of J.R. Shewchuk's robust geometric predicates.
 # This is a straightforward translation of the predicates in triangle.c into
 # python.
@@ -830,12 +832,12 @@ def orientation(a,b,c):
 if __name__ == '__main__':
     ## Some testing:
 
-    print "incircle, for cocircular:",incircle([0,0],[1,0],[1,1],[0,1])
+    print("incircle, for cocircular:",incircle([0,0],[1,0],[1,1],[0,1]))
 
 
-    print "incircle, for inside:",incircle([0,0],[1,0],[1,1],[1e-30,1])
+    print("incircle, for inside:",incircle([0,0],[1,0],[1,1],[1e-30,1]))
 
-    print "incircle, for outside:",incircle([0,0],[1,0],[1,1],[-1e-30,1])
+    print("incircle, for outside:",incircle([0,0],[1,0],[1,1],[-1e-30,1]))
     # simple test
     # h = scale_expansion_zeroelim([pi],pi)
     

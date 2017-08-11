@@ -11,8 +11,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from numpy import ma
 
-import contour_transect
-from contour_transect import contourf_t,contour_t
+from ...plot.contour_transect import contourf_t,contour_t
 
 try:
     import cPickle as pickle
