@@ -104,7 +104,8 @@ class HalfEdge(object):
             return HalfEdge.from_nodes(self.grid,fwd_node,fwdfwd_node)
         else:
             # not sure about this...
-            fwdfwd_node=nbrs[1] # next ccw neighbor
+            # the weird modulo is because nbrs may have only 1 item.
+            fwdfwd_node=nbrs[1%len(nbrs)] # next ccw neighbor
             return HalfEdge.from_nodes(self.grid,fwdfwd_node,fwd_node)
     def fwd(self):
         return self.nbr(direc=0)

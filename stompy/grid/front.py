@@ -551,23 +551,8 @@ class JoinStrategy(Strategy):
         mover=None
 
         j_ac=grid.nodes_to_edge(na,nc)
-        if j_ac is None:
-            if grid.nodes['fixed'][na]!=site.af.FREE:
-                if grid.nodes['fixed'][nc]!=site.af.FREE:
-                    raise StrategyFailed("Neither node is movable, cannot Join")
-                mover=nc
-                anchor=na
-            else:
-                mover=na
-                anchor=nc
 
-            he=grid.nodes_to_halfedge(na,nb)
-            pre_a=he.rev().node_rev()
-            post_c=he.fwd().fwd().node_fwd()
-            if pre_a==post_c:
-                log.info("Found a quad - proceeding carefully with nd")
-                nd=pre_a
-        else:
+        if j_ac is not None:
             # special case: nodes are already joined, but there is no
             # cell.
             # this *could* be extended to allow the deletion of thin cells,
@@ -575,18 +560,47 @@ class JoinStrategy(Strategy):
             # not creation)
             if (grid.edges['cells'][j_ac,0] >=0) or (grid.edges['cells'][j_ac,1]>=0):
                 raise StrategyFailed("Edge already has real cells")
-            # these now include HINT for choosing the mover.
-            if grid.nodes['fixed'][na] in [site.af.FREE,site.af.HINT,site.af.SLIDE]:
-                mover=na
-                anchor=nc
-            elif grid.nodes['fixed'][nc] in [site.af.FREE,site.af.HINT,site.af.SLIDE]:
-                mover=nc
-                anchor=na
-            else:
-                raise StrategyFailed("Neither node can be moved")
-
             grid.delete_edge(j_ac)
+            j_ac=None
+            
+        # a previous version only checked fixed against HINT and SLIDE
+        # when the edge j_ac existed.  Why not allow this comparison
+        # even when j_ac doesn't exist?
 
+        if grid.nodes['fixed'][na] in [site.af.FREE,site.af.HINT,site.af.SLIDE]:
+            mover=na
+            anchor=nc
+        elif grid.nodes['fixed'][nc] in [site.af.FREE,site.af.HINT,site.af.SLIDE]:
+            mover=nc
+            anchor=na
+        else:
+            raise StrategyFailed("Neither node can be moved")
+
+        he_ab=grid.nodes_to_halfedge(na,nb)
+        he_da=he_ab.rev()
+        pre_a=he_da.node_rev()
+        he_bc=he_ab.fwd()
+        he_cd=he_bc.fwd()
+        post_c=he_cd.node_fwd()
+        
+        if pre_a==post_c:
+            log.info("Found a quad - proceeding carefully with nd")
+            nd=pre_a
+
+        # figure out external cell markers before the half-edges are invalidated.
+        # note the cell index on the outside of mover, and record half-edges
+        # for the anchor side
+        if mover==na:
+            cell_opp_mover=he_ab.cell_opp()
+            cell_opp_dmover=he_da.cell_opp()
+            he_anchor=he_bc
+            he_danchor=he_cd
+        else:
+            cell_opp_mover=he_bc.cell_opp()
+            cell_opp_dmover=he_cd.cell_opp()
+            he_anchor=he_ab
+            he_danchor=he_da
+        
         edits={'cells':[],'edges':[] }
 
         cells_to_replace=[]
@@ -613,25 +627,6 @@ class JoinStrategy(Strategy):
             for i in [0,1]:
                 if nodes[i]==mover:
                     if (nodes[1-i]==nb) or (nodes[1-i]==nd):
-                        # While we don't add the edge itself, do need
-                        # to check whether the old edge,
-                        # which is adjacent to the "joined" areas which vanish, had
-                        # a relevant non-cell index on the other side, i.e. boundary vs.
-                        # unpaved.
-                        cells=data['cells']
-                        pdb.set_trace()
-
-                        # HERE - need code above, before we wreck the topology,
-                        # to find out
-                        # cell_outside_mover
-                        # he_anchor, with the he facing into the site.
-                        # he_d, from anchor to d, if exists, and again facing into the site.
-                        # cell_outside_mover_d
-                        #
-                        # Then here we can update the adjacent cells for he_anchor
-                        # if it is a mark and not a real cell which will be restored
-                        # below.
-
                         nodes=None # signal that we don't add it
                     else:
                         nodes[i]=anchor
@@ -664,6 +659,16 @@ class JoinStrategy(Strategy):
             cnew=grid.add_cell(nodes=nodes)
             edits['cells'].append(cnew)
 
+        if cell_opp_mover<0: # need to update boundary markers
+            j_cells=grid.edges['cells'][he_anchor.j,:].copy()
+            j_cells[he_anchor.orient]=cell_opp_mover
+            grid.modify_edge(he_anchor.j,cells=j_cells)
+            
+        if nd is not None and cell_opp_dmover<0:
+            j_cells=grid.edges['cells'][he_danchor.j,:].copy()
+            j_cells[he_danchor.orient]=cell_opp_dmover
+            grid.modify_edge(he_danchor.j,cells=j_cells)
+            
         # This check could also go in unstructured_grid, maybe optionally?
         areas=grid.cells_area()
         if np.any( areas[edits['cells']]<=0.0 ):
