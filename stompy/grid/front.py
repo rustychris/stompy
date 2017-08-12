@@ -566,13 +566,34 @@ class JoinStrategy(Strategy):
         # a previous version only checked fixed against HINT and SLIDE
         # when the edge j_ac existed.  Why not allow this comparison
         # even when j_ac doesn't exist?
-
-        if grid.nodes['fixed'][na] in [site.af.FREE,site.af.HINT,site.af.SLIDE]:
+        # need to be more careful than that, though.  The only time it's okay
+        # for a SLIDE or HINT to be the mover is if anchor is on the same ring,
+        # and the path between them is clear, which means b cannot be on that
+        # ring.
+        
+        if grid.nodes['fixed'][na]==site.af.FREE:
             mover=na
             anchor=nc
-        elif grid.nodes['fixed'][nc] in [site.af.FREE,site.af.HINT,site.af.SLIDE]:
+        elif grid.nodes['fixed'][nc]==site.af.FREE:
             mover=nc
             anchor=na
+        elif grid.nodes['oring'][na]>0 and grid.nodes['oring'][nc]>0:
+            # *might* be legal but requires more checks:
+            ring=grid.nodes['oring'][na]
+            if ring!=grid.nodes['oring'][nc]:
+                raise StrategyFailed("Cannot join across rings")
+            if grid.nodes['oring'][nb]==ring:
+                # this is a problem if nb falls in between them.
+                fa,fb,fc=grid.nodes['ring_f'][ [na,nb,nc] ]
+                curve=site.af.curves[ring-1]
+                if ( curve.is_forward(fa,fb,fc) or
+                     curve.is_forward(fc,fb,fa) ):
+                    raise StrategyFailed("Cannot join across middle node")
+            # probably okay, not sure if there are more checks to attempt
+            if grid.nodes['fixed'][na]==site.af.HINT:
+                mover,anchor=na,nc
+            else:
+                mover,anchor=nc,na
         else:
             raise StrategyFailed("Neither node can be moved")
 

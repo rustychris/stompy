@@ -38,7 +38,7 @@ def test_curve_eval():
     f=np.linspace(0,2*crv.total_distance(),25)
     crvX=crv(f)
     
-    if plt:
+    if 0: # skip plots
         plt.clf()
         crv.plot()
 
@@ -49,7 +49,7 @@ def test_curve_eval():
 def test_distance_away():
     crv=hex_curve()
 
-    if plt:
+    if 0: # skip plots
         plt.clf()
         crv.plot()
         plt.axis('equal')
@@ -64,7 +64,7 @@ def test_distance_away():
             f,x =crv.distance_away(f0,tgt,rtol=rtol)
             d=utils.dist(x-x0)
             assert np.abs( (d-np.abs(tgt))/tgt) <= rtol
-            if plt:
+            if 0:
                 plt.plot( [x0[0],x[0]],
                           [x0[1],x[1]],style)
 
@@ -124,7 +124,7 @@ def test_curve_upsample():
 
     pnts,dists = boundary.upsample(scale,return_sources=True)
 
-    if plt:
+    if 0:
         plt.clf()
         line=boundary.plot()
         plt.setp(line,lw=0.5,color='0.5')
@@ -144,7 +144,7 @@ def test_basic_setup():
     # create boundary edges based on scale and curves:
     af.initialize_boundaries()
 
-    if 0 and plt:
+    if 0:
         plt.clf()
         g=af.grid
         g.plot_edges()
@@ -217,7 +217,7 @@ def test_merge_edges():
         if he==he0:
             break
 
-    if plt:
+    if 0:
         plt.clf()
         af.grid.plot_edges()
 
@@ -240,7 +240,7 @@ def test_resample():
     af.resample(n=n,anchor=anchor,scale=25,direction=1)
     af.resample(n=n2,anchor=anchor,scale=25,direction=-1)
 
-    if plt:
+    if 0:
         plt.clf()
         af.grid.plot_edges()
 
@@ -255,7 +255,7 @@ def test_resample():
 def test_resample_neighbors():
     af=test_basic_setup()
     
-    if plt:
+    if 0:
         plt.clf()
         af.grid.plot_nodes(color='r')
     
@@ -263,7 +263,7 @@ def test_resample_neighbors():
             
     af.resample_neighbors(site)
 
-    if plt:
+    if 0:
         af.grid.plot_edges()
 
         af.grid.plot_nodes(color='g')
@@ -366,7 +366,7 @@ def test_dt_backtracking():
     tries all possible children, at least for strategies,
     then goes with the "best" one.
     """
-    if plt:
+    if 0:
         plt.figure(1).clf()
         fig,ax=plt.subplots(num=1)
         
@@ -411,12 +411,9 @@ def test_singlestep_lookahead():
         if not af.current.best_child(): # cb=cb
             assert False
         
-    # af.plot_summary()
     return af
 
-
 ## 
-
 # Basic, no lookahead:
 # This produces better results because the metrics have been pre-tuned
 
@@ -890,4 +887,4 @@ def test_sine_sine():
 # test_cul_de_sac? - maybe fixed
 # test_peanut: need to fix the bulk initialization of the CDT.
 #   way way slow.
-# singlestep_lookahead failed?
+# singlestep_lookahead failed? probably fixed.
