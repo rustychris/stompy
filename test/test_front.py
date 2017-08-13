@@ -116,8 +116,7 @@ def test_is_forward():
     assert crv.is_reverse(5,-5,10)
 
 
-
-#-# 
+## 
 def test_curve_upsample():
     boundary=hex_curve()
     scale=field.ConstantField(3)
@@ -884,7 +883,11 @@ def test_sine_sine():
 
 # Who is failing at this point?
 # test_long_channel_rigid -
-# test_cul_de_sac? - maybe fixed
 # test_peanut: need to fix the bulk initialization of the CDT.
 #   way way slow.
-# singlestep_lookahead failed? probably fixed.
+
+# trying a simple speed up on exact_delaunay - it currently
+# recomputes neighbors a lot, which could make some operations
+# which should be linear, into quadratic.
+# starting point: test_pave_quad takes 52s
+# with the change, it takes 42s.  makes the code cleaner, 

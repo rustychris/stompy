@@ -586,9 +586,22 @@ class JoinStrategy(Strategy):
                 # this is a problem if nb falls in between them.
                 fa,fb,fc=grid.nodes['ring_f'][ [na,nb,nc] ]
                 curve=site.af.curves[ring-1]
-                if ( curve.is_forward(fa,fb,fc) or
-                     curve.is_forward(fc,fb,fa) ):
-                    raise StrategyFailed("Cannot join across middle node")
+                # simple orientation test, such as
+                # (curve.is_forward(fa,fb,fc) or
+                #  curve.is_forward(fc,fb,fa))
+                # is not sufficient, since fb is between them for one
+                # direction or the other.
+                # so choose the shorter distance around between a and
+                # c, and check that b isn't in the middle of that.
+                # not sure that this will be correct in bizarrely small
+                # corner cases
+                tdist=curve.total_distance()
+                if (fa-fc) % tdist < tdist/2:
+                    if curve.is_forward(fc,fb,fa):
+                        raise StrategyFailed("Cannot join across middle node")
+                else:
+                    if curve.is_forward(fa,fb,fc):
+                        raise StrategyFailed("Cannot join across middle node")
             # probably okay, not sure if there are more checks to attempt
             if grid.nodes['fixed'][na]==site.af.HINT:
                 mover,anchor=na,nc
