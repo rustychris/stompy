@@ -3028,7 +3028,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         centers = self.cells_center()[cells]
         errors=np.zeros( len(self.cells[cells]),'f8')
 
-        for nsi in six.range(3,self.max_sides+1):
+        for nsi in range(3,self.max_sides+1):
             sel = (self.cells['nodes'][cells,nsi-1]>=0) & (~self.cells['deleted'][cells])
             if nsi<self.max_sides:
                 sel = sel&(self.cells['nodes'][cells,nsi]<0)
