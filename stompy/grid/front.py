@@ -482,7 +482,46 @@ class BisectStrategy(Strategy):
                 'cells': [new_c1,new_c2],
                 'edges': [j_cd,j_bd,j_ad] }
     
+
+class ResampleStrategy(Strategy):
+    """ TESTING: resample one step beyond.
+    """
+    def __str__(self):
+        return "<Resample>"
+    def nodes_beyond(self,site):
+        he=site.grid.nodes_to_halfedge(site.abc[0],site.abc[1])
+        pre_a=he.rev().node_rev()
+        post_c=he.fwd().fwd().node_fwd()
+        return pre_a,post_c
     
+    def metric(self,site):
+        pre_a,post_c = self.node_beyond(site)
+
+        scale=site.local_length
+
+        p_pa,p_a,p_c,p_pc=site.grid.nodes['x'][ [pre_a,
+                                                 site.abc[0],
+                                                 site.abc[2],
+                                                 post_c] ]
+        dists=[utils.dist( p_pa - p_a ),
+               utils.dist( p_c - p_pc )]
+        # return a good low score when those distances are short relative
+        # scale
+        return min( dists[0]/scale,dists[1]/scale )
+    def execute(self,site):
+        pre_a,post_c = self.node_beyond(site)
+
+        scale=site.local_length
+        HERE: just copied from resample_neighbors().
+        for n,direction in [ (a,-1),
+                             (c,1) ]:
+            # used to check for SLIDE and degree
+            # not sure whether we should let SLIDE through...
+            if grid.nodes['fixed'][n] in [self.af.HINT,self.af.SLIDE]:
+                try:
+                    n_res=self.af.resample(n=n,anchor=b,scale=local_length,direction=direction)
+        
+            
 class CutoffStrategy(Strategy):
     def __str__(self):
         return "<Cutoff>"
@@ -551,23 +590,8 @@ class JoinStrategy(Strategy):
         mover=None
 
         j_ac=grid.nodes_to_edge(na,nc)
-        if j_ac is None:
-            if grid.nodes['fixed'][na]!=site.af.FREE:
-                if grid.nodes['fixed'][nc]!=site.af.FREE:
-                    raise StrategyFailed("Neither node is movable, cannot Join")
-                mover=nc
-                anchor=na
-            else:
-                mover=na
-                anchor=nc
 
-            he=grid.nodes_to_halfedge(na,nb)
-            pre_a=he.rev().node_rev()
-            post_c=he.fwd().fwd().node_fwd()
-            if pre_a==post_c:
-                log.info("Found a quad - proceeding carefully with nd")
-                nd=pre_a
-        else:
+        if j_ac is not None:
             # special case: nodes are already joined, but there is no
             # cell.
             # this *could* be extended to allow the deletion of thin cells,
@@ -575,18 +599,81 @@ class JoinStrategy(Strategy):
             # not creation)
             if (grid.edges['cells'][j_ac,0] >=0) or (grid.edges['cells'][j_ac,1]>=0):
                 raise StrategyFailed("Edge already has real cells")
-            # these now include HINT for choosing the mover.
-            if grid.nodes['fixed'][na] in [site.af.FREE,site.af.HINT,site.af.SLIDE]:
-                mover=na
-                anchor=nc
-            elif grid.nodes['fixed'][nc] in [site.af.FREE,site.af.HINT,site.af.SLIDE]:
-                mover=nc
-                anchor=na
-            else:
-                raise StrategyFailed("Neither node can be moved")
-
             grid.delete_edge(j_ac)
+            j_ac=None
+            
+        # a previous version only checked fixed against HINT and SLIDE
+        # when the edge j_ac existed.  Why not allow this comparison
+        # even when j_ac doesn't exist?
+        # need to be more careful than that, though.  The only time it's okay
+        # for a SLIDE or HINT to be the mover is if anchor is on the same ring,
+        # and the path between them is clear, which means b cannot be on that
+        # ring.
+        
+        if grid.nodes['fixed'][na]==site.af.FREE:
+            mover=na
+            anchor=nc
+        elif grid.nodes['fixed'][nc]==site.af.FREE:
+            mover=nc
+            anchor=na
+        elif grid.nodes['oring'][na]>0 and grid.nodes['oring'][nc]>0:
+            # *might* be legal but requires more checks:
+            ring=grid.nodes['oring'][na]
+            if ring!=grid.nodes['oring'][nc]:
+                raise StrategyFailed("Cannot join across rings")
+            if grid.nodes['oring'][nb]==ring:
+                # this is a problem if nb falls in between them.
+                fa,fb,fc=grid.nodes['ring_f'][ [na,nb,nc] ]
+                curve=site.af.curves[ring-1]
+                # simple orientation test, such as
+                # (curve.is_forward(fa,fb,fc) or
+                #  curve.is_forward(fc,fb,fa))
+                # is not sufficient, since fb is between them for one
+                # direction or the other.
+                # so choose the shorter distance around between a and
+                # c, and check that b isn't in the middle of that.
+                # not sure that this will be correct in bizarrely small
+                # corner cases
+                tdist=curve.total_distance()
+                if (fa-fc) % tdist < tdist/2:
+                    if curve.is_forward(fc,fb,fa):
+                        raise StrategyFailed("Cannot join across middle node")
+                else:
+                    if curve.is_forward(fa,fb,fc):
+                        raise StrategyFailed("Cannot join across middle node")
+            # probably okay, not sure if there are more checks to attempt
+            if grid.nodes['fixed'][na]==site.af.HINT:
+                mover,anchor=na,nc
+            else:
+                mover,anchor=nc,na
+        else:
+            raise StrategyFailed("Neither node can be moved")
 
+        he_ab=grid.nodes_to_halfedge(na,nb)
+        he_da=he_ab.rev()
+        pre_a=he_da.node_rev()
+        he_bc=he_ab.fwd()
+        he_cd=he_bc.fwd()
+        post_c=he_cd.node_fwd()
+        
+        if pre_a==post_c:
+            log.info("Found a quad - proceeding carefully with nd")
+            nd=pre_a
+
+        # figure out external cell markers before the half-edges are invalidated.
+        # note the cell index on the outside of mover, and record half-edges
+        # for the anchor side
+        if mover==na:
+            cell_opp_mover=he_ab.cell_opp()
+            cell_opp_dmover=he_da.cell_opp()
+            he_anchor=he_bc
+            he_danchor=he_cd
+        else:
+            cell_opp_mover=he_bc.cell_opp()
+            cell_opp_dmover=he_cd.cell_opp()
+            he_anchor=he_ab
+            he_danchor=he_da
+        
         edits={'cells':[],'edges':[] }
 
         cells_to_replace=[]
@@ -613,25 +700,6 @@ class JoinStrategy(Strategy):
             for i in [0,1]:
                 if nodes[i]==mover:
                     if (nodes[1-i]==nb) or (nodes[1-i]==nd):
-                        # While we don't add the edge itself, do need
-                        # to check whether the old edge,
-                        # which is adjacent to the "joined" areas which vanish, had
-                        # a relevant non-cell index on the other side, i.e. boundary vs.
-                        # unpaved.
-                        cells=data['cells']
-                        pdb.set_trace()
-
-                        # HERE - need code above, before we wreck the topology,
-                        # to find out
-                        # cell_outside_mover
-                        # he_anchor, with the he facing into the site.
-                        # he_d, from anchor to d, if exists, and again facing into the site.
-                        # cell_outside_mover_d
-                        #
-                        # Then here we can update the adjacent cells for he_anchor
-                        # if it is a mark and not a real cell which will be restored
-                        # below.
-
                         nodes=None # signal that we don't add it
                     else:
                         nodes[i]=anchor
@@ -664,6 +732,16 @@ class JoinStrategy(Strategy):
             cnew=grid.add_cell(nodes=nodes)
             edits['cells'].append(cnew)
 
+        if cell_opp_mover<0: # need to update boundary markers
+            j_cells=grid.edges['cells'][he_anchor.j,:].copy()
+            j_cells[he_anchor.orient]=cell_opp_mover
+            grid.modify_edge(he_anchor.j,cells=j_cells)
+            
+        if nd is not None and cell_opp_dmover<0:
+            j_cells=grid.edges['cells'][he_danchor.j,:].copy()
+            j_cells[he_danchor.orient]=cell_opp_dmover
+            grid.modify_edge(he_danchor.j,cells=j_cells)
+            
         # This check could also go in unstructured_grid, maybe optionally?
         areas=grid.cells_area()
         if np.any( areas[edits['cells']]<=0.0 ):
@@ -1200,17 +1278,21 @@ class AdvancingFront(object):
         """
         span=0.0
         if direction==1:
-            trav=he.node_fwd()
-            last=anchor=he.node_rev()
+            trav0=he.node_fwd()
+            anchor=he.node_rev()
         else:
-            trav=he.node_rev()
-            last=anchor=he.node_fwd()
+            trav0=he.node_rev()
+            anchor=he.node_fwd()
+        last=anchor
+        trav=trav0
 
         nodes=[last] # anchor is included
 
         def pred(n):
             # used to check for SLIDE and degree
-            return self.grid.nodes['fixed'][n]== self.HINT
+            # then only checked for HINT.  but in some
+            # cases, trav0 was SLIDE, and we'd stop there.
+            return (n==trav0) or self.grid.nodes['fixed'][n]== self.HINT
 
         while pred(trav) and (trav != anchor) and (span<max_span):
             span += utils.dist( self.grid.nodes['x'][last] -
@@ -1429,10 +1511,16 @@ class AdvancingFront(object):
                          disp=0)
         dx=utils.dist( new_x - x0 )
         self.log.debug('Relaxation moved node %f'%dx)
-        if dx !=0.0:
-            self.grid.modify_node(n,x=new_x)
-        return cost(new_x)
-
+        cp=self.grid.checkpoint()
+        try:
+            if dx !=0.0:
+                self.grid.modify_node(n,x=new_x)
+            return cost(new_x)
+        except self.cdt.IntersectingConstraints as exc:
+            self.grid.revert(cp)
+            self.log.info("Relaxation caused intersection, reverting")
+            return cost
+        
     def relax_slide_node(self,n):
         cost_free=self.cost_function(n)
         if cost_free is None:
@@ -1462,10 +1550,16 @@ class AdvancingFront(object):
                                             slide_limits[1]):
             self.log.info("Slide went outside limits")
             return cost_free(x0)
-        
-        if new_f[0]!=f0:
-            self.slide_node(n,new_f[0]-f0)
-        return cost_slide(new_f)
+
+        cp=self.grid.checkpoint()
+        try:
+            if new_f[0]!=f0:
+                self.slide_node(n,new_f[0]-f0)
+            return cost_slide(new_f)
+        except self.cdt.IntersectingConstraints as exc:
+            self.grid.revert(cp)
+            self.log.info("Relaxation caused intersection, reverting")
+            return cost_free(x0)
 
     def find_slide_limits(self,n,cutoff=None):
         """ Returns the range of allowable ring_f for n.
@@ -1619,10 +1713,13 @@ class AdvancingFront(object):
             site=self.choose_site()
             if site is None:
                 break
-            self.advance_at_site(site)
+            if not self.advance_at_site(site):
+                self.log.error("Failed to advance. Exiting loop early")
+                return False
             count-=1
             if count==0:
                 break
+        return True
             
     def advance_at_site(self,site):
         # This can modify site! May also fail.
@@ -1639,7 +1736,13 @@ class AdvancingFront(object):
                 self.optimize_edits(edits)
                 # could commit?
             except self.cdt.IntersectingConstraints as exc:
+                # arguably, this should be caught lower down, and rethrown
+                # as a StrategyFailed.
                 self.log.error("Intersecting constraints - rolling back")
+                self.grid.revert(cp)
+                continue
+            except StrategyFailed as exc:
+                self.log.error("Strategy failed - rolling back")
                 self.grid.revert(cp)
                 continue
             break
@@ -1656,14 +1759,14 @@ class AdvancingFront(object):
         ax.cla()
 
         for curve in self.curves:
-            curve.plot(ax=ax,color='0.5',zorder=-5)
+            curve.plot(ax=ax,color='0.5',lw=0.4,zorder=-5)
 
-        self.grid.plot_edges(ax=ax,clip=clip)
+        self.grid.plot_edges(ax=ax,clip=clip,lw=1)
         if label_nodes:
             labeler=lambda ni,nr: str(ni)
         else:
             labeler=None
-        self.grid.plot_nodes(ax=ax,labeler=labeler,clip=clip)
+        self.grid.plot_nodes(ax=ax,labeler=labeler,clip=clip,sizes=10)
         ax.axis('equal')
         if self.zoom:
             ax.axis(self.zoom)

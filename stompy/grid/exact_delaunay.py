@@ -1039,10 +1039,10 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
         # based on neighbor nodes.
         nbr_nodes=self.angle_sort_adjacent_nodes(n)
         
-        start=trav=nbr_nodes[0]
-        trav_next=nbr_nodes[1]
-
-        while 1:
+        N=len(nbr_nodes)
+        for i in range(N):
+            trav=nbr_nodes[i]
+            trav_next=nbr_nodes[(i+1)%N]
             c=self.nodes_to_cell( [n,trav,trav_next],fail_hard=False)
             if c is not None:    
                 for i in [0,1,2]:
@@ -1050,17 +1050,10 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
                         break
                 else:
                     assert False
-            # line up the next cell before modifying this one
-            nbr_nodes=self.angle_sort_adjacent_nodes(n,ref_nbr=trav_next)
-            trav=trav_next
-            trav_next=nbr_nodes[1]
 
             if c is not None:
                 self.propagating_flip(c,i)
                 
-            if trav == start:
-                break
-
         if self.post_check:
             bad=self.check_local_delaunay()
             if bad:
