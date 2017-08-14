@@ -482,7 +482,46 @@ class BisectStrategy(Strategy):
                 'cells': [new_c1,new_c2],
                 'edges': [j_cd,j_bd,j_ad] }
     
+
+class ResampleStrategy(Strategy):
+    """ TESTING: resample one step beyond.
+    """
+    def __str__(self):
+        return "<Resample>"
+    def nodes_beyond(self,site):
+        he=site.grid.nodes_to_halfedge(site.abc[0],site.abc[1])
+        pre_a=he.rev().node_rev()
+        post_c=he.fwd().fwd().node_fwd()
+        return pre_a,post_c
     
+    def metric(self,site):
+        pre_a,post_c = self.node_beyond(site)
+
+        scale=site.local_length
+
+        p_pa,p_a,p_c,p_pc=site.grid.nodes['x'][ [pre_a,
+                                                 site.abc[0],
+                                                 site.abc[2],
+                                                 post_c] ]
+        dists=[utils.dist( p_pa - p_a ),
+               utils.dist( p_c - p_pc )]
+        # return a good low score when those distances are short relative
+        # scale
+        return min( dists[0]/scale,dists[1]/scale )
+    def execute(self,site):
+        pre_a,post_c = self.node_beyond(site)
+
+        scale=site.local_length
+        HERE: just copied from resample_neighbors().
+        for n,direction in [ (a,-1),
+                             (c,1) ]:
+            # used to check for SLIDE and degree
+            # not sure whether we should let SLIDE through...
+            if grid.nodes['fixed'][n] in [self.af.HINT,self.af.SLIDE]:
+                try:
+                    n_res=self.af.resample(n=n,anchor=b,scale=local_length,direction=direction)
+        
+            
 class CutoffStrategy(Strategy):
     def __str__(self):
         return "<Cutoff>"
@@ -1239,17 +1278,21 @@ class AdvancingFront(object):
         """
         span=0.0
         if direction==1:
-            trav=he.node_fwd()
-            last=anchor=he.node_rev()
+            trav0=he.node_fwd()
+            anchor=he.node_rev()
         else:
-            trav=he.node_rev()
-            last=anchor=he.node_fwd()
+            trav0=he.node_rev()
+            anchor=he.node_fwd()
+        last=anchor
+        trav=trav0
 
         nodes=[last] # anchor is included
 
         def pred(n):
             # used to check for SLIDE and degree
-            return self.grid.nodes['fixed'][n]== self.HINT
+            # then only checked for HINT.  but in some
+            # cases, trav0 was SLIDE, and we'd stop there.
+            return (n==trav0) or self.grid.nodes['fixed'][n]== self.HINT
 
         while pred(trav) and (trav != anchor) and (span<max_span):
             span += utils.dist( self.grid.nodes['x'][last] -
@@ -1468,10 +1511,16 @@ class AdvancingFront(object):
                          disp=0)
         dx=utils.dist( new_x - x0 )
         self.log.debug('Relaxation moved node %f'%dx)
-        if dx !=0.0:
-            self.grid.modify_node(n,x=new_x)
-        return cost(new_x)
-
+        cp=self.grid.checkpoint()
+        try:
+            if dx !=0.0:
+                self.grid.modify_node(n,x=new_x)
+            return cost(new_x)
+        except self.cdt.IntersectingConstraints as exc:
+            self.grid.revert(cp)
+            self.log.info("Relaxation caused intersection, reverting")
+            return cost
+        
     def relax_slide_node(self,n):
         cost_free=self.cost_function(n)
         if cost_free is None:
@@ -1501,10 +1550,16 @@ class AdvancingFront(object):
                                             slide_limits[1]):
             self.log.info("Slide went outside limits")
             return cost_free(x0)
-        
-        if new_f[0]!=f0:
-            self.slide_node(n,new_f[0]-f0)
-        return cost_slide(new_f)
+
+        cp=self.grid.checkpoint()
+        try:
+            if new_f[0]!=f0:
+                self.slide_node(n,new_f[0]-f0)
+            return cost_slide(new_f)
+        except self.cdt.IntersectingConstraints as exc:
+            self.grid.revert(cp)
+            self.log.info("Relaxation caused intersection, reverting")
+            return cost_free(x0)
 
     def find_slide_limits(self,n,cutoff=None):
         """ Returns the range of allowable ring_f for n.
@@ -1658,10 +1713,13 @@ class AdvancingFront(object):
             site=self.choose_site()
             if site is None:
                 break
-            self.advance_at_site(site)
+            if not self.advance_at_site(site):
+                self.log.error("Failed to advance. Exiting loop early")
+                return False
             count-=1
             if count==0:
                 break
+        return True
             
     def advance_at_site(self,site):
         # This can modify site! May also fail.
@@ -1678,7 +1736,13 @@ class AdvancingFront(object):
                 self.optimize_edits(edits)
                 # could commit?
             except self.cdt.IntersectingConstraints as exc:
+                # arguably, this should be caught lower down, and rethrown
+                # as a StrategyFailed.
                 self.log.error("Intersecting constraints - rolling back")
+                self.grid.revert(cp)
+                continue
+            except StrategyFailed as exc:
+                self.log.error("Strategy failed - rolling back")
                 self.grid.revert(cp)
                 continue
             break
@@ -1695,14 +1759,14 @@ class AdvancingFront(object):
         ax.cla()
 
         for curve in self.curves:
-            curve.plot(ax=ax,color='0.5',zorder=-5)
+            curve.plot(ax=ax,color='0.5',lw=0.4,zorder=-5)
 
-        self.grid.plot_edges(ax=ax,clip=clip)
+        self.grid.plot_edges(ax=ax,clip=clip,lw=1)
         if label_nodes:
             labeler=lambda ni,nr: str(ni)
         else:
             labeler=None
-        self.grid.plot_nodes(ax=ax,labeler=labeler,clip=clip)
+        self.grid.plot_nodes(ax=ax,labeler=labeler,clip=clip,sizes=10)
         ax.axis('equal')
         if self.zoom:
             ax.axis(self.zoom)
