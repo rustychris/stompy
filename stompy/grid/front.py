@@ -493,11 +493,11 @@ class ResampleStrategy(Strategy):
         pre_a=he.rev().node_rev()
         post_c=he.fwd().fwd().node_fwd()
         return pre_a,post_c
-    
-    def metric(self,site):
-        pre_a,post_c = self.node_beyond(site)
 
-        scale=site.local_length
+    def distances(self,site):
+        "return pair of distances from the site to next node"
+        
+        pre_a,post_c = self.nodes_beyond(site)
 
         p_pa,p_a,p_c,p_pc=site.grid.nodes['x'][ [pre_a,
                                                  site.abc[0],
@@ -505,22 +505,50 @@ class ResampleStrategy(Strategy):
                                                  post_c] ]
         dists=[utils.dist( p_pa - p_a ),
                utils.dist( p_c - p_pc )]
+        return dists
+        
+    def metric(self,site):
+        dists=self.distances(site)
         # return a good low score when those distances are short relative
         # scale
-        return min( dists[0]/scale,dists[1]/scale )
-    def execute(self,site):
-        pre_a,post_c = self.node_beyond(site)
-
         scale=site.local_length
-        HERE: just copied from resample_neighbors().
-        for n,direction in [ (a,-1),
-                             (c,1) ]:
-            # used to check for SLIDE and degree
-            # not sure whether we should let SLIDE through...
-            if grid.nodes['fixed'][n] in [self.af.HINT,self.af.SLIDE]:
-                try:
-                    n_res=self.af.resample(n=n,anchor=b,scale=local_length,direction=direction)
+
+        return min( dists[0]/scale,dists[1]/scale )
+
+    def execute(self,site):
+        grid=site.grid
+        scale=site.local_length
+
+        metric0=self.metric(site)
         
+        def maybe_resample(n,anchor,direction):
+            if grid.nodes['fixed'][n] in [site.af.HINT,site.af.SLIDE]:
+                try:
+                    n_res=site.af.resample(n=n,anchor=anchor,scale=scale,
+                                           direction=direction)
+                except Curve.CurveException as exc:
+                    pass
+                
+        # execute one side at a time, since it's possible for a
+        # resample on one side to reach into the other side.
+        he=site.grid.nodes_to_halfedge(site.abc[0],site.abc[1])
+
+        pre_a=he.rev().node_rev()
+        maybe_resample(pre_a,site.abc[0],-1)
+        post_c=he.fwd().fwd().node_fwd()
+        maybe_resample(post_c,site.abc[1],1)
+        
+
+        metric=self.metric(site)
+        
+        if metric<metric0:
+            # while other nodes may have been modified, these are
+            # the ones still remaining, and even these are probably of
+            # no use for optimization.  may change this to report no
+            # optimizable items
+            return {'nodes':[pre_a,post_c]}
+        else:
+            raise StrategyFailed("Resample made no improvement")
             
 class CutoffStrategy(Strategy):
     def __str__(self):
@@ -885,12 +913,12 @@ class NonLocalStrategy(Strategy):
                 'edges': [j] }
 
 
-    
 Wall=WallStrategy()
 Cutoff=CutoffStrategy()
 Join=JoinStrategy()
 Bisect=BisectStrategy()
 NonLocal=NonLocalStrategy()
+Resample=ResampleStrategy()
 
 class Site(object):
     """
@@ -948,7 +976,7 @@ class TriangleSite(FrontSite):
         return ax.plot( points[:,0],points[:,1],'r-o' )[0]
     def actions(self):
         theta=self.internal_angle
-        return [Wall,Cutoff,Join,Bisect,NonLocal]
+        return [Wall,Cutoff,Join,Bisect,NonLocal,Resample]
 
     def resample_neighbors(self):
         """ may update site! used to be part of AdvancingFront, but
@@ -1497,7 +1525,11 @@ class AdvancingFront(object):
         elif self.grid.nodes['fixed'][n] == self.SLIDE:
             return self.relax_slide_node(n)
         else:
-            raise Exception("relax_node with fixed=%s"%self.grid.nodes['fixed'][n])
+            # Changed to silent pass because ResampleStrategy currently
+            # tells the truth about nodes it moves, even though they
+            # are HINT nodes.  
+            # raise Exception("relax_node with fixed=%s"%self.grid.nodes['fixed'][n])
+            return 0.0
 
     def relax_free_node(self,n):
         cost=self.cost_function(n)

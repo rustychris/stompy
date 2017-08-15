@@ -712,6 +712,48 @@ def test_cul_de_sac():
     density = field.ConstantField(2*r/(np.sqrt(3)/2))
     trifront_wrapper([ring],density,label='cul_de_sac')
 
+##
+r=5
+theta = np.linspace(-np.pi/2,np.pi/2,20)
+cap = r * np.swapaxes( np.array([np.cos(theta), np.sin(theta)]), 0,1)
+box = np.array([ [-3*r,r],
+                 [-4*r,-r] ])
+ring = np.concatenate((box,cap))
+rings=[ring]
+
+scale = field.ConstantField(2*r/(np.sqrt(3)/2))
+# trifront_wrapper([ring],density,label='cul_de_sac')
+
+af=front.AdvancingTriangles()
+af.set_edge_scale(scale)
+    
+af.add_curve(rings[0],interior=False)
+for ring in rings[1:]:
+    af.add_curve(ring,interior=True)
+af.initialize_boundaries()
+
+## 
+af.loop(2)
+af.plot_summary(label_nodes=False)
+
+##
+
+site=af.choose_site()
+site.plot()
+
+##
+
+front.Resample.execute(site)
+
+# this is getting kind of bad -
+#   exposes some issues in resample where the number of segments is chosen
+#   base on distance along path, but then it places the nodes based on
+#   straight-line distances
+
+#
+# INFO:AdvancingFront:n_segment=1, but that would be an implicit join
+# 
+
 ##     
 def test_bow():
     x = np.linspace(-100,100,50)
