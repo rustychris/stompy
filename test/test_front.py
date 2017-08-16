@@ -880,34 +880,34 @@ def test_sine_sine():
 
 ##
 
+if 0:
+    rings=sine_sine_rings()
+    density = field.ConstantField(25.0)
 
-rings=sine_sine_rings()
-density = field.ConstantField(25.0)
 
+    af=front.AdvancingTriangles()
+    af.set_edge_scale(density)
 
-af=front.AdvancingTriangles()
-af.set_edge_scale(density)
+    af.add_curve(rings[0],interior=False)
+    for ring in rings[1:]:
+        af.add_curve(ring,interior=True)
+    af.initialize_boundaries()
 
-af.add_curve(rings[0],interior=False)
-for ring in rings[1:]:
-    af.add_curve(ring,interior=True)
-af.initialize_boundaries()
+    af.loop(12)
 
-af.loop(12)
+    ## 
 
-## 
+    # af.loop(1)
 
-# af.loop(1)
+    zoom=(3659.0438883805541, 3830.0274873892508, -115.41637873859611, 19.957127976555682)
+    zoom=(3691.4047394120844, 3771.8443367653808, -88.483853026251893, -24.797099234640243)
 
-zoom=(3659.0438883805541, 3830.0274873892508, -115.41637873859611, 19.957127976555682)
-zoom=(3691.4047394120844, 3771.8443367653808, -88.483853026251893, -24.797099234640243)
+    af.plot_summary(label_nodes=True)
+    plt.axis(zoom)
 
-af.plot_summary(label_nodes=True)
-plt.axis(zoom)
-
-site=af.choose_site()
-site.plot()
-af.advance_at_site(site)
+    site=af.choose_site()
+    site.plot()
+    af.advance_at_site(site)
 
 ## 
 

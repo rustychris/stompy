@@ -539,7 +539,7 @@ class ResampleStrategy(Strategy):
         pre_a=he.rev().node_rev()
         maybe_resample(pre_a,site.abc[0],-1)
         post_c=he.fwd().fwd().node_fwd()
-        maybe_resample(post_c,site.abc[1],1)
+        maybe_resample(post_c,site.abc[2],1)
         
 
         metric=self.metric(site)
@@ -2207,7 +2207,7 @@ class DTChooseStrategy(DTNode):
         self.af.current=self.children[i]
 
         nodes=[]
-        for c in edits['cells']:
+        for c in edits.get('cells',[]):
             nodes += list(self.af.grid.cell_to_nodes(c))
         for n in edits.get('nodes',[]):
             nodes.append(n)
