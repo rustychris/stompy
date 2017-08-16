@@ -522,6 +522,9 @@ class ResampleStrategy(Strategy):
         metric0=self.metric(site)
         
         def maybe_resample(n,anchor,direction):
+            if n in site.abc:
+                # went too far around!  Bad!
+                return
             if grid.nodes['fixed'][n] in [site.af.HINT,site.af.SLIDE]:
                 try:
                     n_res=site.af.resample(n=n,anchor=anchor,scale=scale,
@@ -1365,7 +1368,7 @@ class AdvancingFront(object):
                                                                                 direction) )
         n_deg=self.grid.node_degree(n)
         if n_deg!=2:
-            self.log.info("Will not resample node %d because degree=%d, not 2"%(n,n_deg))
+            self.log.debug("Will not resample node %d because degree=%d, not 2"%(n,n_deg))
             return n
         
         if direction==1: # anchor to n is t
@@ -1382,34 +1385,40 @@ class AdvancingFront(object):
 
         if span_length < self.max_span_factor*scale:
             n_segments = max(1,round(span_length / scale))
-
-            if n_segments==1:
-                # in tight situations, need to make sure
-                # that for a site a--b--c we're not trying
-                # move c all the way on top of a.
-                # it is not sufficient to just force two
-                # segments, as that just pushes the issue into
-                # the next iteration, but in an even worse state.
-                if direction==-1:
-                    he_other=he.fwd()
-                    opposite_node=he_other.node_fwd()
-                else:
-                    he_other=he.rev()
-                    opposite_node=he_other.node_rev()
-                if opposite_node==span_nodes[-1]:
-                    self.log.info("n_segment=1, but that would be an implicit join")
-                    
-                    # rather than force two segments, force it
-                    # to remove all but the last edge
-                    span_nodes=span_nodes[:-1]
             target_span = span_length / n_segments
-            if n_segments==1:
-                self.log.debug("Only one space for 1 segment")
-                for d in span_nodes[1:-1]:
-                    self.grid.merge_edges(node=d)
-                return span_nodes[-1]
         else:
             target_span=scale
+            n_segments = None
+
+        def handle_one_segment():
+            # this is a function because there are two times
+            # (one proactive, one reactive) it might get used below.
+            # in tight situations, need to make sure
+            # that for a site a--b--c we're not trying
+            # move c all the way on top of a.
+            # it is not sufficient to just force two
+            # segments, as that just pushes the issue into
+            # the next iteration, but in an even worse state.
+            if direction==-1:
+                he_other=he.fwd()
+                opposite_node=he_other.node_fwd()
+            else:
+                he_other=he.rev()
+                opposite_node=he_other.node_rev()
+            if opposite_node==span_nodes[-1]:
+                self.log.info("n_segment=1, but that would be an implicit join")
+
+                # rather than force two segments, force it
+                # to remove all but the last edge.
+                del span_nodes[-1]
+
+            self.log.debug("Only space for 1 segment")
+            for d in span_nodes[1:-1]:
+                self.grid.merge_edges(node=d)
+            return span_nodes[-1]
+
+        if n_segments==1:
+            return handle_one_segment()
 
         # first, find a point on the original ring which satisfies the target_span
         anchor_oring=self.grid.nodes['oring'][anchor]-1
@@ -1425,6 +1434,18 @@ class AdvancingFront(object):
         except Curve.CurveException as exc:
             raise
 
+        # it's possible that even though the along-curve distance yielded
+        # n_segments>1, distance_away() went too far since it cuts out some
+        # curvature in the along-curve distance.
+        # this leads to a liability that new_f is beyond span_nodes[-1], and
+        # we should follow the same treatment as above for n_segments==1
+        end_span_f=self.grid.nodes['ring_f'][span_nodes[-1]]
+        if ((direction==1) == (curve.is_forward(anchor_f,end_span_f,new_f))
+            and end_span_f!=anchor_f):
+            pdb.set_trace()
+            self.log.warning("n_segments=%s, but distance_away blew past it"%n_segments)
+            return handle_one_segment()
+            
         # check to see if there are other nodes in the way, and remove them.
         nodes_to_delete=[]
         trav=he
