@@ -880,44 +880,45 @@ def test_sine_sine():
 
 ##
 
-if 0:
-    rings=sine_sine_rings()
-    density = field.ConstantField(25.0)
+
+rings=sine_sine_rings()
+density = field.ConstantField(25.0)
 
 
-    af=front.AdvancingTriangles()
-    af.set_edge_scale(density)
+af=front.AdvancingTriangles()
+af.set_edge_scale(density)
 
-    af.add_curve(rings[0],interior=False)
-    for ring in rings[1:]:
-        af.add_curve(ring,interior=True)
-    af.initialize_boundaries()
+af.add_curve(rings[0],interior=False)
+for ring in rings[1:]:
+    af.add_curve(ring,interior=True)
+af.initialize_boundaries()
 
-    af.loop(12)
+af.loop(12)
 
-    ## 
+##
+af.loop()
 
-    # af.loop(1)
+## 
+zoom=(3685.3576744887459, 3766.6617074119663, -106.27412460553033, -45.230532144628569)
+af.plot_summary(label_nodes=False)
 
-    zoom=(3659.0438883805541, 3830.0274873892508, -115.41637873859611, 19.957127976555682)
-    zoom=(3691.4047394120844, 3771.8443367653808, -88.483853026251893, -24.797099234640243)
+site=af.choose_site()
+site.plot()
 
-    af.plot_summary(label_nodes=True)
-    plt.axis(zoom)
+plt.axis(zoom)
 
-    site=af.choose_site()
-    site.plot()
-    af.advance_at_site(site)
+##
+
+# Gets a bit further, then a DuplicateNode error
+
+##
+
+#af.resample_neighbors(site)
+#front.Resample.execute(site)
 
 ## 
 
-# gets a few more steps in, but fails with a case where
-# the boundary impinges on our ability to even do a simple cutoff.
-# in the old code, I think there was more pro-active resampling
-# along the boundary, to clear out neighboring nodes which were
-# too close.
-# could do something like that, or check the CDT to see if anybody
-# is in our way before attempting a cutoff.
+front.Cutoff.execute(site)
 
 ## 
 
@@ -925,7 +926,7 @@ if 0:
 # test_tight_with_island() - why?
 # 
 # test_peanut: need to fix the bulk initialization of the CDT.
-#   way way slow. maybe better now?
+#   still slow, but better
 # test_sine_sine()
 # test_dumbarton is disabled.
 # test_embedded_channel - needs embedded edges, right?

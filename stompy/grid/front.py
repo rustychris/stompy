@@ -549,17 +549,17 @@ class ResampleStrategy(Strategy):
         maybe_resample(pre_a,site.abc[0],-1)
         post_c=he.fwd().fwd().node_fwd()
         maybe_resample(post_c,site.abc[2],1)
-        
 
         metric=self.metric(site)
         
-        if metric<metric0:
+        if metric>metric0:
             # while other nodes may have been modified, these are
             # the ones still remaining, and even these are probably of
             # no use for optimization.  may change this to report no
             # optimizable items
             return {'nodes':[pre_a,post_c]}
         else:
+            log.warning("Resample made no improvement (%f => %f)"%(metric0,metric))
             raise StrategyFailed("Resample made no improvement")
             
 class CutoffStrategy(Strategy):
