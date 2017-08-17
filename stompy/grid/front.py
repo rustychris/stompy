@@ -313,6 +313,10 @@ class Curve(object):
             pntb=self.points[idxb]
             dista=utils.dist(pnta - anchor_pnt)
             distb=utils.dist(pntb - anchor_pnt)
+            # as written, this may bail out of the iteration with an
+            # inferior solution (i.e. stop when the error is 5%, rather
+            # than go to the next segment where we could get an exact
+            # answer).  It's not too bad though.
             if (dista<(1-rtol)*abs_dist) and (distb<(1-rtol)*abs_dist):
                 # No way this segment is good.
                 continue
@@ -334,20 +338,25 @@ class Curve(object):
         if sign*far_f<sign*close_f:
             far_f+=sign*self.distances[-1]
 
-        for maxit in range(10):
-            mid_f=0.5*(close_f+far_f)
-            pnt_mid=self(mid_f)
-            dist_mid=utils.dist(pnt_mid - anchor_pnt)
-            rel_err = (dist_mid-abs_dist)/abs_dist
-            if rel_err < -rtol:
-                close_f=mid_f
-            elif rel_err > rtol:
-                far_f=mid_f
-            else:
-                result=mid_f,pnt_mid
-                break
+        # explicitly check the far end point
+        if abs(distb-abs_dist) / abs_dist < rtol:
+            # good enough
+            result=far_f,self(far_f)
         else:
-            assert False
+            for maxit in range(10):
+                mid_f=0.5*(close_f+far_f)
+                pnt_mid=self(mid_f)
+                dist_mid=utils.dist(pnt_mid - anchor_pnt)
+                rel_err = (dist_mid-abs_dist)/abs_dist
+                if rel_err < -rtol:
+                    close_f=mid_f
+                elif rel_err > rtol:
+                    far_f=mid_f
+                else:
+                    result=mid_f,pnt_mid
+                    break
+            else:
+                assert False
         return result
 
         

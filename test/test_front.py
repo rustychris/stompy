@@ -922,7 +922,13 @@ if 0:
 ## 
 
 # Who is failing at this point?
-# test_long_channel_rigid -
+# test_tight_with_island() - why?
+# 
 # test_peanut: need to fix the bulk initialization of the CDT.
-#   way way slow.
+#   way way slow. maybe better now?
+# test_sine_sine()
+# test_dumbarton is disabled.
+# test_embedded_channel - needs embedded edges, right?
+# test_long_channel_rigid - needs additional API
+
 
