@@ -910,6 +910,15 @@ class NonLocalStrategy(Strategy):
             return np.inf
     
     def execute(self,site):
+        # as much as it would be nice to blindly execute these
+        # things, the current state of the cost functions means
+        # that a really bad nonlocal may not show up in the cost
+        # function, and that means that best_child() will get tricked
+        # So until there is a better cost function, this needs to
+        # be more careful about which edges it will attempt
+        if self.metric(site) > 0.75:
+            raise StrategyFailed("NonLocal: too far away")
+        
         site_node,nonlocal_node,dist = self.nonlocal_pair(site)
         
         if site_node is None:
@@ -1315,6 +1324,11 @@ class AdvancingFront(object):
 
         the reason this works with halfedges is that we only
         move along nodes which are simply connected (degree 2)
+
+        TODO: this reports along edge distances, but it's
+        used (exclusively?) in walking along boundaries which
+        might be resampled.  It would be better to look at
+        the distance in discrete jumps.
         """
         span=0.0
         if direction==1:
@@ -1443,7 +1457,7 @@ class AdvancingFront(object):
         except Curve.CurveException as exc:
             raise
 
-        # it's possible that even though the along-curve distance yielded
+        # it's possible that even though the free_span distance yielded
         # n_segments>1, distance_away() went too far since it cuts out some
         # curvature in the along-curve distance.
         # this leads to a liability that new_f is beyond span_nodes[-1], and
@@ -1451,59 +1465,94 @@ class AdvancingFront(object):
         end_span_f=self.grid.nodes['ring_f'][span_nodes[-1]]
         if ((direction==1) == (curve.is_forward(anchor_f,end_span_f,new_f))
             and end_span_f!=anchor_f):
-            pdb.set_trace()
             self.log.warning("n_segments=%s, but distance_away blew past it"%n_segments)
             return handle_one_segment()
             
         # check to see if there are other nodes in the way, and remove them.
+        # in the past, this started with the node after n, deleting things up
+        # to, and *including* a node at the location where we want n to be.
+        # in simple cases, it would be better to delete n, and only move the
+        # last node.  But there is a chance that n cannot be deleted, more likely
+        # that n cannot be deleted than later nodes.  However... free_span
+        # would not allow those edges, so we can assume anything goes here.
+        eps=0.001*target_span
+
         nodes_to_delete=[]
         trav=he
         while True:
-            if direction==1:
-                trav=trav.fwd()
-            else:
-                trav=trav.rev()
-            # we have anchor, n, and
-            if trav==he:
-                self.log.error("Made it all the way around!")
-                raise Exception("This is probably bad")
-
+            # start with the half-edge from anchor to n
+            # want to loop until trav.node_fwd() (for direction=1)
+            # is at or beyond our target, and all nodes from n
+            # until trav.node_rev() are in the list nodes_to_delete.
+            
             if direction==1:
                 n_trav=trav.node_fwd()
-                f_trav=self.grid.nodes['ring_f'][n_trav]
-                if curve.is_forward( anchor_f, new_f, f_trav ):
+                f_trav=self.grid.nodes['ring_f'][n_trav] # HERE EPS??
+                if curve.is_forward( anchor_f, new_f+eps, f_trav ):
                     break
             else:
                 n_trav=trav.node_rev()
                 f_trav=self.grid.nodes['ring_f'][n_trav]
-                if curve.is_reverse( anchor_f, new_f, f_trav ):
+                if curve.is_reverse( anchor_f, new_f-eps, f_trav ):
                     break
 
+            # that half-edge wasn't far enough
             nodes_to_delete.append(n_trav)
+                
+            if direction==1:
+                trav=trav.fwd()
+            else:
+                trav=trav.rev()
+                
+            # sanity check.
+            if trav==he:
+                self.log.error("Made it all the way around!")
+                raise Exception("This is probably bad")
 
+        # either n was already far enough, in which case we should split
+        # this edge, or there are some nodes in nodes_to_delete.
+        # the last of those nodes will be saved, and become the new n
+        if len(nodes_to_delete):
+            nnew=nodes_to_delete.pop()
+            # slide, because it needs to move farther out
+            method='slide'
+        else:
+            # because n is already too far
+            method='split'
+            nnew=n
+            
+        # Maybe better to fix the new node with any sliding necessary,
+        # and then delete these, but that would require more checks to
+        # see if it's safe to reposition the node?
         for d in nodes_to_delete:
             self.grid.merge_edges(node=d)
 
         # on the other hand, it may be that the next node is too far away, and it
         # would be better to divide the edge than to shift a node from far away.
         # also possible that our neighbor was RIGID and can't be shifted
-        method='slide'
-        if (self.grid.nodes['fixed'][n] == self.RIGID):
-            method='split'
-        else:
-            dist_orig = utils.dist( self.grid.nodes['x'][anchor] - self.grid.nodes['x'][n] )
-            # tunable parameter here - how do we decide between shifting a neighbor and
-            # dividing the edge.  Larger threshold means shifting nodes from potentially far
-            # away, which distorts later steps.  smaller threshold means subdividing, but then
-            # there could be the potential to bump into that node during optimization (which
-            # is probably okay - we clear out interfering nodes like that).
-            if dist_orig / scale > 1.5: 
-                method='split'
+
+
+        # I don't like this anymore. Using a more split-heavy approach
+        # if (self.grid.nodes['fixed'][n] == self.RIGID):
+        #     assert False # I don't think this can happen.
+        #     method='split'
+        # else:
+        #     dist_orig = utils.dist( self.grid.nodes['x'][anchor] - self.grid.nodes['x'][n] )
+        #     # tunable parameter here - how do we decide between shifting a neighbor and
+        #     # dividing the edge.  Larger threshold means shifting nodes from potentially far
+        #     # away, which distorts later steps.  smaller threshold means subdividing, but then
+        #     # there could be the potential to bump into that node during optimization (which
+        #     # is probably okay - we clear out interfering nodes like that).
+        #     if dist_orig / scale > 1.5: 
+        #         method='split'
+
+        
         if method=='slide':
-            self.grid.modify_node(n,x=new_x,ring_f=new_f)
-            return n
+            self.grid.modify_node(nnew,x=new_x,ring_f=new_f)
+            return nnew
         else: # 'split'
-            j=self.grid.nodes_to_edge([anchor,n])
+            j=self.grid.nodes_to_edge([anchor,nnew])
+            # get a newer nnew
             jnew,nnew = self.grid.split_edge(j,x=new_x,ring_f=new_f,oring=oring+1,
                                              fixed=self.SLIDE)
             return nnew

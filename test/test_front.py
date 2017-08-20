@@ -18,10 +18,6 @@ logging.basicConfig(level=logging.INFO)
 from stompy.spatial.linestring_utils import upsample_linearring,resample_linearring
 from stompy.spatial import field,constrained_delaunay,wkb2shp
 
-reload(unstructured_grid)
-reload(exact_delaunay)
-reload(front)
-
 ## Curve -
 
 def hex_curve():
@@ -297,8 +293,6 @@ def test_actions():
     best=np.argmin(metrics)
     edits=actions[best].execute(site)
     af.optimize_edits(edits)
-
-##
 
 # af=test_basic_setup()
 # check0=af.grid.checkpoint()
@@ -878,58 +872,31 @@ def test_sine_sine():
 
     trifront_wrapper(rings,density,label='sine_sine')
 
-##
 
-
-rings=sine_sine_rings()
-density = field.ConstantField(25.0)
-
-
-af=front.AdvancingTriangles()
-af.set_edge_scale(density)
-
-af.add_curve(rings[0],interior=False)
-for ring in rings[1:]:
-    af.add_curve(ring,interior=True)
-af.initialize_boundaries()
-
-af.loop(12)
-
-##
-af.loop()
-
-## 
-zoom=(3685.3576744887459, 3766.6617074119663, -106.27412460553033, -45.230532144628569)
-af.plot_summary(label_nodes=False)
-
-site=af.choose_site()
-site.plot()
-
-plt.axis(zoom)
-
-##
-
-# Gets a bit further, then a DuplicateNode error
-
-##
-
-#af.resample_neighbors(site)
-#front.Resample.execute(site)
-
-## 
-
-front.Cutoff.execute(site)
-
-## 
 
 # Who is failing at this point?
-# test_tight_with_island() - why?
-# 
+# test_singlestep_lookahead?? REGRESSION!
+#   fails with shadow cdt assertion b/c a constraint being
+#   added already exists.
+#   during merge_edges, from slide_node
+#   edges are doubled up here.
+# test_narrow_channel() - REGRESSION
+# test_cul_de_sac()     - REGRESSION
+
+
 # test_peanut: need to fix the bulk initialization of the CDT.
 #   still slow, but better
+
 # test_sine_sine()
 # test_dumbarton is disabled.
 # test_embedded_channel - needs embedded edges, right?
 # test_long_channel_rigid - needs additional API
 
 
+# GENERAL
+#  strategies which don't add or remove cells are problematic
+#  for the cost function.
+
+#  maybe an overall approach which starts from a CDT of the
+#  domain, and works by stepwise modification on this triangulation
+#  would be more robust.  could revisit the classical paving algorithm.
