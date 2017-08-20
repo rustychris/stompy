@@ -533,22 +533,23 @@ class ResampleStrategy(Strategy):
         def maybe_resample(n,anchor,direction):
             if n in site.abc:
                 # went too far around!  Bad!
-                return
+                return n
             if grid.nodes['fixed'][n] in [site.af.HINT,site.af.SLIDE]:
                 try:
-                    n_res=site.af.resample(n=n,anchor=anchor,scale=scale,
+                    n=site.af.resample(n=n,anchor=anchor,scale=scale,
                                            direction=direction)
                 except Curve.CurveException as exc:
                     pass
+            return n
                 
         # execute one side at a time, since it's possible for a
         # resample on one side to reach into the other side.
         he=site.grid.nodes_to_halfedge(site.abc[0],site.abc[1])
 
         pre_a=he.rev().node_rev()
-        maybe_resample(pre_a,site.abc[0],-1)
+        new_pre_a=maybe_resample(pre_a,site.abc[0],-1)
         post_c=he.fwd().fwd().node_fwd()
-        maybe_resample(post_c,site.abc[2],1)
+        new_post_c=maybe_resample(post_c,site.abc[2],1)
 
         metric=self.metric(site)
         
@@ -557,7 +558,7 @@ class ResampleStrategy(Strategy):
             # the ones still remaining, and even these are probably of
             # no use for optimization.  may change this to report no
             # optimizable items
-            return {'nodes':[pre_a,post_c]}
+            return {'nodes':[new_pre_a,new_post_c]}
         else:
             log.warning("Resample made no improvement (%f => %f)"%(metric0,metric))
             raise StrategyFailed("Resample made no improvement")
