@@ -193,6 +193,31 @@ def test_halfedge_traverse():
     assert he.rev().fwd() == he
     #-# 
 
+def test_free_span():
+    r=5
+    theta = np.linspace(-np.pi/2,np.pi/2,20)
+    cap = r * np.swapaxes( np.array([np.cos(theta), np.sin(theta)]), 0,1)
+    box = np.array([ [-3*r,r],
+                     [-4*r,-r] ])
+    ring = np.concatenate((box,cap))
+
+    density = field.ConstantField(2*r/(np.sqrt(3)/2))
+    af=front.AdvancingTriangles()
+    af.set_edge_scale(density)
+
+    af.add_curve(ring,interior=False)
+    af.initialize_boundaries()
+
+    # N.B. this edge is not given proper cell neighbors
+    af.grid.add_edge(nodes=[22,3])
+
+    af.plot_summary()
+
+    he=af.grid.nodes_to_halfedge(4,5)
+    span_dist,span_nodes = af.free_span(he,25,1)
+    assert span_nodes[-1]!=4
+
+    
 def test_merge_edges():
     af=test_basic_setup()
 
@@ -881,7 +906,6 @@ def test_sine_sine():
 #   during merge_edges, from slide_node
 #   edges are doubled up here.
 # test_narrow_channel() - REGRESSION
-# test_cul_de_sac()     - REGRESSION
 
 
 # test_peanut: need to fix the bulk initialization of the CDT.
@@ -896,6 +920,9 @@ def test_sine_sine():
 # GENERAL
 #  strategies which don't add or remove cells are problematic
 #  for the cost function.
+#   1: resample and nonlocal looking like the "best" child,
+#      though they may not actually get anywhere.  
+#      cost in some of these cases is just None.
 
 #  maybe an overall approach which starts from a CDT of the
 #  domain, and works by stepwise modification on this triangulation

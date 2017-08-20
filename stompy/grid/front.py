@@ -1329,6 +1329,7 @@ class AdvancingFront(object):
         used (exclusively?) in walking along boundaries which
         might be resampled.  It would be better to look at
         the distance in discrete jumps.
+
         """
         span=0.0
         if direction==1:
@@ -1346,7 +1347,12 @@ class AdvancingFront(object):
             # used to check for SLIDE and degree
             # then only checked for HINT.  but in some
             # cases, trav0 was SLIDE, and we'd stop there.
-            return (n==trav0) or self.grid.nodes['fixed'][n]== self.HINT
+            # ahh - but degree is still important.
+            # adding that back in
+            degree=self.grid.node_degree(n)
+            
+            return (n==trav0) or ( self.grid.nodes['fixed'][n]== self.HINT
+                                   and degree==2 )
 
         while pred(trav) and (trav != anchor) and (span<max_span):
             span += utils.dist( self.grid.nodes['x'][last] -

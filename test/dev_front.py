@@ -40,28 +40,3 @@ plt.axis(zoom)
 pdb.run("front.Resample.execute(site)")
 
 ## -----------
-
-# two problems:
-# 1: resample is looking like the "best" child, so it doesn't
-#    actually get anywhere.  In some cases, NonLocal has the same
-#    issue.  cost in some of these cases is just None.
-# 2: edges are getting corrupted somehow
-#    not exactly corrupted, but nearly colinear due to a NonLocal
-# in the bad step, the metric is 2.96. 
-af=test_basic_setup()
-
-af.log.setLevel(logging.INFO)
-af.cdt.post_check=False
-af.current=af.root=front.DTChooseSite(af)
-## 
-for step in range(2):
-    if not af.current.children:
-        break # we're done?
-    
-    if not af.current.best_child(): # cb=cb
-        assert False
-
-plt.clf()
-af.plot_summary()
-
-        
