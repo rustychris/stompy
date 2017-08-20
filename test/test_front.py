@@ -900,16 +900,6 @@ def test_sine_sine():
 
 
 # Who is failing at this point?
-# test_singlestep_lookahead?? REGRESSION!
-#   fails with shadow cdt assertion b/c a constraint being
-#   added already exists.
-#   during merge_edges, from slide_node
-#   edges are doubled up here.
-# test_narrow_channel() - REGRESSION
-
-
-# test_peanut: need to fix the bulk initialization of the CDT.
-#   still slow, but better
 
 # test_sine_sine()
 # test_dumbarton is disabled.

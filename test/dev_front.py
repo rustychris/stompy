@@ -10,7 +10,6 @@ from test_front import *
 rings=sine_sine_rings()
 density = field.ConstantField(25.0)
 
-
 af=front.AdvancingTriangles()
 af.set_edge_scale(density)
 
@@ -19,7 +18,9 @@ for ring in rings[1:]:
     af.add_curve(ring,interior=True)
 af.initialize_boundaries()
 
-af.loop()
+# gets pretty far, then corrupts some shoreline
+# while getting an intersecting constraint error
+af.loop(200)
 
 ## 
 zoom=(3685.3576744887459, 3766.6617074119663, -106.27412460553033, -45.230532144628569)

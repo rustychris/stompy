@@ -1023,17 +1023,19 @@ class TriangleSite(FrontSite):
                 except Curve.CurveException as exc:
                     self.resample_status=False
                     continue
-                
-                # is this the right time to change the fixed status?
-                if grid.nodes['fixed'][n] == self.af.HINT:
-                    grid.modify_node(n,fixed=self.af.SLIDE)
-                
+
                 if n!=n_res:
                     log.info("resample_neighbors changed a node")
                     if n==a:
                         self.abc[0]=n_res
                     else:
                         self.abc[2]=n_res
+                    n=n_res # so that modify_node below operates on the right one.
+                
+                # is this the right time to change the fixed status?
+                if grid.nodes['fixed'][n] == self.af.HINT:
+                    grid.modify_node(n,fixed=self.af.SLIDE)
+                
         return self.resample_status
 
 # without a richer way of specifying the scales, have to start
