@@ -1793,7 +1793,11 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         # must come before too many modifications, in case we end
         # up recalculating cell center or truncating self.cells
         if self._cell_center_index is not None:
-            self._cell_center_index.delete(i,self.cells_center()[i,self.xxyy])
+            if self.cell_center_index_point=='circumcenter':
+                pnt=self.cells_center()[i]
+            else: # centroid
+                pnt=self.cells_centroid([i])[0]
+            self._cell_center_index.delete(i,pnt[self.xxyy])                
 
         # remove links from edges:
         for j in self.cell_to_edges(i): # self.cells['edges'][i]:
@@ -1907,7 +1911,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 self._node_to_cells[n].append(i)
 
         if self._cell_center_index is not None:
-            cc=self.cells_center()[i]
+            if self.cell_center_index_point=='circumcenter':
+                cc=self.cells_center()[i]
+            else: # centroid
+                cc=self.cells_centroid([i])[0]
             self._cell_center_index.insert(i,cc[self.xxyy])
 
         # updated 2016-08-25 - not positive here.
@@ -2000,9 +2007,14 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     def modify_node(self,n,**kws):
         if self._cell_center_index:
             my_cells=self.node_to_cells(n)
-            cc=self.cells_center()
-            for c in my_cells:
-                self._cell_center_index.delete(c,cc[c,self.xxyy])
+
+            if self.cell_center_index_point=='circumcenter':
+                ccs=self.cells_center()[my_cells]
+            else:
+                ccs=self.cells_centroid(my_cells)
+                
+            for c,cc in zip(my_cells,ccs):
+                self._cell_center_index.delete(c,cc[self.xxyy])
         else:
             cc=None
 
@@ -2023,9 +2035,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             self._node_index.insert(n,self.nodes['x'][n][self.xxyy])
 
         if self._cell_center_index:
-            cc=self.cells_center(refresh=my_cells)
-            for c in my_cells:
-                self._cell_center_index.insert(c,cc[c,self.xxyy])
+            if self.cell_center_index_point=='circumcenter':
+                ccs=self.cells_center(refresh=my_cells)[my_cells]
+            else: # centroid
+                ccs=self.cells_centroid(my_cells)
+            for c,cc in zip(my_cells,ccs):
+                self._cell_center_index.insert(c,cc[self.xxyy])
 
     def elide_node(self,n):
         """ 
@@ -2883,7 +2898,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         framework.  Do not use yet for a grid which will be modified.
         """
         if self._cell_center_index is None:
-            cc=self.cells_center()
+            if self.cell_center_index_point=='circumcenter':
+                cc=self.cells_center()
+            else:
+                cc=self.cells_centroid()
             tuples = [(i,cc[i,self.xxyy],None) 
                       for i in range(self.Ncells()) 
                       if not self.cells['deleted'][i] ]
