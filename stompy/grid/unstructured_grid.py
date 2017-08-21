@@ -2877,6 +2877,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         
     _cell_center_index=None
+    cell_center_index_point='centroid' # 'centroid' or 'circumcenter'
     def cell_center_index(self):
         """ TODO: this is not wired into the update,listen, etc.
         framework.  Do not use yet for a grid which will be modified.

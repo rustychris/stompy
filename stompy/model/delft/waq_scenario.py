@@ -1899,8 +1899,9 @@ class HydroFiles(Hydro):
             except KeyError:
                 return None
             try:
-                ug=ugrid.Ugrid(orig)
-                self._grid=ug.grid()
+                #ug=ugrid.Ugrid(orig)
+                #self._grid=ug.grid()
+                self._grid=unstructured_grid.UnstructuredGrid.from_ugrid(orig)
             except IndexError:
                 self.log.warning("Grid wouldn't load as ugrid, trying dfm grid")
                 dg=dfm_grid.DFMGrid(orig)
@@ -5265,8 +5266,18 @@ class ModelForcing(object):
     holds some common code between BoundaryCondition and 
     Load.
     """
+    class_serial=0 # to generate names for data files
+    
     scenario=None # set by the scenario
 
+    # Control whether data is written inline in the input file or
+    # into a separate data file which is then included in the main input
+    # file.
+    separate_data_file=True
+    # if not None and separate_data_file is True, then create forcing
+    # files in the named subdirectory (created on demand).
+    data_file_subdirectory='forcing'
+    
     def __init__(self,items,substances,data):
         if isinstance(substances,str):
             substances=[substances]
@@ -5275,7 +5286,20 @@ class ModelForcing(object):
         self.items=items
         self.substances=substances
         self.data=data
+        self.my_serial=ModelForcing.next_serial()
 
+    @classmethod
+    def next_serial(cls):
+        cls.class_serial+=1
+        return cls.class_serial
+        
+    @property
+    def safe_name(self):
+        """ identifying name which can be used in filenames.
+        """
+        # There isn't a great choice at this level - 
+        return "forcing-%03d"%self.my_serial
+        
     def text_item(self):
         lines=['ITEM']
 
@@ -5289,7 +5313,40 @@ class ModelForcing(object):
         lines.append("   " + "  ".join(["'%s'"%s for s in self.substances]))
         return "\n".join(lines)
 
-    def text_data(self):
+    @property
+    def supporting_file(self):
+        """ base name of the supporting binary file (dir name will come from scenario,
+        and possibly self.data_file_subdirectory
+        """
+        return self.scenario.name + "-" + self.safe_name + ".dat"
+    
+    def text_data(self,write_supporting=True):
+        data=self.render_data_to_text()
+
+        if self.separate_data_file:
+            if write_supporting:
+                if self.data_file_subdirectory is not None:
+                    dir_name=os.path.join(self.scenario.base_path,
+                                          self.data_file_subdirectory)
+                    rel_path=os.path.join(self.data_file_subdirectory,
+                                          self.supporting_file)
+                else:
+                    dir_name=self.scenario.base_path
+                    rel_path=self.supporting_file
+
+                if not os.path.exists(dir_name):
+                    os.makedirs(dir_name)
+                    
+                fn=os.path.join(dir_name,
+                                self.supporting_file)
+                
+                with open(fn,'wt') as fp:
+                    fp.write(data)
+            return "INCLUDE '%s' ; external time series data"%rel_path
+        else:
+            return data
+        
+    def render_data_to_text(self):
         lines=[]
 
         # FIX: somewhere we should limit the output to the simulation period plus
@@ -5338,10 +5395,10 @@ class ModelForcing(object):
     def fmt_item(self,item):
         return str(item) # probably not what you want...
 
-    def text(self):
+    def text(self,write_supporting=True):
         lines=[self.text_item(),
                self.text_substances(),
-               self.text_data()]
+               self.text_data(write_supporting=write_supporting)]
         return "\n".join(lines)
 
 class BoundaryCondition(ModelForcing):
@@ -5430,7 +5487,10 @@ class Discharge(object):
 
 class Load(ModelForcing):
     """
-    descriptions of mass sources/sinks (loads, withdrawals)
+    descriptions of mass sources/sinks (loads, withdrawals).
+
+    When setting the load on a 'MASS' discharge (the default), d-waq expects
+    data with units of g/s.
     """
     
     # only used if time varying - can also be blank or 'BLOCK'
@@ -5553,6 +5613,11 @@ class ParameterTemporal(Parameter):
     """ Process parameter which varies only in time
     aka DWAQ's FUNCTION
     """
+    # Control whether data is written inline in the input file or
+    # into a separate data file which is then included in the main input
+    # file.
+    separate_data_file=True
+    
     def __init__(self,times,values,scenario=None,name=None,hydro=None):
         """
         times: [N] sized array, 'i4', giving times as seconds after time0
@@ -5562,15 +5627,28 @@ class ParameterTemporal(Parameter):
         self.times=times
         self.values=values
     def text(self,write_supporting=False):
+        data=self.text_data()
+        if self.separate_data_file:
+            if write_supporting:
+                with open(os.path.join(self.scenario.base_path,self.supporting_file),'wt') as fp:
+                    fp.write(data)
+            return "INCLUDE '%s' ; external time series data"%self.supporting_file
+        else:
+            return data
+        
+    def text_data(self):
         lines=["FUNCTIONS '{}' BLOCK DATA".format(self.name),
                ""]
         for t,v in zip(self.times,self.values):
             lines.append("{}  {:e}".format(self.scenario.fmt_datetime(t),v) )
         return "\n".join(lines)
-    # @property
-    # def supporting_file(self):
-    #     """ base name of the supporting binary file, (no dir. name) """
-    #     return self.scenario.name + "-" + self.safe_name + ".seg"
+        
+
+    
+    @property
+    def supporting_file(self):
+        """ base name of the supporting binary file, (no dir. name) """
+        return self.scenario.name + "-" + self.safe_name + ".ts"
     
     def evaluate(self,**kws):
         if 't' in kws:
@@ -6245,7 +6323,15 @@ END_MULTIGRID"""%num_layers
 
             if geom.type=='Point':
                 xy=np.array(geom.coords)[0]
-                elt=g.select_cells_nearest(xy)
+                # would be better to have select_cells_nearest use
+                # centroids instead of circumcenters, but barring
+                # that, throw the net wide and look at up to 40
+                # cells.
+                elt=g.select_cells_nearest(xy,inside=True,count=40)
+                if elt is None:
+                    self.log.warning("Monitor point %s was not found inside a cell"%xy)
+                    # Fall back to nearest
+                    elt=g.select_cells_nearest(xy,inside=False)
 
                 segs=np.nonzero( self.hydro.seg_to_2d_element==elt )[0]
                 for layer,seg in enumerate(segs):
