@@ -104,7 +104,8 @@ class HalfEdge(object):
             return HalfEdge.from_nodes(self.grid,fwd_node,fwdfwd_node)
         else:
             # not sure about this...
-            fwdfwd_node=nbrs[1] # next ccw neighbor
+            # the weird modulo is because nbrs may have only 1 item.
+            fwdfwd_node=nbrs[1%len(nbrs)] # next ccw neighbor
             return HalfEdge.from_nodes(self.grid,fwdfwd_node,fwd_node)
     def fwd(self):
         return self.nbr(direc=0)
@@ -1600,7 +1601,6 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         edge_data['nodes']=new_nodes
         self.add_edge(_index=A,**edge_data)
         return A
-
     def split_edge(self,j,**node_args):
         """
         The opposite of merge_edges, take an existing edge and insert
@@ -3029,7 +3029,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         centers = self.cells_center()[cells]
         errors=np.zeros( len(self.cells[cells]),'f8')
 
-        for nsi in six.range(3,self.max_sides+1):
+        for nsi in range(3,self.max_sides+1):
             sel = (self.cells['nodes'][cells,nsi-1]>=0) & (~self.cells['deleted'][cells])
             if nsi<self.max_sides:
                 sel = sel&(self.cells['nodes'][cells,nsi]<0)

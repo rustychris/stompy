@@ -313,6 +313,10 @@ class Curve(object):
             pntb=self.points[idxb]
             dista=utils.dist(pnta - anchor_pnt)
             distb=utils.dist(pntb - anchor_pnt)
+            # as written, this may bail out of the iteration with an
+            # inferior solution (i.e. stop when the error is 5%, rather
+            # than go to the next segment where we could get an exact
+            # answer).  It's not too bad though.
             if (dista<(1-rtol)*abs_dist) and (distb<(1-rtol)*abs_dist):
                 # No way this segment is good.
                 continue
@@ -334,20 +338,25 @@ class Curve(object):
         if sign*far_f<sign*close_f:
             far_f+=sign*self.distances[-1]
 
-        for maxit in range(10):
-            mid_f=0.5*(close_f+far_f)
-            pnt_mid=self(mid_f)
-            dist_mid=utils.dist(pnt_mid - anchor_pnt)
-            rel_err = (dist_mid-abs_dist)/abs_dist
-            if rel_err < -rtol:
-                close_f=mid_f
-            elif rel_err > rtol:
-                far_f=mid_f
-            else:
-                result=mid_f,pnt_mid
-                break
+        # explicitly check the far end point
+        if abs(distb-abs_dist) / abs_dist < rtol:
+            # good enough
+            result=far_f,self(far_f)
         else:
-            assert False
+            for maxit in range(10):
+                mid_f=0.5*(close_f+far_f)
+                pnt_mid=self(mid_f)
+                dist_mid=utils.dist(pnt_mid - anchor_pnt)
+                rel_err = (dist_mid-abs_dist)/abs_dist
+                if rel_err < -rtol:
+                    close_f=mid_f
+                elif rel_err > rtol:
+                    far_f=mid_f
+                else:
+                    result=mid_f,pnt_mid
+                    break
+            else:
+                assert False
         return result
 
         
@@ -482,7 +491,78 @@ class BisectStrategy(Strategy):
                 'cells': [new_c1,new_c2],
                 'edges': [j_cd,j_bd,j_ad] }
     
-    
+
+class ResampleStrategy(Strategy):
+    """ TESTING: resample one step beyond.
+    """
+    def __str__(self):
+        return "<Resample>"
+    def nodes_beyond(self,site):
+        he=site.grid.nodes_to_halfedge(site.abc[0],site.abc[1])
+        pre_a=he.rev().node_rev()
+        post_c=he.fwd().fwd().node_fwd()
+        return pre_a,post_c
+
+    def distances(self,site):
+        "return pair of distances from the site to next node"
+        
+        pre_a,post_c = self.nodes_beyond(site)
+
+        p_pa,p_a,p_c,p_pc=site.grid.nodes['x'][ [pre_a,
+                                                 site.abc[0],
+                                                 site.abc[2],
+                                                 post_c] ]
+        dists=[utils.dist( p_pa - p_a ),
+               utils.dist( p_c - p_pc )]
+        return dists
+        
+    def metric(self,site):
+        dists=self.distances(site)
+        # return a good low score when those distances are short relative
+        # scale
+        scale=site.local_length
+
+        return min( dists[0]/scale,dists[1]/scale )
+
+    def execute(self,site):
+        grid=site.grid
+        scale=site.local_length
+
+        metric0=self.metric(site)
+        
+        def maybe_resample(n,anchor,direction):
+            if n in site.abc:
+                # went too far around!  Bad!
+                return n
+            if grid.nodes['fixed'][n] in [site.af.HINT,site.af.SLIDE]:
+                try:
+                    n=site.af.resample(n=n,anchor=anchor,scale=scale,
+                                           direction=direction)
+                except Curve.CurveException as exc:
+                    pass
+            return n
+                
+        # execute one side at a time, since it's possible for a
+        # resample on one side to reach into the other side.
+        he=site.grid.nodes_to_halfedge(site.abc[0],site.abc[1])
+
+        pre_a=he.rev().node_rev()
+        new_pre_a=maybe_resample(pre_a,site.abc[0],-1)
+        post_c=he.fwd().fwd().node_fwd()
+        new_post_c=maybe_resample(post_c,site.abc[2],1)
+
+        metric=self.metric(site)
+        
+        if metric>metric0:
+            # while other nodes may have been modified, these are
+            # the ones still remaining, and even these are probably of
+            # no use for optimization.  may change this to report no
+            # optimizable items
+            return {'nodes':[new_pre_a,new_post_c]}
+        else:
+            log.warning("Resample made no improvement (%f => %f)"%(metric0,metric))
+            raise StrategyFailed("Resample made no improvement")
+            
 class CutoffStrategy(Strategy):
     def __str__(self):
         return "<Cutoff>"
@@ -551,23 +631,8 @@ class JoinStrategy(Strategy):
         mover=None
 
         j_ac=grid.nodes_to_edge(na,nc)
-        if j_ac is None:
-            if grid.nodes['fixed'][na]!=site.af.FREE:
-                if grid.nodes['fixed'][nc]!=site.af.FREE:
-                    raise StrategyFailed("Neither node is movable, cannot Join")
-                mover=nc
-                anchor=na
-            else:
-                mover=na
-                anchor=nc
 
-            he=grid.nodes_to_halfedge(na,nb)
-            pre_a=he.rev().node_rev()
-            post_c=he.fwd().fwd().node_fwd()
-            if pre_a==post_c:
-                log.info("Found a quad - proceeding carefully with nd")
-                nd=pre_a
-        else:
+        if j_ac is not None:
             # special case: nodes are already joined, but there is no
             # cell.
             # this *could* be extended to allow the deletion of thin cells,
@@ -575,18 +640,81 @@ class JoinStrategy(Strategy):
             # not creation)
             if (grid.edges['cells'][j_ac,0] >=0) or (grid.edges['cells'][j_ac,1]>=0):
                 raise StrategyFailed("Edge already has real cells")
-            # these now include HINT for choosing the mover.
-            if grid.nodes['fixed'][na] in [site.af.FREE,site.af.HINT,site.af.SLIDE]:
-                mover=na
-                anchor=nc
-            elif grid.nodes['fixed'][nc] in [site.af.FREE,site.af.HINT,site.af.SLIDE]:
-                mover=nc
-                anchor=na
-            else:
-                raise StrategyFailed("Neither node can be moved")
-
             grid.delete_edge(j_ac)
+            j_ac=None
+            
+        # a previous version only checked fixed against HINT and SLIDE
+        # when the edge j_ac existed.  Why not allow this comparison
+        # even when j_ac doesn't exist?
+        # need to be more careful than that, though.  The only time it's okay
+        # for a SLIDE or HINT to be the mover is if anchor is on the same ring,
+        # and the path between them is clear, which means b cannot be on that
+        # ring.
+        
+        if grid.nodes['fixed'][na]==site.af.FREE:
+            mover=na
+            anchor=nc
+        elif grid.nodes['fixed'][nc]==site.af.FREE:
+            mover=nc
+            anchor=na
+        elif grid.nodes['oring'][na]>0 and grid.nodes['oring'][nc]>0:
+            # *might* be legal but requires more checks:
+            ring=grid.nodes['oring'][na]
+            if ring!=grid.nodes['oring'][nc]:
+                raise StrategyFailed("Cannot join across rings")
+            if grid.nodes['oring'][nb]==ring:
+                # this is a problem if nb falls in between them.
+                fa,fb,fc=grid.nodes['ring_f'][ [na,nb,nc] ]
+                curve=site.af.curves[ring-1]
+                # simple orientation test, such as
+                # (curve.is_forward(fa,fb,fc) or
+                #  curve.is_forward(fc,fb,fa))
+                # is not sufficient, since fb is between them for one
+                # direction or the other.
+                # so choose the shorter distance around between a and
+                # c, and check that b isn't in the middle of that.
+                # not sure that this will be correct in bizarrely small
+                # corner cases
+                tdist=curve.total_distance()
+                if (fa-fc) % tdist < tdist/2:
+                    if curve.is_forward(fc,fb,fa):
+                        raise StrategyFailed("Cannot join across middle node")
+                else:
+                    if curve.is_forward(fa,fb,fc):
+                        raise StrategyFailed("Cannot join across middle node")
+            # probably okay, not sure if there are more checks to attempt
+            if grid.nodes['fixed'][na]==site.af.HINT:
+                mover,anchor=na,nc
+            else:
+                mover,anchor=nc,na
+        else:
+            raise StrategyFailed("Neither node can be moved")
 
+        he_ab=grid.nodes_to_halfedge(na,nb)
+        he_da=he_ab.rev()
+        pre_a=he_da.node_rev()
+        he_bc=he_ab.fwd()
+        he_cd=he_bc.fwd()
+        post_c=he_cd.node_fwd()
+        
+        if pre_a==post_c:
+            log.info("Found a quad - proceeding carefully with nd")
+            nd=pre_a
+
+        # figure out external cell markers before the half-edges are invalidated.
+        # note the cell index on the outside of mover, and record half-edges
+        # for the anchor side
+        if mover==na:
+            cell_opp_mover=he_ab.cell_opp()
+            cell_opp_dmover=he_da.cell_opp()
+            he_anchor=he_bc
+            he_danchor=he_cd
+        else:
+            cell_opp_mover=he_bc.cell_opp()
+            cell_opp_dmover=he_cd.cell_opp()
+            he_anchor=he_ab
+            he_danchor=he_da
+        
         edits={'cells':[],'edges':[] }
 
         cells_to_replace=[]
@@ -613,25 +741,6 @@ class JoinStrategy(Strategy):
             for i in [0,1]:
                 if nodes[i]==mover:
                     if (nodes[1-i]==nb) or (nodes[1-i]==nd):
-                        # While we don't add the edge itself, do need
-                        # to check whether the old edge,
-                        # which is adjacent to the "joined" areas which vanish, had
-                        # a relevant non-cell index on the other side, i.e. boundary vs.
-                        # unpaved.
-                        cells=data['cells']
-                        pdb.set_trace()
-
-                        # HERE - need code above, before we wreck the topology,
-                        # to find out
-                        # cell_outside_mover
-                        # he_anchor, with the he facing into the site.
-                        # he_d, from anchor to d, if exists, and again facing into the site.
-                        # cell_outside_mover_d
-                        #
-                        # Then here we can update the adjacent cells for he_anchor
-                        # if it is a mark and not a real cell which will be restored
-                        # below.
-
                         nodes=None # signal that we don't add it
                     else:
                         nodes[i]=anchor
@@ -664,6 +773,16 @@ class JoinStrategy(Strategy):
             cnew=grid.add_cell(nodes=nodes)
             edits['cells'].append(cnew)
 
+        if cell_opp_mover<0: # need to update boundary markers
+            j_cells=grid.edges['cells'][he_anchor.j,:].copy()
+            j_cells[he_anchor.orient]=cell_opp_mover
+            grid.modify_edge(he_anchor.j,cells=j_cells)
+            
+        if nd is not None and cell_opp_dmover<0:
+            j_cells=grid.edges['cells'][he_danchor.j,:].copy()
+            j_cells[he_danchor.orient]=cell_opp_dmover
+            grid.modify_edge(he_danchor.j,cells=j_cells)
+            
         # This check could also go in unstructured_grid, maybe optionally?
         areas=grid.cells_area()
         if np.any( areas[edits['cells']]<=0.0 ):
@@ -792,6 +911,15 @@ class NonLocalStrategy(Strategy):
             return np.inf
     
     def execute(self,site):
+        # as much as it would be nice to blindly execute these
+        # things, the current state of the cost functions means
+        # that a really bad nonlocal may not show up in the cost
+        # function, and that means that best_child() will get tricked
+        # So until there is a better cost function, this needs to
+        # be more careful about which edges it will attempt
+        if self.metric(site) > 0.75:
+            raise StrategyFailed("NonLocal: too far away")
+        
         site_node,nonlocal_node,dist = self.nonlocal_pair(site)
         
         if site_node is None:
@@ -807,12 +935,12 @@ class NonLocalStrategy(Strategy):
                 'edges': [j] }
 
 
-    
 Wall=WallStrategy()
 Cutoff=CutoffStrategy()
 Join=JoinStrategy()
 Bisect=BisectStrategy()
 NonLocal=NonLocalStrategy()
+Resample=ResampleStrategy()
 
 class Site(object):
     """
@@ -870,7 +998,7 @@ class TriangleSite(FrontSite):
         return ax.plot( points[:,0],points[:,1],'r-o' )[0]
     def actions(self):
         theta=self.internal_angle
-        return [Wall,Cutoff,Join,Bisect,NonLocal]
+        return [Wall,Cutoff,Join,Bisect,NonLocal,Resample]
 
     def resample_neighbors(self):
         """ may update site! used to be part of AdvancingFront, but
@@ -895,17 +1023,19 @@ class TriangleSite(FrontSite):
                 except Curve.CurveException as exc:
                     self.resample_status=False
                     continue
-                
-                # is this the right time to change the fixed status?
-                if grid.nodes['fixed'][n] == self.af.HINT:
-                    grid.modify_node(n,fixed=self.af.SLIDE)
-                
+
                 if n!=n_res:
                     log.info("resample_neighbors changed a node")
                     if n==a:
                         self.abc[0]=n_res
                     else:
                         self.abc[2]=n_res
+                    n=n_res # so that modify_node below operates on the right one.
+                
+                # is this the right time to change the fixed status?
+                if grid.nodes['fixed'][n] == self.af.HINT:
+                    grid.modify_node(n,fixed=self.af.SLIDE)
+                
         return self.resample_status
 
 # without a richer way of specifying the scales, have to start
@@ -1197,20 +1327,35 @@ class AdvancingFront(object):
 
         the reason this works with halfedges is that we only
         move along nodes which are simply connected (degree 2)
+
+        TODO: this reports along edge distances, but it's
+        used (exclusively?) in walking along boundaries which
+        might be resampled.  It would be better to look at
+        the distance in discrete jumps.
+
         """
         span=0.0
         if direction==1:
-            trav=he.node_fwd()
-            last=anchor=he.node_rev()
+            trav0=he.node_fwd()
+            anchor=he.node_rev()
         else:
-            trav=he.node_rev()
-            last=anchor=he.node_fwd()
+            trav0=he.node_rev()
+            anchor=he.node_fwd()
+        last=anchor
+        trav=trav0
 
         nodes=[last] # anchor is included
 
         def pred(n):
             # used to check for SLIDE and degree
-            return self.grid.nodes['fixed'][n]== self.HINT
+            # then only checked for HINT.  but in some
+            # cases, trav0 was SLIDE, and we'd stop there.
+            # ahh - but degree is still important.
+            # adding that back in
+            degree=self.grid.node_degree(n)
+            
+            return (n==trav0) or ( self.grid.nodes['fixed'][n]== self.HINT
+                                   and degree==2 )
 
         while pred(trav) and (trav != anchor) and (span<max_span):
             span += utils.dist( self.grid.nodes['x'][last] -
@@ -1255,7 +1400,7 @@ class AdvancingFront(object):
                                                                                 direction) )
         n_deg=self.grid.node_degree(n)
         if n_deg!=2:
-            self.log.info("Will not resample node %d because degree=%d, not 2"%(n,n_deg))
+            self.log.debug("Will not resample node %d because degree=%d, not 2"%(n,n_deg))
             return n
         
         if direction==1: # anchor to n is t
@@ -1272,34 +1417,47 @@ class AdvancingFront(object):
 
         if span_length < self.max_span_factor*scale:
             n_segments = max(1,round(span_length / scale))
-
-            if n_segments==1:
-                # in tight situations, need to make sure
-                # that for a site a--b--c we're not trying
-                # move c all the way on top of a.
-                # it is not sufficient to just force two
-                # segments, as that just pushes the issue into
-                # the next iteration, but in an even worse state.
-                if direction==-1:
-                    he_other=he.fwd()
-                    opposite_node=he_other.node_fwd()
-                else:
-                    he_other=he.rev()
-                    opposite_node=he_other.node_rev()
-                if opposite_node==span_nodes[-1]:
-                    self.log.info("n_segment=1, but that would be an implicit join")
-                    
-                    # rather than force two segments, force it
-                    # to remove all but the last edge
-                    span_nodes=span_nodes[:-1]
             target_span = span_length / n_segments
-            if n_segments==1:
-                self.log.debug("Only one space for 1 segment")
-                for d in span_nodes[1:-1]:
-                    self.grid.merge_edges(node=d)
-                return span_nodes[-1]
         else:
             target_span=scale
+            n_segments = None
+
+        def handle_one_segment():
+            # this is a function because there are two times
+            # (one proactive, one reactive) it might get used below.
+            # in tight situations, need to make sure
+            # that for a site a--b--c we're not trying
+            # move c all the way on top of a.
+            # it is not sufficient to just force two
+            # segments, as that just pushes the issue into
+            # the next iteration, but in an even worse state.
+            if direction==-1:
+                he_other=he.fwd()
+                opposite_node=he_other.node_fwd()
+            else:
+                he_other=he.rev()
+                opposite_node=he_other.node_rev()
+            if opposite_node==span_nodes[-1]:
+                self.log.info("n_segment=1, but that would be an implicit join")
+
+                # rather than force two segments, force it
+                # to remove all but the last edge.
+                del span_nodes[-1]
+
+            self.log.debug("Only space for 1 segment")
+            for d in span_nodes[1:-1]:
+                cp=self.grid.checkpoint()
+                try:
+                    self.grid.merge_edges(node=d)
+                except self.cdt.IntersectingConstraints as exc:
+                    self.log.info("handle_one_segment: cut short by exception")
+                    self.grid.revert(cp)
+                    # only got that far..
+                    return d
+            return span_nodes[-1]
+
+        if n_segments==1:
+            return handle_one_segment()
 
         # first, find a point on the original ring which satisfies the target_span
         anchor_oring=self.grid.nodes['oring'][anchor]-1
@@ -1315,58 +1473,103 @@ class AdvancingFront(object):
         except Curve.CurveException as exc:
             raise
 
+        # it's possible that even though the free_span distance yielded
+        # n_segments>1, distance_away() went too far since it cuts out some
+        # curvature in the along-curve distance.
+        # this leads to a liability that new_f is beyond span_nodes[-1], and
+        # we should follow the same treatment as above for n_segments==1
+        end_span_f=self.grid.nodes['ring_f'][span_nodes[-1]]
+        if ((direction==1) == (curve.is_forward(anchor_f,end_span_f,new_f))
+            and end_span_f!=anchor_f):
+            self.log.warning("n_segments=%s, but distance_away blew past it"%n_segments)
+            return handle_one_segment()
+            
         # check to see if there are other nodes in the way, and remove them.
+        # in the past, this started with the node after n, deleting things up
+        # to, and *including* a node at the location where we want n to be.
+        # in simple cases, it would be better to delete n, and only move the
+        # last node.  But there is a chance that n cannot be deleted, more likely
+        # that n cannot be deleted than later nodes.  However... free_span
+        # would not allow those edges, so we can assume anything goes here.
+        eps=0.001*target_span
+
         nodes_to_delete=[]
         trav=he
         while True:
-            if direction==1:
-                trav=trav.fwd()
-            else:
-                trav=trav.rev()
-            # we have anchor, n, and
-            if trav==he:
-                self.log.error("Made it all the way around!")
-                raise Exception("This is probably bad")
-
+            # start with the half-edge from anchor to n
+            # want to loop until trav.node_fwd() (for direction=1)
+            # is at or beyond our target, and all nodes from n
+            # until trav.node_rev() are in the list nodes_to_delete.
+            
             if direction==1:
                 n_trav=trav.node_fwd()
-                f_trav=self.grid.nodes['ring_f'][n_trav]
-                if curve.is_forward( anchor_f, new_f, f_trav ):
+                f_trav=self.grid.nodes['ring_f'][n_trav] # HERE EPS??
+                if curve.is_forward( anchor_f, new_f+eps, f_trav ):
                     break
             else:
                 n_trav=trav.node_rev()
                 f_trav=self.grid.nodes['ring_f'][n_trav]
-                if curve.is_reverse( anchor_f, new_f, f_trav ):
+                if curve.is_reverse( anchor_f, new_f-eps, f_trav ):
                     break
 
+            # that half-edge wasn't far enough
             nodes_to_delete.append(n_trav)
+                
+            if direction==1:
+                trav=trav.fwd()
+            else:
+                trav=trav.rev()
+                
+            # sanity check.
+            if trav==he:
+                self.log.error("Made it all the way around!")
+                raise Exception("This is probably bad")
 
+        # either n was already far enough, in which case we should split
+        # this edge, or there are some nodes in nodes_to_delete.
+        # the last of those nodes will be saved, and become the new n
+        if len(nodes_to_delete):
+            nnew=nodes_to_delete.pop()
+            # slide, because it needs to move farther out
+            method='slide'
+        else:
+            # because n is already too far
+            method='split'
+            nnew=n
+            
+        # Maybe better to fix the new node with any sliding necessary,
+        # and then delete these, but that would require more checks to
+        # see if it's safe to reposition the node?
         for d in nodes_to_delete:
-            self.grid.merge_edges(node=d)
+            cp=self.grid.checkpoint()
+            try:
+                self.grid.merge_edges(node=d)
+            except self.cdt.IntersectingConstraints as exc:
+                self.log.info("resample: had to stop short due to intersection")
+                self.grid.revert(cp)
+                return d
+                
 
         # on the other hand, it may be that the next node is too far away, and it
         # would be better to divide the edge than to shift a node from far away.
         # also possible that our neighbor was RIGID and can't be shifted
-        method='slide'
-        if (self.grid.nodes['fixed'][n] == self.RIGID):
-            method='split'
-        else:
-            dist_orig = utils.dist( self.grid.nodes['x'][anchor] - self.grid.nodes['x'][n] )
-            # tunable parameter here - how do we decide between shifting a neighbor and
-            # dividing the edge.  Larger threshold means shifting nodes from potentially far
-            # away, which distorts later steps.  smaller threshold means subdividing, but then
-            # there could be the potential to bump into that node during optimization (which
-            # is probably okay - we clear out interfering nodes like that).
-            if dist_orig / scale > 1.5: 
-                method='split'
-        if method=='slide':
-            self.grid.modify_node(n,x=new_x,ring_f=new_f)
-            return n
-        else: # 'split'
-            j=self.grid.nodes_to_edge([anchor,n])
-            jnew,nnew = self.grid.split_edge(j,x=new_x,ring_f=new_f,oring=oring+1,
-                                             fixed=self.SLIDE)
-            return nnew
+
+        cp=self.grid.checkpoint()
+        
+        try:
+            if method=='slide':
+                self.grid.modify_node(nnew,x=new_x,ring_f=new_f)
+            else: # 'split'
+                j=self.grid.nodes_to_edge([anchor,nnew])
+
+                # get a newer nnew
+                jnew,nnew = self.grid.split_edge(j,x=new_x,ring_f=new_f,oring=oring+1,
+                                                 fixed=self.SLIDE)
+        except self.cdt.IntersectingConstraints as exc:
+            self.log.info("resample - slide() failed. will return node at original loc")
+            self.grid.revert(cp)
+            
+        return nnew
 
     def resample_neighbors(self,site):
         return site.resample_neighbors()
@@ -1415,7 +1618,11 @@ class AdvancingFront(object):
         elif self.grid.nodes['fixed'][n] == self.SLIDE:
             return self.relax_slide_node(n)
         else:
-            raise Exception("relax_node with fixed=%s"%self.grid.nodes['fixed'][n])
+            # Changed to silent pass because ResampleStrategy currently
+            # tells the truth about nodes it moves, even though they
+            # are HINT nodes.  
+            # raise Exception("relax_node with fixed=%s"%self.grid.nodes['fixed'][n])
+            return 0.0
 
     def relax_free_node(self,n):
         cost=self.cost_function(n)
@@ -1429,10 +1636,16 @@ class AdvancingFront(object):
                          disp=0)
         dx=utils.dist( new_x - x0 )
         self.log.debug('Relaxation moved node %f'%dx)
-        if dx !=0.0:
-            self.grid.modify_node(n,x=new_x)
-        return cost(new_x)
-
+        cp=self.grid.checkpoint()
+        try:
+            if dx !=0.0:
+                self.grid.modify_node(n,x=new_x)
+            return cost(new_x)
+        except self.cdt.IntersectingConstraints as exc:
+            self.grid.revert(cp)
+            self.log.info("Relaxation caused intersection, reverting")
+            return cost
+        
     def relax_slide_node(self,n):
         cost_free=self.cost_function(n)
         if cost_free is None:
@@ -1462,10 +1675,16 @@ class AdvancingFront(object):
                                             slide_limits[1]):
             self.log.info("Slide went outside limits")
             return cost_free(x0)
-        
-        if new_f[0]!=f0:
-            self.slide_node(n,new_f[0]-f0)
-        return cost_slide(new_f)
+
+        cp=self.grid.checkpoint()
+        try:
+            if new_f[0]!=f0:
+                self.slide_node(n,new_f[0]-f0)
+            return cost_slide(new_f)
+        except self.cdt.IntersectingConstraints as exc:
+            self.grid.revert(cp)
+            self.log.info("Relaxation caused intersection, reverting")
+            return cost_free(x0)
 
     def find_slide_limits(self,n,cutoff=None):
         """ Returns the range of allowable ring_f for n.
@@ -1619,10 +1838,13 @@ class AdvancingFront(object):
             site=self.choose_site()
             if site is None:
                 break
-            self.advance_at_site(site)
+            if not self.advance_at_site(site):
+                self.log.error("Failed to advance. Exiting loop early")
+                return False
             count-=1
             if count==0:
                 break
+        return True
             
     def advance_at_site(self,site):
         # This can modify site! May also fail.
@@ -1639,7 +1861,13 @@ class AdvancingFront(object):
                 self.optimize_edits(edits)
                 # could commit?
             except self.cdt.IntersectingConstraints as exc:
+                # arguably, this should be caught lower down, and rethrown
+                # as a StrategyFailed.
                 self.log.error("Intersecting constraints - rolling back")
+                self.grid.revert(cp)
+                continue
+            except StrategyFailed as exc:
+                self.log.error("Strategy failed - rolling back")
                 self.grid.revert(cp)
                 continue
             break
@@ -1656,14 +1884,14 @@ class AdvancingFront(object):
         ax.cla()
 
         for curve in self.curves:
-            curve.plot(ax=ax,color='0.5',zorder=-5)
+            curve.plot(ax=ax,color='0.5',lw=0.4,zorder=-5)
 
-        self.grid.plot_edges(ax=ax,clip=clip)
+        self.grid.plot_edges(ax=ax,clip=clip,lw=1)
         if label_nodes:
             labeler=lambda ni,nr: str(ni)
         else:
             labeler=None
-        self.grid.plot_nodes(ax=ax,labeler=labeler,clip=clip)
+        self.grid.plot_nodes(ax=ax,labeler=labeler,clip=clip,sizes=10)
         ax.axis('equal')
         if self.zoom:
             ax.axis(self.zoom)
@@ -2051,7 +2279,7 @@ class DTChooseStrategy(DTNode):
         self.af.current=self.children[i]
 
         nodes=[]
-        for c in edits['cells']:
+        for c in edits.get('cells',[]):
             nodes += list(self.af.grid.cell_to_nodes(c))
         for n in edits.get('nodes',[]):
             nodes.append(n)

@@ -397,10 +397,12 @@ def interp_near(x,sx,sy,max_dx=None):
     y_at_x[ (dx>max_dx) | (dx<0) ] = np.nan                 
     return y_at_x
 
-def nearest(A,x):
+def nearest(A,x,max_dx=None):
     """ 
     like searchsorted, but return the index of the nearest value,
-    not just the first value greater than x
+    not just the first value greater than x.
+    if max_dx is given, then return -1 for items where the nearest
+    match was more than max_dx away
     """
     N=len(A)
     xi_right=np.searchsorted(A,x).clip(0,N-1) # the index of the value to the right of x
@@ -415,6 +417,9 @@ def nearest(A,x):
     else:
         if sel_left:
             xi=xi_left
+    if max_dx is not None:
+        dx_best=np.minimum(dx_right,dx_left)
+        xi=np.where(dx_best<=max_dx,xi,-1)
     return xi
 
 def nearest_val(A,x):

@@ -18,10 +18,6 @@ logging.basicConfig(level=logging.INFO)
 from stompy.spatial.linestring_utils import upsample_linearring,resample_linearring
 from stompy.spatial import field,constrained_delaunay,wkb2shp
 
-reload(unstructured_grid)
-reload(exact_delaunay)
-reload(front)
-
 ## Curve -
 
 def hex_curve():
@@ -38,7 +34,7 @@ def test_curve_eval():
     f=np.linspace(0,2*crv.total_distance(),25)
     crvX=crv(f)
     
-    if plt:
+    if 0: # skip plots
         plt.clf()
         crv.plot()
 
@@ -49,7 +45,7 @@ def test_curve_eval():
 def test_distance_away():
     crv=hex_curve()
 
-    if plt:
+    if 0: # skip plots
         plt.clf()
         crv.plot()
         plt.axis('equal')
@@ -64,7 +60,7 @@ def test_distance_away():
             f,x =crv.distance_away(f0,tgt,rtol=rtol)
             d=utils.dist(x-x0)
             assert np.abs( (d-np.abs(tgt))/tgt) <= rtol
-            if plt:
+            if 0:
                 plt.plot( [x0[0],x[0]],
                           [x0[1],x[1]],style)
 
@@ -116,15 +112,14 @@ def test_is_forward():
     assert crv.is_reverse(5,-5,10)
 
 
-
-#-# 
+## 
 def test_curve_upsample():
     boundary=hex_curve()
     scale=field.ConstantField(3)
 
     pnts,dists = boundary.upsample(scale,return_sources=True)
 
-    if plt:
+    if 0:
         plt.clf()
         line=boundary.plot()
         plt.setp(line,lw=0.5,color='0.5')
@@ -144,7 +139,7 @@ def test_basic_setup():
     # create boundary edges based on scale and curves:
     af.initialize_boundaries()
 
-    if 0 and plt:
+    if 0:
         plt.clf()
         g=af.grid
         g.plot_edges()
@@ -198,6 +193,31 @@ def test_halfedge_traverse():
     assert he.rev().fwd() == he
     #-# 
 
+def test_free_span():
+    r=5
+    theta = np.linspace(-np.pi/2,np.pi/2,20)
+    cap = r * np.swapaxes( np.array([np.cos(theta), np.sin(theta)]), 0,1)
+    box = np.array([ [-3*r,r],
+                     [-4*r,-r] ])
+    ring = np.concatenate((box,cap))
+
+    density = field.ConstantField(2*r/(np.sqrt(3)/2))
+    af=front.AdvancingTriangles()
+    af.set_edge_scale(density)
+
+    af.add_curve(ring,interior=False)
+    af.initialize_boundaries()
+
+    # N.B. this edge is not given proper cell neighbors
+    af.grid.add_edge(nodes=[22,3])
+
+    af.plot_summary()
+
+    he=af.grid.nodes_to_halfedge(4,5)
+    span_dist,span_nodes = af.free_span(he,25,1)
+    assert span_nodes[-1]!=4
+
+    
 def test_merge_edges():
     af=test_basic_setup()
 
@@ -217,7 +237,7 @@ def test_merge_edges():
         if he==he0:
             break
 
-    if plt:
+    if 0:
         plt.clf()
         af.grid.plot_edges()
 
@@ -240,7 +260,7 @@ def test_resample():
     af.resample(n=n,anchor=anchor,scale=25,direction=1)
     af.resample(n=n2,anchor=anchor,scale=25,direction=-1)
 
-    if plt:
+    if 0:
         plt.clf()
         af.grid.plot_edges()
 
@@ -255,7 +275,7 @@ def test_resample():
 def test_resample_neighbors():
     af=test_basic_setup()
     
-    if plt:
+    if 0:
         plt.clf()
         af.grid.plot_nodes(color='r')
     
@@ -263,7 +283,7 @@ def test_resample_neighbors():
             
     af.resample_neighbors(site)
 
-    if plt:
+    if 0:
         af.grid.plot_edges()
 
         af.grid.plot_nodes(color='g')
@@ -298,8 +318,6 @@ def test_actions():
     best=np.argmin(metrics)
     edits=actions[best].execute(site)
     af.optimize_edits(edits)
-
-##
 
 # af=test_basic_setup()
 # check0=af.grid.checkpoint()
@@ -366,7 +384,7 @@ def test_dt_backtracking():
     tries all possible children, at least for strategies,
     then goes with the "best" one.
     """
-    if plt:
+    if 0:
         plt.figure(1).clf()
         fig,ax=plt.subplots(num=1)
         
@@ -411,12 +429,9 @@ def test_singlestep_lookahead():
         if not af.current.best_child(): # cb=cb
             assert False
         
-    # af.plot_summary()
     return af
 
-
 ## 
-
 # Basic, no lookahead:
 # This produces better results because the metrics have been pre-tuned
 
@@ -485,12 +500,14 @@ def trifront_wrapper(rings,scale,label=None):
     af.initialize_boundaries()
 
     try:
-        af.loop()
+        result = af.loop()
     finally:
         if label is not None:
             plt.figure(1).clf()
             af.grid.plot_edges(lw=0.5)
             plt.savefig('af-%s.png'%label)
+    assert result
+    
     return af
     
 def test_pave_quad():
@@ -701,25 +718,6 @@ def test_peninsula():
     
     trifront_wrapper([pen2],density,label='peninsula')
 
-def test_peanut():
-    # like a figure 8, or a peanut
-    r = 100
-    thetas = np.linspace(0,2*np.pi,1000)
-    peanut = np.zeros( (len(thetas),2), np.float64)
-
-    peanut[:,0] = r*(0.5+0.3*np.cos(2*thetas))*np.cos(thetas)
-    peanut[:,1] = r*(0.5+0.3*np.cos(2*thetas))*np.sin(thetas)
-
-    min_pnt = peanut.min(axis=0)
-    max_pnt = peanut.max(axis=0)
-    d_data = np.array([ [min_pnt[0],min_pnt[1], 1.5],
-                        [min_pnt[0],max_pnt[1], 1.5],
-                        [max_pnt[0],min_pnt[1], 8],
-                        [max_pnt[0],max_pnt[1], 8]])
-    density = field.XYZField(X=d_data[:,:2],F=d_data[:,2])
-
-    trifront_wrapper([peanut],density,label='peanut')
-
 ##
 
 def test_cul_de_sac():
@@ -734,53 +732,6 @@ def test_cul_de_sac():
     trifront_wrapper([ring],density,label='cul_de_sac')
 
 
-##
-
-# what's up with this one?
-# works when single-stepping, fails when in the loop.
-
-r=5
-theta = np.linspace(-np.pi/2,np.pi/2,20)
-cap = r * np.swapaxes( np.array([np.cos(theta), np.sin(theta)]), 0,1)
-box = np.array([ [-3*r,r],
-                 [-4*r,-r] ])
-ring = np.concatenate((box,cap))
-
-density = field.ConstantField(2*r/(np.sqrt(3)/2))
-# trifront_wrapper([ring],density,label='cul_de_sac')
-scale=density
-rings=[ring]
-
-af=front.AdvancingTriangles()
-af.set_edge_scale(scale)
-
-af.add_curve(rings[0],interior=False)
-for ring in rings[1:]:
-    af.add_curve(ring,interior=True)
-af.initialize_boundaries()
-
-af.loop(3)
-##
-
-plt.clf()
-af.grid.plot_edges(lw=0.5)
-af.grid.plot_nodes(labeler=lambda i,r:str(i))
-af.grid.plot_halfedges(labeler=lambda j,side: str(af.grid.edges['cells'][j,side]))
-##
-
-site=af.choose_site()
-site.plot()
-# this is okay now, but the join leaves a bad cell index out there.
-af.resample_neighbors(site)
-
-        
-actions=site.actions()
-metrics=[a.metric(site) for a in actions]
-bests=np.argsort(metrics)
-
-pdb.run("actions[bests[0]].execute(site)")
-
-    
 ##     
 def test_bow():
     x = np.linspace(-100,100,50)
@@ -867,13 +818,28 @@ def test_dumbarton():
 
 
 ##
+def test_peanut():
+    # like a figure 8, or a peanut
+    r = 100
+    thetas = np.linspace(0,2*np.pi,1000)
+    peanut = np.zeros( (len(thetas),2), np.float64)
 
-# This is going to require a fair bit of porting --
+    peanut[:,0] = r*(0.5+0.3*np.cos(2*thetas))*np.cos(thetas)
+    peanut[:,1] = r*(0.5+0.3*np.cos(2*thetas))*np.sin(thetas)
 
-# hmm - maybe better just to have a sinusoid channel, then perturb it
-# and put some islands in there.  having a wide range of scales looks
-# nice but isn't going to be a great test.
-def gen_sine_sine():
+    min_pnt = peanut.min(axis=0)
+    max_pnt = peanut.max(axis=0)
+    d_data = np.array([ [min_pnt[0],min_pnt[1], 1.5],
+                        [min_pnt[0],max_pnt[1], 1.5],
+                        [max_pnt[0],min_pnt[1], 8],
+                        [max_pnt[0],max_pnt[1], 8]])
+    density = field.XYZField(X=d_data[:,:2],F=d_data[:,2])
+
+    trifront_wrapper([peanut],density,label='peanut')
+
+
+def sine_sine_rings():
+    
     t = np.linspace(1.0,12*np.pi,400)
     x1 = 100*t
     y1 = 200*np.sin(t)
@@ -911,28 +877,54 @@ def gen_sine_sine():
         island = np.swapaxes( np.concatenate( (x[None,:],y[None,:]) ), 0,1)
 
         rings.append(island)
-
-    density = field.ConstantField(25.0)
-    min_density = field.ConstantField(2.0)
-    p = paver.Paving(rings,density=density,min_density=min_density)
-    
-    print("Smoothing to nominal 1.0m")
-    # mostly just to make sure that long segments are
-    # sampled well relative to the local feature scale.
-    p.smooth() 
-
-    print("Adjusting other densities to local feature size")
-    p.telescope_rate=1.1
-    p.adjust_density_by_apollonius()
-
-    return p
+    return rings
 
 def test_sine_sine():
-    assert False # meh.. 
-    p=gen_sine_sine()
-    p.pave_all()
+    rings=sine_sine_rings()
+    density = field.ConstantField(25.0)
+
+    if 0: # no support for min_density yet
+        min_density = field.ConstantField(2.0)
+
+    # mostly just to make sure that long segments are
+    # sampled well relative to the local feature scale.
+    if 0: # no support yet
+        p.smooth() 
+
+        print("Adjusting other densities to local feature size")
+        p.telescope_rate=1.1
+        p.adjust_density_by_apollonius()
+
+    trifront_wrapper(rings,density,label='sine_sine')
+
+
 
 # Who is failing at this point?
-# test_long_channel_rigid -
-# test_peanut: need to fix the bulk initialization of the CDT.
-#   way way slow.
+
+# test_sine_sine()
+# test_dumbarton is disabled.
+# test_embedded_channel - needs embedded edges, right?
+# test_long_channel_rigid - needs additional API
+
+
+# GENERAL
+#  strategies which don't add or remove cells are problematic
+#  for the cost function.
+#   1: resample and nonlocal looking like the "best" child,
+#      though they may not actually get anywhere.  
+#      cost in some of these cases is just None.
+
+#  maybe an overall approach which starts from a CDT of the
+#  domain, and works by stepwise modification on this triangulation
+#  would be more robust.  could revisit the classical paving algorithm.
+
+# when resample() hits a snag, what should be the protocol for backing
+# up?  Probably we don't want it to be the caller's problem to deal
+# with. They call resample, it does what it can, and returns.
+# inside resample, then, just want to go as far as possible, try to 
+# order the operations such that getting only halfway through the
+# steps is still an imrprovement, and when an error occurs, rollback
+# to the last consistent state and return.
+
+# what does that mean for things like merge_edges?
+# 
