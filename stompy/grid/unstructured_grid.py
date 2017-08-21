@@ -1601,7 +1601,6 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         edge_data['nodes']=new_nodes
         self.add_edge(_index=A,**edge_data)
         return A
-
     def split_edge(self,j,**node_args):
         """
         The opposite of merge_edges, take an existing edge and insert

@@ -1446,7 +1446,14 @@ class AdvancingFront(object):
 
             self.log.debug("Only space for 1 segment")
             for d in span_nodes[1:-1]:
-                self.grid.merge_edges(node=d)
+                cp=self.grid.checkpoint()
+                try:
+                    self.grid.merge_edges(node=d)
+                except self.cdt.IntersectingConstraints as exc:
+                    self.log.info("handle_one_segment: cut short by exception")
+                    self.grid.revert(cp)
+                    # only got that far..
+                    return d
             return span_nodes[-1]
 
         if n_segments==1:
@@ -1534,37 +1541,35 @@ class AdvancingFront(object):
         # and then delete these, but that would require more checks to
         # see if it's safe to reposition the node?
         for d in nodes_to_delete:
-            self.grid.merge_edges(node=d)
+            cp=self.grid.checkpoint()
+            try:
+                self.grid.merge_edges(node=d)
+            except self.cdt.IntersectingConstraints as exc:
+                self.log.info("resample: had to stop short due to intersection")
+                self.grid.revert(cp)
+                return d
+                
 
         # on the other hand, it may be that the next node is too far away, and it
         # would be better to divide the edge than to shift a node from far away.
         # also possible that our neighbor was RIGID and can't be shifted
 
-
-        # I don't like this anymore. Using a more split-heavy approach
-        # if (self.grid.nodes['fixed'][n] == self.RIGID):
-        #     assert False # I don't think this can happen.
-        #     method='split'
-        # else:
-        #     dist_orig = utils.dist( self.grid.nodes['x'][anchor] - self.grid.nodes['x'][n] )
-        #     # tunable parameter here - how do we decide between shifting a neighbor and
-        #     # dividing the edge.  Larger threshold means shifting nodes from potentially far
-        #     # away, which distorts later steps.  smaller threshold means subdividing, but then
-        #     # there could be the potential to bump into that node during optimization (which
-        #     # is probably okay - we clear out interfering nodes like that).
-        #     if dist_orig / scale > 1.5: 
-        #         method='split'
-
+        cp=self.grid.checkpoint()
         
-        if method=='slide':
-            self.grid.modify_node(nnew,x=new_x,ring_f=new_f)
-            return nnew
-        else: # 'split'
-            j=self.grid.nodes_to_edge([anchor,nnew])
-            # get a newer nnew
-            jnew,nnew = self.grid.split_edge(j,x=new_x,ring_f=new_f,oring=oring+1,
-                                             fixed=self.SLIDE)
-            return nnew
+        try:
+            if method=='slide':
+                self.grid.modify_node(nnew,x=new_x,ring_f=new_f)
+            else: # 'split'
+                j=self.grid.nodes_to_edge([anchor,nnew])
+
+                # get a newer nnew
+                jnew,nnew = self.grid.split_edge(j,x=new_x,ring_f=new_f,oring=oring+1,
+                                                 fixed=self.SLIDE)
+        except self.cdt.IntersectingConstraints as exc:
+            self.log.info("resample - slide() failed. will return node at original loc")
+            self.grid.revert(cp)
+            
+        return nnew
 
     def resample_neighbors(self,site):
         return site.resample_neighbors()

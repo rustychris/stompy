@@ -20,12 +20,15 @@ af.initialize_boundaries()
 
 # gets pretty far, then corrupts some shoreline
 # while getting an intersecting constraint error
-af.loop(200)
+af.loop(283)
 
-## 
+# 
+
+##
+af.loop(1)
 zoom=(3685.3576744887459, 3766.6617074119663, -106.27412460553033, -45.230532144628569)
 zoom=(2391.5283204797729, 2467.0778002411375, -175.48232649105583, -118.75928967022534)
-
+zoom=(617.5288764629438, 851.27615881930399, 122.37679637174006, 241.99027866141051)
 af.plot_summary(label_nodes=False)
 
 site=af.choose_site()
@@ -35,9 +38,5 @@ plt.axis(zoom)
 
 ##
 
-# this is okay
-# af.resample_neighbors(site)
-# This fails:
-pdb.run("front.Resample.execute(site)")
-
-## -----------
+# this is what fails.
+af.resample_neighbors(site)

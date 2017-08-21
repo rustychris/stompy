@@ -917,3 +917,14 @@ def test_sine_sine():
 #  maybe an overall approach which starts from a CDT of the
 #  domain, and works by stepwise modification on this triangulation
 #  would be more robust.  could revisit the classical paving algorithm.
+
+# when resample() hits a snag, what should be the protocol for backing
+# up?  Probably we don't want it to be the caller's problem to deal
+# with. They call resample, it does what it can, and returns.
+# inside resample, then, just want to go as far as possible, try to 
+# order the operations such that getting only halfway through the
+# steps is still an imrprovement, and when an error occurs, rollback
+# to the last consistent state and return.
+
+# what does that mean for things like merge_edges?
+# 
