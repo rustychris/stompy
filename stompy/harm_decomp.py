@@ -98,12 +98,12 @@ def noaa_37_names():
 
 def noaa_37_omegas():
     """
-    return frequencies in inverse seconds for the 37 NOAA constituents
+    return frequencies in rad/sec for the 37 NOAA constituents
     """
     idx = [tide_consts.const_names.index(n) for n in noaa_37_names()]
     omega_deg_per_hour = tide_consts.speeds[idx]
     omega_per_sec = omega_deg_per_hour * (1./3600) * (1/360.)
-    return omega_per_sec
+    return 2*np.pi*omega_per_sec
     
 
 def decompose_noaa37(t,h):
