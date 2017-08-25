@@ -383,6 +383,26 @@ def grid_to_pli_data(g,node_fields,labeler=None):
         features.append( (label,feature) )
     return features
 
+def add_suffix_to_feature(feat,suffix):
+    """
+    Utility method, takes a feature as returned by read_pli
+    (name,
+     [ [x0,y0],[x1,y1],...],
+     { [node_label0,node_label1,...] }  # optional
+    )
+    
+    and adds a suffix to the name of the feature and the 
+    names of nodes if they exist
+    """
+    name=feat[0]
+    suffize=lambda s: s.replace(name,name+suffix)
+    feat_suffix=[suffize(feat[0]), feat[1]] # points stay the same
+    if len(feat)==3: # includes names for nodes
+        feat_suffix.append( [suffize(s) for s in feat[2]] )
+    return feat_suffix
+
+
+
 def read_map(fn,hyd,use_memmap=True,include_grid=True):
     """
     Read binary D-Water Quality map output, returning an xarray dataset.
