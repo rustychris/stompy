@@ -1902,7 +1902,7 @@ class HydroFiles(Hydro):
                 #ug=ugrid.Ugrid(orig)
                 #self._grid=ug.grid()
                 self._grid=unstructured_grid.UnstructuredGrid.from_ugrid(orig)
-            except IndexError:
+            except (IndexError,AssertionError):
                 self.log.warning("Grid wouldn't load as ugrid, trying dfm grid")
                 dg=dfm_grid.DFMGrid(orig)
                 self._grid=dg
