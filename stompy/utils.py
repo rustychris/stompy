@@ -1631,3 +1631,49 @@ def point_in_polygon( pgeom, randomize=False ):
         # then choose the midpoint:
         midpoint = np.array(ix.coords).mean(axis=0)
         return midpoint
+
+
+def isolate_downcasts(ds,
+                      z_surface='auto',min_cast_samples=10,
+                      z_var='z',time_dim='time',positive='up',
+                      z_slush=0.3):
+    """
+    take a timeseries with depth, split it into downcasts.
+    """
+    z=ds[z_var].values
+    if z_surface == 'auto':
+        z_surface = percentile(z,95) - z_slush # ~ 0.3m slush factor
+    dz = np.concatenate( ([0],diff(z)) )
+    mask = ((z<z_surface) & (dz<0))
+
+    ## divide into individual casts
+    cast_starts = np.nonzero( mask[1:] & (~mask[:-1]))[0]
+    cast_ends = np.nonzero( mask[:-1] & (~mask[1:]))[0]
+    # remove partials at start and end
+    if mask[0]:
+        cast_ends = cast_ends[1:]
+    if mask[-1]:
+        cast_starts = cast_starts[:-1]
+
+    cast_Nsamples = cast_ends - cast_starts
+    valid_casts = cast_Nsamples > min_cast_samples
+
+    cast_starts = cast_starts[valid_casts]
+    cast_ends = cast_ends[valid_casts]
+    max_cast_samples = cast_Nsamples.max()
+
+    Ncasts = len(cast_starts)
+
+    # repackage scalar and z into MxN array
+    scalar_mn = np.zeros( (Ncasts,max_cast_samples), scalar.dtype)
+    z_mn = np.zeros( (Ncasts,max_cast_samples), float64)
+    scalar_mn[...] = nan
+    z_mn[...] = nan
+    times_m = np.zeros(Ncasts, np.float64)
+    xy_m = np.zeros( (Ncasts,2), np.float64)
+    for c,(s,e)in enumerate(zip(cast_starts,cast_ends)):
+            scalar_mn[c,:e-s] = scalar[s:e]
+            z_mn[c,:e-s] = z[s:e]
+            times_m[c] = times[s]
+            xy_m[c,:] = xy[s]
+    tr = Transect(xy=xy_m,times=times_m,elevations=z_mn.T,scalar=scalar_mn.T)

@@ -1,14 +1,15 @@
 # Class for representing an RBR CTD
 import numpy as np
-import pdb
-# from pylab import *
 
 import re
 import seawater
 import copy
 import sqlite3
 import pytz
+import datetime
 from matplotlib.dates import date2num,num2date
+import xarray as xr
+from .. import utils
 
 class Calibration(object):
     """ a container for calibration information - these aren't
@@ -142,10 +143,24 @@ class Rbr(object):
 
                 bad = np.argmax(d2_norm)
                 if d2_norm[bad] > 30:
-                    self.data[bad+1,ci+1] = nan
+                    self.data[bad+1,ci+1] = np.nan
                 else:
                     break
 
+    def to_xarray(self):
+        ds=xr.Dataset()
+        ds['time']=('time',),utils.to_dt64(self.data[:,0])
+        for icol,col in enumerate(self.columns):
+            ds[col]=('time',),self.data[:,1+icol]
+
+        for field in ['averaging','instrument_tz','Nchannels',
+                      'txt_logger_time','txt_host_time',
+                      'txt_sample_period','txt_logging_start']:
+            val=getattr(self,field)
+            if field.startswith('txt'):
+                val=val.strip()
+            ds[field]=val
+        return ds
 
 
 class RbrRsk(Rbr):
@@ -477,7 +492,7 @@ class RbrHex(Rbr):
         bytes=np.fromstring(binary,np.uint8)
 
         # snip out the timestamp entries
-        sel=ones(len(bytes),np.bool8)
+        sel=np.ones(len(bytes),np.bool8)
         offset=0
         bytes_per_frame=3*self.Ncolumns
         for tb in self.timebases:
@@ -552,7 +567,7 @@ class RbrHex(Rbr):
             base_times.append( base_times[-1]+ self.dt_s*(base_samples[-1]-base_samples[-2])/86400. )
 
         sample_i=np.arange(len(self.data)) # indices where we want times.
-        self.data[:,0]=np.interp(sample_i,base_samples,base_times,left=nan,right=nan)
+        self.data[:,0]=np.interp(sample_i,base_samples,base_times,left=np.nan,right=np.nan)
         
     @staticmethod
     def concatenate(Rs):
@@ -574,7 +589,7 @@ class RbrHex(Rbr):
                 R.timebases.append(tb)
             sample_offset+=r.Nsamples
 
-        R.data=concatenate( [r.data for r in Rs])
+        R.data=np.concatenate( [r.data for r in Rs])
         R.update_fields()
         return R
             
