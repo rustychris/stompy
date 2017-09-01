@@ -110,6 +110,74 @@ def decompose_noaa37(t,h):
     return decompose(t,h,noaa_37_omegas())
 
 
+def select_omegas(T,omegas=None,factor=0.25):
+    """
+    T: timedelta64 giving duration of a timeseries
+    omegas: an array of angular frequencies in rad/s, defaults to
+    the 37 constituents used in NOAA predictions.
+
+    returns a subset of angular frequencies which are resolvable in the
+    given period of data.  This is based on eliminating pairs of
+    constituents whose beat frequency is less than factor times
+    the reciprocal of T.  In each such pair, the order of the incoming
+    omegas is used as a prioritization.
+    """
+    # length of the data
+
+    # min_beat
+    # Roughly, to distinguish two frequencies f_a,f_b, must be able
+    # to resolve their beat frequency, (f_b-f_a)
+    # Figure we need a quarter period(?) to resolve that
+    min_omega_beat=factor * (2*np.pi/T)
+
+    if omegas is None:
+        omegas=noaa_37_omegas() # rad/s
+        
+    # ability to differentiate two frequencies in a time series of
+    # length T is proportional to the ratio of T to 1/delta f.
+
+    sel_omegas=np.concatenate( ([0],omegas) )
+    sel_omegas.sort()
+
+    while 1:
+        omega_beat=np.diff(sel_omegas)
+
+        if omega_beat.min() < min_omega_beat:
+            idx=np.argmin(omega_beat)
+            if idx==0:
+                T_a=np.inf
+            else:
+                T_a=2*np.pi/(3600*sel_omegas[idx])
+            T_b=2*np.pi/(3600*sel_omegas[idx+1])
+
+            # print( ("Periods %.2fh and %.2fh have beat period %.2fh,"
+            #         " too long to be resolved by %.2fh time"
+            #         " series")%( T_a,T_b,
+            #                      2*np.pi/(3600*omega_beat.min()),
+            #                      T/3600 ))
+            
+            # drop the one later in the original list of frequencies, and never DC.
+            if idx==0:
+                drop=1
+            else:
+                rank_a=np.nonzero( omegas==sel_omegas[idx] )[0][0]
+                rank_b=np.nonzero( omegas==sel_omegas[idx+1] )[0][0]
+
+                if rank_a<rank_b:
+                    drop=idx+1
+                else:
+                    drop=idx
+            # print("Will drop period of %.2fh"%(2*np.pi/3600/sel_omegas[drop]))
+            sel_omegas=np.concatenate( (sel_omegas[:drop],
+                                        sel_omegas[drop+1:]) )
+        else:
+            break
+    sel_omegas=sel_omegas[1:] # drop DC now.
+    return sel_omegas
+
+
+
+
 decompose.cached_t = None
 decompose.cached_omegas = None
 

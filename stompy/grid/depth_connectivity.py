@@ -15,6 +15,7 @@ see end of file
 """
 
 # Copied from .../research/spatialdata/us/ca/lidar/direct_biased/direct_biased.py
+from __future__ import print_function
 
 import numpy as np
 from scipy.ndimage import label
@@ -36,6 +37,74 @@ except ImportError:
         p=path.Path(ijs,closed=True)
         return p.contains_points(points)
 
+
+def greedy_edgemin_to_node(g,orig_node_depth,edge_min_depth):
+    """
+    A simple approach to moving edge depths to nodes, when the
+    hydro model (i.e. DFM) will use the minimum of the nodes to 
+    set the edge.
+    It sounds roundabout because it is, but there is not a 
+    supported way to assign edge depth directly.
+
+    For each edge, want to enforce a minimum depth in two sense:
+    1. one of its nodes is at the minimum depth
+    2. neither of the nodes are below the minimum depth
+    and..
+    3. the average of the two nodes is close to the average DEM depth 
+       of the edge
+    Not yet sure of how to get all of those.  This method focuses on
+    the first point, but in some situations that is still problematic.
+    The 3rd point is not attempted at all, but in DFM would only be
+    relevant for nonlinear edge depths which are possibly not even supported
+    for 3D runs.
+    """
+
+    conn_depth=np.nan*orig_node_depth
+
+    # N.B. nans sort to the end
+    edge_min_ordering=np.argsort(edge_min_depth)
+
+    # The greedy aspect is that we start with edges at the
+    # lowest target depth, ensuring their elevations before
+    # setting higher edges
+    for j in edge_min_ordering:
+        if np.isnan(edge_min_depth[j]):
+            break # done with all of the target depths
+        
+        nodes=g.edges['nodes'][j]
+
+        # is this edge is already low enough, based on minimum of
+        # node elevations set so far?
+        if ( np.any( np.isfinite(conn_depth[nodes]) ) and 
+             (np.nanmin(conn_depth[nodes])<=edge_min_depth[j] ) ):
+            continue # yes, move on.
+
+        orig_z=orig_node_depth[nodes]
+
+        # original code skipped edges where either of the nodes were nan
+        # in the original grid -- seems unnecessary
+
+        # instead, now choose the node to update based orig_node_depth is possible,
+        # considering nan to be above finite.  failing that, choose nodes[0] arbitrarily.
+        if np.isnan(orig_z[0]):
+            if np.isnan(orig_z[1]):
+                target_node=nodes[0] # arbitrary
+            else:
+                target_node=nodes[1]
+        elif np.isnan(orig_z[1]):
+            target_node=nodes[0]
+        elif orig_z[0]<orig_z[1]:
+            target_node=nodes[0]
+        else:
+            target_node=nodes[1]
+            
+        conn_depth[target_node]=edge_min_depth[j]
+
+    missing=np.isnan(conn_depth)
+    conn_depth[missing]=orig_node_depth[missing]
+    return conn_depth
+
+    
 def points_to_mask(hull_ijs,nx,ny):
     # This seems inefficient, but actually timed out at 0.3ms
     # very reasonable.
@@ -46,6 +115,7 @@ def points_to_mask(hull_ijs,nx,ny):
     points = np.vstack((x,y)).T
     mask = points_inside_poly(points, hull_ijs)
     return mask.reshape((ny,nx))
+
 
 def min_connection_elevation(ijs,min_depth,max_depth,F):
     while max_depth - min_depth > 0.01: # cm accuracy
@@ -116,7 +186,7 @@ def min_graph_elevation_for_edge(g,dem,j,starts='lowest'):
          (tile.extents[1]<xxyy[1]) or
          (tile.extents[2]>xxyy[2]) or
          (tile.extents[3]<xxyy[3]) ):
-        print "Tile clipped by edge of DEM"
+        print("Tile clipped by edge of DEM")
         return np.nan
 
     if debug:
@@ -195,7 +265,7 @@ def min_graph_elevation_for_edge(g,dem,j,starts='lowest'):
         ax.set_title('Centers')
 
     if not valid[ijs[0,1],ijs[0,0]] or not valid[ijs[1,1],ijs[1,0]]:
-        print "Cell circumcenter(s) not in cell!"
+        print("Cell circumcenter(s) not in cell!")
         return np.nan
 
     # will probably end up grabbing the real cell depths here, rather
@@ -217,22 +287,30 @@ def edge_connection_depth(g,dem,edge_mask=None,centers='circumcenter'):
     a depth value corresponding to the minimum elevation at which
     adjacent cells are hydraulically connected, evaluated on the
     dem.  
+    g: instance of UnstructuredGrid
+    dem: field.SimpleGrid instance, usually GdalGrid
+    edge_mask: bitmask for which edges to calculate, defaults to bounds of dem.
+
     centers controls the reference point for each cell.
       'circumcenter': use cell circumcenter
       'centroid': use cell centroid
       'lowest': use lowest point within the cell.
     """
     if edge_mask is None:
-        edge_mask=np.ones(g.Nedges(),'b1')
+        # use to default to all edges
+        # edge_mask=np.ones(g.Nedges(),'b1')
+        # this makes more sense, though
+        edge_mask=g.edge_clip_mask(dem.bounds())
 
     sel_edges=np.nonzero(edge_mask)[0]
     count=np.sum(edge_mask)
 
     edge_elevations=np.nan*np.ones(g.Nedges())
+    g.edge_to_cells()
 
     for ji,j in enumerate(sel_edges): 
         if ji%100==0:
-            print "%d/%d"%(ji,count)
+            print("%d/%d"%(ji,count))
 
         elev = min_graph_elevation_for_edge(g,dem,j,starts=centers)
 

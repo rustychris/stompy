@@ -388,7 +388,10 @@ def fill_tidal_data(da,fill_time=True):
     data_hp=data - data_lp
 
     valid=np.isfinite(data_hp)
-    omegas=harm_decomp.noaa_37_omegas() # as rad/sec
+    
+    # omegas=harm_decomp.noaa_37_omegas() # as rad/sec
+    T_s=(da.time[-1]-da.time[0]).values / np.timedelta64(1,'s')
+    omegas=harm_decomp.select_omegas(T_s,factor=0.25)
 
     harmonics=harm_decomp.decompose(dnums[valid]*86400,data_hp[valid],omegas)
 

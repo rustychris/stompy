@@ -1,15 +1,6 @@
 from __future__ import division
 from __future__ import print_function
 
-from future import standard_library
-standard_library.install_aliases()
-from builtins import zip
-from builtins import str
-from builtins import map
-from builtins import range
-from builtins import object
-# from past.utils import old_div
-
 import numpy as np # to help in transition
 
 import glob,types
@@ -394,7 +385,7 @@ class XYZField(Field):
 
                 if not self.index:
                     dsqr = ((self.X - X[i])**2).sum(axis=1)
-                    j = argmin( dsqr )
+                    j = np.argmin( dsqr )
                 else:
                     j = self.nearest(X[i])
 
@@ -538,7 +529,7 @@ class XYZField(Field):
 
         # may have to trim back some of the extras:
         if r is not None and r > min_radius:
-            good = argsort(dists)[:min_n_closest]
+            good = np.argsort(dists)[:min_n_closest]
             nearby = nearby[good]
             dists = dists[good]
 
@@ -581,10 +572,10 @@ class XYZField(Field):
             dsqr = ((self.X - p)**2).sum(axis=1)
 
             if count == 1:
-                j = argmin( dsqr )
+                j = np.argmin( dsqr )
                 return j
             else:
-                js = argsort( dsqr )
+                js = np.argsort( dsqr )
                 return js[:count]
 
     def rectify(self,dx=None,dy=None):

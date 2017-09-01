@@ -677,7 +677,7 @@ def dfm_wind_to_nc(wind_u_fn,wind_v_fn,nc_fn):
 
 
 def dataset_to_dfm_wind(ds,period_start,period_stop,target_filename_base,
-                        extra_header=None):
+                        extra_header=None,min_records=1):
     """
     Write wind in an xarray dataset to a pair of gridded meteo files for DFM.
 
@@ -687,13 +687,23 @@ def dataset_to_dfm_wind(ds,period_start,period_stop,target_filename_base,
       y, and the wind variables named wind_u and wind_v.
     period_start,period_stop: 
       include data from the dataset on or after period_start, and up to period_stop.
+    target_filename_base:
+      the path and filename for output, without the .amu and .amv extensions.
     extra_header: 
       extra text to place in the header.  This is included as is, with the exception that
       a newline will be added if it's missing
+
+    returns the number of available records overlapping the requested period.
+    If that number is less than min_records, no output is written.
     """
     time_idx_start, time_idx_stop = np.searchsorted(ds.time,[period_start,period_stop])
+
+    record_count=time_idx_stop-time_idx_start
+    if record_count<min_records:
+        return record_count
     
     # Sanity checks that there was actually some overlapping data.
+    # maybe with min_records, this can be relaxed?  Unsure of use case there.
     assert time_idx_start+1<len(ds.time)
     assert time_idx_stop>0
     assert time_idx_start<time_idx_stop
@@ -764,7 +774,7 @@ unit1 = m s-1
 
     fp_u.close()
     fp_v.close()
-
+    return record_count
 
 class SectionedConfig(object):
     """ 

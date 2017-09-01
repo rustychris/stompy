@@ -94,11 +94,13 @@ def coops_dataset(station,start_date,end_date,products,
     ds_per_product=[]
 
     for product in products:
-        ds_per_product.append( coops_dataset_product(station=station,
-                                                     product=product,
-                                                     start_date=start_date,
-                                                     end_date=end_date,
-                                                     days_per_request=days_per_request) )
+        ds=coops_dataset_product(station=station,
+                                 product=product,
+                                 start_date=start_date,
+                                 end_date=end_date,
+                                 days_per_request=days_per_request)
+        if ds is not None:
+            ds_per_product.append(ds)
     ds_merged=xr.merge(ds_per_product,join='outer')
     return ds_merged
 
@@ -113,7 +115,7 @@ def coops_dataset_product(station,product,
     or numpy datetime64.
     days_per_request: batch the requests to fetch smaller chunks at a time.
 
-    returns an xarray dataset
+    returns an xarray dataset, or None if no data could be fetched
     """
     fmt_date=lambda d: utils.to_datetime(d).strftime("%Y%m%d %H:%M")
     base_url="https://tidesandcurrents.noaa.gov/api/datagetter"
