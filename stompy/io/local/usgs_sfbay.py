@@ -79,7 +79,21 @@ def cruise_dataset(start,stop):
             # ds4[fld] = ds4[fld].isel(drop=True,date=0,prof_sample=0)
             # Instead, aggregate over the dimension.  min() picks out nan
             # values.  median can't handle strings.  max() appears ok.
-            ds4[fld] = ds4[fld].max(dim='date').max(dim='prof_sample')
+            # In some cases this is still a problem, ie on hpc, can get a
+            # TypeError because missing values are nan, and cannot be compared
+            # to byte or string.
+            # Because there are some lurking inconsistencies with the type
+            # of strings coming in as bytes vs. strings, we still have some
+            # weird logic here
+            try:
+                # this should work if the field is already a float
+                ds4[fld] = ds4[fld].max(dim='date').max(dim='prof_sample')
+            except TypeError:
+                # maybe it's a string?
+                try:
+                    ds4[fld] = ds4[fld].fillna(b'').max(dim='date').max(dim='prof_sample')
+                except TypeError:
+                    ds4[fld] = ds4[fld].fillna('').max(dim='date').max(dim='prof_sample')
             
         ds4=ds4.set_coords(spatial)
      
