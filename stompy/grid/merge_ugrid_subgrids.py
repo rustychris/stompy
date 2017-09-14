@@ -169,7 +169,7 @@ class MergeUgridSubgrids(UgridTranscriber):
             max_edges_per_submesh = max(max_edges_per_submesh,len(tupes))
 
             for e,k in enumerate(tupes):
-                if k not in not new_edge_map:
+                if k not in new_edge_map:
                     new_edge_map[k] = new_edge_idx
                     new_edge_idx += 1
                     selected[e] = True

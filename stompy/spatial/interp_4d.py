@@ -4,10 +4,11 @@ form thereof)
 """
 
 import numpy as np
-import utils
 import pandas as pd
-import unstructured_grid
-import unstructured_diffuser
+
+from .. import utils
+from ..grid import unstructured_grid
+from ..model import unstructured_diffuser
 
 ## 
 

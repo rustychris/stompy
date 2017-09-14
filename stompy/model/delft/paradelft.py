@@ -4,16 +4,20 @@ Tools to read Delft output into paraview.
 Note that this probably needs to be run from within paraview or pvpython.
 """
 
+from __future__ import print_function
 
-import qnc
-from delft import dfm_grid
 import numpy as np
 import time
 
-import paraview
-print paraview
-import paraview.numpy_support as pnp
-import vtk
+from ...io import qnc
+from . import dfm_grid
+
+try:
+    import paraview
+    import paraview.numpy_support as pnp
+    import vtk
+except ImportError:
+    print("vtk/paraview import failed. Paradelft not available")
 
 # this works, but it's super slow (25.92s to load one timestep)
 # starting point: 25.92s
@@ -126,7 +130,7 @@ def load_map(output=None,ncmap_fn=None,tidx=None):
         else:
             raise Exception("Only know how to translate 3,4 sided cells")
 
-    print "Elapsed for building cells: %.2f"%(time.time() - t)
+    print("Elapsed for building cells: %.2f"%(time.time() - t))
 
     t=time.time()
 
@@ -140,7 +144,7 @@ def load_map(output=None,ncmap_fn=None,tidx=None):
     w=ncmap.variables['ucz'][tidx,:,:].ravel()
 
     # 0.01
-    print "Reading data: %.2f"%(time.time() - t)
+    print("Reading data: %.2f"%(time.time() - t))
 
     U=np.ascontiguousarray( np.array([u,v,w]).T )
     arr=pnp.numpy_to_vtk(U,deep=1)
@@ -159,7 +163,7 @@ def load_map(output=None,ncmap_fn=None,tidx=None):
         cellData.AddArray(arr)
 
     # 0.33
-    print "Elapsed total for cell data: %.2f"%(time.time() - t)
+    print("Elapsed total for cell data: %.2f"%(time.time() - t))
 
 
 # paste something like:

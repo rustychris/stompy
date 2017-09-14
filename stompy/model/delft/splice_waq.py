@@ -5,16 +5,15 @@
 # sort of a repurposing of the DWaqAggregator.
 
 import os
-import sunreader
-from . import waq_scenario
-from . import sundwaq
 import logging
-import scriptable
 import numpy as np
 
 logger = logging.getLogger()
-logger.setLevel(logging.INFO)
 
+from ..suntans import sunreader
+from . import waq_scenario
+from . import sundwaq
+from ... import scriptable
 
 class SpliceScenario(waq_scenario.Scenario):
     pass 

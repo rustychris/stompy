@@ -51,7 +51,7 @@ def point_index_class_factory(implementation='best'):
             # try to mimic the Rtree interface - starting by just using it...
             return Rtree
         except ImportError:
-            if implentation=='best':
+            if implementation=='best':
                 raise
             # otherwise fall through to next best
 

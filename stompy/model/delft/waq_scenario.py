@@ -6282,7 +6282,7 @@ END_MULTIGRID"""%num_layers
         self.discharges=[]
         self.loads=[]
 
-    def add_discharge(self,*arg,on_exists='exception',**kws):
+    def add_discharge(self,on_exists='exception',*arg,**kws):
         disch=Discharge(*arg,**kws)
         disch.scenario=self
         disch.update_fields()

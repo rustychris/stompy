@@ -20,9 +20,8 @@ import scipy.stats.stats as sp
 import scipy.stats.morestats as ssm
 from matplotlib.dates import date2num,num2date
 import datetime
-import pdb
-import nmea
 
+from . import nmea
 
 cfac=180.0/(2**31)
 
@@ -870,12 +869,6 @@ def rd_buffer(fd,num_av,msg=msg_print):
 
         for n in range(len(hdr.dat_offsets)): # n: 1 => 0 based
             id_="%04X"%fromfile(fd,uint16,1)[0]
-
-            # DBG - second time through the loop we're 3 bytes short.
-            # print "ID=%s ftell=%d n=%d"%(id_,fd.tell(),n)
-            # DBG:
-            #if fd.tell() == 3957:
-            #    pdb.set_trace()
 
             # handle all the various segments of data. Note that since I read the IDs as a two
             # byte number in little-endian order the high and low bytes are exchanged compared to
