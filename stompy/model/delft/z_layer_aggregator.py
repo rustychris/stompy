@@ -28,7 +28,7 @@ from collections import defaultdict
 
 import numpy as np
 
-from delft import waq_scenario 
+from . import waq_scenario 
 
 # class ZLayerAggregatorOriginal(waq_scenario.DwaqAggregator):
 #     """ Aggregates in the horizontal, but preserves the z layers

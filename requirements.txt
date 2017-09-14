@@ -10,3 +10,4 @@ scipy
 Shapely
 six
 xarray
+seawater

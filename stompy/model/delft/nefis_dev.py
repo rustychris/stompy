@@ -5,7 +5,8 @@ import os
 import sys
 import numpy as np
 import matplotlib.pyplot as plt
-import memoize
+# import memoize
+
 ## 
 # os.chdir('/Users/rusty/research/sfei/models/delft/delft3d_repository/examples/01_standard')
 d3d_libdir=os.path.join(os.environ['HOME'],
@@ -577,7 +578,7 @@ class DflowGrid2D(object):
                                edgecolors='k',lw=0.2,
                                shading='gouraud')
 
-    @memoize.memoize()
+    # @memoize.memoize()
     def to_triangulation(self):
         # map 2d node index to 1d index - not yet compressed.
         idx1d=arange(np.prod(self.xcor.shape)).reshape(self.xcor.shape)

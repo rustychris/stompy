@@ -22,7 +22,13 @@
 
 # -- General configuration ------------------------------------------------
 
-autodoc_mock_imports = ['_tkinter','osgeo','ogr']
+autodoc_mock_imports = ['_tkinter',
+                        'osgeo',
+                        'ogr',
+                        'osgeo.ogr',
+                        'osr',
+                        'qgis',
+                        'nose' ]
 
 # If your documentation needs a minimal Sphinx version, state it here.
 #
