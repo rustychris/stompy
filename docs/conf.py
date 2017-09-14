@@ -20,8 +20,9 @@
 # import sys
 # sys.path.insert(0, u'/home/rusty/src/stompy/stompy')
 
-
 # -- General configuration ------------------------------------------------
+
+autodoc_mock_imports = ['_tkinter','osgeo','ogr']
 
 # If your documentation needs a minimal Sphinx version, state it here.
 #
