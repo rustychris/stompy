@@ -1,11 +1,10 @@
 # harmonic decomposition
 from __future__ import print_function
 
-# from safe_pylab import *
-# from numpy import *
 import numpy as np
 from numpy.linalg import norm,qr,pinv
-import tide_consts    
+
+from . import tide_consts    
 
 
 ###
