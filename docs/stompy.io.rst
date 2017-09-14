@@ -19,14 +19,6 @@ stompy\.io\.match\_datasets module
     :undoc-members:
     :show-inheritance:
 
-stompy\.io\.polaris module
---------------------------
-
-.. automodule:: stompy.io.polaris
-    :members:
-    :undoc-members:
-    :show-inheritance:
-
 stompy\.io\.qnc module
 ----------------------
 

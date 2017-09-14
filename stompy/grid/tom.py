@@ -16,23 +16,22 @@ except ImportError:
 
 import shapely.wkb
 import matplotlib
-import wkb2shp
 
 # Cairo doesn't play well with some conda installations.
-# matplotlib.use('agg')  # This causes warnings
 import pylab 
 import numpy as np
 
-import trigrid,paver, field, join_features
+from . import (trigrid, paver)
+from ..spatial import (field, join_features, wkb2shp)
 
 # Maybe we have CGAL, and can use the constrained delaunay field -
 try:
-    import constrained_delaunay
+    from ..spatial import constrained_delaunay
 except ImportError:
     constrained_delaunay = False
 
-import optimize_grid
-from geom_types import ogr2text
+from . import optimize_grid
+from .geom_types import ogr2text
 
 class FileNotFound(Exception):
     pass

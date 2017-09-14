@@ -22,7 +22,10 @@
 
 # -- General configuration ------------------------------------------------
 
+# seems that some module-level code peeks into _tkinter, so it's not enough
+# to mock only that.
 autodoc_mock_imports = ['_tkinter',
+                        'tkinter',
                         'osgeo',
                         'ogr',
                         'osgeo.ogr',
