@@ -1,4 +1,6 @@
 # see how involved a NEFIS reader in native python/numpy would be
+from __future__ import print_function
+
 import os
 import sys
 import numpy as np
@@ -47,7 +49,7 @@ access.value="r"
 # first param is "BInt4 *fd"  - how to pass that in ctypes??
 err=nef.Crenef(byref(fd_nefis), dat_fn, def_fn,byref(endian), access)
 if err:
-    print err 
+    print(err)
     nef.nefis_error(1,None)
 
 # # 
@@ -57,10 +59,10 @@ if err:
 header_buff=create_string_buffer(" "*129)
 err=nef.Gethdf(byref(fd_nefis),byref(header_buff))
 # => 'Deltares, NEFIS Definition File; 5.00.00'
-print header_buff.value
+print(header_buff.value)
 
 if err:
-    print err 
+    print(err)
     nef.nefis_error(1,None)
 
 ## 
@@ -117,14 +119,14 @@ err = nef.Inqfgr(byref(fd_nefis),
                  grpdms.ctypes,
                  grpord.ctypes)
 if err:
-    print err 
+    print(err)
     nef.nefis_error(1,None)
 
-print "  Group: %s   cell: %s"%(grpnam.value,celnam.value)
+print("  Group: %s   cell: %s"%(grpnam.value,celnam.value))
 dims=",".join( ["%d"%grpdms[dim_i] for dim_i in range(grpndm.value)] )
-print "  dims: ",dims
+print("  dims: ",dims)
 ords=",".join( ["%d"%grpord[dim_i] for dim_i in range(grpndm.value)] )
-print "  order: ",ords
+print("  order: ",ords)
 
 ## 
 
@@ -143,14 +145,14 @@ def inqfgr(fd):
                      grpdms.ctypes,
                      grpord.ctypes)
     if err:
-        print err 
+        print(err)
         nef.nefis_error(1,None)
 
-    print "  Group: %s   cell: %s"%(grpnam.value,celnam.value)
+    print("  Group: %s   cell: %s"%(grpnam.value,celnam.value))
     dims=",".join( ["%d"%grpdms[dim_i] for dim_i in range(grpndm.value)] )
-    print "  dims: ",dims
+    print("  dims: ",dims)
     ords=",".join( ["%d"%grpord[dim_i] for dim_i in range(grpndm.value)] )
-    print "  order: ",ords
+    print("  order: ",ords)
 
 def inqngr(fd):
     grpnam=create_string_buffer(" "*16)
@@ -167,22 +169,22 @@ def inqngr(fd):
                      grpord.ctypes)
     if err:
         if err==-6028:
-            print "End of groups"
+            print("End of groups")
             return
-        print err 
+        print(err)
         nef.nefis_error(1,None)
         return None
 
-    print "  Group: %s   cell: %s"%(grpnam.value,celnam.value)
+    print("  Group: %s   cell: %s"%(grpnam.value,celnam.value))
     def fmt(l):
         if l:
             return "%d"%l
         else:
             return "0 (unlimited)"
     dims=",".join( [fmt(grpdms[dim_i]) for dim_i in range(grpndm.value)] )
-    print "  dim lengths: ",dims
+    print("  dim lengths: ",dims)
     ords=",".join( ["%d"%grpord[dim_i] for dim_i in range(grpndm.value)] )
-    print "  order: ",ords
+    print("  order: ",ords)
     
     return 1
 
@@ -214,15 +216,15 @@ def inquire_elt(fd,elt_name):
                    byref(elmndm),
                    byref(elmdms))
     if err:
-        print err 
+        print(err)
         nef.nefis_error(1,None)
         return
 
-    print "     type: {}".format( elmtyp.value )
-    print "     nbytes/single element: {}".format( nbytsg.value )
-    print "     quantity {}  unit {}".format( elmqty.value,elmunt.value )
-    print "     desc: {}".format( desc.value )
-    print "     dimensions: {}".format( ",".join( [str(elmdms[i]) for i in range(elmndm.value)] ) )
+    print("     type: {}".format( elmtyp.value ))
+    print("     nbytes/single element: {}".format( nbytsg.value ))
+    print("     quantity {}  unit {}".format( elmqty.value,elmunt.value ))
+    print("     desc: {}".format( desc.value ))
+    print("     dimensions: {}".format( ",".join( [str(elmdms[i]) for i in range(elmndm.value)] ) ))
 
 # inquire_elt(fd_nefis,"U1")
 
@@ -245,14 +247,14 @@ def inqfcl(fd,describe_elements=False):
                      byref(elmnms))
                      
     if err:
-        print err 
+        print(err)
         nef.nefis_error(1,None)
 
-    print "Cell name: {}, bytes: {}".format(celnam.value,bytes.value)
-    print "  elements: "
+    print("Cell name: {}, bytes: {}".format(celnam.value,bytes.value))
+    print("  elements: ")
     for elem_idx in range(nelems.value):
         # nefis doesn't null terminate - so drop last byte.
-        print "   Element '{}'".format(elmnms[elem_idx].value[:16])
+        print("   Element '{}'".format(elmnms[elem_idx].value[:16]))
         if describe_elements:
             inquire_elt(fd,elmnms[elem_idx].value[:16])
 
@@ -274,17 +276,17 @@ def inqncl(fd,describe_elements=False):
                      
     if err:
         if err == -6026:
-            print "End of cells"
+            print("End of cells")
         else:
-            print err 
+            print(err)
             nef.nefis_error(1,None)
         return None
 
-    print "Cell name: {}, bytes: {}".format(celnam.value,bytes.value)
-    print "  elements: "
+    print("Cell name: {}, bytes: {}".format(celnam.value,bytes.value))
+    print("  elements: ")
     for elem_idx in range(nelems.value):
         # nefis doesn't null terminate - so drop last byte.
-        print "   Element {}".format(elmnms[elem_idx].value[:16])
+        print("   Element {}".format(elmnms[elem_idx].value[:16]))
         if describe_elements:
             inquire_elt(fd,elmnms[elem_idx].value[:16])
     return 1
@@ -306,9 +308,9 @@ grpnam=create_string_buffer("map-series       ",17)
 maxi=c_int(-1)
 err=nef.Inqmxi(byref(fd_nefis),byref(grpnam),byref(maxi))
 if err:
-    print err 
+    print(err)
     nef.nefis_error(1,None)
-print "Maximum index: ",maxi.value
+print("Maximum index: ",maxi.value)
 
 ## 
 # And finally read some data.
@@ -348,20 +350,20 @@ else:
     data_ref=byref(data)
 
 
-print "Buffer length: %d"%(buflen.value)
+print("Buffer length: %d"%(buflen.value))
 # #  
-print "HOLD YER BREATH"
+print("HOLD YER BREATH")
 err = nef.Getelt(byref(fd_nefis),
                  byref(grp_name), byref(elm_name),
                  uindex_ref, uorder_ref,
                  byref(buflen),
                  data_ref)
-print "WELL??"
+print("WELL??")
 if err:
-    print err 
+    print(err)
     nef.nefis_error(1,None)
 else:
-    print "Appears successful"
+    print("Appears successful")
 
 ## 
 

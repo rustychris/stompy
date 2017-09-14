@@ -1,10 +1,12 @@
 ## Command line interface to the grid generation code.
+from __future__ import print_function
+
 import sys,os,getopt
 
 try:
     sys.path.append(os.path.dirname(__file__))
 except NameError:
-    print "Hopefully you already have the python path initialized"
+    print("Hopefully you already have the python path initialized")
     
 
 try:
@@ -83,55 +85,55 @@ class Tom(object):
         self.tele_scale_shps = []
 
     def usage(self):
-        print "tom.py   -h                   # show this help message      "
-        print "         -b boundary.shp      # boundary shapefile          "
-        print "         -i interior.shp      # interior paving guides      "
-        print "         --slide-interior     # Allow nodes on interior lines to slide [default]"
-        print "         --rigid-interior     # Force nodes on interior lines to stay put"
-        print "         -s scale.shp         # scale shapefile             "
+        print("tom.py   -h                   # show this help message      ")
+        print("         -b boundary.shp      # boundary shapefile          ")
+        print("         -i interior.shp      # interior paving guides      ")
+        print("         --slide-interior     # Allow nodes on interior lines to slide [default]")
+        print("         --rigid-interior     # Force nodes on interior lines to stay put")
+        print("         -s scale.shp         # scale shapefile             ")
         if field.has_apollonius:
-            print "         -a telescoping_scale.shp # auto telescoping scale shapefile"
-            print "         -t N.NN              # telescoping rate - defaults to 1.1"
+            print("         -a telescoping_scale.shp # auto telescoping scale shapefile")
+            print("         -t N.NN              # telescoping rate - defaults to 1.1")
         else:
-            print "         [DISABLED] -a telescoping_scale.shp"
-        print "         -f N.NN              # factor for adjusting scale globally"
-        print "         -C N.NN              # smoothing: min number of cells across a channel"
-        print "         -p N                 # output interval for plots   "
-        print "         -c N                 # checkpoint interval         "
-        print "         -d                   # disable smoothing "
-        print "         -o                   # enable optimization "
-        print "         -r checkpoint.pav    # resume from a checkpoint    "
-        print "         -v N                 # set verbosity level N"
-        print "         -n                   # ready the shoreline, but don't mesh it"
-        print "         -m x1,y1,x2,y2,dx,dy # output raster of scale field"
+            print("         [DISABLED] -a telescoping_scale.shp")
+        print("         -f N.NN              # factor for adjusting scale globally")
+        print("         -C N.NN              # smoothing: min number of cells across a channel")
+        print("         -p N                 # output interval for plots   ")
+        print("         -c N                 # checkpoint interval         ")
+        print("         -d                   # disable smoothing ")
+        print("         -o                   # enable optimization ")
+        print("         -r checkpoint.pav    # resume from a checkpoint    ")
+        print("         -v N                 # set verbosity level N")
+        print("         -n                   # ready the shoreline, but don't mesh it")
+        print("         -m x1,y1,x2,y2,dx,dy # output raster of scale field")
         
-        print "         -g output.shp        # output shapefile of grid"
+        print("         -g output.shp        # output shapefile of grid")
         
-        print " boundary.shp: "
-        print "   A shapefile containing either lines or a single polygon.  If "
-        print "   lines, they must join together within a tolerance of 1.0 units"
-        print " scale.shp:"
-        print "   A shapefile containing points with a field 'scale', which gives"
-        print "   the desired length of the edges in a region."
-        print "   If the CGAL-python library is available, multiple shapefiles can "
-        print "   be specified, including LineString layers."
-        print " interior.shp:"
-        print "   A shapefile containg line segments which will be used to guide the orientation of cells"
-        print " output interval N: "
-        print "   Every N steps of the algorithm create a PDF of the grid so far"
-        print " checkpoint interval N:"
-        print "   Every N steps of the algorithm make a backup of the grid and all"
-        print "   intermediate information"
-        print " resume from checkpoint"
-        print "   Loads a previously saved checkpoint file and will continue where it"
-        print "   left off."
-        print " verbosity level N:"
-        print "   Defaults to 1, which prints step numbers."
-        print "   0: almost silent"
-        print "   1: ~1 line per step"
-        print "   2: ~30 lines per step"
-        print "   3: ~100 lines per step and will try to plot intermediate stages"
-        print " raster of scale field: the given region will be rasterized and output to scale-raster.tif"
+        print(" boundary.shp: ")
+        print("   A shapefile containing either lines or a single polygon.  If ")
+        print("   lines, they must join together within a tolerance of 1.0 units")
+        print(" scale.shp:")
+        print("   A shapefile containing points with a field 'scale', which gives")
+        print("   the desired length of the edges in a region.")
+        print("   If the CGAL-python library is available, multiple shapefiles can ")
+        print("   be specified, including LineString layers.")
+        print(" interior.shp:")
+        print("   A shapefile containg line segments which will be used to guide the orientation of cells")
+        print(" output interval N: ")
+        print("   Every N steps of the algorithm create a PDF of the grid so far")
+        print(" checkpoint interval N:")
+        print("   Every N steps of the algorithm make a backup of the grid and all")
+        print("   intermediate information")
+        print(" resume from checkpoint")
+        print("   Loads a previously saved checkpoint file and will continue where it")
+        print("   left off.")
+        print(" verbosity level N:")
+        print("   Defaults to 1, which prints step numbers.")
+        print("   0: almost silent")
+        print("   1: ~1 line per step")
+        print("   2: ~30 lines per step")
+        print("   3: ~100 lines per step and will try to plot intermediate stages")
+        print(" raster of scale field: the given region will be rasterized and output to scale-raster.tif")
         
         
     def run(self,argv):
@@ -139,9 +141,9 @@ class Tom(object):
             opts,rest = getopt.getopt(argv[1:],'hb:s:a:t:i:c:r:dv:np:om:i:f:g:C:',
                                       ['slide-interior',
                                        'rigid-interior'])
-        except getopt.GetoptError,e:
-            print e
-            print "-"*80
+        except getopt.GetoptError as e:
+            print(e)
+            print("-"*80)
             self.usage()
             exit(1)
             
@@ -228,7 +230,7 @@ class Tom(object):
             self.p.verbose = self.verbosity
 
         if self.dry_run:
-            print "dry run..."
+            print("dry run...")
         elif self.density_map:
             f = self.p.density
             x1,y1,x2,y2,dx,dy = map(float,self.density_map.split(','))
@@ -246,7 +248,7 @@ class Tom(object):
 
             # write grid as shapefile
             if self.output_shp:
-                print "Writing shapefile with %d features (edgse)"%(self.p.Nedges())
+                print("Writing shapefile with %d features (edgse)"%(self.p.Nedges()))
                 self.p.write_shp(self.output_shp,only_boundaries=0,overwrite=1)
                 # by reading the suntans grid output back in, we should get boundary edges
                 # marked as 1 - self.p probably doesn't have these markers
@@ -266,21 +268,21 @@ class Tom(object):
 
         if self.resume_checkpoint_fn is None:
             if len(self.scale_shps) + len(self.tele_scale_shps) == 0:
-                print "ERROR: Must specify scale shapefile or telescoping scale shapefile"
+                print("ERROR: Must specify scale shapefile or telescoping scale shapefile")
                 show_usage = 1
             if self.boundary_shp is None:
-                print "ERROR: Must specify boundary shapefile"
+                print("ERROR: Must specify boundary shapefile")
                 show_usage = 1
             if not self.smooth:
-                print "WARNING: You are brave to disable smoothing."
-                print "         without smoothing the scale may be larger than the shoreline permits"
+                print("WARNING: You are brave to disable smoothing.")
+                print("         without smoothing the scale may be larger than the shoreline permits")
         else:
             if (len(self.scale_shps) + len(self.tele_scale_shps)) > 0 or self.boundary_shp is not None:
-                print "ERROR: with resume (-r), no scale or boundary may be specified"
+                print("ERROR: with resume (-r), no scale or boundary may be specified")
                 show_usage = 1
 
         if show_usage:
-            print "-"*80
+            print("-"*80)
             self.usage()
             exit(1)
 
@@ -292,7 +294,7 @@ class Tom(object):
         
         ods = ogr.Open(self.boundary_shp)
         if ods is None:
-            raise Exception,"Didn't find shapefile %s"%self.boundary_shp
+            raise Exception("Didn't find shapefile %s"%self.boundary_shp)
         
         layer = ods.GetLayer(0)
 
@@ -304,8 +306,8 @@ class Tom(object):
 
         if gtype == ogr.wkbLineString:
             if self.boundary_poly_shp == self.boundary_shp:
-                print "Boundary shapefile has same name as processed shapefile -"
-                print "Exiting to avoid overwriting it"
+                print("Boundary shapefile has same name as processed shapefile -")
+                print("Exiting to avoid overwriting it")
                 exit(1)
             join_features.process_layer(layer,self.boundary_poly_shp,
                                         tolerance=self.linestring_join_tolerance,
@@ -313,15 +315,15 @@ class Tom(object):
                                         close_arc=False)
         elif gtype == ogr.wkbPolygon:
             if n_features > 1:
-                print "Sorry - no support yet for multiple polygons - must be a single polygon with holes"
+                print("Sorry - no support yet for multiple polygons - must be a single polygon with holes")
                 exit(1)
             self.boundary_poly_shp = self.boundary_shp
         elif gtype == ogr.wkbMultiPolygon:
             feat_is_multi_polygon = True
             self.boundary_poly_shp = self.boundary_shp
         else:
-            print "Boundary shapefile has geometry of type '%s'"%ogr2text[gtype]
-            print "Must be LineString or Polygon"
+            print("Boundary shapefile has geometry of type '%s'"%ogr2text[gtype])
+            print("Must be LineString or Polygon")
             exit(1)
 
         # Read the polygonized shoreline geometry and keep it around for plotting:
@@ -341,7 +343,7 @@ class Tom(object):
                 feat = layer.GetNextFeature()
                 if feat is None:
                     break
-            	original_geometries.append( shapely.wkb.loads( feat.GetGeometryRef().ExportToWkb()) )
+                original_geometries.append( shapely.wkb.loads( feat.GetGeometryRef().ExportToWkb()) )
 
         self.original_boundary_geo = original_geometries
 
@@ -364,8 +366,8 @@ class Tom(object):
                     break
                 geom = shapely.wkb.loads( feat.GetGeometryRef().ExportToWkb() )
                 degens.append( np.array(geom) )
-        print "Got degenerate edges:"
-        print degens
+        print("Got degenerate edges:")
+        print(degens)
         return {'degenerates':degens}
         
     def prepare_density(self):
@@ -379,7 +381,7 @@ class Tom(object):
                     density = field.XYZField.read_shp(self.scale_shps[0],value_field=self.scale_shp_field_name)
                 else:
                     # really this could be implemented very easily - just been too lazy to do it.
-                    raise Exception,"constrained_delaunay unavailable, but you specified multiple scale files"
+                    raise Exception("constrained_delaunay unavailable, but you specified multiple scale files")
         else:
             density = None
             
@@ -421,7 +423,7 @@ class Tom(object):
         pylab.close(fig)
 
     def create_grid(self):
-        print "Starting grid generation"
+        print("Starting grid generation")
 
         p = self.p
         
@@ -432,23 +434,23 @@ class Tom(object):
                 if self.plot_interval and p.step%self.plot_interval == 0:
                     self.plot_intermediate()
                 if self.checkpoint_interval and p.step%self.checkpoint_interval == 0:
-                    print "Saving checkpoint data to %s"%self.checkpoint_fn
+                    print("Saving checkpoint data to %s"%self.checkpoint_fn)
                     p.write_complete("temp-checkpoint.pav")
                     os.rename("temp-checkpoint.pav",self.checkpoint_fn)
-                    print "Done with checkpoint"
+                    print("Done with checkpoint")
 
-            print "Done with creating cells"
-            print "Renumbering:"
+            print("Done with creating cells")
+            print("Renumbering:")
             p.renumber()
-            print "Writing suntans output"
+            print("Writing suntans output")
             p.write_suntans('.')
         except paver.FillFailed:
-            print "Paver failed."
-            print "plotting the aftermath"
+            print("Paver failed.")
+            print("plotting the aftermath")
             self.plot_intermediate('crash.pdf')
-            print "Saving post-crash checkpoint"
+            print("Saving post-crash checkpoint")
             p.write_complete('crash.pav')
-            print "Goodbye."
+            print("Goodbye.")
             raise
 
     def run_optimization(self):
@@ -462,11 +464,11 @@ class Tom(object):
 
         opter.stats()
         
-        print "Done with optimizing"
+        print("Done with optimizing")
 
-        print "Overwriting suntans output with optimized grid."
+        print("Overwriting suntans output with optimized grid.")
         self.p.renumber()
-        print "Writing suntans output"
+        print("Writing suntans output")
         self.p.write_suntans('.')
 
                 

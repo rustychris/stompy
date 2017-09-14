@@ -1,3 +1,5 @@
+from __future__ import print_function
+
 import numpy as np
 
 from shapely import geometry
@@ -72,7 +74,7 @@ class ParticlesKGS(basic.UgridParticles):
                      * self.edge_len[j] )
         for c in self.g.valid_cell_iter():
             if c%5000==0:
-                print "%d / %d"%( c, self.g.Ncells() )
+                print("%d / %d"%( c, self.g.Ncells() ))
 
             c_edges=self.cell_edges[c,:] 
 
@@ -146,7 +148,7 @@ class ParticlesKGS(basic.UgridParticles):
         if 0: # old, non-vector approach
             for c in self.g.valid_cell_iter():
                 if c%5000==0:
-                    print "%d / %d"%( c, self.g.Ncells() )
+                    print("%d / %d"%( c, self.g.Ncells() ))
 
                 c_edges=self.cell_edges[c,:] 
 
@@ -184,7 +186,7 @@ class ParticlesKGS(basic.UgridParticles):
             #for c in self.g.valid_cell_iter():
             for c in range(self.g.Ncells()):
                 if c%10000==0:
-                    print "%d / %d"%( c, self.g.Ncells() )
+                    print("%d / %d"%( c, self.g.Ncells() ))
 
                 B[:2]=Uc[c]
                 B[2]=self.d_eta_dt[c]
@@ -365,7 +367,7 @@ class ParticlesKGS(basic.UgridParticles):
                 if c is None:
                     # annoying, but ode doesn't know where the boundaries
                     # are...
-                    print "!"
+                    print("!")
                     return stuck
                 else:
                     return self.vel_interp(c,x)
@@ -385,16 +387,16 @@ class ParticlesKGS(basic.UgridParticles):
 
                 r.integrate(stop_t)
                 if not r.successful():
-                    print "X1"
+                    print("X1")
                     continue # try with slow method
                 new_c=self.g.select_cells_nearest(r.y,inside=True)                
                 if new_c is None:
-                    print "X2"
+                    print("X2")
                     continue
                 break
             else:
                 # Bad news - neither was great.
-                print "Couldn't salvage step."
+                print("Couldn't salvage step.")
                 pdb.set_trace()
 
             self.P['x'][i] = r.y
@@ -483,7 +485,7 @@ class ParticlesKGS(basic.UgridParticles):
             else:
                 high=(t_mid,xy_mid)
         else:
-            print "Exhausted max iterations trying to find moment of particle exit"
+            print("Exhausted max iterations trying to find moment of particle exit")
 
         # which one of this cell's edges is crossed first within this period?
         trav_xy = high[1] - low[1] # where is the trajectory going

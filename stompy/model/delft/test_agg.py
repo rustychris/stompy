@@ -4,6 +4,8 @@ Tests related to aggregating WAQ hydro
  figure out the partitions, which aren't available for the FTI
  tutorial case.
 """
+from __future__ import print_function
+
 import os
 import shutil
 
@@ -35,7 +37,7 @@ def test_agg():
     scen=TextBox(hydro=hydro)
 
     if os.path.exists(scen.base_path):
-        print "base path:",scen.base_path
+        print("base path:",scen.base_path)
         shutil.rmtree(scen.base_path)
 
     scen.cmd_default()

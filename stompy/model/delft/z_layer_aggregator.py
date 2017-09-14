@@ -20,6 +20,7 @@ Lexsort cells based on (i) elevation of cell centroid and (ii) bed elevation.
 That's all fine for segment values, but exchanges are little tricky.  
 
 """
+from __future__ import print_function
 
 import os
 
@@ -286,7 +287,7 @@ class ZLayerAggregator(waq_scenario.DwaqAggregator):
         # n_layers_for_elt=self.n_agg_layers
 
         for elt_i in range(len(self.elements)):
-            print "--- Processing aggregate element %d ---"%elt_i
+            print("--- Processing aggregate element %d ---"%elt_i)
 
             for p in range(self.nprocs):
                 nc=self.open_flowgeom(p)
@@ -295,7 +296,7 @@ class ZLayerAggregator(waq_scenario.DwaqAggregator):
 
                 sel_elt=(self.elt_global_to_agg_2d[global_ids]==elt_i)
                 if not np.any(sel_elt):
-                    print "This proc has no local elements in this aggregated element"
+                    print("This proc has no local elements in this aggregated element")
                     continue
 
                 hyd=self.open_hyd(p)

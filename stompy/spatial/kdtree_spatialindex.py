@@ -14,7 +14,7 @@ class RtreeKDTree(object):
         For now, only interleaved=False is supported.
         """
         if interleaved:
-            raise Exception,"No support for interleaved index.  You must use xxyy ordering"
+            raise Exception("No support for interleaved index.  You must use xxyy ordering")
         
         it = iter(stream)
 
@@ -22,7 +22,7 @@ class RtreeKDTree(object):
         self.data = []
         for fid,xxyy,obj in it:
             if xxyy[0]!=xxyy[1] or xxyy[2]!=xxyy[3]:
-                raise Exception,"No support in kdtree for finite sized objects"
+                raise Exception("No support in kdtree for finite sized objects")
             self.points.append([xxyy[0],xxyy[2]])
             self.data.append( (fid,obj) )
 
@@ -42,14 +42,14 @@ class RtreeKDTree(object):
     def intersects(self,xxyy):
         """ This should be made compatible with the regular RTree call...
         """
-        raise Exception,"Intersects is not implemented in scipy.KDTree"
+        raise Exception("Intersects is not implemented in scipy.KDTree")
         return []
     
     def insert(self, feat_id, rect=None ):
         if rect[0]!=rect[1] or rect[2]!=rect[3]:
-            raise Exception,"No support in kdtree for finite sized objects"
+            raise Exception("No support in kdtree for finite sized objects")
         if rect is None:
-            raise Exception,"Not sure what inserting an empty rectangle is supposed to do..."
+            raise Exception("Not sure what inserting an empty rectangle is supposed to do...")
         self.points.append( [rect[0],rect[2]] )
         self.data.append( [feat_id,None] )
 
@@ -59,7 +59,7 @@ class RtreeKDTree(object):
         for i in range(len(self.data)):
             if self.data[i][0] == feat_id:
                 return i
-        raise Exception,"feature id not found"
+        raise Exception("feature id not found")
     
     def delete(self, feat_id, rect ):
         index = self.feat_id_to_index(feat_id)

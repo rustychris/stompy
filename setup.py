@@ -8,6 +8,7 @@ setup(
               'stompy.model.pypart', 'stompy.model.suntans',
               'stompy.plot', 'stompy.plot.cmaps',
               'stompy.spatial'],
+    package_data={'stompy':['tide_consts.txt']},
     license='MIT',
     url="https://github.com/rustychris/stompy",
     author="Rusty Holleman",

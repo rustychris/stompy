@@ -1,4 +1,6 @@
 # Class for representing an RBR CTD
+from __future__ import print_function
+
 import numpy as np
 
 import re
@@ -111,7 +113,7 @@ class Rbr(object):
             start = good[0]
             stop =  good[-1]
         else:
-            print "%s doesn't have pressure or conductivity"%self.comment
+            print("%s doesn't have pressure or conductivity"%self.comment)
             return
 
         self.data = self.data[start:stop]
@@ -395,7 +397,7 @@ class RbrHex(Rbr):
                         int( m.group(4) )
                         ] )
                 else:
-                    print "Bad type",repr(m.group(5))
+                    print("Bad type",repr(m.group(5)))
             else:
                 #print "Not a timestamp: ",repr(l)
                 pass
@@ -432,7 +434,7 @@ class RbrHex(Rbr):
                 # maybe it's safer just to assume all samples were output,
                 # and synthesize time one go.
                 # assumes that the first timestamp is correct
-                print "Overwriting time with even steps of dt_s"
+                print("Overwriting time with even steps of dt_s")
                 self.data[:,0] = self.data[0,0] + self.dt_s * np.arange(len(self.data)) / 86400.
         else:
             # simple text format
@@ -517,7 +519,7 @@ class RbrHex(Rbr):
         raw_fields=(np.fromstring(expanded.tostring(),'>i4') / 256)
         extra=len(raw_fields) % self.Ncolumns
         if extra:
-            print "There were %d extra triples of data - truncating"%extra
+            print("There were %d extra triples of data - truncating"%extra)
             raw_fields=raw_fields[:-extra]
         raw_fields=raw_fields.reshape([-1,self.Ncolumns])
         unit_fields=raw_fields/(2.0**24)

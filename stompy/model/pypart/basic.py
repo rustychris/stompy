@@ -2,6 +2,8 @@
 Encapsulating some of the 2D particle tracking from
 currents-figures-netcdf-animation-v03.ipynb
 """
+from __future__ import print_function
+
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -285,7 +287,7 @@ class UgridParticles(object):
                                   self.P['u'][i,1]*j_cross_normal[1] )
                         # slightly over-compensate, pushing away from problematic
                         # edge
-                        print "BOUNCE"
+                        print("BOUNCE")
 
                         self.P['u'][i] -= 1.1 * j_cross_normal*closing
                         self.P['j_last'][i]=j_cross

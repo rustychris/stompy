@@ -1,3 +1,5 @@
+from __future__ import print_function
+
 import nose
 import nefis
 import numpy as np
@@ -33,7 +35,7 @@ def test_get_header():
 def test_get_groups():
     nef=get_nef()
     groups=nef.groups()
-    print groups
+    print(groups)
     assert(len(groups) == 5)
     # make sure map-const shows up somewhere
     for g in groups:
@@ -101,19 +103,19 @@ def test_unl_length():
 def test_int_attrs():
     nef=get_nef()
     attrs=nef.groups()[0].attrs_int()
-    print attrs
+    print(attrs)
     nef.close()
 
 def test_real_attrs():
     nef=get_nef()
     attrs=nef.groups()[0].attrs_real()
-    print attrs
+    print(attrs)
     nef.close()
 
 def test_str_attrs():
     nef=get_nef()
     attrs=nef.groups()[0].attrs_str()
-    print attrs
+    print(attrs)
     nef.close()
 
 def test_getelt():
@@ -148,7 +150,7 @@ def test_getelt_with_shape():
 
     # ellipsis
     data=nef['map-series'].getelt('U1',[Ellipsis,2,3])
-    print "Actually ellipsis data shape",data.shape
+    print("Actually ellipsis data shape",data.shape)
     assert( data.shape == (11,10) )
 
     nef.close()

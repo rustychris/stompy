@@ -1,6 +1,7 @@
 """
 Prototyping some approaches for local orthogonalization
 """
+from __future__ import print_function
 
 import numpy as np
 
@@ -97,7 +98,7 @@ if 0: # dev code.
         nudge_cell_orthogonal(g,c)
 
         errs=g.circumcenter_errors(radius_normalized=True)
-        print "Error for cell %d %.4f => %.4f"%(c,err_start,errs[c])
+        print("Error for cell %d %.4f => %.4f"%(c,err_start,errs[c]))
 
         plt.figure(1).clf()
         fig,ax=plt.subplots(num=1)

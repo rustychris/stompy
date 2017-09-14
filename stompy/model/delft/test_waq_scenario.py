@@ -1,3 +1,5 @@
+from __future__ import print_function
+
 import os
 import shutil
 
@@ -153,7 +155,7 @@ def bloom_setup():
     scen.monitor_areas=[('test monitor',1)] 
 
     if os.path.exists(scen.base_path):
-        print "base path:",scen.base_path
+        print("base path:",scen.base_path)
         shutil.rmtree(scen.base_path)
 
     scen.cmd_default()
@@ -187,7 +189,7 @@ def test_bloom10():
     scen=Bloombox(hydro)
 
     if os.path.exists(scen.base_path):
-        print "base path:",scen.base_path
+        print("base path:",scen.base_path)
         shutil.rmtree(scen.base_path)
 
     scen.cmd_default()
@@ -202,7 +204,7 @@ def test_bloom50():
     scen=Bloombox(hydro)
 
     if os.path.exists(scen.base_path):
-        print "base path:",scen.base_path
+        print("base path:",scen.base_path)
         shutil.rmtree(scen.base_path)
 
     scen.cmd_default()
@@ -219,7 +221,7 @@ def test_delwaq1_fail():
     scen=Bloombox(hydro)
 
     if os.path.exists(scen.base_path):
-        print "base path:",scen.base_path
+        print("base path:",scen.base_path)
         shutil.rmtree(scen.base_path)
 
     scen.cmd_write_runid()
@@ -240,7 +242,7 @@ def test_delwaq2_fail():
     scen=Bloombox(hydro)
 
     if os.path.exists(scen.base_path):
-        print "base path:",scen.base_path
+        print("base path:",scen.base_path)
         shutil.rmtree(scen.base_path)
 
     scen.cmd_write_runid()
