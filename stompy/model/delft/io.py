@@ -73,7 +73,7 @@ def bal_his_file_dataframe(fn):
     return df
 
 
-def bal_his_file_xarray(fn,region_exclude=None,region_include=None):
+def his_file_xarray(fn,region_exclude=None,region_include=None):
     """
     Read a delwaq balance file, return the result as an xarray.
     region_exclude: regular expression for region names to omit from the result
@@ -113,9 +113,13 @@ def bal_his_file_xarray(fn,region_exclude=None,region_include=None):
         skip=[bool(re.match(region_exclude,region))
               for region in region_names]
         region_mask &= ~np.array(skip)
-    
-    sub_proc=[ "%s,%s"%(decstrip(s),decstrip(p))
-               for s,p in fields]
+
+    sub_proc=[]
+    for s,p in fields:
+        if decstrip(p):
+            sub_proc.append("%s,%s"%(decstrip(s),decstrip(p)))
+        else:
+            sub_proc.append(decstrip(s))
 
     region_idxs=np.nonzero(region_mask)[0]
     ds['region']=( ('region',), [region_names[i] for i in region_idxs] )
@@ -127,7 +131,9 @@ def bal_his_file_xarray(fn,region_exclude=None,region_include=None):
                 frames['data'][:,region_mask,:] )
     return ds
 
-
+# older name - xarray version doesn't discriminate between balance
+# and monitoring output
+bal_his_file_xarray=his_file_xarray
 
 def mon_his_file_dataframe(fn):
     df=bal_his_file_dataframe(fn)
