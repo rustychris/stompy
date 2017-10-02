@@ -1,13 +1,14 @@
-## Command line interface to the grid generation code.
+"""
+Command line interface to the grid generation code.
+"""
 from __future__ import print_function
 
 import sys,os,getopt
 
 try:
-    sys.path.append(os.path.dirname(__file__))
-except NameError:
-    print("Hopefully you already have the python path initialized")
-    
+    import stompy
+except ImportError:
+    sys.path.append(os.path.join(os.path.dirname(__file__),'..','..'))
 
 try:
     from osgeo import ogr
@@ -21,17 +22,19 @@ import matplotlib
 import pylab 
 import numpy as np
 
-from . import (trigrid, paver)
-from ..spatial import (field, join_features, wkb2shp)
+# no relative imports here, since we're trying to make this a
+# command line program.
+from stompy.grid import (trigrid, paver)
+from stompy.spatial import (field, join_features, wkb2shp)
 
 # Maybe we have CGAL, and can use the constrained delaunay field -
 try:
-    from ..spatial import constrained_delaunay
+    from stompy.spatial import constrained_delaunay
 except ImportError:
     constrained_delaunay = False
 
-from . import optimize_grid
-from .geom_types import ogr2text
+from stompy.grid import optimize_grid
+from stompy.grid.geom_types import ogr2text
 
 class FileNotFound(Exception):
     pass

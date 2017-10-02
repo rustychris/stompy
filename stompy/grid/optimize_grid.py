@@ -28,11 +28,11 @@ class OptimizeGui(object):
         self.cid_mouse = self.fig.canvas.mpl_connect('button_release_event',self.on_buttonrelease)
         
     def usage(self):
-        print "t: flip edge"
-        print "y: relax neighborhood"
-        print "u: regrid at point"
-        print "i: relax node"
-        print "p: show bad cells"
+        print("t: flip edge")
+        print("y: relax neighborhood")
+        print("u: regrid at point")
+        print("i: relax node")
+        print("p: show bad cells")
 
     def flip_edge_at_point(self,pnt):
         """assumes an og instance is visible """
@@ -52,10 +52,10 @@ class OptimizeGui(object):
         v = self.p.closest_point(pnt)
 
         if v == self.last_node_relaxed:
-            print "Allowing beta"
+            print("Allowing beta")
             self.p.safe_relax_one(v,use_beta=1)
         else:
-            print "No beta"
+            print("No beta")
             self.p.safe_relax_one(v)
         self.p.plot()
         self.last_node_relaxed = v
@@ -105,7 +105,7 @@ class OptimizeGui(object):
                 else:
                     self.p.plot(boundary=False)
             else:
-                print "button release but axis is the same"
+                print("button release but axis is the same")
 
 
 class GridOptimizer(object):
@@ -331,23 +331,23 @@ class GridOptimizer(object):
             new_scales = scale_factor * orig_scales
             xyz = np.concatenate( [centers,new_scales[:,newaxis]], axis=1)
             self.scale_reductions = np.concatenate( [self.scale_reductions,xyz])
-            print "Installing new Apollonius Field..."
+            print( "Installing new Apollonius Field...")
             self.update_apollonius_field()
-            print "... Done"
+            print( "... Done")
 
         count = 0
         while 1:
             c = ranking[count]
-            print "Considering cell %d"%c
+            print("Considering cell %d"%c)
             count += 1
 
             # cell may have been deleted during other repaving
             if self.p.cells[c,0] < 0:
-                print "It's been deleted"
+                print("It's been deleted")
                 continue
 
             if expired_cells.has_key(c):
-                print "It had been deleted, and some other cell has taken its place"
+                print("It had been deleted, and some other cell has taken its place")
                 continue
 
             # cell may have been updated during other repaving
@@ -365,9 +365,9 @@ class GridOptimizer(object):
             # also, this cell may have gotten updated by another repaving -
             # in which case we probably want
 
-            print "Repaving a neighborhood"
+            print( "Repaving a neighborhood")
             self.repave_neighborhood(c,neighborhood_size=neighborhood_size,scale_factor=scale_factor)
-            print "Done"
+            print( "Done")
             
             if count >= count_threshold:
                 break
@@ -396,7 +396,7 @@ class GridOptimizer(object):
 
         if nbr_nodes is None:
             if scale_factor is not None and self.use_apollo and scale_factor < 1.0:
-                print "dynamically defining neighborhood based on radius of Apollonius Graph influence"
+                print( "dynamically defining neighborhood based on radius of Apollonius Graph influence")
                 nbr_nodes = self.cell_neighborhood_apollo(c)
             else:
                 nbr_nodes = self.cell_neighborhood(c,neighborhood_size)

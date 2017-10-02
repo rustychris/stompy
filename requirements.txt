@@ -1,7 +1,8 @@
 cmocean
 future
-# GDAL # this is failing the build
+gdal
 matplotlib
+pyqt=4
 netCDF4
 numpy
 pandas==0.19.2
@@ -11,3 +12,4 @@ Shapely
 six
 xarray
 seawater
+cgal
