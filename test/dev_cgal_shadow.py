@@ -8,7 +8,7 @@ from stompy import utils
 from CGAL.CGAL_Triangulation_2 import (Constrained_Delaunay_triangulation_2,
                                        Constrained_Delaunay_triangulation_2_Edge)
 
-from CGAL.CGAL_Kernel import Point_2
+from CGAL.CGAL_Kernel import (Point_2,Segment_2)
 
 # 1. The CGAL constrained delaunay triangulation wrapped in the bindings
 #    appears to allow intersections, constructing an approximate new vertex
@@ -24,7 +24,9 @@ xy=[ [0,0],
      [1,0],
      [1,1],
      [0,-1],
-     [2,0] ]
+     [2,0],
+     [2,1],
+     [2,2]]
 points= [ Point_2(x,y) for x,y in xy ]
 vh=[DT.insert(p) for p in points]
 
@@ -34,11 +36,7 @@ DT.insert_constraint(vh[1],vh[4])
     
 # DT.insert_constraint(vh3,vh2) # causes a new vertex to be created
 
-##
-
-# how to remove constraints?
-
-##
+# #
 
 def plot_dt(DT,ax=None):
     segs=[]
@@ -92,8 +90,17 @@ def segment_is_free(DT,vh_a,vh_b,ax=None):
         
     lw=DT.line_walk(vh_a.point(),vh_b.point(),init_face) 
 
+    seg=Segment_2( vh_a.point(), vh_b.point() )
+    
     faces=[]
     for face in lw:
+        # check to make sure we don't go through a vertex
+        for i in [0,1,2]:
+            v=face.vertex(i)
+            if v==vh_a or v==vh_b:
+                continue
+            if seg.has_on(v.point()):
+                return False # collinear!
         if len(faces):
             # figure out the common edge
             for i in [0,1,2]:
@@ -112,11 +119,12 @@ def segment_is_free(DT,vh_a,vh_b,ax=None):
 
             edge=Constrained_Delaunay_triangulation_2_Edge(face,i)
             if DT.is_constrained(edge):
-                tri_1=face_to_tri(face)
-                tri_2=face_to_tri(faces[-1])
-                pcoll=PolyCollection([tri_1,tri_2])
-                ax=ax or plt.gca()
-                ax.add_collection(pcoll)
+                if 0:
+                    tri_1=face_to_tri(face)
+                    tri_2=face_to_tri(faces[-1])
+                    pcoll=PolyCollection([tri_1,tri_2])
+                    ax=ax or plt.gca()
+                    ax.add_collection(pcoll)
                 return False
             
         faces.append(face)
@@ -124,7 +132,7 @@ def segment_is_free(DT,vh_a,vh_b,ax=None):
             break
     return True
     
-## 
+# # 
 
 
 fig=plt.figure(1)
@@ -143,6 +151,9 @@ for idx,p in enumerate(xy):
 # basic tests -
 assert segment_is_free(DT,vh[0],vh[1])
 assert not segment_is_free(DT,vh[3],vh[2])
+assert not segment_is_free(DT,vh[3],vh[6])
+
+assert not segment_is_free(DT,vh[3],vh[5])
 
 ##
 
@@ -541,3 +552,7 @@ elts=traverse_fresh_edge(cdt,a,b)
 #   at an anonymous vertex, none of the edges are in
 #   the grid, and we are confronted with the correct
 #   edge, and the two "halves" of the severed edge
+
+# what about line_walk, but add the logic to understand going
+# through a node?
+# that seems like way less machinery than live_dt.

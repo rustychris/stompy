@@ -33,6 +33,7 @@ def test_node_insertion():
 def test_node_insertion_cgal():
     run_node_insertion(shadow_cdt.ShadowCGALCDT)
     
+test_node_insertion_cgal()
 
 ##
 

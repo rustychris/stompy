@@ -95,7 +95,7 @@ try:
     from CGAL.CGAL_Triangulation_2 import (Constrained_Delaunay_triangulation_2,
                                            Constrained_Delaunay_triangulation_2_Edge)
     
-    from CGAL.CGAL_Kernel import Point_2
+    from CGAL.CGAL_Kernel import (Segment_2,Point_2)
     has_CGAL=True
 except ImportError:
     has_CGAL=False
@@ -189,10 +189,12 @@ class ShadowCGALCDT(object):
         log.debug("      A.point=%s  B.point=%s"%(vhA.point(), vhB.point()))
 
         # a priori check on whether the constraint would be valid:
-        if not self.line_is_free(a,b):
-            msg="About to insert a constraint %d-%d (%s - %s), but it's not clear!"%(a,b,
-                                                                                     pA,pB)
-            raise self.IntersectingConstraints(msg)
+        exc=self.line_is_free(a,b)
+        if exc is not None:
+            #msg="About to insert a constraint %d-%d (%s - %s), but it's not clear!"%(a,b,
+            #                                                                         pA,pB)
+            #raise self.IntersectingConstraints(msg)
+            raise exc
             
         self.DT.insert_constraint(vhA, vhB)
 
@@ -230,6 +232,10 @@ class ShadowCGALCDT(object):
         may differ from the locations in g.nodes['x'].
         
         ax: if specified and an error arises, will try to plot some details.
+
+        returns an exception if the line is free (does not raise, just
+        queues it up for you).
+        or None if all is well.
         """
         DT=self.DT
         vh_a=self.g.nodes['vh'][a]
@@ -247,9 +253,20 @@ class ShadowCGALCDT(object):
             assert False
 
         lw=DT.line_walk(vh_a.point(),vh_b.point(),init_face) 
+        seg=Segment_2(vh_a.point(), vh_b.point())
 
         faces=[]
         for face in lw:
+            # check to make sure we don't go through a vertex
+            for i in [0,1,2]:
+                v=face.vertex(i)
+                if v==vh_a or v==vh_b:
+                    continue
+                if seg.has_on(v.point()):
+                    n_collide=self.vh_info[v]
+                    return self.ConstraintCollinearNode("Hit node %s along %s--%s"%(n_collide,
+                                                                                    a,b))
+            
             if len(faces):
                 # figure out the common edge
                 for i in [0,1,2]:
@@ -275,12 +292,12 @@ class ShadowCGALCDT(object):
                         pcoll=PolyCollection([tri_1,tri_2])
                         ax=ax or plt.gca()
                         ax.add_collection(pcoll)
-                    return False
+                    return self.IntersectingConstraints("Intersection along %s--%s"%(a,b))
 
             faces.append(face)
             if face.has_vertex(vh_b):
                 break
-        return True
+        return None
         
     class Edge(object):
         def __init__(self,**kwargs):
@@ -353,9 +370,10 @@ class ShadowCGALCDT(object):
         exc=None
         
         for edge,a,b in to_remove:
-            if not self.line_is_free(a,b):
+            exc=self.line_is_free(a,b)
+            if exc:
                 # HERE - rollback, then raise exception to stop operation.
-                exc=self.IntersectingConstraints("New location of %s to %s"%(a,b))
+                # exc=self.IntersectingConstraints("New location of %s to %s"%(a,b))
                 self.dt_remove(n)
                 # put it back where it was:
                 self.after_add_node(g,'modify_node',n,{'x':self.nodes['x'][n]})
