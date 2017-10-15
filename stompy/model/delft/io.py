@@ -313,7 +313,7 @@ def read_pli(fn,one_per_line=True):
                 geometry=[]
                 node_labels=[]
                 for row in range(nrows):
-                    values=fp.readline().strip().split(maxsplit=ncols+1)
+                    values=fp.readline().strip().split(None,ncols+1)
                     geometry.append( [float(s) for s in values[:ncols]] )
                     if len(values)>ncols:
                         node_labels.append(values[ncols])

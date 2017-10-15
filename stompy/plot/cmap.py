@@ -71,13 +71,13 @@ def ggr_cm(filename,reverse=False):
 
     return colors.LinearSegmentedColormap.from_list(os.path.basename(filename),rgb_tuples)
 
-def cmap_transform(cmap,f):
+def cmap_transform(cmap,f,samples=256):
     """ brute-force - evaluate the gradient at all 256 locations.
     f is a function [0,1] => [0,1], mapping the new values to 
     old.
     e.g. f=lambda x: (1-x)  would reverse a colormap
     """
-    X = np.linspace(0,1,256)
+    X = np.linspace(0,1,samples)
     rgb_tuples = [ cmap(f(x)) for x in X]
     #rgb_tuples = [ (rgba,g,b) for rgba in rgb]
 
