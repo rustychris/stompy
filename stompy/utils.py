@@ -1017,6 +1017,11 @@ def to_unix(t):
         dt0=datetime.datetime(1970, 1, 1)
         return (dt - dt0).total_seconds()
 
+# re-implementation:
+def unix_to_dt64(t):
+    unix0=np.datetime64('1970-01-01 00:00:00')
+    return unix0 + t*np.timedelta64(1,'s')
+    
 def cf_string_to_dt64(x):
     """ return a seconds-based numpy datetime 
     from something like 
