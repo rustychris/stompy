@@ -27,7 +27,11 @@ class BadConstraint(Exception):
 
 class IntersectingConstraints(BadConstraint):
     pass
-class ConstraintCollinearNode(BadConstraint):
+class ConstraintCollinearNode(IntersectingConstraints):
+    """
+    Special case of intersections, when a constraint attempts to 
+    run *through* an existing node
+    """
     pass
 
 def ordered(x1,x2,x3):
