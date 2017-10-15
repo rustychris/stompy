@@ -336,82 +336,6 @@ def show_slopes(ax=None,slopes=[-5./3,-1],xfac=5,yfac=3):
         ax.loglog(xs,ys,c='0.5')
         plt.annotate("%g"%s,[xs[0],ys[0]])
 
-        
-# interactive log-log slope widget:
-class Sloper(object):
-    def __init__(self,ax=None,slope=-5./3,xfac=5,yfac=3,xlog=True,ylog=True,x=None,y=None):
-        self.slope = slope
-        self.ax = ax or plt.gca()
-        if x is None:
-            x = np.median( [l.get_xdata()[-1] for l in self.ax.lines] )
-        if y is None:
-            y = np.max( [l.get_ydata()[-1] for l in self.ax.lines] )
-
-        y *= yfac # set the legend above the plotted lines
-
-        self.xlog = xlog
-        self.ylog = ylog
-
-        xs = np.array([x/xfac,x])
-        ys = np.array([y/xfac**slope,y])
-
-        if self.xlog and self.ylog:
-            self.line = self.ax.loglog(xs,ys,c='0.5',picker=5)[0]
-        elif not self.xlog and not self.ylog:
-            self.line = self.ax.plot(xs,ys,c='0.5',picker=5)[0]
-
-        self.text = self.ax.text(xs[0],1.5*ys[0],"%g"%self.slope,transform=self.ax.transData)
-        
-        self.ax.figure.canvas.mpl_connect('pick_event',self.onpick)
-
-        self.drag = dict(cid=None,x=None,y=None)
-
-        
-    def onpick(self,event):
-        thisline = event.artist
-        xdata = thisline.get_xdata()
-        ydata = thisline.get_ydata()
-        ind = event.ind
-        print('onpick points:', list(zip(xdata[ind], ydata[ind])))
-        print(' mouse point: ', event.mouseevent.xdata,event.mouseevent.ydata)
-
-        cid = self.ax.figure.canvas.mpl_connect('button_release_event',self.drag_end)
-
-        if self.drag['cid'] is not None:
-            self.ax.figure.canvas.mpl_disconnect(self.drag['cid'])
-            
-        self.drag = dict(cid=cid,x=event.mouseevent.xdata,y=event.mouseevent.ydata)
-
-    yoff = 1.5
-    def update_text_pos(self):
-        x = self.line.get_xdata()[0]
-        y = self.line.get_ydata()[0]
-        self.text.set_x(x)
-        if self.ylog:
-            self.text.set_y(self.yoff*y)
-        else:
-            self.text.set_y(self.yoff+y)
-        
-    def drag_end(self,event):
-        print("drag end")
-        self.ax.figure.canvas.mpl_disconnect(self.drag['cid'])
-        xdata = self.line.get_xdata()
-        ydata = self.line.get_ydata()
-        
-        if self.xlog:
-            xdata *= event.xdata / self.drag['x']
-        else:
-            xdata += (event.xdata - self.drag['x'])
-        if self.ylog:
-            ydata *= event.ydata / self.drag['y']
-        else:
-            ydata += event.ydata - self.drag['y']
-        self.line.set_xdata(xdata)
-        self.line.set_ydata(ydata)
-        self.update_text_pos()
-        event.canvas.draw()
-
-
 class LogLogSlopeGrid(object):
     """ draw evenly spaced lines, for now in log-log space, at a given slope.
     y=mx+b
@@ -1065,9 +989,6 @@ def vec_to_rgb(U,V,scale):
     rgb = np.asarray([r,g,b]).transpose(1,2,0)
     
     return rgb
-
-
-# def multi_plot(*args,**kwargs):
 
 def savefig_geo(fig,fn,*args,**kws):
     # Not really tested...

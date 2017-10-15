@@ -1735,7 +1735,7 @@ class ZLevelField(Field3D):
         """
         x = self.distance_along_transect()
         
-        meshY,meshX = meshgrid(self.Z,x)
+        meshY,meshX = np.meshgrid(self.Z,x)
         all_x = meshX.ravel()
         all_y = meshY.ravel()
         all_g = transpose(self.F).ravel()
@@ -1945,7 +1945,7 @@ class SimpleGrid(QuadrilateralGrid):
         return x,y
     
     def XY(self):
-        X,Y = meshgrid(*self.xy())
+        X,Y = np.meshgrid(*self.xy())
         return X,Y
 
     def xyz(self):
