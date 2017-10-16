@@ -524,24 +524,6 @@ def gpick(coll,*args,**kwargs):
 
     return picked_id[0]
 
-def function_contours(f=lambda x,y: x-y,ax=None,Nx=20,Ny=20,V=10,
-                      fmt=None):
-    """ Cheap way to draw contours of a function and label them.
-    Just evaluates the function on a grid and calls contour
-    """
-    ax = ax or plt.gca()
-    xxyy = ax.axis()
-    x = np.linspace(xxyy[0],xxyy[1],Nx)
-    y = np.linspace(xxyy[2],xxyy[3],Ny)
-    X,Y = np.meshgrid(x,y)
-    Z = f(X,Y)
-    ctr = plt.contour(X,Y,Z,V,colors='k')
-    if fmt:
-        ax.clabel(ctr,fmt=fmt)
-        
-    return ctr
-
-
 def sqrt_scale(mappable,cbar,fmt="%.2f"):
     mappable.set_array(np.sqrt(mappable.get_array()))
 
