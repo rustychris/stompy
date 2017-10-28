@@ -173,7 +173,10 @@ def coops_dataset_product(station,product,
                 log.warning("No data found for this period")
                 continue
 
-        ds=coops_json_to_ds(data,params)    
+        ds=coops_json_to_ds(data,params)
+        if len(datasets)>0:
+            # avoid duplicates in case they overlap
+            ds=ds.isel(time=ds.time.values>datasets[-1].time.values[-1])
         datasets.append(ds)
 
     if len(datasets)==0:
