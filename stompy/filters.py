@@ -61,6 +61,16 @@ def lowpass_gotin(data,in_t_days,*args,**kwargs):
 def lowpass_fir(x,winsize,ignore_nan=True,axis=-1,mode='same',use_fft=False,
                 nan_weight_threshold=0.5):
     """
+    In the absence of exact filtering needs, choose the window 
+    size to match the cutoff period.  Signals with a frequency corresponding to
+    that cutoff period will be attenuated to about 50% of their original
+    amplitude, corresponding to the -6dB point.
+
+    Rolloff is about 18dB/octave, though highly scalloped so it's not as
+    simple as with a Butterworth filter.  That 18dB/octave is roughly the same as
+    a 3rd order butterworth, but it's a bit unclear on exactly where the 18dB/octave
+    rolloff holds.
+    
     x: ndarray
     winsize: integer - how long the hanning window is
     axis: the axis along which to apply the filter
@@ -68,7 +78,7 @@ def lowpass_fir(x,winsize,ignore_nan=True,axis=-1,mode='same',use_fft=False,
     use_fft: using the fft is faster, but sometimes less robust
     nan_weight_threshold: items with a weight less than this will be marked nan
     """
-    # not sure why hanning windows have first/last elements==0
+    # hanning windows have first/last elements==0.
     # but it's counter-intuitive - so force a window with nonzero
     # elements matching the requested size
     win=np.hanning(winsize+2)[1:-1]

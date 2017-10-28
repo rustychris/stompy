@@ -457,6 +457,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         ds[mesh_name].attrs['node_coordinates']='node_x node_y'
         ds[mesh_name].attrs['face_node_connectivity']='face_node'
         ds[mesh_name].attrs['edge_node_connectivity']='edge_node'
+        ds[mesh_name].attrs['face_dimension']='face'
+        ds[mesh_name].attrs['edge_dimension']='edge'
 
         ds['node_x']= ( ('node',),self.nodes['x'][:,0])
         ds['node_y']= ( ('node',),self.nodes['x'][:,1])
@@ -3410,6 +3412,29 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         wkb2shp.wkb2shp(shpname,input_wkbs=edge_geoms,fields=edge_data,
                         overwrite=True)
 
+    def write_node_shp(self,shpname,extra_fields=[]):
+        """ Write a shapefile with each node.  Fields will attempt to mirror
+        self.nodes.dtype
+
+        extra_fields: goal is similar to write_cells_shp and write_edges_shp, 
+        but not yet supported.
+        """
+        assert len(extra_fields)==0 # not yet supported!
+
+        # zero-based index of node (why does write_edge_shp create 1-based ids?)
+        base_dtype = [('node_id',np.int32)]
+
+        node_geoms=[geometry.Point( self.nodes['x'][i] )
+                    for i in self.valid_node_iter() ]
+
+        node_data=self.nodes[~self.nodes['deleted']].copy()
+
+        # don't need to write all of the original fields out:
+        node_data=utils.recarray_del_fields(node_data,['x','deleted'])
+
+        wkb2shp.wkb2shp(shpname,input_wkbs=node_geoms,fields=node_data,
+                        overwrite=True)
+        
     def write_ptm_gridfile(self,fn):
         """ write this grid out in the ptm grid format.
         """

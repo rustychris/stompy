@@ -313,7 +313,7 @@ def read_pli(fn,one_per_line=True):
                 geometry=[]
                 node_labels=[]
                 for row in range(nrows):
-                    values=fp.readline().strip().split(maxsplit=ncols+1)
+                    values=fp.readline().strip().split(None,ncols+1)
                     geometry.append( [float(s) for s in values[:ncols]] )
                     if len(values)>ncols:
                         node_labels.append(values[ncols])
@@ -474,6 +474,10 @@ def read_map(fn,hyd,use_memmap=True,include_grid=True):
 
     ds=xr.Dataset()
 
+    try:
+        txt_header=txt_header.decode()
+    except AttributeError:
+        pass # Hopefully header is already a string
     ds.attrs['header']=txt_header
 
     # a little python 2/3 misery
@@ -481,6 +485,7 @@ def read_map(fn,hyd,use_memmap=True,include_grid=True):
         substance_names=[s.decode() for s in substance_names]
     except AttributeError:
         pass
+    
     ds['sub']= ( ('sub',), [s.strip() for s in substance_names] )
 
     times=utils.to_dt64(hyd.time0) + np.timedelta64(1,'s') * mapped['tsecs']
@@ -491,12 +496,60 @@ def read_map(fn,hyd,use_memmap=True,include_grid=True):
     for idx,name in enumerate(ds.sub.values):
         ds[name]= ( ('time','layer','face'), 
                     mapped['data'][...,idx] )
+        ds[name].attrs['_FillValue']=-999
 
     if include_grid:
         # not sure why this doesn't work.
         g.write_to_xarray(ds=ds)
 
     return ds
+
+def map_add_z_coordinate(map_ds,total_depth='TotalDepth',coord_type='sigma',
+                         layer_dim='layer'):
+    """
+    For an xarray representation of dwaq output, where the total depth
+    has been recorded, add an inferred vertical coordinate in the dataset.
+    This is necessary to allow the ugrid visit reader to understand
+    the file.
+    Currently only sigma coordinates, assumed to be evenly spaced, are
+    supported.
+
+    total_depth: Name of the xarray variable in map_ds holding total water column
+    depth for each segment.
+    coord_type: type of coordinate, currently must be "sigma".
+    layer_dim: name of the vertical dimension in the data.
+
+    Makes an arbitrary assumption that the first output time step is roughly
+    mean sea level.  Obviously wrong, but a starting point.
+
+    Modifies map_ds in place, also returning it.
+    """
+    assert coord_type=='sigma'
+
+    bedlevel=-map_ds.TotalDepth.isel(**{layer_dim:0,'time':0,'drop':True})
+    dry=(bedlevel==999)
+    bedlevel[dry]=0.0
+    map_ds['bedlevel']=bedlevel
+    map_ds.bedlevel.attrs['units']='m'
+    map_ds.bedlevel.attrs['positive']='up'
+    map_ds.bedlevel.attrs['long_name']='Bed elevation relative to initial water level'
+
+    tdepth=map_ds.TotalDepth.isel(**{layer_dim:0,'drop':True})
+    eta=tdepth + map_ds.bedlevel
+    eta.values[ tdepth.values==-999 ] = 0.0
+    map_ds['eta']=eta
+    map_ds.eta.attrs['units']='m'
+    map_ds.eta.attrs['positive']='up'
+    map_ds.eta.attrs['long_name']='Sea surface elevation relative initial time step'
+
+    Nlayers=len(map_ds[layer_dim])
+    map_ds['sigma']=(layer_dim,), (0.5+np.arange(Nlayers)) / float(Nlayers)
+    map_ds.sigma.attrs['standard_name']="ocean_sigma_coordinate"
+    map_ds.sigma.attrs['positive']='up'
+    map_ds.sigma.attrs['units']=""
+    map_ds.sigma.attrs['formula_terms']="sigma: sigma eta: eta  bedlevel: bedlevel"
+    
+    return map_ds
 
 def dfm_wind_to_nc(wind_u_fn,wind_v_fn,nc_fn):
     """

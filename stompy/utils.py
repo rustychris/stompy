@@ -384,8 +384,13 @@ def fill_tidal_data(da,fill_time=True):
 
     # lowpass at about 5 days, splitting out low/high components
     winsize=int( np.timedelta64(5,'D') / dt )
-    data_lp=filters.lowpass_fir(data,winsize)
-    data_hp=data - data_lp
+    if winsize<len(data):
+        data_lp=filters.lowpass_fir(data,winsize)
+        data_hp=data - data_lp
+    else:
+        # not long enough, punt with the mean.
+        data_hp=data - data.mean()
+        data_lp=0*data
 
     valid=np.isfinite(data_hp)
     

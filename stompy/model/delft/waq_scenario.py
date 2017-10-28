@@ -913,36 +913,51 @@ class Hydro(object):
     # which didn't transfer well to aggregated domains which usually have many
     # unaggregated links going into the same aggregated element.
     boundary_scheme='lgrouped'
+    _boundary_defs=None
     def boundary_defs(self):
         """ Generic boundary defs - types default to ids
         """
-        Nbdry=self.n_boundaries
-        
-        bdefs=np.zeros(Nbdry, self.boundary_dtype)
-        for i in range(Nbdry):
-            bdefs['id'][i]="boundary %d"%(i+1)
-        bdefs['name']=bdefs['id']
-        if self.boundary_scheme=='id':
-            bdefs['type']=bdefs['id']
-        elif self.boundary_scheme in ['element','grouped']:
-            bc_segs=self.bc_segs() 
-            self.infer_2d_elements()
-            if self.boundary_scheme=='element':
-                bdefs['type']=["element %d"%( self.seg_to_2d_element[seg] )
-                               for seg in bc_segs]
-            elif self.boundary_scheme=='grouped':
-                bc_groups=self.group_boundary_elements()
-                bdefs['type']=[ bc_groups['name'][self.seg_to_2d_element[seg]] 
-                                for seg in bc_segs]
-        elif self.boundary_scheme == 'lgrouped':
-            bc_lgroups=self.group_boundary_links()
-            bc_exchs=np.nonzero(self.pointers[:,0]<0)[0]
-            self.infer_2d_links()
-            bdefs['type']=[ bc_lgroups['name'][self.exch_to_2d_link['link'][exch]] 
-                            for exch in bc_exchs]
-        else:
-            raise ValueError("Boundary scheme is bad: %s"%self.boundary_scheme)
-        return bdefs
+        if self._boundary_defs is None:
+            Nbdry=self.n_boundaries
+
+            bdefs=np.zeros(Nbdry, self.boundary_dtype)
+            for i in range(Nbdry):
+                bdefs['id'][i]="boundary %d"%(i+1)
+            bdefs['name']=bdefs['id']
+            if self.boundary_scheme=='id':
+                bdefs['type']=bdefs['id']
+            elif self.boundary_scheme in ['element','grouped']:
+                self.log.warning("This is outdated, and may be incorrect for DFM output with out-of-order exchanges")
+                bc_segs=self.bc_segs() 
+                self.infer_2d_elements()
+                if self.boundary_scheme=='element':
+                    bdefs['type']=["element %d"%( self.seg_to_2d_element[seg] )
+                                   for seg in bc_segs]
+                elif self.boundary_scheme=='grouped':
+                    bc_groups=self.group_boundary_elements()
+                    bdefs['type']=[ bc_groups['name'][self.seg_to_2d_element[seg]] 
+                                    for seg in bc_segs]
+            elif self.boundary_scheme == 'lgrouped':
+                bc_lgroups=self.group_boundary_links()
+                if 0:
+                    # old way, assume the order of things we return here should
+                    # follow the order of they appearin pointers
+                    bc_exchs=np.nonzero(self.pointers[:,0]<0)[0]
+                    self.infer_2d_links()
+                    bdefs['type']=[ bc_lgroups['name'][self.exch_to_2d_link['link'][exch]] 
+                                    for exch in bc_exchs]
+                else:
+                    self.log.info("Slowly setting boundary info")
+                    for bdry0 in range(Nbdry):
+                        exchs=np.nonzero(-self.pointers[:,0] == bdry0+1)[0]
+                        assert len(exchs)==1 # may be relaxable.
+                        exch=exchs[0]
+                        bdefs['type'][bdry0] = bc_lgroups['name'][self.exch_to_2d_link['link'][exch]]
+                    self.log.info("Done setting boundary info")
+            else:
+                raise ValueError("Boundary scheme is bad: %s"%self.boundary_scheme)
+            self._boundary_defs=bdefs
+        return self._boundary_defs
 
     def bc_segs(self):
         # Return an array of segments (0-based) corresponding to the receiving side of
@@ -1289,6 +1304,10 @@ class Hydro(object):
         We could maybe conservatively do some grouping based on marked edges in the 
         original grid, but we don't necessarily have those marks in this code (but
         see Suntans subclass where more info is available).
+
+        Return an array mapping of 2D links (i.e. elements of self.links)
+        to a struct array with elements  ('id',<index into boundary groups>), 
+        ('name', <string identifier>), ('attrs',<hash of additional info>).
         """
         self.infer_2d_links()
 
@@ -1949,14 +1968,106 @@ class HydroFiles(Hydro):
             self.log.warning("Couldn't read 2D link info in HydroFiles - will compute")
             super(HydroFiles,self).infer_2d_links()
 
-    def group_boundary_links(self):
-        gbl=self.read_group_boundary_links()
-        if gbl is None:
-            self.log.info("Couldn't find file with group_boundary_links data")
-            return super(HydroFiles,self).group_boundary_links()
-        else:
-            return gbl
+    @property
+    def bnd_filename(self):
+        return os.path.join(self.scenario.base_path, self.fn_base+".bnd")
         
+    def write_boundary_links(self):
+        """
+        On the way to following the .bnd format, at least in cases where we already
+        have a .bnd file, sneak in and copy that over
+        """
+        src_fn=self.get_path('boundaries-file')
+        dest_fn=self.bnd_filename
+        
+        if os.path.exists(src_fn):
+            self.log.info("Using .bnd file, not writing out kludgey boundary-links.csv")
+            if src_fn!=dest_fn: # a bit of paranoia with name check
+                shutil.copyfile(src_fn,dest_fn)
+        else:
+            super(HydroFiles,self).write_boundary_links()
+            
+    def group_boundary_links(self):
+        """
+        Use either a .bnd file (written by DFM) or a boundaries.csv (kludge
+        format from suntans runs) to return an array annotating each 2D link with
+        name, index, and other boundary condition metadata.
+        """
+        bnds=self.read_bnd()
+        if bnds is not None:
+            return self.group_boundary_links_bnd(bnds)
+
+        gbl=self.read_group_boundary_links()
+        if gbl is not None:
+            return gbl
+            
+        self.log.info("Couldn't find file with group_boundary_links data")
+        return super(HydroFiles,self).group_boundary_links()
+
+    def group_boundary_links_bnd(self,bnds):
+        poi=self.pointers
+        self.infer_2d_elements()
+        self.infer_2d_links()
+
+        gbl=np.zeros( self.n_2d_links,self.link_group_dtype )
+        gbl['id']=-1 # initialize to non-boundary
+
+        # each bnd entry has one or more surface links
+        # not comfortable assuming that their link numbers are
+        # the same as mine, but appears that theirs are consistent
+        # with surface layer exchange ids.
+        for rec_i,bnd in enumerate(bnds):
+            # bc_exch is a negative boundary element index, which
+            # can be matched to a "from" segment in poi
+            for bc_exch in bnd[1]['exch']:
+                exch_i=np.nonzero(poi[:,0]==bc_exch)[0]
+                assert len(exch_i)==1
+                exch_i=exch_i[0]
+                # seems that these come in only as horizontal exchanges.
+                # a vertical exchange couldn't be a link, so play it safe:
+                assert exch_i < self.n_exch_x + self.n_exch_y
+
+                # This is a 0-based link index
+                link0=self.exch_to_2d_link['link'][exch_i]
+                gbl['id'][link0]=rec_i
+                gbl['name'][link0]=bnd[0]
+
+                other={}
+
+                other['wkt']=geometry.LineString(bnd[1]['x'].reshape([-1,2]) ).wkt
+                other['geom']=other['wkt'] # follow previous interface, leaving geom
+                # as text wkt.
+                gbl['attrs'][link0]=other
+        return gbl
+    
+    def read_bnd(self):
+        """
+        parse the .bnd file present in some DFM runs.
+        Returns a list [ ['boundary_name',array([ boundary_link_idx,[[x0,y0],[x1,y1]] ])], ...]
+        """
+        fn=self.get_path('boundaries-file')
+        if not os.path.exists(fn):
+            return None
+        
+        with open(fn,'rt') as fp:
+            tok=tokenize(fp)
+            N_groups=int(next(tok))
+            groups=[]
+            for group_idx in range(N_groups):
+                group_name=next(tok)
+                N_exch=int(next(tok))
+                exchs=np.zeros( N_exch,
+                                dtype=[ ('exch','i4'),
+                                        ('x','f8',(2,2)) ] )
+                for i in range(N_exch):
+                    exchs['exch'][i]=int(next(tok))
+                    exchs['x'][i,0,0]=float(next(tok))
+                    exchs['x'][i,0,1]=float(next(tok))
+                    exchs['x'][i,1,0]=float(next(tok))
+                    exchs['x'][i,1,1]=float(next(tok))
+                groups.append( [group_name,exchs] )
+        return groups
+
     def read_group_boundary_links(self):
         """ Attempt to read grouped boundary links from file.  Return None if
         file doesn't exist.
@@ -7594,11 +7705,17 @@ INCLUDE '{self.atr_filename}'  ; attributes file
         # third is type, will be matched with first 20 characters
         # to group boundaries together.
 
+        # I used to think that these were labeled in order of their
+        # appearance in pointers, but 2017-10-13, they appear to be
+        # in accordance with the boundary segment.  This is [soon]
+        # handled in boundary_defs()
         lines=[]
+
         for bdry in self.scenario.hydro.boundary_defs():
             lines.append("'{}' '{}' '{}'".format( bdry['id'].decode(),
                                                   bdry['name'].decode(),
                                                   bdry['type'].decode() ) )
+            
         return "\n".join(lines)
     
     @property
