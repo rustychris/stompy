@@ -22,6 +22,18 @@ from scipy import ndimage
 
 from scipy.interpolate import RectBivariateSpline
 
+from functools import wraps
+
+# Lazily loads plt just for plotting functions.
+# Gross, but helpful??
+def with_plt(f):
+    @wraps(f)
+    def wrapper(*args, **kwds):
+        global plt
+        import matplotlib.pyplot as plt
+        return f(*args, **kwds)
+    return wrapper
+
 try:
     import matplotlib.tri as delaunay
 except ImportError:
@@ -30,7 +42,6 @@ except ImportError:
 
 from . import wkb2shp
 from ..utils import array_append
-
 
 try:
     from matplotlib import cm
@@ -975,6 +986,7 @@ class XYZField(Field):
         else:
             return newF
 
+    @with_plt
     def plot_on_boundary(self,bdry):
         # bdry is an array of vertices (presumbly on the boundary)
         l = np.zeros( len(bdry), np.float64 )
@@ -1735,7 +1747,7 @@ class ZLevelField(Field3D):
         """
         x = self.distance_along_transect()
         
-        meshY,meshX = meshgrid(self.Z,x)
+        meshY,meshX = np.meshgrid(self.Z,x)
         all_x = meshX.ravel()
         all_y = meshY.ravel()
         all_g = transpose(self.F).ravel()
@@ -1830,14 +1842,14 @@ class CurvilinearGrid(QuadrilateralGrid):
 
         return xyz
 
+    @with_plt
     def plot(self,**kwargs):
-        import pylab 
         # this is going to be slow...
-        self.scatter = pylab.scatter( self.X[:,:,0].ravel(),
-                                      self.X[:,:,1].ravel(),
-                                      c=self.F[:,:].ravel(),
-                                      antialiased=False,marker='s',lod=True,
-                                      lw=0,**kwargs )
+        self.scatter = plt.scatter( self.X[:,:,0].ravel(),
+                                    self.X[:,:,1].ravel(),
+                                    c=self.F[:,:].ravel(),
+                                    antialiased=False,marker='s',lod=True,
+                                    lw=0,**kwargs )
         
     def apply_xform(self,xform):
         new_X = self.X.copy()
@@ -1910,18 +1922,48 @@ class SimpleGrid(QuadrilateralGrid):
         return ( (self.extents[1] - self.extents[0]) / (self.F.shape[1]-1.0),
                  (self.extents[3] - self.extents[2]) / (self.F.shape[0]-1.0) )
 
+    def trace_contour(self,vmin,vmax,union=True):
+        """
+        Trace a filled contour between vmin and vmax, returning
+        a single shapely geometry (union=True) or a list of
+        polygons (union=False).
+        Uses matplotlib to do the actual contour construction
+        """
+        cset=self.contourf([vmin,vmax],ax='hidden')
+        segs=cset.allsegs
+        geoms=[]
+        for seg in segs[0]:
+            geoms.append( geometry.Polygon(seg) )
+        if union:
+            poly=geoms[0]
+            for geo in geoms[1:]:
+                poly=poly.union(geo)
+            return poly
+        else:
+            return geoms
+        
+    @with_plt
     def contourf(self,*args,**kwargs):
         X,Y = self.XY()
-        ax=kwargs.pop('ax',None) or plt.gca()
-        return ax.contourf(X,Y,self.F,*args,**kwargs)
-        
+        ax=kwargs.pop('ax',None)
+        if ax=='hidden':
+            tmp_ax=True
+            fig=plt.figure(999)
+            ax=fig.gca()
+        else:
+            tmp_ax=False
+            ax=ax or plt.gca()
+        cset=ax.contourf(X,Y,self.F,*args,**kwargs)
+        if tmp_ax:
+            plt.close(fig)
+        return cset
+    @with_plt
     def contour(self,*args,**kwargs):
         X,Y = self.XY()
         ax=kwargs.pop('ax',None) or plt.gca()
         return ax.contour(X,Y,self.F,*args,**kwargs)
-            
+    @with_plt
     def plot(self,**kwargs):
-        import pylab 
         dx,dy = self.delta()
 
         maskedF = ma.array(self.F,mask=np.isnan(self.F))
@@ -1932,7 +1974,7 @@ class SimpleGrid(QuadrilateralGrid):
             del kwargs['ax']
             ims = ax.imshow
         else:
-            ims = pylab.imshow
+            ims = plt.imshow
             
         return ims(maskedF,origin='lower',
                    extent=[self.extents[0]-0.5*dx, self.extents[1]+0.5*dx,
@@ -1945,7 +1987,7 @@ class SimpleGrid(QuadrilateralGrid):
         return x,y
     
     def XY(self):
-        X,Y = meshgrid(*self.xy())
+        X,Y = np.meshgrid(*self.xy())
         return X,Y
 
     def xyz(self):
@@ -2243,7 +2285,7 @@ class SimpleGrid(QuadrilateralGrid):
             newF[to_update] = values[to_update] / weights[to_update]
 
             i+=1
-            if adaptive and (sum(~bin_valid)>0):
+            if adaptive and (np.sum(~bin_valid)>0):
                 iterations += 1 # keep trying
             else:
                 adaptive = False # we're done 
