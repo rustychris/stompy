@@ -1977,7 +1977,10 @@ class HydroFiles(Hydro):
         On the way to following the .bnd format, at least in cases where we already
         have a .bnd file, sneak in and copy that over
         """
-        src_fn=self.get_path('boundaries-file')
+        try:
+            src_fn=self.get_path('boundaries-file')
+        except KeyError:
+            src_fn='no file found'
         dest_fn=self.bnd_filename
         
         if os.path.exists(src_fn):
@@ -2045,7 +2048,10 @@ class HydroFiles(Hydro):
         parse the .bnd file present in some DFM runs.
         Returns a list [ ['boundary_name',array([ boundary_link_idx,[[x0,y0],[x1,y1]] ])], ...]
         """
-        fn=self.get_path('boundaries-file')
+        try:
+            fn=self.get_path('boundaries-file')
+        except KeyError:
+            return None
         if not os.path.exists(fn):
             return None
         
@@ -7175,18 +7181,51 @@ END_MULTIGRID"""%num_layers
         self.cmd_write_inp()
 
     def cmd_write_nc(self):
-        """ Transcribe NEFIS to NetCDF for a completed DWAQ run 
+        """ Transcribe binary or NEFIS to NetCDF for a completed DWAQ run 
         """
-        if 1:
-            nc2_fn=os.path.join(self.base_path,'dwaq_hist.nc')
-            nc2=self.ugrid_history(nc_kwargs=dict(fn=nc2_fn,overwrite=True))
-            # if no history output, no nc2.
-            nc2 and nc2.close()
-        if 1:
-            nc_fn=os.path.join(self.base_path,'dwaq_map.nc')
-            nc=self.ugrid_map(nc_kwargs=dict(fn=nc_fn,overwrite=True))
-            # if no map output, no nc
-            nc and nc.close()
+        self.write_nefis_his_nc()
+        # binary is faster and doesn't require dwaq libraries, but
+        # does not know about units.
+        self.write_binary_map_nc() or self.write_nefis_map_nc()
+        
+    def write_nefis_his_nc(self):
+        nc2_fn=os.path.join(self.base_path,'dwaq_hist.nc')
+        nc2=self.ugrid_history(nc_kwargs=dict(fn=nc2_fn,overwrite=True))
+        # if no history output, no nc2.
+        if nc2:
+            nc2.close()
+            return True
+        else:
+            return False
+        
+    def write_nefis_map_nc(self):
+        nc_fn=os.path.join(self.base_path,'dwaq_map.nc')
+        nc=self.ugrid_map(nc_kwargs=dict(fn=nc_fn,overwrite=True))
+        # if no map output, no nc
+        if nc:
+            nc.close()
+            return True
+        else:
+            return False
+        
+    def write_binary_map_nc(self):
+        """
+        Transcribe binary formatted map output from completed dwaq
+        run to a ugrid-esque netcdf file.  Currently assumes sigma
+        coordinates!
+        """
+        if 'binary' not in self.map_formats:
+            return False
+
+        import stompy.model.delft.io as dio
+        map_fn=os.path.join(self.base_path,self.name+".map")
+        map_ds=dio.read_map(map_fn,self.hydro.hyd_path)
+
+        dio.map_add_z_coordinate(map_ds,total_depth='TotalDepth',coord_type='sigma',
+                                 layer_dim='layer')
+
+        map_ds.to_netcdf(os.path.join(self.base_path,"dwaq_map.nc"))
+        return True
 
     use_bloom=False
     def cmd_delwaq1(self):
