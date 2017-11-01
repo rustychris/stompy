@@ -1699,12 +1699,12 @@ class BinopField(Field):
     def value(self,X):
         try: # if isinstance(self.A,Field):
             a = self.A.value(X)
-        except:
+        except: # FIX - masks errors!
             a = self.A
             
         try: # if isinstance(self.B,Field):
             b = self.B.value(X)
-        except:
+        except: # FIX - masks errors!
             b = self.B
             
         return self.op(a,b)
