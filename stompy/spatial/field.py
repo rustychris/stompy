@@ -1053,7 +1053,7 @@ class PyApolloniusField(XYZField):
         newF = np.zeros( X.shape[:-1], np.float64 )
         
         if len(self.F)==0:
-            newF[:]=np.nan
+            newF[...]=np.nan
             return newF
 
         # need to compute all pairs of distances:
@@ -1069,7 +1069,7 @@ class PyApolloniusField(XYZField):
 
         f = self.F[idx] + dist*(self.r-1.0)
         
-        newF[:] = f.min(axis=0)
+        newF[...] = f.min(axis=0)
         return newF
 
     def to_grid(self,*a,**k):
