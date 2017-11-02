@@ -466,7 +466,7 @@ class Nefis(object):
             
             while 1:
                 celnam=create_string_buffer(b" "*16)
-                nelems_alloc=100
+                nelems_alloc=200 # RH 20171031: had been 100, which is now too small for some runs.
                 nelems=c_int(nelems_alloc) 
                 nbytes=c_int(0)
                 elmnms=((c_char*17)*nelems_alloc)()
