@@ -34,6 +34,25 @@ def test_basic():
 
     p.pave_all()
 
+## 
+def test_basic_apollo():
+    # Define a polygon
+    boundary=np.array([[0,0],[1000,0],[1000,1000],[0,1000]])
+    island  =np.array([[200,200],[600,200],[200,600]])
+
+    rings=[boundary,island]
+
+    # And the scale:
+    scale=field.PyApolloniusField()
+    scale.insert([50,50],20)
+
+    p=paver.Paving(rings=rings,density=scale)
+
+    p.pave_all()
+    return p
+
+
+
 ##     
 # A circle - r = 100, C=628, n_points = 628
 def test_circle():

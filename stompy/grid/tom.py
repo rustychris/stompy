@@ -275,6 +275,9 @@ class Tom(object):
             if self.boundary_shp is None:
                 print("ERROR: Must specify boundary shapefile")
                 show_usage = 1
+            if len(self.tele_scale_shps)>0 and not field.has_apollonius:
+                print("ERROR: Telescoping scales supplied, but Apollonius is not available")
+                show_usage = 1
             if not self.smooth:
                 print("WARNING: You are brave to disable smoothing.")
                 print("         without smoothing the scale may be larger than the shoreline permits")
