@@ -1069,7 +1069,7 @@ class PyApolloniusField(XYZField):
 
         f = self.F[idx] + dist*(self.r-1.0)
         
-        newF[:] = f.min(axis=0)
+        newF[...] = f.min(axis=0)
         return newF
 
     def to_grid(self,*a,**k):

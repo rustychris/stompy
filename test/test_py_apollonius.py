@@ -8,3 +8,6 @@ def test_basic():
 
     g=pa.to_grid(100,100)
 
+    # good to test a single point, too
+    pa( [10,10] )
+
