@@ -1053,7 +1053,7 @@ class PyApolloniusField(XYZField):
         newF = np.zeros( X.shape[:-1], np.float64 )
         
         if len(self.F)==0:
-            newF[:]=np.nan
+            newF[...]=np.nan
             return newF
 
         # need to compute all pairs of distances:
@@ -1699,12 +1699,12 @@ class BinopField(Field):
     def value(self,X):
         try: # if isinstance(self.A,Field):
             a = self.A.value(X)
-        except:
+        except: # FIX - masks errors!
             a = self.A
             
         try: # if isinstance(self.B,Field):
             b = self.B.value(X)
-        except:
+        except: # FIX - masks errors!
             b = self.B
             
         return self.op(a,b)
