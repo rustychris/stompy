@@ -1206,10 +1206,16 @@ class AdvancingFront(object):
 
         # Subscribe to operations *before* they happen, so that the constrained
         # DT can signal that an invariant would be broken
-        self.cdt=shadow_cdt.ShadowCDT(g)
+        self.cdt=self.shadow_cdt_factory(g)
                           
         return g
-    
+
+    def shadow_cdt_factory(self,g):
+        try:
+            return shadow_cdt.ShadowCGALCDT(g)
+        except AttributeError:
+            return shadow_cdt.ShadowCDT(g)
+        
     def initialize_boundaries(self):
         for curve_i,curve in enumerate(self.curves):
             curve_points,srcs=curve.upsample(self.scale,return_sources=True)

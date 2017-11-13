@@ -211,17 +211,24 @@ class ShadowCGALCDT(object):
             raise self.IntersectingConstraints(msg)
         
     def remove_constraint(self,a,b):
-        vh_a=self.nodes['vh'][a]
-        vh_b=self.nodes['vh'][b]
+        vh_a=self.g.nodes['vh'][a]
+        vh_b=self.g.nodes['vh'][b]
+
+        inc_constraints=[]
+        self.DT.incident_constraints(vh_a,inc_constraints)
         
-        for edge in self.DT.incident_constraints(vh_a): 
-            v1,v2 = edge.vertices()
+        for edge in inc_constraints:
+            f=edge[0]
+            v=edge[1]
+            v1=f.vertex( (v+1)%3 )
+            v2=f.vertex( (v+2)%3 )
+            
             if vh_b==v1 or vh_b==v2:
-                self.DT.remove_constrained_edge(edge.f,edge.v)
+                self.DT.remove_constrained_edge(f,v)
                 return
         msg="Tried to remove edge %i-%i, but it wasn't in the constrained DT"%(a,b)
         raise self.MissingConstraint(msg)
-
+    count_line_is_free=0 # DBG!
     def line_is_free(self,a,b,ax=None):
         """
         Check whether inserting a constraint between nodes a
@@ -252,11 +259,25 @@ class ShadowCGALCDT(object):
         else:
             assert False
 
-        lw=DT.line_walk(vh_a.point(),vh_b.point(),init_face) 
+        # DBG
+        print "line_is_free call %d"%self.count_line_is_free
+        if self.count_line_is_free==41:
+            import pdb
+            pdb.set_trace()
+        self.count_line_is_free+=1
+            
+        # 41st time through, during a modify_node, this returns a
+        # dud.  Could be that that one of vertex handles are trash,
+        # that init_face is bad, .. ?   this is getting called after "after_add_node"
+        p_a=vh_a.point() # does keeping a reference to these help? nope.
+        p_b=vh_b.point()
+        # init_face is required for the check to work - gets an assertion fail
+        # 
+        lw=DT.line_walk(p_a,p_b,init_face) 
         seg=Segment_2(vh_a.point(), vh_b.point())
 
         faces=[]
-        for face in lw:
+        for face in lw: 
             # check to make sure we don't go through a vertex
             for i in [0,1,2]:
                 v=face.vertex(i)
@@ -282,7 +303,7 @@ class ShadowCGALCDT(object):
                         ax.add_collection(pcoll)
 
                         pdb.set_trace()
-                    assert False
+                    assert False # This triggers when init_face is omitted
 
                 edge=Constrained_Delaunay_triangulation_2_Edge(face,i)
                 if DT.is_constrained(edge):
@@ -297,6 +318,7 @@ class ShadowCGALCDT(object):
             faces.append(face)
             if face.has_vertex(vh_b):
                 break
+            
         return None
         
     class Edge(object):
@@ -310,8 +332,6 @@ class ShadowCGALCDT(object):
         # maybe I should keep a reference to the Edge object, too?
         # that gets through some early crashes.
         return [self.Edge(f=e.first,v=e.second,keepalive=[e]) for e in constraints]
-
-    
             
     def before_add_node(self,g,func_name,**k):
         pass # no checks quite yet
@@ -322,6 +342,7 @@ class ShadowCGALCDT(object):
         
         xy=k['x']
         pnt = Point_2( k['x'][0], k['x'][1] )
+        assert self.g.nodes['vh'][n] in [0,None]
         vh = self.g.nodes['vh'][n] = self.DT.insert(pnt)
         self.vh_info[vh] = n
 
@@ -330,7 +351,7 @@ class ShadowCGALCDT(object):
             return
         
         # This is a tricky and important one!
-        vh=self.nodes['vh'][n]
+        vh=self.g.nodes['vh'][n]
 
         # so that there aren't conflicts between the current
         # edges and the probe point.
@@ -344,19 +365,37 @@ class ShadowCGALCDT(object):
             vi2 = self.vh_info[v2]
 
             to_remove.append( (edge, vi1, vi2) )
-            if vi1 == i:
+            if vi1 == n:
                 nbrs.append(vi2)
             else:
                 nbrs.append(vi1)
+                
+        # DBG: does this cause issues before modifying the node, and even
+        # before removing the constraints?
+        # print "10--9 pre-manual"
+        # self.line_is_free(10,9)         # DBG - crashes
+        # print "10--9 manual"
+        # also crashes:
+        for edge,a,b in to_remove:
+            print "About to check %d-%d"%(a,b)
+            exc=self.line_is_free(a,b)
+            if exc:
+                raise Exception("How can this be non-free?")
+            print "checked one"
+        print "Survived known good check"
 
+                
         if len(to_remove) != len(g.node_to_edges(n)):
             # Usually means that there is an inconsistency in the CDT
             log.error("WARNING: modify_node len(DT constraints) != len(pnt2edges(i))")
             pdb.set_trace()
 
+            
         # remove all of the constraints in one go:
         self.DT.remove_incident_constraints(vh)
-            
+
+        # line_is_free has problems even here.
+        
         self.dt_remove(n)
 
         #-- testing new location:
