@@ -13,4 +13,10 @@ def test_basic():
                               days_per_request=30)
 
 
+def test_provisional():
+    usgs_a8_site="372512121585801"
 
+    ds=usgs_nwis.nwis_dataset(usgs_a8_site,
+                              np.datetime64("2015-12-10"),
+                              np.datetime64("2015-12-20"),
+                              products=[72178])
