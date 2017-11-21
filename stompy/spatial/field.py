@@ -1916,7 +1916,7 @@ class SimpleGrid(QuadrilateralGrid):
         self.dx,self.dy = self.delta()
 
     def copy(self):
-        return SimpleGrid(extents=list(self.extents),F=self.F.copy(),projection=self.projection)
+        return SimpleGrid(extents=list(self.extents),F=self.F.copy(),projection=self.projection())
 
     def delta(self):
         return ( (self.extents[1] - self.extents[0]) / (self.F.shape[1]-1.0),
@@ -1927,7 +1927,11 @@ class SimpleGrid(QuadrilateralGrid):
         Trace a filled contour between vmin and vmax, returning
         a single shapely geometry (union=True) or a list of
         polygons (union=False).
-        Uses matplotlib to do the actual contour construction
+        Uses matplotlib to do the actual contour construction.
+
+        Note that matplotlib is not infallible here, and complicated
+        or large inputs can create erroneous output.  gdal_contour
+        might help.
         """
         cset=self.contourf([vmin,vmax],ax='hidden')
         segs=cset.allsegs
