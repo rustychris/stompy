@@ -248,9 +248,14 @@ def rdb_to_dataset(filename=None,text=None):
                 # parm_nm is often really long!
                 # srsname, when present, is shorter
                 srsname=parameter['srsname']
+                varname=None
                 if srsname:
-                    varname=srsname
-                else:
+                    # sometimes this is nan, though!
+                    try:
+                        varname=srsname.lower() # force string-like check
+                    except AttributeError:
+                        pass
+                if varname is None:
                     varname=parameter['parameter_nm']
                 varname=varname.lower().replace(' ','_').replace(',','').replace('.','')
 

@@ -874,9 +874,10 @@ class SectionedConfig(object):
         self.sources.append(label)
 
         for line in fp:
-            # save original text so we can write out a new suntans.dat with
+            # save original text so we can write out a new mdu with
             # only minor changes
-            self.rows.append(line.rstrip("\n"))
+            # the rstrip()s leave trailing whitespace, but strip newline or CR/LF
+            self.rows.append(line.rstrip("\n").rstrip("\r"))
         if filename:
             fp.close()
 
