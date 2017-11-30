@@ -25,13 +25,13 @@ except ImportError:
     log.warning("Plotting not available - no matplotlib")
     plt=None
 
-# from numba import jit, int32, float64
 
-# copied from paver verbatim, with edits to reference
-# numpy identifiers via np._
+
+# from numba import jit, int32, float64
 # @jit(nopython=True)
 # @jit
 # @jit(float64(float64[:],float64[:,:,:],float64),nopython=True)
+
 def one_point_cost(pnt,edges,target_length=5.0):
     # pnt is intended to complete a triangle with each
     # pair of points in edges, and should be to the left
@@ -55,10 +55,6 @@ def one_point_cost(pnt,edges,target_length=5.0):
     abs_angles = np.arctan2( all_edges[:,:,1], all_edges[:,:,0] )
     all_angles = (np.pi - (abs_angles[:,i] - abs_angles[:,im1]) % (2*np.pi)) % (2*np.pi)
         
-    # a_angles = (pi - (ab_angles - ca_angles) % (2*pi)) % (2*pi)
-    # b_angles = (pi - (bc_angles - ab_angles) % (2*pi)) % (2*pi)
-    # c_angles = (pi - (ca_angles - bc_angles) % (2*pi)) % (2*pi)
-
     if 1:
         # 60 is what it's been for a while, but I think in one situation
         # this put too much weight on small angles.
@@ -101,8 +97,8 @@ def one_point_cost(pnt,edges,target_length=5.0):
     if 1:
         ab_lens = (all_edges[:,0,:]**2).sum(axis=1)
         ca_lens = (all_edges[:,2,:]**2).sum(axis=1)
-        min_ab=min(ab_lens)
-        min_ca=min(ca_lens)
+        min_ab=ab_lens.min() # min(ab_lens)
+        min_ca=ca_lens.min() # min(ca_lens)
     else:
         # maybe better for numba?
         min_ab=np.inf
@@ -135,7 +131,7 @@ def one_point_cost(pnt,edges,target_length=5.0):
     penalty += length_penalty
 
     return penalty
-    
+
 
 class Curve(object):
     """
@@ -812,7 +808,7 @@ class NonLocalStrategy(Strategy):
         # skip over neighbors of any of the sites nodes
 
         # take any neighbors in the DT.
-        each_dt_nbrs=[af.cdt.node_to_nodes(n) for n in site.abc]
+        each_dt_nbrs=[af.cdt.delaunay_neighbors(n) for n in site.abc]
         if 1:
             # filter out neighbors which are not within the 'sector'
             # defined by the site.
@@ -1331,11 +1327,12 @@ class AdvancingFront(object):
         Returns the resampled node index -- often same as n, but may be a different
         node.
         """
-        self.log.debug("resample %d to be %g away from %d in the %s direction"%(n,scale,anchor,
-                                                                                direction) )
+        #self.log.debug("resample %d to be %g away from %d in the %s direction"%(n,scale,anchor,
+        #                                                                        direction) )
+        
         n_deg=self.grid.node_degree(n)
         if n_deg!=2:
-            self.log.debug("Will not resample node %d because degree=%d, not 2"%(n,n_deg))
+            # self.log.debug("Will not resample node %d because degree=%d, not 2"%(n,n_deg))
             return n
         
         if direction==1: # anchor to n is t
@@ -1348,7 +1345,7 @@ class AdvancingFront(object):
         span_length,span_nodes = self.free_span(he,self.max_span_factor*scale,direction)
         # anchor-n distance should be in there, already.
         
-        self.log.debug("free span from the anchor is %g"%span_length)
+        # self.log.debug("free span from the anchor is %g"%span_length)
 
         if span_length < self.max_span_factor*scale:
             n_segments = max(1,round(span_length / scale))
@@ -1373,13 +1370,13 @@ class AdvancingFront(object):
                 he_other=he.rev()
                 opposite_node=he_other.node_rev()
             if opposite_node==span_nodes[-1]:
-                self.log.info("n_segment=1, but that would be an implicit join")
+                # self.log.info("n_segment=1, but that would be an implicit join")
 
                 # rather than force two segments, force it
                 # to remove all but the last edge.
                 del span_nodes[-1]
 
-            self.log.debug("Only space for 1 segment")
+            # self.log.debug("Only space for 1 segment")
             for d in span_nodes[1:-1]:
                 cp=self.grid.checkpoint()
                 try:
@@ -1547,7 +1544,7 @@ class AdvancingFront(object):
         """ Move node n, subject to its constraints, to minimize
         the cost function.  Return the final value of the cost function
         """
-        self.log.debug("Relaxing node %d"%n)
+        # self.log.debug("Relaxing node %d"%n)
         if self.grid.nodes['fixed'][n] == self.FREE:
             return self.relax_free_node(n)
         elif self.grid.nodes['fixed'][n] == self.SLIDE:
@@ -1570,7 +1567,7 @@ class AdvancingFront(object):
                          xtol=local_length*1e-4,
                          disp=0)
         dx=utils.dist( new_x - x0 )
-        self.log.debug('Relaxation moved node %f'%dx)
+        # self.log.debug('Relaxation moved node %f'%dx)
         cp=self.grid.checkpoint()
         try:
             if dx !=0.0:

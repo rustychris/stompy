@@ -89,7 +89,10 @@ class ShadowCDT(exact_delaunay.Triangulation):
         nodes=g.edges['nodes'][j]
         self.remove_constraint(nodes[0],nodes[1])
 
-
+    def delaunay_neighbors(self,gn):
+        n=self.nodemap_g_to_local(gn)
+        local_nbrs=self.node_to_nodes(n)
+        return self.nodes['g_n'][local_nbrs]
         
 try:
     from CGAL.CGAL_Triangulation_2 import (Constrained_Delaunay_triangulation_2,
@@ -185,9 +188,9 @@ class ShadowCGALCDT(object):
                                                                                      b,pB)
             raise self.BadConstraint(msg)
 
-        log.debug("    Inserting constraint (add_constraint): %d %d  %s %s"%(a,b,vhA,vhB))
-        log.debug("      node A=%s   node B=%s"%(pA,pB))
-        log.debug("      A.point=%s  B.point=%s"%(vhA.point(), vhB.point()))
+        # log.debug("    Inserting constraint (add_constraint): %d %d  %s %s"%(a,b,vhA,vhB))
+        # log.debug("      node A=%s   node B=%s"%(pA,pB))
+        # log.debug("      A.point=%s  B.point=%s"%(vhA.point(), vhB.point()))
 
         # a priori check on whether the constraint would be valid:
         exc=self.line_is_free(a,b)
@@ -255,8 +258,7 @@ class ShadowCGALCDT(object):
             return None
         else:
             if conflicts[0][0]=='v':
-                return self.ConstraintCollinearNode("Hit node %s along %s--%s"%(n_collide,
-                                                                                a,b))
+                return self.ConstraintCollinearNode("Hit a node along %s--%s"%(a,b))
             else:
                 return self.IntersectingConstraints("Intersection along %s--%s"%(a,b))
             
@@ -346,7 +348,23 @@ class ShadowCGALCDT(object):
         # maybe I should keep a reference to the Edge object, too?
         # that gets through some early crashes.
         return [self.Edge(f=e.first,v=e.second,keepalive=[e]) for e in constraints]
-            
+
+    def delaunay_neighbors(self,gn):
+        vh=self.g.nodes['vh'][gn]
+        edges=self.dt_incident_constraints(vh)
+
+        nbrs=[]
+        for edge in edges:
+            vh1,vh2=edge.vertices()
+            if vh1==vh:
+                vh_nbr=vh2
+            else:
+                vh_nbr=vh1
+            n=self.vh_info[vh_nbr]
+            assert n is not None
+            nbrs.append(n)
+        return np.array(nbrs)
+    
     def before_add_node(self,g,func_name,**k):
         pass # no checks quite yet
     def after_add_node(self,g,func_name,return_value,**k):
@@ -384,24 +402,8 @@ class ShadowCGALCDT(object):
             else:
                 nbrs.append(vi1)
                 
-        # DBG: does this cause issues before modifying the node, and even
-        # before removing the constraints?
-        # print "10--9 pre-manual"
-        # self.line_is_free(10,9)         # DBG - crashes
-        # print "10--9 manual"
-        # also crashes:
-
-        # Maybe this is crashing because all of the checks are along existing
-        # segments?
-        # for edge,a,b in to_remove:
-        #     print "About to check %d-%d"%(a,b)
-        #     exc=self.line_is_free(a,b)
-        #     if exc:
-        #         raise Exception("How can this be non-free?")
-        #     print "checked one"
-        # print "Survived known good check"
-
-                
+        x_orig=self.g.nodes['x'][n].copy()
+        
         if len(to_remove) != len(g.node_to_edges(n)):
             # Usually means that there is an inconsistency in the CDT
             log.error("WARNING: modify_node len(DT constraints) != len(pnt2edges(i))")
@@ -427,11 +429,13 @@ class ShadowCGALCDT(object):
         for edge,a,b in to_remove:
             exc=self.line_is_free(a,b)
             if exc:
-                # HERE - rollback, then raise exception to stop operation.
-                # exc=self.IntersectingConstraints("New location of %s to %s"%(a,b))
                 self.dt_remove(n)
                 # put it back where it was:
-                self.after_add_node(g,'modify_node',n,{'x':self.nodes['x'][n]})
+                self.after_add_node(self.g,'modify_node',n,x=x_orig)
+                # the edges will be added back in below, and exc
+                # raised at the very end
+                # rollback, then raise exception to stop operation.
+                exc=self.IntersectingConstraints("New location of %s to %s"%(a,b))
                 break
 
         # By here, we've either verified that all constraints will be okay,
