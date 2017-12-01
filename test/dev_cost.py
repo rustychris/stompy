@@ -83,7 +83,7 @@ def test_no_lookahead():
 
 ##
 
-# from numba import jit, int32, float64
+from numba import jit, int32, float64
 # @jit(float64[:,:](float64[:,:],float64[:,:],float64[:,:]),nopython=True)
 def circumcenter(p1,p2,p3):
     ref = p1
@@ -105,29 +105,6 @@ def circumcenter(p1,p2,p3):
     vc[...,1]=(b2*(p1x-p2x)-b1*(p1x-p3x))/dd + ref[...,1]
     
     return vc
-
-def circumcenter_py(p1,p2,p3):
-    """ no longer vectorized
-    """
-    ref = p1
-    
-    p1x = 0
-    p1y = 0
-    p2x = p2[0] - ref[0]
-    p2y = p2[1] - ref[1]
-    p3x = p3[0] - ref[0]
-    p3y = p3[1] - ref[1]
-
-    # taken from TRANSFORMER_gang.f90
-    dd=2.0*((p1x-p2x)*(p1y-p3y) -(p1x-p3x)*(p1y-p2y))
-    b_com=p1x*p1x+p1y*p1y
-    b1=b_com-p2x*p2x-p2y*p2y
-    b2=b_com-p3x*p3x-p3y*p3y 
-
-    return [ (b1*(p1y-p3y)-b2*(p1y-p2y))/dd + ref[0] ,
-             (b2*(p1x-p2x)-b1*(p1x-p3x))/dd + ref[1] ]
-
-
 
 def gen_circum_partial(p1,p2):
     # return a function which takes a single point which completes
@@ -178,7 +155,8 @@ def gen_circum_partial(p1,p2):
 class TestCC(front.AdvancingTriangles):
     """ Testing other options for node cost
     """
-    def cost_function(self,n,method='cc_py'):
+    cost_method='cc_py'
+    def cost_function(self,n):
         local_length = self.scale( self.grid.nodes['x'][n] )
         my_cells = self.grid.node_to_cells(n)
 
@@ -214,46 +192,6 @@ class TestCC(front.AdvancingTriangles):
         Blist=[ [ e[0],e[1] ]
                 for e in edge_points[:,1,:] ]
         EPS=1e-5*local_length
-
-        def cost_cc_and_scale(x0):
-            # tri_cc = circumcenter( edge_points[:,0,:],edge_points[:,1,:],x0[None,:] )
-            # tri_cc = circum_partial(x0)
-            x0l=list(x0)
-            tri_cc=np.array( [ circumcenter_py(A,B,x0l)
-                               for A,B in zip(Alist,Blist)] )
-
-            As=edge_points[:,0,:]
-            Bs=edge_points[:,1,:]
-            Cs=x0[None,:]
-
-            deltaAB=tri_cc[:,:] - As
-            ABs=Bs-As
-            magABs=utils.mag(ABs)
-            vecAB=ABs/magABs[...,None]
-            leftAB=vecAB[:,0]*deltaAB[:,1] - vecAB[:,1]*deltaAB[:,0]
-
-            deltaBC=tri_cc[:,:] - Bs
-            BCs=Cs-Bs
-            magBCs=utils.mag(BCs)
-            vecBC=BCs/magBCs[...,None]
-            leftBC=vecBC[:,0]*deltaBC[:,1] - vecBC[:,1]*deltaBC[:,0]
-
-            deltaCA=tri_cc[:,:] - Cs
-            CAs=As-Cs
-            magCAs=utils.mag(CAs)
-            vecCA=CAs/magCAs[...,None]
-            leftCA=vecCA[:,0]*deltaCA[:,1] - vecCA[:,1]*deltaCA[:,0]
-
-            cc_cost = ( (1./leftAB.clip(EPS,np.inf)).sum() +
-                        (1./leftBC.clip(EPS,np.inf)).sum() +
-                        (1./leftCA.clip(EPS,np.inf)).sum() )
-            # non-dimensionalize
-            cc_cost *= local_length
-
-            scale_cost=(magABs-local_length)**2 + (magBCs-local_length)**2 + (magCAs-local_length)**2
-            scale_cost=scale_cost.sum() / (local_length*local_length)
-
-            return 0.1*cc_cost+scale_cost
 
         def cost_cc_and_scale_py(x0):
             C=list(x0)
@@ -306,11 +244,9 @@ class TestCC(front.AdvancingTriangles):
             scale_cost /= local_length*local_length
             return cc_cost+scale_cost
 
-        if method=='base':
+        if self.cost_method=='base':
             return cost
-        elif method=='cc':
-            return cost_cc_and_scale
-        elif method=='cc_py':
+        elif self.cost_method=='cc_py':
             return cost_cc_and_scale_py
         else:
             assert False
@@ -330,16 +266,30 @@ af2.loop()
 elapsed_cc=time.time() - t
 
 print "%.2f cells/s"%( af2.grid.Ncells() / elapsed_cc)
-# 15.2s for 148 cells.  9.6 cells/s
-# 14.2s with turning circumcenter into a partial
-# Where is the time?
-# 15.8s, and 10.3 is in cost_cc_and_scale
-# 2.2s in partial(), vs. 3.3 in circumcenter vs 0.9 in cirumcenter_py
-# how much faster would it be to use straight python
-# about as fast as old code, but has a bug -- actually old code had a bug.
-# with more intentional scaling of cc_cost - makes an acceptable grid
-# 130 cells (method=cc), 11.4 cells/s
+# Recap:
+#  For small input sizes, it's considerably faster to use
+#  pure python rather than calling into numpy.
+#  With the old code, the circumcenter approach was about
+#  half as fast as the original cost.  converting that to
+#  pure python gets it back to the same speed as the old
+#  approach, and roughly similar cell quality.
+#  Using a partial for the circumcenter makes about 1s of difference
+#  over the 10-20s run.
+#  There is still wiggle room in weighting the scale vs. circumcenter
+#  costs.  
 # pure python gets 20.5 cells/s
+
+# For a 7.1s run, 4.3 is in optimization, of which 2.6 is the cost
+# function. 0.8s is in calculation of the circumcenters.
+# 1.3 is in cgal_line_walk - pretty expensive
+# So the big players are:
+# 7.1s:
+#   4.3 opt
+#     2.7 cost function
+#     1.6 opt overhead
+#   1.3 cgal_line_walk
+#   1.5 all the other stuff.
+
 
 ##
 

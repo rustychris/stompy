@@ -5,6 +5,7 @@ An advancing front grid generator for use with unstructured_grid
 Largely a port of paver.py.
 
 """
+import math
 import numpy as np
 import time
 from scipy import optimize as opt
@@ -25,6 +26,30 @@ except ImportError:
     log.warning("Plotting not available - no matplotlib")
     plt=None
 
+def circumcenter_py(p1,p2,p3):
+    """ Compute circumcenter of a single triangle using pure python.
+    For small input sizes, this is much faster than using the vectorized
+    numpy version in utils.
+    """
+    ref = p1
+    
+    p1x = 0
+    p1y = 0
+    p2x = p2[0] - ref[0]
+    p2y = p2[1] - ref[1]
+    p3x = p3[0] - ref[0]
+    p3y = p3[1] - ref[1]
+
+    # taken from TRANSFORMER_gang.f90
+    dd=2.0*((p1x-p2x)*(p1y-p3y) -(p1x-p3x)*(p1y-p2y))
+    b_com=p1x*p1x+p1y*p1y
+    b1=b_com-p2x*p2x-p2y*p2y
+    b2=b_com-p3x*p3x-p3y*p3y 
+
+    # avoid division by zero is the points are collinear
+    dd=max(dd,1e-40)
+    return [ (b1*(p1y-p3y)-b2*(p1y-p2y))/dd + ref[0] ,
+             (b2*(p1x-p2x)-b1*(p1x-p3x))/dd + ref[1] ]
 
 
 # from numba import jit, int32, float64
@@ -1861,7 +1886,13 @@ class AdvancingTriangles(AdvancingFront):
             sites.append( TriangleSite(self,nodes=[a,b,c]) )
         return sites
 
+    cost_method='cc_py'
     def cost_function(self,n):
+        """
+        Return a function which takes an x,y pair, and evaluates
+        a geometric cost function for node n based on the shape and
+        scale of triangle cells containing n
+        """
         local_length = self.scale( self.grid.nodes['x'][n] )
         my_cells = self.grid.node_to_cells(n)
 
@@ -1888,9 +1919,61 @@ class AdvancingTriangles(AdvancingFront):
         edge_points = self.grid.nodes['x'][edges]
 
         def cost(x,edge_points=edge_points,local_length=local_length):
-            return one_point_cost(x,edge_points,target_length=local_length)
+            return front.one_point_cost(x,edge_points,target_length=local_length)
 
-        return cost
+        Alist=[ [ e[0],e[1] ]
+                for e in edge_points[:,0,:] ]
+        Blist=[ [ e[0],e[1] ]
+                for e in edge_points[:,1,:] ]
+        EPS=1e-5*local_length
+
+        def cost_cc_and_scale_py(x0):
+            C=list(x0)
+            cc_cost=0
+            scale_cost=0
+            
+            for A,B in zip(Alist,Blist):
+                tri_cc=circumcenter_py(A,B,C)
+
+                deltaAB=[ tri_cc[0] - A[0],
+                          tri_cc[1] - A[1]]
+                ABs=[B[0]-A[0],B[1]-A[1]]
+                magABs=math.sqrt( ABs[0]*ABs[0] + ABs[1]*ABs[1])
+                vecAB=[ABs[0]/magABs, ABs[1]/magABs]
+                leftAB=vecAB[0]*deltaAB[1] - vecAB[1]*deltaAB[0] 
+
+                deltaBC=[tri_cc[0] - B[0],
+                         tri_cc[1] - B[1]]
+                BCs=[C[0]-B[0], C[1]-B[1]]
+                magBCs=math.sqrt( BCs[0]*BCs[0] + BCs[1]*BCs[1] )
+                vecBC=[BCs[0]/magBCs, BCs[1]/magBCs]
+                leftBC=vecBC[0]*deltaBC[1] - vecBC[1]*deltaBC[0]
+
+                deltaCA=[tri_cc[0] - C[0],
+                         tri_cc[1] - C[1]]
+                CAs=[A[0]-C[0],A[1]-C[1]]
+                magCAs=math.sqrt(CAs[0]*CAs[0] + CAs[1]*CAs[1])
+                vecCA=[CAs[0]/magCAs, CAs[1]/magCAs]
+                leftCA=vecCA[0]*deltaCA[1] - vecCA[1]*deltaCA[0]
+
+                # cc_fac=-4. # not bad
+                cc_fac=-2. # a little nicer shape
+                # clip to 100, to avoid overflow in math.exp
+                cc_cost += ( math.exp(min(100,cc_fac*leftAB/local_length)) +
+                             math.exp(min(100,cc_fac*leftBC/local_length)) +
+                             math.exp(min(100,cc_fac*leftCA/local_length)) )
+                
+                scale_cost+=(magABs-local_length)**2 + (magBCs-local_length)**2 + (magCAs-local_length)**2
+
+            scale_cost /= local_length*local_length
+            return cc_cost+scale_cost
+
+        if self.cost_method=='base':
+            return cost
+        elif self.cost_method=='cc_py':
+            return cost_cc_and_scale_py
+        else:
+            assert False
 
 
 #### 

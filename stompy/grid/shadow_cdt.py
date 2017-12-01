@@ -349,9 +349,26 @@ class ShadowCGALCDT(object):
         # that gets through some early crashes.
         return [self.Edge(f=e.first,v=e.second,keepalive=[e]) for e in constraints]
 
+    def dt_incident_edges(self,vh):
+        circ=self.DT.incident_edges(vh)
+        # maybe I should keep a reference to the Edge object, too?
+        # that gets through some early crashes.
+        
+        edges=[]
+        for e in circ:
+            if edges and edges[0] == e:
+                break # come back to start of circulator
+            if len(edges) > 10000:
+                assert False # probably a bad issue
+            edges.append(e)
+        
+        return [self.Edge(f=e[0],v=e[1],keepalive=[e]) for e in edges
+                if not self.DT.is_infinite(e[0]) ]
+
     def delaunay_neighbors(self,gn):
         vh=self.g.nodes['vh'][gn]
-        edges=self.dt_incident_constraints(vh)
+        # oops - this is wrong!
+        edges=self.dt_incident_edges(vh) # was erroneously dt_incident_constraints
 
         nbrs=[]
         for edge in edges:

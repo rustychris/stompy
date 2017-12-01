@@ -538,6 +538,24 @@ def test_pave_basic():
 
     return trifront_wrapper(rings,scale,label='basic_island')
 
+##
+import field
+# That's failing with the new cost function, though it could be
+# related to the new CGAL shadow_cdt.
+boundary=np.array([[0,0],[1000,0],[1000,1000],[0,1000]])
+island  =np.array([[200,200],[600,200],[200,600]])
+rings=[boundary,island]
+# And the scale:
+scale=field.ConstantField(50)
+if 1:
+    af=front.AdvancingTriangles()
+    af.set_edge_scale(scale)
+    
+    af.add_curve(rings[0],interior=False)
+    for ring in rings[1:]:
+        af.add_curve(ring,interior=True)
+    af.initialize_boundaries()
+
 
 # It continues to choose bad nonlocals.
 # - could go back to the approach of the old code, which made a more
@@ -956,4 +974,5 @@ def test_sine_sine():
 #  1. Try a basic circumcenter and area based cost function.  The point would be
 #     to see whether this is a contender for a more general cost function that would
 #     include quads, and would also be more justifiable in a paper.
+#  1b. Make sure this can pass the same tests in test_front as before
 #  2. Quad paving. 
