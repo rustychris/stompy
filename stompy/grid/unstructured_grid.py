@@ -682,8 +682,11 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     def renumber_nodes_ordering(self):
         return np.argsort(self.nodes['deleted'],kind='mergesort')
     
-    def renumber_nodes(self):
-        nsort =self.renumber_nodes_ordering()
+    def renumber_nodes(self,order=None):
+        if order is None:
+            nsort=self.renumber_nodes_ordering()
+        else:
+            nsort=order
         Nactive = np.sum(~self.nodes['deleted'])
 
         node_map = np.zeros(self.Nnodes()+1) # do this before truncating nodes
@@ -745,8 +748,11 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         Nactive = sum(~self.cells['deleted'])
         return np.argsort( self.cells['deleted'],kind='mergesort')[:Nactive]
         
-    def renumber_cells(self):
-        csort = self.renumber_cells_ordering()
+    def renumber_cells(self,order=None):
+        if order is None:
+            csort = self.renumber_cells_ordering()
+        else:
+            csort= order
         Nneg=-min(-1,self.edges['cells'].min())
         cell_map = np.zeros(self.Ncells()+Nneg) # do this before truncating cells
         self.cells = self.cells[csort]
@@ -772,8 +778,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         Nactive = sum(~self.edges['deleted'])
         return np.argsort( self.edges['deleted'],kind='mergesort')[:Nactive]
         
-    def renumber_edges(self):
-        esort = self.renumber_edges_ordering()
+    def renumber_edges(self,order=None):
+        if order is None:
+            esort=self.renumber_edges_ordering()
+        else:
+            esort=order
+            
         # edges take a little extra work, for handling -1 missing edges
         # Follows same logic as for cells
         Nneg=-min(-1,self.cells['edges'].min())
