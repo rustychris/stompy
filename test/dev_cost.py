@@ -349,6 +349,7 @@ plt.plot(x0_cc_s[None,0],x0_cc_s[None,1],'bo')
 # Some of this is maybe doable in sympy --
 # but it would get involved, and not yet clear that it's worth it.
 from sympy.geometry import Point, Triangle, Segment, Line
+import sympy as S
 
 from sympy import symbols
 x, y = symbols('x y')
@@ -357,11 +358,97 @@ p1, p2, p3 = Point(0, 0), Point(1, 5), Point(x, y)
 t = Triangle(p1, p2, p3)
 cc=t.circumcenter
 
-seg12=Line(p1,p2)
-seg23=Line(p2,p3)
-seg31=Line(p3,p1)
+# replicate the cost_cc_and_scale here - starting with a single
+# cell
 
-# These fail for segments, but okay with Lines
-dist12=seg12.distance(cc)
-dist23=seg23.distance(cc)
-dist31=seg31.distance(cc)
+deltaAB=cc-p1
+ABs=p2-p1
+magABs=ABs.distance(ABs.origin)
+vecAB=ABs.unit
+leftAB=vecAB.x*deltaAB.y - vecAB.y*deltaAB.x
+
+deltaBC=cc-p2
+BCs=p3-p2
+magBCs=BCs.distance(BCs.origin)
+vecBC=BCs.unit
+leftBC=vecBC.x*deltaBC.y - vecBC.y*deltaBC.x
+
+deltaCA=cc-p1 # was - p3, but maybe this makes the result smaller?
+CAs=p1-p3
+magCAs=CAs.distance(CAs.origin)
+vecCA=CAs.unit
+leftCA=vecCA.x*deltaCA.y - vecCA.y*deltaCA.x
+
+# reciprocal means that we have keep it strictly
+
+leftCA=leftCA.simplify()
+leftBC=leftBC.simplify()
+leftAB=leftAB.simplify()
+
+local_length=3 # .0
+cc_fac=-2 #.0
+cc_cost=0
+if 0:
+    cc_cost = cc_cost + S.exp(cc_fac*leftAB/local_length)
+    cc_cost = cc_cost + S.exp(cc_fac*leftBC/local_length) 
+    cc_cost = cc_cost + S.exp(cc_fac*leftCA/local_length)
+else:
+    # if we're finding zeros, maybe these are okay
+    cc_cost = cc_cost + local_length/leftAB
+    cc_cost = cc_cost + local_length/leftBC
+    cc_cost = cc_cost + local_length/leftCA
+
+cc_cost = cc_cost.simplify()
+##
+scale_cost=0
+scale_cost=scale_cost + (magABs-local_length)**2 + (magBCs-local_length)**2 + (magCAs-local_length)**2
+
+scale_cost = scale_cost / (local_length*local_length)
+
+scale_cost = scale_cost.simplify()
+
+total_cost = cc_cost + scale_cost
+
+##
+
+dcost_dx=S.diff(total_cost,x)
+dcost_dy=S.diff(total_cost,y)
+
+##
+
+# This doesn't really work - gets stuck
+# solns=S.solve([dcost_dx,dcost_dy],[x,y])
+
+# expand() creates a huge output
+# simplify() never finishes
+#
+
+# not sure this can handle system of equations, and not
+# sure how to specify domain
+# solns=S.solveset([dcost_dx,dcost_dy],[x,y],S.Reals)
+
+# 
+# solns=S.solve([dcost_dx,dcost_dy],[x,y])
+
+# Try an easier problem - just cc cost, assume y is zero.
+dcost_dx=S.diff(cc_cost,x).subs(y,0).simplify()
+
+##
+
+solns=S.solve(dcost_dx,x)
+
+# Seems like it has trouble at this level, too.
+# At this point, seems unlikely that this will work without a
+# smarter way to write the problem
+# Does look like it could simplify a bit more if there wasn't some
+# floating point nonsense.
+# Yes, specifying local_length and cc_fac as integers lets the above
+# expression look much nicer.
+# And then it gets a definite fail, says solver not implemented.
+
+# Even with the rational approach to cc_cost, it gets a hard fail
+
+# Maybe a really simple cost function would be the way to go?
+# would need to be tested in the general optimization approach
+# before trying to make it work symbolically.  Probably best to
+# beg off this tact. 
