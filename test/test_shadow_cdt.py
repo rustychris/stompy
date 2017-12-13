@@ -87,7 +87,7 @@ test_add_edge_cgal()
 def test_remove_constraint():
     def init():
         # inserting a constraint
-        dt = Triangulation()
+        dt = exact_delaunay.Triangulation()
         pnts = [ [0,0],
                  [5,0],
                  [10,0],
@@ -111,8 +111,36 @@ def test_remove_constraint():
     
     dt.check_global_delaunay()
 
+def test_remove_constraint_cgal():
+    g=unstructured_grid.UnstructuredGrid()
+    cdt=shadow_cdt.ShadowCGALCDT(g)
+    
+    # inserting a constraint
+    pnts = [ [0,0],
+             [5,0],
+             [10,0],
+             [5,5],
+             [3,0],
+             [6,2],
+             [12,4]]
+    nodes=[g.add_node( x=pnt )
+           for pnt in pnts]
+
+    j0=g.add_edge(nodes=[nodes[4],nodes[6]])
+    nodes.append( g.add_node(x=[7,0.5]) )
+
+    g.delete_edge(j0)
+    j1=g.add_edge(nodes=[nodes[2],nodes[3]])
+    j2=g.add_edge(nodes=[nodes[4],nodes[7]])
+    g.delete_edge(j1)
+    g.delete_edge(j2)
+    
+test_remove_constraint_cgal()
+
+## 
+
 def test_constraints_dim1():
-    dt = Triangulation()
+    dt = exact_delaunay.Triangulation()
     pnts = [ [0,0],
              [5,0],
              [10,0] ]
@@ -129,7 +157,28 @@ def test_constraints_dim1():
     except dt.ConstraintCollinearNode:
         pass # 
 
+def test_constraints_dim1_cgal():
+    g = unstructured_grid.UnstructuredGrid()
+    cdt=shadow_cdt.ShadowCGALCDT(g)
+    pnts = [ [0,0],
+             [5,0],
+             [10,0] ]
+    nodes=[g.add_node( x=pnt )
+           for pnt in pnts]
 
+    j0=g.add_edge(nodes=[nodes[0],nodes[1]])
+    j1=g.add_edge(nodes=[nodes[1],nodes[2]])
+    g.delete_edge(j0)
+    g.delete_edge(j1)
+    try:
+        g.add_edge(nodes=[nodes[0],nodes[2]])
+        assert False
+    except cdt.ConstraintCollinearNode:
+        pass # 
+    
+test_constraints_dim1_cgal()
+
+## 
 # # Testing the atomic nature of modify_node()
 
 def test_atomic_move():
@@ -139,7 +188,7 @@ def test_atomic_move():
     """
     def init():
         # inserting a constraint
-        dt = Triangulation()
+        dt = exact_delaunay.Triangulation()
         pnts = [ [0,0],
                  [5,0],
                  [10,0],
@@ -171,11 +220,44 @@ def test_atomic_move():
         dt.plot_cells(lw=13,facecolor='#ddddff',edgecolor='w',zorder=-5)
 
 
+def test_atomic_move_cgal():
+    """ Make sure that when a modify_node call tries an
+    illegal move of a node with a constraint, the DT state
+    is restored to the original state before raising the exception
+    """
+    # inserting a constraint
+    g = unstructured_grid.UnstructuredGrid()
+    cdt=shadow_cdt.ShadowCGALCDT(g)
+
+    pnts = [ [0,0],
+             [5,0],
+             [10,0],
+             [5,5],
+             [3,0],
+             [6,2],
+             [12,4]]
+    nodes=[g.add_node( x=pnt )
+           for pnt in pnts]
+
+    j0=g.add_edge(nodes=[nodes[0],nodes[5]])
+    j1=g.add_edge(nodes=[nodes[3],nodes[2]])
+
+    assert np.all( g.nodes['x'][5]==[6,2] )
+
+    try:
+        g.modify_node(nodes[5],x=[8,3])
+        assert False # it should raise the exception
+    except cdt.IntersectingConstraints:
+        # And the nodes/constraints should be where they started.
+        assert np.all( g.nodes['x'][5]==[6,2] )
+
+test_atomic_move_cgal()
+
 ## 
 #-# Building up some basic tests:
 def test_basic1():
     plot=False
-    dt = Triangulation()
+    dt = exact_delaunay.Triangulation()
     pnts = [ [0,0],
              [5,0],
              [10,0],
@@ -203,9 +285,23 @@ def test_basic1():
         dt.plot_cells(lw=13,facecolor='#ddddff',edgecolor='w',zorder=-5)
 
 
+def test_basic1_cgal():
+    g = unstructured_grid.UnstructuredGrid()
+    cdt=shadow_cdt.ShadowCGALCDT(g)
+
+    pnts = [ [0,0],
+             [5,0],
+             [10,0],
+             [5,5],
+             [3,0],
+             [6,2]]
+    nodes=[g.add_node(x=pnt) for pnt in pnts]
+
+test_basic1_cgal()
+
 def test_flip1():
     plot=False
-    dt = Triangulation()
+    dt = exact_delaunay.Triangulation()
     pnts = [ [0,0],
              [8,0],
              [10,5],
@@ -222,11 +318,25 @@ def test_flip1():
         dt.plot_nodes()
         dt.plot_edges(alpha=0.5,lw=2)
         dt.plot_cells(lw=13,facecolor='#ddddff',edgecolor='w',zorder=-5)
-        
+
+def test_flip1_cgal():
+    plot=False
+    g = unstructured_grid.UnstructuredGrid()
+    cdt=shadow_cdt.ShadowCGALCDT(g)
+    
+    pnts = [ [0,0],
+             [8,0],
+             [10,5],
+             [5,5],
+             [3,0]]
+
+    [g.add_node(x=pnt) for pnt in pnts]
+
+test_flip1_cgal()    
 
 def test_flip2():
     plot=False
-    dt = Triangulation()
+    dt = exact_delaunay.Triangulation()
 
     dt.add_node( x=[0,0] )
     for i in range(5):
@@ -255,7 +365,7 @@ def test_incircle():
 
 # testing dim_down
 def test_test_dim_down():
-    dt = Triangulation()
+    dt = exact_delaunay.Triangulation()
 
     n=dt.add_node( x=[0,0] )
 
@@ -275,7 +385,7 @@ def test_test_dim_down():
 
 def test_delete1():
     plot=False
-    dt = Triangulation() # ExactDelaunay()
+    dt = exact_delaunay.Triangulation() # ExactDelaunay()
 
     dt.add_node( x=[0,0] )
     for i in range(5):
@@ -343,7 +453,7 @@ def test_delete1():
 # slightly more involved test for deletion
 def test_delete2():
     plot=False
-    dt = Triangulation() # ExactDelaunay()
+    dt = exact_delaunay.Triangulation() # ExactDelaunay()
 
     dt.add_node( x=[0,0] )
     for i in range(5):
@@ -365,7 +475,7 @@ def test_delete2():
 
 def test_delete3():
     plot=False
-    dt = Triangulation()
+    dt = exact_delaunay.Triangulation()
 
     nodes=[ dt.add_node( x=[10,i] )
             for i in range(10) ]
@@ -384,7 +494,7 @@ def test_delete3():
 def test_flip2():
     plot=False
     # testing Delaunay flipping
-    dt = Triangulation() # ExactDelaunay()
+    dt = exact_delaunay.Triangulation() # ExactDelaunay()
 
     dt.add_node( x=[0,0] )
     for i in range(10):
@@ -409,7 +519,7 @@ def test_flip2():
 # Test the case where the temporary triangulation is not necessarily planar
 def test_delete4():
     plot=False
-    dt = Triangulation()
+    dt = exact_delaunay.Triangulation()
 
     dt.add_node( x=[0,0] )
     dt.add_node( x=[5,0] )
@@ -430,7 +540,7 @@ def test_delete4():
 
 def test_lowdim1():
     plot=False
-    dt = Triangulation()
+    dt = exact_delaunay.Triangulation()
 
     dt.add_node( x=[0,0] )
     dt.add_node( x=[5,0] )
@@ -452,7 +562,6 @@ def test_lowdim1():
         dt.plot_cells(lw=7,facecolor='#ddddff',edgecolor='w',zorder=-5)
         
 
-
 def test_fuzz1():
     plot=False
     # Fuzzing, regular
@@ -471,7 +580,7 @@ def test_fuzz1():
 
     idxs=np.zeros(len(xys),'i8')-1
 
-    dt = Triangulation()
+    dt = exact_delaunay.Triangulation()
 
     # definitely slows down as the number of nodes gets larger.
     # starting off with <1s per 100 operations, later more like 2s
@@ -496,10 +605,56 @@ def test_fuzz1():
                 dt.plot_cells(lw=7,facecolor='#ddddff',edgecolor='w',zorder=-5)
                 plt.draw()
 
+def test_fuzz1_cgal():
+    plot=False
+    # Fuzzing, regular
+    x=np.arange(5)
+    y=np.arange(5)
 
+    X,Y=np.meshgrid(x,y)
+    xys=np.array([X.ravel(),Y.ravel()]).T
+
+    if plot:
+        plt.figure(1).clf()
+        fig,ax=plt.subplots(num=1)
+
+        ax.plot(xys[:,0],xys[:,1],'go',alpha=0.4)
+        ax.axis([-1,5,-1,5])
+
+    idxs=np.zeros(len(xys),'i8')-1
+
+    g = unstructured_grid.UnstructuredGrid()
+    cdt=shadow_cdt.ShadowCGALCDT(g)
+
+    # definitely slows down as the number of nodes gets larger.
+    # starting off with <1s per 100 operations, later more like 2s
+    for repeat in range(1):
+        print "Repeat: ",repeat
+        for step in range(1000):
+            if step%200==0:
+                print "  step: ",step
+            toggle=np.random.randint(len(idxs))
+            if idxs[toggle]<0:
+                idxs[toggle] = g.add_node( x=xys[toggle] )
+            else:
+                g.delete_node(idxs[toggle])
+                idxs[toggle]=-1
+
+            if plot:
+                del ax.lines[1:]
+                ax.texts=[]
+                ax.collections=[]
+                dt.plot_nodes(labeler=lambda n,nrec: str(n) )
+                dt.plot_edges(alpha=0.5,lw=2)
+                dt.plot_cells(lw=7,facecolor='#ddddff',edgecolor='w',zorder=-5)
+                plt.draw()
+
+
+test_fuzz1_cgal()
+                
 def test_extra1():
     plot=False
-    dt = Triangulation()
+    dt = exact_delaunay.Triangulation()
     pnts = [ [0,0],
              [5,0],
              [10,0],
@@ -528,7 +683,7 @@ def test_extra1():
 
 def test_move1():
     plot=False
-    dt = Triangulation()
+    dt = exact_delaunay.Triangulation()
     pnts = [ [0,0],
              [5,0],
              [10,0],

@@ -16,7 +16,7 @@ import logging
 logging.basicConfig(level=logging.INFO)
 
 from stompy.spatial.linestring_utils import upsample_linearring,resample_linearring
-from stompy.spatial import field,constrained_delaunay,wkb2shp
+from stompy.spatial import constrained_delaunay,wkb2shp
 
 ## Curve -
 
@@ -459,16 +459,25 @@ def test_no_lookahead():
                 break
         else:
             assert False # none of the children worked out
-
+    return af
 ##
 
-# Why does it divege from symmetry at the start?
-# part of this is because the combination of the original
-# metrics and the exact angles of the test case (90deg) lead
-# to a decision based on numerical roundoff
-# the optimization methods also have an effect here, as there
-# is the potential to have a bistable minimization problem,
-# and the numerical optimization chooses in a non-symmetric way.
+# how are we doing time-wise?
+# 172 cells, with CGAL, takes 8.7s ? so 20 cells/second.
+
+# %prun test_no_lookahead()
+
+# 10s in prun
+# removed some log.debug statements
+# 8.3s
+# 5.8s in optimize, 1.1s in line_walk
+# With numba, total is 4.5s, with 2s in optimize.fmin. with numba nopython=True
+# 3.4s in relax_node.
+# with some effort to refine the cost function could probably get the optimization
+# time lower.
+
+# Looking into locate optimizations:
+#   starting point is 7.9s to test_no_lookahead
 
 ## 
 # 6. Implement n-lookahead
@@ -529,6 +538,7 @@ def test_pave_basic():
 
     return trifront_wrapper(rings,scale,label='basic_island')
 
+##
 
 # It continues to choose bad nonlocals.
 # - could go back to the approach of the old code, which made a more
@@ -927,4 +937,25 @@ def test_sine_sine():
 # to the last consistent state and return.
 
 # what does that mean for things like merge_edges?
-# 
+
+
+# 2017-11-26
+# numba is promising.
+#  - possibly reimplement fmin in python, then jit the whole thing to get the
+#    best speedup.
+#  - CGAL shadow cdt working. both CGAL and python might benefit from locality
+#    on insert.  hmm - how did this work in the older code?  I don't think it was
+#    actually doing much with locality.
+#  - may be best to move on to quad paving, not spin wheels on optimizing triangles
+#    much more.
+#  - might, /might/ be possible to sympy a circumcenter based approach, and get
+#    some speed up by better math.
+#  - both cost functions could probably be sped up by precomputing more.
+#  - cython would be another thing to try.
+
+# Next steps:
+#  1. Try a basic circumcenter and area based cost function.  The point would be
+#     to see whether this is a contender for a more general cost function that would
+#     include quads, and would also be more justifiable in a paper.
+#  1b. Make sure this can pass the same tests in test_front as before
+#  2. Quad paving. 

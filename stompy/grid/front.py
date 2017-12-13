@@ -5,6 +5,7 @@ An advancing front grid generator for use with unstructured_grid
 Largely a port of paver.py.
 
 """
+import math
 import numpy as np
 import time
 from scipy import optimize as opt
@@ -25,13 +26,37 @@ except ImportError:
     log.warning("Plotting not available - no matplotlib")
     plt=None
 
-# from numba import jit, int32, float64
+def circumcenter_py(p1,p2,p3):
+    """ Compute circumcenter of a single triangle using pure python.
+    For small input sizes, this is much faster than using the vectorized
+    numpy version in utils.
+    """
+    ref = p1
+    
+    p1x = 0
+    p1y = 0
+    p2x = p2[0] - ref[0]
+    p2y = p2[1] - ref[1]
+    p3x = p3[0] - ref[0]
+    p3y = p3[1] - ref[1]
 
-# copied from paver verbatim, with edits to reference
-# numpy identifiers via np._
+    # taken from TRANSFORMER_gang.f90
+    dd=2.0*((p1x-p2x)*(p1y-p3y) -(p1x-p3x)*(p1y-p2y))
+    b_com=p1x*p1x+p1y*p1y
+    b1=b_com-p2x*p2x-p2y*p2y
+    b2=b_com-p3x*p3x-p3y*p3y 
+
+    # avoid division by zero is the points are collinear
+    dd=max(dd,1e-40)
+    return [ (b1*(p1y-p3y)-b2*(p1y-p2y))/dd + ref[0] ,
+             (b2*(p1x-p2x)-b1*(p1x-p3x))/dd + ref[1] ]
+
+
+# from numba import jit, int32, float64
 # @jit(nopython=True)
 # @jit
 # @jit(float64(float64[:],float64[:,:,:],float64),nopython=True)
+
 def one_point_cost(pnt,edges,target_length=5.0):
     # pnt is intended to complete a triangle with each
     # pair of points in edges, and should be to the left
@@ -55,10 +80,6 @@ def one_point_cost(pnt,edges,target_length=5.0):
     abs_angles = np.arctan2( all_edges[:,:,1], all_edges[:,:,0] )
     all_angles = (np.pi - (abs_angles[:,i] - abs_angles[:,im1]) % (2*np.pi)) % (2*np.pi)
         
-    # a_angles = (pi - (ab_angles - ca_angles) % (2*pi)) % (2*pi)
-    # b_angles = (pi - (bc_angles - ab_angles) % (2*pi)) % (2*pi)
-    # c_angles = (pi - (ca_angles - bc_angles) % (2*pi)) % (2*pi)
-
     if 1:
         # 60 is what it's been for a while, but I think in one situation
         # this put too much weight on small angles.
@@ -101,8 +122,8 @@ def one_point_cost(pnt,edges,target_length=5.0):
     if 1:
         ab_lens = (all_edges[:,0,:]**2).sum(axis=1)
         ca_lens = (all_edges[:,2,:]**2).sum(axis=1)
-        min_ab=min(ab_lens)
-        min_ca=min(ca_lens)
+        min_ab=ab_lens.min() # min(ab_lens)
+        min_ca=ca_lens.min() # min(ca_lens)
     else:
         # maybe better for numba?
         min_ab=np.inf
@@ -135,7 +156,7 @@ def one_point_cost(pnt,edges,target_length=5.0):
     penalty += length_penalty
 
     return penalty
-    
+
 
 class Curve(object):
     """
@@ -812,7 +833,7 @@ class NonLocalStrategy(Strategy):
         # skip over neighbors of any of the sites nodes
 
         # take any neighbors in the DT.
-        each_dt_nbrs=[af.cdt.node_to_nodes(n) for n in site.abc]
+        each_dt_nbrs=[af.cdt.delaunay_neighbors(n) for n in site.abc]
         if 1:
             # filter out neighbors which are not within the 'sector'
             # defined by the site.
@@ -1331,11 +1352,12 @@ class AdvancingFront(object):
         Returns the resampled node index -- often same as n, but may be a different
         node.
         """
-        self.log.debug("resample %d to be %g away from %d in the %s direction"%(n,scale,anchor,
-                                                                                direction) )
+        #self.log.debug("resample %d to be %g away from %d in the %s direction"%(n,scale,anchor,
+        #                                                                        direction) )
+        
         n_deg=self.grid.node_degree(n)
         if n_deg!=2:
-            self.log.debug("Will not resample node %d because degree=%d, not 2"%(n,n_deg))
+            # self.log.debug("Will not resample node %d because degree=%d, not 2"%(n,n_deg))
             return n
         
         if direction==1: # anchor to n is t
@@ -1348,7 +1370,7 @@ class AdvancingFront(object):
         span_length,span_nodes = self.free_span(he,self.max_span_factor*scale,direction)
         # anchor-n distance should be in there, already.
         
-        self.log.debug("free span from the anchor is %g"%span_length)
+        # self.log.debug("free span from the anchor is %g"%span_length)
 
         if span_length < self.max_span_factor*scale:
             n_segments = max(1,round(span_length / scale))
@@ -1373,13 +1395,13 @@ class AdvancingFront(object):
                 he_other=he.rev()
                 opposite_node=he_other.node_rev()
             if opposite_node==span_nodes[-1]:
-                self.log.info("n_segment=1, but that would be an implicit join")
+                # self.log.info("n_segment=1, but that would be an implicit join")
 
                 # rather than force two segments, force it
                 # to remove all but the last edge.
                 del span_nodes[-1]
 
-            self.log.debug("Only space for 1 segment")
+            # self.log.debug("Only space for 1 segment")
             for d in span_nodes[1:-1]:
                 cp=self.grid.checkpoint()
                 try:
@@ -1547,7 +1569,7 @@ class AdvancingFront(object):
         """ Move node n, subject to its constraints, to minimize
         the cost function.  Return the final value of the cost function
         """
-        self.log.debug("Relaxing node %d"%n)
+        # self.log.debug("Relaxing node %d"%n)
         if self.grid.nodes['fixed'][n] == self.FREE:
             return self.relax_free_node(n)
         elif self.grid.nodes['fixed'][n] == self.SLIDE:
@@ -1570,7 +1592,7 @@ class AdvancingFront(object):
                          xtol=local_length*1e-4,
                          disp=0)
         dx=utils.dist( new_x - x0 )
-        self.log.debug('Relaxation moved node %f'%dx)
+        # self.log.debug('Relaxation moved node %f'%dx)
         cp=self.grid.checkpoint()
         try:
             if dx !=0.0:
@@ -1864,7 +1886,13 @@ class AdvancingTriangles(AdvancingFront):
             sites.append( TriangleSite(self,nodes=[a,b,c]) )
         return sites
 
+    cost_method='cc_py'
     def cost_function(self,n):
+        """
+        Return a function which takes an x,y pair, and evaluates
+        a geometric cost function for node n based on the shape and
+        scale of triangle cells containing n
+        """
         local_length = self.scale( self.grid.nodes['x'][n] )
         my_cells = self.grid.node_to_cells(n)
 
@@ -1891,9 +1919,61 @@ class AdvancingTriangles(AdvancingFront):
         edge_points = self.grid.nodes['x'][edges]
 
         def cost(x,edge_points=edge_points,local_length=local_length):
-            return one_point_cost(x,edge_points,target_length=local_length)
+            return front.one_point_cost(x,edge_points,target_length=local_length)
 
-        return cost
+        Alist=[ [ e[0],e[1] ]
+                for e in edge_points[:,0,:] ]
+        Blist=[ [ e[0],e[1] ]
+                for e in edge_points[:,1,:] ]
+        EPS=1e-5*local_length
+
+        def cost_cc_and_scale_py(x0):
+            C=list(x0)
+            cc_cost=0
+            scale_cost=0
+            
+            for A,B in zip(Alist,Blist):
+                tri_cc=circumcenter_py(A,B,C)
+
+                deltaAB=[ tri_cc[0] - A[0],
+                          tri_cc[1] - A[1]]
+                ABs=[B[0]-A[0],B[1]-A[1]]
+                magABs=math.sqrt( ABs[0]*ABs[0] + ABs[1]*ABs[1])
+                vecAB=[ABs[0]/magABs, ABs[1]/magABs]
+                leftAB=vecAB[0]*deltaAB[1] - vecAB[1]*deltaAB[0] 
+
+                deltaBC=[tri_cc[0] - B[0],
+                         tri_cc[1] - B[1]]
+                BCs=[C[0]-B[0], C[1]-B[1]]
+                magBCs=math.sqrt( BCs[0]*BCs[0] + BCs[1]*BCs[1] )
+                vecBC=[BCs[0]/magBCs, BCs[1]/magBCs]
+                leftBC=vecBC[0]*deltaBC[1] - vecBC[1]*deltaBC[0]
+
+                deltaCA=[tri_cc[0] - C[0],
+                         tri_cc[1] - C[1]]
+                CAs=[A[0]-C[0],A[1]-C[1]]
+                magCAs=math.sqrt(CAs[0]*CAs[0] + CAs[1]*CAs[1])
+                vecCA=[CAs[0]/magCAs, CAs[1]/magCAs]
+                leftCA=vecCA[0]*deltaCA[1] - vecCA[1]*deltaCA[0]
+
+                # cc_fac=-4. # not bad
+                cc_fac=-2. # a little nicer shape
+                # clip to 100, to avoid overflow in math.exp
+                cc_cost += ( math.exp(min(100,cc_fac*leftAB/local_length)) +
+                             math.exp(min(100,cc_fac*leftBC/local_length)) +
+                             math.exp(min(100,cc_fac*leftCA/local_length)) )
+                
+                scale_cost+=(magABs-local_length)**2 + (magBCs-local_length)**2 + (magCAs-local_length)**2
+
+            scale_cost /= local_length*local_length
+            return cc_cost+scale_cost
+
+        if self.cost_method=='base':
+            return cost
+        elif self.cost_method=='cc_py':
+            return cost_cc_and_scale_py
+        else:
+            assert False
 
 
 #### 
