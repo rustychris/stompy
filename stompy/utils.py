@@ -471,7 +471,11 @@ def interp_near(x,sx,sy,max_dx=None):
 
     y_at_x=np.interp(x,sx,sy)
     # drop things off the end and things too spaced apart
-    y_at_x[ (dx>max_dx) | (dx<0) ] = np.nan                 
+    try:
+        y_at_x[ (dx>max_dx) | (dx<0) ] = np.nan
+    except TypeError: # so it was a scalar...
+        if (dx>max_dx) | (dx<0):
+            y_at_x=np.nan
     return y_at_x
 
 def nearest(A,x,max_dx=None):
@@ -719,7 +723,7 @@ def resample_to_common(A,Z,
 
 
 def principal_theta(vec,eta=None,positive='flood',detrend=False,
-                    ambiguous='warn'):
+                    ambiguous='warn',ignore_nan=True):
     """
     vec: 2D velocity data, last dimension must be {x,y} component.
     eta: if specified, freesurface data with same time dimension as vec.
@@ -735,6 +739,13 @@ def principal_theta(vec,eta=None,positive='flood',detrend=False,
     """
     # vec just needs to have a last dimensions of 2.
     vec=vec.reshape([-1,2])
+
+    if ignore_nan:
+        valid=np.all(np.isfinite(vec),axis=1)
+    else:
+        valid=slice(None)
+    vec=vec[valid,:]
+    
     if detrend:
         vbar=vec.mean(axis=0)
         vec=vec-vbar[None,:]
@@ -742,6 +753,7 @@ def principal_theta(vec,eta=None,positive='flood',detrend=False,
 
     theta=np.arctan2( svdU[0,1],svdU[0,0] )
     if eta is not None:
+        eta=eta[valid] # not tested!
         unit=np.array( [np.cos(theta),np.sin(theta)] )
         U=np.dot(vec-vec.mean(axis=0),unit)
 
@@ -775,7 +787,7 @@ def principal_theta(vec,eta=None,positive='flood',detrend=False,
             err=0 # no flip
         # circular error 
         err = np.abs( (err + np.pi)%(2*np.pi) - np.pi )
-        if err>np.pi:
+        if err>np.pi/2:
             theta = (theta+np.pi) % (2*np.pi)
 
     return theta
