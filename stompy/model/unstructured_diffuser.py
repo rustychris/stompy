@@ -168,10 +168,11 @@ class Diffuser(object):
         self.grid.edge_to_cells() # makes sure that edges['cells'] exists.
         
         for j in range(self.grid.Nedges()):
-            if self.grid.edges['cells'][j,1] < 0:
+            e = self.grid.edges[j]
+            ic1,ic2 = e['cells']
+            
+            if ic1<0 or ic2<0:
                 continue # boundary edge
-            else:
-                e = self.grid.edges[j]
                 
             flux_per_gradient=flux_per_gradient_j[j]
             
@@ -179,7 +180,6 @@ class Diffuser(object):
             #  Cdiff[ic1] -= flux_per_gradient / (An[ic1]*dzc) * (C[ic2] - C[ic1])
             #  Cdiff[ic2] += flux_per_gradient / (An[ic2]*dzc) * (C[ic2] - C[ic1])
             # Where Cdiff is row, C is col
-            ic1,ic2 = e['cells']
 
             if is_calc_c[ic1] and is_calc_c[ic2]:
                 mic2 = c_map[ic2]
