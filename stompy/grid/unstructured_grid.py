@@ -3320,33 +3320,13 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         wkb2shp.wkb2shp(shpname,input_wkbs=cell_geoms,fields=cell_data,
                         overwrite=overwrite)
 
-    def write_shore_shp(self,shpname):
-        # this is a really bad implementation
-        # should probably infer relevant edges based on not having two 
-        # cell neighbors.
-        # and create the features directly through shapely.geometry, not
-        # via WKT.
-        new_ds, new_layer = self.init_shp(shpname,ogr.wkbLineString)
-        
-        fdef = new_layer.GetLayerDefn()
-
-        sides = self.edges_as_nodes_cells_mark()
-        vertices = self.nodes['x']
-        
-        boundaries = sides[np.where(sides[:,-1]>0)][:,:2]
-
-        for i in range(boundaries.shape[0]):
-            l = vertices[boundaries[i]]
-
-            feat = ogr.Feature(fdef)
-            wkt = """LINESTRING(%f %f, %f %f)"""%(l[0,0],l[0,1],l[1,0],l[1,1])
-            # print "Wkt is: ",wkt
-            
-            geom = ogr.CreateGeometryFromWkt(wkt)
-            feat.SetGeometryDirectly(geom)
-            new_layer.CreateFeature(feat)
-            
-        new_layer.SyncToDisk()
+    def write_shore_shp(self,shpname,geom_type='polygon'):
+        poly=self.boundary_polygon()
+        if geom_type=='polygon':
+            geoms=[poly]
+        elif geom_type=='linestring':
+            geoms=list(poly.boundary.geoms)
+        wkb2shp.wkb2shp(shpname,geoms)
 
     def init_shp(self,shpname,geom_type):
         drv = ogr.GetDriverByName('ESRI Shapefile')
