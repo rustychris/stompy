@@ -47,6 +47,12 @@ try:
     from ..spatial import (wkb2shp, join_features)
 except ImportError:
     logging.info( "No wkb2shp, join_features" )
+
+try:
+    import xarray as xr
+except ImportError:
+    logging.warning("No xarray - some functions may not work")
+
     
 from .. import undoer
 
@@ -384,16 +390,21 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         return UnstructuredGrid(edges=g.edges,points=g.points,cells=g.cells)
 
     @staticmethod
-    def from_ugrid(nc,mesh_name=None,skip_edges=False):
+    def from_ugrid(nc,mesh_name=None,skip_edges=False,fields='auto'):
         """ extract 2D grid from netcdf/ugrid
+        nc: either a filename or an xarray dataset.
+         THIS IS NEW -- old code used a QDataset, but that is being phased out.
+        fields: 'auto' [new] populate additional node,edge and cell fields
+        based on matching dimensions.
         """
         if isinstance(nc,str):
-            nc=qnc.QDataset(nc)
+            # nc=qnc.QDataset(nc)
+            nc=xr.open_dataset(nc)
 
         if mesh_name is None:
             meshes=[]
             for vname in nc.variables.keys():
-                if getattr(nc[vname],'cf_role',None) == 'mesh_topology':
+                if nc[vname].attrs.get('cf_role',None) == 'mesh_topology':
                     meshes.append(vname)
             assert len(meshes)==1
             mesh_name=meshes[0]
@@ -443,6 +454,24 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         edges = process_as_index(mesh.edge_node_connectivity) # [N,2]
 
         ug = UnstructuredGrid(points=node_xy,cells=faces,edges=edges)
+
+        if fields=='auto':
+            # doing this after the fact is inefficient, but a useful
+            # simplification during development
+            for dim_attr,struct,adder in [('node_dimension',ug.nodes,ug.add_node_field),
+                                          ('edge_dimension',ug.edges,ug.add_edge_field),
+                                          ('face_dimension',ug.cells,ug.add_cell_field)]:
+                dim_name=mesh.attrs.get(dim_attr,None)
+                if dim_name:
+                    for vname in nc.data_vars:
+                        # At this point, only scalar values
+                        if nc[vname].dims==(dim_name,):
+                            if vname in struct.dtype.names:
+                                # already exists, just copy
+                                struct[vname]=nc[vname].values
+                            else:
+                                adder( vname, nc[vname].values )
+                
         return ug
 
     def write_to_xarray(self,ds=None,mesh_name='mesh'):
@@ -472,8 +501,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     def write_ugrid(self,
                     fn,
                     mesh_name='mesh',
+                    fields='auto',
                     overwrite=False):
-        """ rough ugrid writing - doesn't set the full complement of
+        """ 
+        rough ugrid writing - doesn't set the full complement of
         attributes (missing_value, edge-face connectivity, others...)
         really just a starting point.
         """
@@ -482,23 +513,64 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 os.unlink(fn)
             else:
                 raise GridException("File %s exists"%(fn))
-        nc=qnc.empty(fn)
 
-        nc[mesh_name]=1
-        mesh_var=nc.variables[mesh_name]
-        mesh_var.cf_role='mesh_topology'
+        if 1: # xarray-based code
+            ds=xr.Dataset()
+            ds[mesh_name]=1
 
-        mesh_var.node_coordinates='node_x node_y'
-        nc['node_x']['node']=self.nodes['x'][:,0]
-        nc['node_y']['node']=self.nodes['x'][:,1]
+            mesh_var=ds[mesh_name]
+            mesh_var.attrs['cf_role']='mesh_topology'
+            mesh_var.attrs['node_coordinates']='node_x node_y'
+            mesh_var.attrs['face_node_connectivity']='face_node'
+            mesh_var.attrs['edge_node_connectivity']='edge_node'
+            mesh_var.attrs['node_dimension']='node'
+            mesh_var.attrs['edge_dimension']='edge'
+            mesh_var.attrs['face_dimension']='face'
+            
+            ds['node_x'] = ('node',),self.nodes['x'][:,0]
+            ds['node_y'] = ('node',),self.nodes['x'][:,1]
 
-        mesh_var.face_node_connectivity='face_node'
-        nc['face_node']['face','maxnode_per_face']=self.cells['nodes']
+            ds['face_node'] = ('face','maxnode_per_face'),self.cells['nodes']
 
-        mesh_var.edge_node_connectivity='edge_node'
-        nc['edge_node']['edge','node_per_edge']=self.edges['nodes']
+            ds['edge_node']=('edge','node_per_edge'),self.edges['nodes']
 
-        nc.close()
+            if fields=='auto':
+                for src_data,dim_name in [ (self.cells,'face'),
+                                           (self.edges,'edge'),
+                                           (self.nodes,'node') ]:
+                    for field in src_data.dtype.names:
+                        if field.startswith('_'):
+                            continue
+                        if field in ['cells','nodes','edges','deleted']:
+                            continue # already included
+                        if src_data[field].ndim != 1:
+                            continue # not smart enough for that yet
+                        if field in ds:
+                            out_field = dim_name + "_" + field
+                        else:
+                            out_field=field
+                            
+                        ds[out_field] = (dim_name,),src_data[field]
+            ds.to_netcdf(fn)
+            
+        if 0: # old qnc-based code
+            nc=qnc.empty(fn)
+
+            nc[mesh_name]=1
+            mesh_var=nc.variables[mesh_name]
+            mesh_var.cf_role='mesh_topology'
+
+            mesh_var.node_coordinates='node_x node_y'
+            nc['node_x']['node']=self.nodes['x'][:,0]
+            nc['node_y']['node']=self.nodes['x'][:,1]
+
+            mesh_var.face_node_connectivity='face_node'
+            nc['face_node']['face','maxnode_per_face']=self.cells['nodes']
+
+            mesh_var.edge_node_connectivity='edge_node'
+            nc['edge_node']['edge','node_per_edge']=self.edges['nodes']
+
+            nc.close()
 
     @staticmethod
     def from_shp(shp_fn):
