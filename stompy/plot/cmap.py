@@ -6,15 +6,11 @@ import numpy as np
 import colorsys
 import os,glob
 
-import ggr
 import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib import colors
 
-# these are the candidates for default in mpl1.5 / mpl2.0
-# viridis is the new default
-from mpl15 import magma,inferno,plasma,viridis
-
+from . import ggr
 
 def list_gradients():
     """ Return the locally available colormaps
@@ -86,11 +82,32 @@ def cmap_transform(cmap,f,samples=256):
 def cmap_reverse(cmap):
     return cmap_transform(cmap,lambda x: 1-x)
 
-inferno_r=cmap_transform(inferno,lambda x: (1-x))
-viridis_r=cmap_transform(viridis,lambda x: (1-x))
-plasma_r=cmap_transform(plasma,lambda x: (1-x))
-magma_r=cmap_transform(magma,lambda x: (1-x))
-      
+
+# these are the candidates for default in mpl1.5 / mpl2.0
+# viridis is the new default
+# Can probably deprecate this as most installations have mpl2.0 now.
+found_new_cmaps=False
+try:
+    from mpl15 import magma,inferno,plasma,viridis
+    inferno_r=cmap_transform(inferno,lambda x: (1-x))
+    viridis_r=cmap_transform(viridis,lambda x: (1-x))
+    plasma_r=cmap_transform(plasma,lambda x: (1-x))
+    magma_r=cmap_transform(magma,lambda x: (1-x))
+    found_new_cmaps=True
+except ImportError:
+    pass
+
+if not found_new_cmaps:
+    # new matplotlib has them built in:
+    try:
+        from matplotlib.cm import (viridis,magma,inferno,plasma,
+                                   viridis_r,magma_r,inferno_r,plasma_r)
+        found_new_cmaps
+    except ImportError:
+        # Just out of luck
+        pass 
+
+    
 def gmt_cm(filename,reverse=False):
     cpt = gmtColormap(filename,reverse=reverse)
     return colors.LinearSegmentedColormap(os.path.basename(filename), cpt)
