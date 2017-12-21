@@ -26,7 +26,7 @@ try:
 except ImportError:
     import pickle
     
-from rdb_datadescriptors import dd_to_synonyms
+from .rdb_datadescriptors import dd_to_synonyms
 
 from .. import utils
 from . import rdb_codes
