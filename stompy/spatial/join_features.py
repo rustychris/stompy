@@ -28,6 +28,7 @@ except ImportError:
     print("Prepared geometries not available - tests will be slow")
     
 import logging
+logging.basicConfig(level=logging.INFO)
 log=logging.getLogger('join_features')
 
 def progress_printer(str,steps_done=None,steps_total=None):
@@ -382,14 +383,13 @@ def lines_to_polygons(new_features,close_arc=False,single_feature=True,force_ori
     returns a list of Polygons
     force_orientation: ensure that interior rings have negative signed area
     """
-    if not single_feature:
-        raise Exception("lines_to_polygons does not yet support returning all polygons, just the biggest")
-    
+    assert single_feature
+        
     ### Remove non-polygons - still not smart enough to handle duplicate points
     new_features = [f for f in new_features if len(f) > 2]
 
     ### Find exterior ring
-    progress_message("Finding exterior ring")
+    log.info("Finding exterior ring from %d linestrings"%len(new_features))
 
     new_features = clean_degenerate_rings(new_features)
 
@@ -415,9 +415,10 @@ def lines_to_polygons(new_features,close_arc=False,single_feature=True,force_ori
         prep_ext_poly = None
 
     new_interiors = []
+    extras = [] # features which were not inside exterior, but otherwise valid
     for i in range(len(interiors)):
         interior = interiors[i]
-        if i%10==0:
+        if i%300==0:
             progress_message("Checking for orphan interior features",i,len(interiors))
         if force_orientation and (utils.signed_area(interior) > 0):
             interior=interior[::-1]
@@ -434,13 +435,15 @@ def lines_to_polygons(new_features,close_arc=False,single_feature=True,force_ori
                     if prep_ext_poly is not None:
                         log.warning( "A feature got through the prepared query, but the real query says it's outside the exterior")
                     else:
-                        log.warning("Removing a feature that was outside the exterior ring" )
+                        log.debug("Removing a feature that was outside the exterior ring" )
+                    extras.append(interior)
         else:
-            log.warning("Removing a feature that the fast query said was outside the exterior ring")
+            log.debug("Removing a feature that the fast query said was outside the exterior ring")
+            extras.append(interior)
 
     # create a single polygon feature from all of the rings:
     poly_geom = shapely.geometry.Polygon(exterior,new_interiors)
-    return [poly_geom]
+    return [poly_geom],extras
 
 ####### Running the actual steps ########
 
@@ -506,7 +509,14 @@ def process_layer(orig_layer,output_name,tolerance=0.0,
     
     ### <output>
     if create_polygons:
-        geoms = lines_to_polygons(new_features,close_arc=close_arc,single_feature=single_feature)
+        if single_feature:
+            geoms,extras = lines_to_polygons(new_features,close_arc=close_arc)
+        else:
+            geoms=[]
+            unmatched=new_features
+            while len(unmatched):
+                one_poly,unmatched=lines_to_polygons(unmatched,close_arc=close_arc,single_feature=True)
+                geoms.append(one_poly[0])
     else:
         # Line output
         geoms = [shapely.geometry.LineString(pnts) for pnts in new_features]
@@ -519,40 +529,3 @@ def process_layer(orig_layer,output_name,tolerance=0.0,
 
     return output_name
 
-
-
-# # How to use this:
-# ### Load shapefile
-# ods = ogr.Open("/home/rusty/classes/research/spatialdata/us/ca/suntans/shoreline/noaa-medres/pacific_medium_shoreline-cropped.shp")
-# output = "/home/rusty/classes/research/spatialdata/us/ca/suntans/shoreline/noaa-medres/pacific_medium_shoreline-cropped-merged.shp"
-# orig_layer = ods.GetLayer(0)
-# ## process it
-# process_layer(orig_layer,output)
-
-if __name__ == '__main__':
-    from optparse import OptionParser
-
-    parser = OptionParser(usage="usage: %prog [options] input.shp output.shp")
-    parser.add_option("-p", "--poly",
-                      help="create polygons from closed linestrings",
-                      action="store_true",
-                      dest='create_polygons',default=False)
-    parser.add_option("-a", "--arc", dest="close_arc", default=False,
-                      action="store_true",
-                      help="close the largest open linestring with a circular arc")
-    parser.add_option("-t","--tolerance", dest="tolerance", type="float", default=0.0,
-                      metavar="DISTANCE",
-                      help="Tolerance for joining two endpoints, in geographic units")
-    parser.add_option("-m","--multiple", dest="single_feature", default=True,
-                      action="store_false",metavar="SINGLE_FEATURE")
-    
-    (options, args) = parser.parse_args()
-    input_shp,output_shp = args
-    
-    ods = ogr.Open(input_shp)
-    layer = ods.GetLayer(0)
-
-    process_layer(layer,output_shp,
-                  create_polygons=options.create_polygons,close_arc=options.close_arc,
-                  tolerance=options.tolerance,single_feature=options.single_feature)
-    
