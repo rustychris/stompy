@@ -993,9 +993,7 @@ def savefig_geo(fig,fn,*args,**kws):
 
 
 # Transect methods:
-def transect_tricontourf(data,xcoord,ycoord,V=None,
-                         elide_missing_columns=True,sortx=True,
-                         positive_down='negate',
+def transect_tricontourf(*args,
                          **kwargs):
     """
     xcoord, ycoord: name of the respective coordinate variables.
@@ -1004,6 +1002,38 @@ def transect_tricontourf(data,xcoord,ycoord,V=None,
        "negate" -- negate the sign of the coordinate
        "flip"   -- reverse the axis in matplotlib
        "none"   -- ignore
+    """
+    return transect_tricontour_gen(*args,
+                                   style='fill',
+                                   **kwargs)
+
+def transect_tricontour(*args,
+                        **kwargs):
+    """
+    xcoord, ycoord: name of the respective coordinate variables.
+
+    positive_down: how to handle a ycoord with a positive:down attribute.
+       "negate" -- negate the sign of the coordinate
+       "flip"   -- reverse the axis in matplotlib
+       "none"   -- ignore
+    """
+    return transect_tricontour_gen(*args,
+                                   style='line',
+                                   **kwargs)
+
+def transect_tricontour_gen(data,xcoord,ycoord,V=None,
+                            elide_missing_columns=True,sortx=True,
+                            positive_down='negate',style='fill',
+                            **kwargs):
+    """
+    xcoord, ycoord: name of the respective coordinate variables.
+
+    positive_down: how to handle a ycoord with a positive:down attribute.
+       "negate" -- negate the sign of the coordinate
+       "flip"   -- reverse the axis in matplotlib
+       "none"   -- ignore
+
+    style: 'fill' for contourf, 'line' for contour
     """
     ax=kwargs.pop('ax',None)
     if ax is None:
@@ -1029,7 +1059,13 @@ def transect_tricontourf(data,xcoord,ycoord,V=None,
         args=[V]
     else:
         args=[]
-    coll=ax.tricontourf(tri,mapper(data.values),*args,**kwargs)
+
+    if style=='fill':
+        coll=ax.tricontourf(tri,mapper(data.values),*args,**kwargs)
+    elif style=='line':
+        coll=ax.tricontour(tri,mapper(data.values),*args,**kwargs)
+    else:
+        raise Exception("Unknown style %s"%style)
 
     # Seems that mpl does not autoscale for contoursets.
     xmin,xmax,ymin,ymax=ax.axis()
@@ -1048,8 +1084,6 @@ def transect_tricontourf(data,xcoord,ycoord,V=None,
     if do_flip:
         ymin,ymax=ymax,ymin
 
-        
-    
     ax.axis(xmin=xmin,xmax=xmax,ymin=ymin,ymax=ymax)
 
     return coll

@@ -29,105 +29,7 @@ def hex_curve():
                          [10,20]] )
     return front.Curve(hexagon)
 
-def test_curve_eval():
-    crv=hex_curve()
-    f=np.linspace(0,2*crv.total_distance(),25)
-    crvX=crv(f)
-    
-    if 0: # skip plots
-        plt.clf()
-        crv.plot()
 
-        f=np.linspace(0,crv.total_distance(),25)
-        crvX=crv(f)
-        plt.plot(crvX[:,0],crvX[:,1],'ro')
-
-def test_distance_away():
-    crv=hex_curve()
-
-    if 0: # skip plots
-        plt.clf()
-        crv.plot()
-        plt.axis('equal')
-        
-    rtol=0.05
-
-    for f00,tgt,style in [ (0,10,'g-'),
-                           (3.4,20,'r-'),
-                           (3.4,-20,'r--') ]:
-        for f0 in np.linspace(f00,crv.distances[-1],20):
-            x0=crv(f0)
-            f,x =crv.distance_away(f0,tgt,rtol=rtol)
-            d=utils.dist(x-x0)
-            assert np.abs( (d-np.abs(tgt))/tgt) <= rtol
-            if 0:
-                plt.plot( [x0[0],x[0]],
-                          [x0[1],x[1]],style)
-
-    try:
-        f,x=crv.distance_away(0.0,50,rtol=0.05)
-        raise Exception("That was supposed to fail!")
-    except crv.CurveException:
-        #print "Okay"
-        pass
-
-
-def test_distance_away2():
-    # Towards a smarter Curve::distance_away(), which understands
-    # piecewise linear geometry
-    island  =np.array([[200,200],[600,200],[200,600]])
-    curve=front.Curve(island)
-
-    anchor_f=919.3
-    signed_distance=50.0
-    res=curve.distance_away(anchor_f,signed_distance)
-    assert res[0]>anchor_f
-    anchor_pnt=curve(anchor_f)
-
-    rel_err=np.abs( utils.dist(anchor_pnt - res[1]) - abs(signed_distance)) / abs(signed_distance)
-    assert np.abs(rel_err)<=0.05
-
-    anchor_f=440
-    signed_distance=-50.0
-    res=curve.distance_away(anchor_f,signed_distance)
-
-    anchor_pnt=curve(anchor_f)
-
-    rel_err=np.abs( utils.dist(anchor_pnt - res[1]) - abs(signed_distance)) / abs(signed_distance)
-    assert res[0]<anchor_f
-    assert np.abs(rel_err)<=0.05
-    
-def test_distance3():
-    # Case where the return point is on the same segment as it starts
-    curve=front.Curve(np.array([[   0,    0],
-                                [1000,    0],
-                                [1000, 1000],
-                                [   0, 1000]]),closed=True)
-    res=curve.distance_away(3308.90,50.0)
-    res=curve.distance_away(3308.90,-50.0)
-    
-def test_is_forward():
-    crv=hex_curve()
-    assert crv.is_forward(5,6,50)
-    assert crv.is_reverse(5,-5,10)
-
-
-## 
-def test_curve_upsample():
-    boundary=hex_curve()
-    scale=field.ConstantField(3)
-
-    pnts,dists = boundary.upsample(scale,return_sources=True)
-
-    if 0:
-        plt.clf()
-        line=boundary.plot()
-        plt.setp(line,lw=0.5,color='0.5')
-
-        #f=np.linspace(0,crv.total_distance(),25)
-        #crvX=crv(f)
-        plt.scatter(pnts[:,0],pnts[:,1],30,dists,lw=0)
-    
 def test_basic_setup():
     boundary=hex_curve()
     af=front.AdvancingTriangles()
@@ -139,111 +41,7 @@ def test_basic_setup():
     # create boundary edges based on scale and curves:
     af.initialize_boundaries()
 
-    if 0:
-        plt.clf()
-        g=af.grid
-        g.plot_edges()
-        g.plot_nodes()
-
-        # 
-        coll=g.plot_halfedges(values=g.edges['cells'])
-        coll.set_lw(0)
-        coll.set_cmap('winter')
-
     return af
-
-
-# Going to try more of a half-edge approach, rather than explicitly
-# tracking the unpaved rings.
-# hoping that a half-edge interface is sufficient for the paver, and
-# could be supported by multiple representations internally.
-
-# for starters, don't worry about caching/speed/etc.
-# okay to start from scratch each time.
-
-# the product here is a list of the N best internal angles for
-# filling with a triangle(s)
-
-def test_halfedge_traverse():
-    af=test_basic_setup()
-    J,Orient = np.nonzero( (af.grid.edges['cells'][:,:]==af.grid.UNMESHED) )
-
-    # he=he0=HalfEdge(af.grid,J[0],Orient[0])
-    he=he0=af.grid.halfedge(J[0],Orient[0])
-
-    for i in range(af.grid.Nedges()*2):
-        he=he.fwd()
-        if he == he0:
-            break
-    else:
-        assert False
-    assert i==31 # that had been 33, but now I'm getting 31.  may need to be smarter.
-
-    he=he0=af.grid.halfedge(J[0],Orient[0])
-
-    for i in range(af.grid.Nedges()*2):
-        he=he.rev()
-        if he == he0:
-            break
-    else:
-        assert False
-    assert i==31 # pretty sure about that number...
-
-    assert he.fwd().rev() == he
-    assert he.rev().fwd() == he
-    #-# 
-
-def test_free_span():
-    r=5
-    theta = np.linspace(-np.pi/2,np.pi/2,20)
-    cap = r * np.swapaxes( np.array([np.cos(theta), np.sin(theta)]), 0,1)
-    box = np.array([ [-3*r,r],
-                     [-4*r,-r] ])
-    ring = np.concatenate((box,cap))
-
-    density = field.ConstantField(2*r/(np.sqrt(3)/2))
-    af=front.AdvancingTriangles()
-    af.set_edge_scale(density)
-
-    af.add_curve(ring,interior=False)
-    af.initialize_boundaries()
-
-    # N.B. this edge is not given proper cell neighbors
-    af.grid.add_edge(nodes=[22,3])
-
-    af.plot_summary()
-
-    he=af.grid.nodes_to_halfedge(4,5)
-    span_dist,span_nodes = af.free_span(he,25,1)
-    assert span_nodes[-1]!=4
-
-    
-def test_merge_edges():
-    af=test_basic_setup()
-
-    new_j=af.grid.merge_edges(node=0)
-    
-    he0=he=af.grid.halfedge(new_j,0)
-    c0_left = af.grid.edges['cells'][he.j,he.orient]
-    c0_right = af.grid.edges['cells'][he.j,1-he.orient]
-
-    while True:
-        he=he.fwd()
-        c_left = af.grid.edges['cells'][he.j,he.orient]
-        c_right = af.grid.edges['cells'][he.j,1-he.orient]
-        assert c_left==c0_left
-        assert c_right==c0_right
-        
-        if he==he0:
-            break
-
-    if 0:
-        plt.clf()
-        af.grid.plot_edges()
-
-        coll=af.grid.plot_halfedges(values=af.grid.edges['cells'])
-        coll.set_lw(0)
-        coll.set_cmap('winter')
 
 # when resample nodes on a sliding boundary, want to calculate the available
 # span, and if it's small, start distributing the nodes evenly.
@@ -280,3 +78,15 @@ test_resample()
 #  invalidates the state?
 # it's the second time through the loop that fails?
 # 10--9 crashes, even when it's the first in the loop
+# even if we could drop init_face, it segfaults without it.
+# segfaults when performing the line walk on a deep copy of DT.
+# the test it is attempting is along an existing finite edge.
+# happens whether the edge is constrained or not.
+
+# Possible next steps:
+#  1. could remove the node, insert in the new spot, maybe do a locate first?
+#     and for any nodes which are now DT neighbors clearly we can skip the
+#     line_is_free.
+#  2. hand-write the line_is_free stuff, ala live_dt.
+#  3. Abstract out the line_is_free stuff in live_dt, and both that and this
+#     can use it.

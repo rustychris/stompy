@@ -1,4 +1,5 @@
 import os
+import datetime
 import io # python io.
 import numpy as np
 import pandas as pd
@@ -999,5 +1000,18 @@ class MDUFile(SectionedConfig):
     configparser, but better support for discerning and retaining
     comments
     """
-    pass
-    
+    def time_range(self):
+        """
+        return tuple of t_ref,t_start,t_stop
+        as np.datetime64
+        """
+        t_ref=utils.to_dt64( datetime.datetime.strptime(self['time','RefDate'],'%Y%m%d') )
+
+        if self['time','Tunit'].lower() == 'm':
+            tunit=np.timedelta64(1,'m')
+        else:
+            raise Exception("TODO: allow other time units")
+
+        t_start = t_ref+int(self['time','tstart'])*tunit
+        t_stop = t_ref+int(self['time','tstop'])*tunit
+        return t_ref,t_start,t_stop

@@ -26,6 +26,9 @@ def decompose(t,h,omegas):
     super cheap caching: remembers the last t and omegas, and if they are the same
     it will reuse the matrix from before.
     """
+    t=np.asanyarray(t)
+    omegas=np.asanyarray(omegas)
+    
     def sim(a,b):
         if a is b:
             return True

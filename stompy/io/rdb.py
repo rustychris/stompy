@@ -14,6 +14,7 @@ from functools import reduce
 import re,string,time
 import six
 import io
+import pytz
 
 import datetime
 import numpy as np
@@ -116,9 +117,15 @@ class Rdb(object):
         # eat the comments
         line = None
 
+        preamble_lines=[]
+        
         for line in self.fp:
             if line[0]!='#':
                 break
+            preamble_lines.append(line)
+
+        self.preamble="".join(preamble_lines)
+        
         if line is None:
             print("No data in source!")
             print("text:",self.text)
@@ -207,9 +214,13 @@ class Rdb(object):
 
 
 
-def rdb_to_dataset(filename=None,text=None):
+def rdb_to_dataset(filename=None,text=None,to_utc=True):
     """
     Read an rdb file and return an xarray dataset.
+    if to_utc is set, look for a tz_cd attribute, and adjust times
+    to UTC if tz_cd is present.
+
+    If no data was found, return None
     """
 
     if filename is not None:
@@ -217,11 +228,16 @@ def rdb_to_dataset(filename=None,text=None):
     else:
         usgs_data=Rdb(text=text)
 
+    if len(usgs_data['datetime'])==0:
+        return None
+    
     # Convert that xarray for consistency
     ds=xr.Dataset()
     
     ds['time']=( ('time',), utils.to_dt64(usgs_data['datetime']) )
     ds['datenum']=( ('time',), usgs_data['datetime'])
+
+    ds.attrs['preamble']=usgs_data.preamble
 
     for key in usgs_data.keys():
         if key=='datetime':
@@ -260,6 +276,15 @@ def rdb_to_dataset(filename=None,text=None):
                 varname=varname.lower().replace(' ','_').replace(',','').replace('.','')
 
                 meta['units']=parameter['parameter_units']
+
+                # But possible that one station has multiple instances of the same
+                # parameter.  In this case,
+                count=0
+                base_varname=varname
+                while varname in ds:
+                    count+=1
+                    varname=base_varname+"_%02d"%count
+                
             if m.group(4):
                 statistic=rdb_codes.stat_code_lookup(meta['stat_code'])
                 if statistic is not None:
@@ -281,5 +306,27 @@ def rdb_to_dataset(filename=None,text=None):
         else: # probably should be an attribute
             ds.attrs[key]=data
 
+
+    # if there is a tz_cd attribute, use that to get timestamps
+    # back to UTC.
+    if 'tz_cd' in usgs_data.keys() and to_utc:
+        # tz_cd, in a sample size of 1, is something like PST.
+        tz_target=pytz.utc
+        tz_src=usgs_data['tz_cd']
+        if tz_src == 'PST':
+            offset_hours=-8
+        elif tz_src=='PDT':
+            offset_hours=-7
+        elif tz_src=='EST':
+            offset_hours=-5
+        elif tz_src=='EDT':
+            offset_hours=-4
+        else:
+            raise Exception("Not sure how to interpret time zone %s"%tz_src)
+        ds['time'].values -= np.timedelta64(offset_hours,'h')
+        ds['datenum'].values -= offset_hours/24.
+        ds.attrs['tz_cd_original']=ds.tz_cd
+        ds.attrs['tz_cd']='UTC'
+            
     return ds
     

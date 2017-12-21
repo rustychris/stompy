@@ -89,13 +89,17 @@ class ShadowCDT(exact_delaunay.Triangulation):
         nodes=g.edges['nodes'][j]
         self.remove_constraint(nodes[0],nodes[1])
 
-
+    def delaunay_neighbors(self,gn):
+        n=self.nodemap_g_to_local(gn)
+        local_nbrs=self.node_to_nodes(n)
+        return self.nodes['g_n'][local_nbrs]
         
 try:
     from CGAL.CGAL_Triangulation_2 import (Constrained_Delaunay_triangulation_2,
                                            Constrained_Delaunay_triangulation_2_Edge)
     
     from CGAL.CGAL_Kernel import (Segment_2,Point_2)
+    from . import cgal_line_walk
     has_CGAL=True
 except ImportError:
     has_CGAL=False
@@ -184,9 +188,9 @@ class ShadowCGALCDT(object):
                                                                                      b,pB)
             raise self.BadConstraint(msg)
 
-        log.debug("    Inserting constraint (add_constraint): %d %d  %s %s"%(a,b,vhA,vhB))
-        log.debug("      node A=%s   node B=%s"%(pA,pB))
-        log.debug("      A.point=%s  B.point=%s"%(vhA.point(), vhB.point()))
+        # log.debug("    Inserting constraint (add_constraint): %d %d  %s %s"%(a,b,vhA,vhB))
+        # log.debug("      node A=%s   node B=%s"%(pA,pB))
+        # log.debug("      A.point=%s  B.point=%s"%(vhA.point(), vhB.point()))
 
         # a priori check on whether the constraint would be valid:
         exc=self.line_is_free(a,b)
@@ -240,86 +244,98 @@ class ShadowCGALCDT(object):
         
         ax: if specified and an error arises, will try to plot some details.
 
-        returns an exception if the line is free (does not raise, just
+        returns an exception if the line is not free (does not raise, just
         queues it up for you).
         or None if all is well.
         """
         DT=self.DT
         vh_a=self.g.nodes['vh'][a]
         vh_b=self.g.nodes['vh'][b]
-        
-        # requires points, not vertex handles
-        # N.B. that means it does its own locate, which is O(sqrt(n))
-        # also, without a face passed in, it will start at the boundary of
-        # the convex hull.
-        # so get a real face, which keeps the running time constant
-        for init_face in DT.incident_faces(vh_a):
-            if not DT.is_infinite(init_face):
-                break
+
+        conflicts=cgal_line_walk.line_conflicts(DT,v1=vh_a,v2=vh_b)
+
+        if len(conflicts)==0:
+            return None
         else:
-            assert False
-
-        # DBG
-        print "line_is_free call %d"%self.count_line_is_free
-        if self.count_line_is_free==41:
-            import pdb
-            pdb.set_trace()
-        self.count_line_is_free+=1
+            if conflicts[0][0]=='v':
+                return self.ConstraintCollinearNode("Hit a node along %s--%s"%(a,b))
+            else:
+                return self.IntersectingConstraints("Intersection along %s--%s"%(a,b))
             
-        # 41st time through, during a modify_node, this returns a
-        # dud.  Could be that that one of vertex handles are trash,
-        # that init_face is bad, .. ?   this is getting called after "after_add_node"
-        p_a=vh_a.point() # does keeping a reference to these help? nope.
-        p_b=vh_b.point()
-        # init_face is required for the check to work - gets an assertion fail
+            
+        # # requires points, not vertex handles
+        # # N.B. that means it does its own locate, which is O(sqrt(n))
+        # # also, without a face passed in, it will start at the boundary of
+        # # the convex hull.
+        # # so get a real face, which keeps the running time constant
+        # for init_face in DT.incident_faces(vh_a):
+        #     if not DT.is_infinite(init_face):
+        #         break
+        # else:
+        #     assert False
         # 
-        lw=DT.line_walk(p_a,p_b,init_face) 
-        seg=Segment_2(vh_a.point(), vh_b.point())
-
-        faces=[]
-        for face in lw: 
-            # check to make sure we don't go through a vertex
-            for i in [0,1,2]:
-                v=face.vertex(i)
-                if v==vh_a or v==vh_b:
-                    continue
-                if seg.has_on(v.point()):
-                    n_collide=self.vh_info[v]
-                    return self.ConstraintCollinearNode("Hit node %s along %s--%s"%(n_collide,
-                                                                                    a,b))
-            
-            if len(faces):
-                # figure out the common edge
-                for i in [0,1,2]:
-                    if face.neighbor(i)==faces[-1]:
-                        break
-                else:
-                    if ax:
-                        tri_1=face_to_tri(face)
-                        tri_2=face_to_tri(faces[-1])
-
-                        pcoll=PolyCollection([tri_1,tri_2])
-                        ax=ax or plt.gca()
-                        ax.add_collection(pcoll)
-
-                        pdb.set_trace()
-                    assert False # This triggers when init_face is omitted
-
-                edge=Constrained_Delaunay_triangulation_2_Edge(face,i)
-                if DT.is_constrained(edge):
-                    if ax:
-                        tri_1=face_to_tri(face)
-                        tri_2=face_to_tri(faces[-1])
-                        pcoll=PolyCollection([tri_1,tri_2])
-                        ax=ax or plt.gca()
-                        ax.add_collection(pcoll)
-                    return self.IntersectingConstraints("Intersection along %s--%s"%(a,b))
-
-            faces.append(face)
-            if face.has_vertex(vh_b):
-                break
-            
-        return None
+        # # DBG
+        # print "line_is_free call %d"%self.count_line_is_free
+        # if self.count_line_is_free==41:
+        #     import pdb
+        #     pdb.set_trace()
+        #     # HERE - is where dev_crash had been stopping
+        # self.count_line_is_free+=1
+        #     
+        # # 41st time through, during a modify_node, this returns a
+        # # dud.  Could be that that one of vertex handles are trash,
+        # # that init_face is bad, .. ?   this is getting called after "after_add_node"
+        # p_a=vh_a.point() # does keeping a reference to these help? nope.
+        # p_b=vh_b.point()
+        # # init_face is required for the check to work - gets an assertion fail
+        # # 
+        # lw=DT.line_walk(p_a,p_b,init_face) 
+        # seg=Segment_2(vh_a.point(), vh_b.point())
+        # 
+        # faces=[]
+        # for face in lw: 
+        #     # check to make sure we don't go through a vertex
+        #     for i in [0,1,2]:
+        #         v=face.vertex(i)
+        #         if v==vh_a or v==vh_b:
+        #             continue
+        #         if seg.has_on(v.point()):
+        #             n_collide=self.vh_info[v]
+        #             return self.ConstraintCollinearNode("Hit node %s along %s--%s"%(n_collide,
+        #                                                                             a,b))
+        #     
+        #     if len(faces):
+        #         # figure out the common edge
+        #         for i in [0,1,2]:
+        #             if face.neighbor(i)==faces[-1]:
+        #                 break
+        #         else:
+        #             if ax:
+        #                 tri_1=face_to_tri(face)
+        #                 tri_2=face_to_tri(faces[-1])
+        # 
+        #                 pcoll=PolyCollection([tri_1,tri_2])
+        #                 ax=ax or plt.gca()
+        #                 ax.add_collection(pcoll)
+        # 
+        #                 pdb.set_trace()
+        #             assert False # This triggers when init_face is omitted
+        # 
+        #         edge=Constrained_Delaunay_triangulation_2_Edge(face,i)
+        #         if DT.is_constrained(edge):
+        #             if ax:
+        #                 tri_1=face_to_tri(face)
+        #                 tri_2=face_to_tri(faces[-1])
+        #                 pcoll=PolyCollection([tri_1,tri_2])
+        #                 ax=ax or plt.gca()
+        #                 ax.add_collection(pcoll)
+        #             return self.IntersectingConstraints("Intersection along %s--%s"%(a,b))
+        # 
+        #     faces.append(face)
+        #     if face.has_vertex(vh_b):
+        #         break
+        #     
+        # return None
         
     class Edge(object):
         def __init__(self,**kwargs):
@@ -332,7 +348,40 @@ class ShadowCGALCDT(object):
         # maybe I should keep a reference to the Edge object, too?
         # that gets through some early crashes.
         return [self.Edge(f=e.first,v=e.second,keepalive=[e]) for e in constraints]
-            
+
+    def dt_incident_edges(self,vh):
+        circ=self.DT.incident_edges(vh)
+        # maybe I should keep a reference to the Edge object, too?
+        # that gets through some early crashes.
+        
+        edges=[]
+        for e in circ:
+            if edges and edges[0] == e:
+                break # come back to start of circulator
+            if len(edges) > 10000:
+                assert False # probably a bad issue
+            edges.append(e)
+        
+        return [self.Edge(f=e[0],v=e[1],keepalive=[e]) for e in edges
+                if not self.DT.is_infinite(e[0]) ]
+
+    def delaunay_neighbors(self,gn):
+        vh=self.g.nodes['vh'][gn]
+        # oops - this is wrong!
+        edges=self.dt_incident_edges(vh) # was erroneously dt_incident_constraints
+
+        nbrs=[]
+        for edge in edges:
+            vh1,vh2=edge.vertices()
+            if vh1==vh:
+                vh_nbr=vh2
+            else:
+                vh_nbr=vh1
+            n=self.vh_info[vh_nbr]
+            assert n is not None
+            nbrs.append(n)
+        return np.array(nbrs)
+    
     def before_add_node(self,g,func_name,**k):
         pass # no checks quite yet
     def after_add_node(self,g,func_name,return_value,**k):
@@ -370,26 +419,12 @@ class ShadowCGALCDT(object):
             else:
                 nbrs.append(vi1)
                 
-        # DBG: does this cause issues before modifying the node, and even
-        # before removing the constraints?
-        # print "10--9 pre-manual"
-        # self.line_is_free(10,9)         # DBG - crashes
-        # print "10--9 manual"
-        # also crashes:
-        for edge,a,b in to_remove:
-            print "About to check %d-%d"%(a,b)
-            exc=self.line_is_free(a,b)
-            if exc:
-                raise Exception("How can this be non-free?")
-            print "checked one"
-        print "Survived known good check"
-
-                
+        x_orig=self.g.nodes['x'][n].copy()
+        
         if len(to_remove) != len(g.node_to_edges(n)):
             # Usually means that there is an inconsistency in the CDT
             log.error("WARNING: modify_node len(DT constraints) != len(pnt2edges(i))")
             pdb.set_trace()
-
             
         # remove all of the constraints in one go:
         self.DT.remove_incident_constraints(vh)
@@ -411,11 +446,13 @@ class ShadowCGALCDT(object):
         for edge,a,b in to_remove:
             exc=self.line_is_free(a,b)
             if exc:
-                # HERE - rollback, then raise exception to stop operation.
-                # exc=self.IntersectingConstraints("New location of %s to %s"%(a,b))
                 self.dt_remove(n)
                 # put it back where it was:
-                self.after_add_node(g,'modify_node',n,{'x':self.nodes['x'][n]})
+                self.after_add_node(self.g,'modify_node',n,x=x_orig)
+                # the edges will be added back in below, and exc
+                # raised at the very end
+                # rollback, then raise exception to stop operation.
+                exc=self.IntersectingConstraints("New location of %s to %s"%(a,b))
                 break
 
         # By here, we've either verified that all constraints will be okay,
@@ -458,4 +495,31 @@ class ShadowCGALCDT(object):
     def before_delete_edge(self,g,func_name,j,**k):
         nodes=g.edges['nodes'][j]
         self.remove_constraint(nodes[0],nodes[1])
+        
+    def plot_dt(self):
+        from matplotlib import pyplot,collections
+
+        pyplot.clf()
+
+        segs=[]
+        csegs=[]
+        for edge in self.DT.finite_edges():
+            face=edge[0]
+            idx=edge[1]
+            v1=face.vertex((idx+1)%3)
+            v2=face.vertex((idx+2)%3)
+            seg=np.array( [ [v1.point().x(),
+                             v1.point().y()],
+                            [v2.point().x(),
+                             v2.point().y()]] )
+            if self.DT.is_constrained(edge):
+                csegs.append(seg)
+            else:
+                segs.append(seg)
+        ecoll=collections.LineCollection(segs)
+        ax=pyplot.gca()
+        ax.add_collection(ecoll)
+        ccoll=collections.LineCollection(csegs,color='m')
+        ax.add_collection(ccoll)
+        ax.axis('equal')
         

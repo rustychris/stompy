@@ -10,10 +10,14 @@ log=logging.getLogger('usgs_nwis')
 from ... import utils
 from .. import rdb
 
-##
+try:
+    import seawater
+except ImportError:
+    seawater=None
+
 
 def nwis_dataset(station,start_date,end_date,products,
-                  days_per_request=None):
+                 days_per_request=None):
     """
     Retrieval script for USGS waterdata.usgs.gov
     
@@ -63,6 +67,8 @@ def nwis_dataset(station,start_date,end_date,products,
 
     datasets=[]
 
+    last_url=None
+    
     for interval_start,interval_end in periods(start_date,end_date,days_per_request):
         log.info("Fetching %s -- %s"%(interval_start,interval_end))
 
@@ -71,8 +77,11 @@ def nwis_dataset(station,start_date,end_date,products,
 
         req=requests.get(base_url,params=params)
         data=req.text
-
         ds=rdb.rdb_to_dataset(text=data)
+        if ds is None: # There was no data there
+            log.warning("    no data found for this period")
+            continue
+        ds.attrs['url']=req.url
 
         # USGS returns data inclusive of the requested date range - leading to some overlap
         if len(datasets):
@@ -85,7 +94,25 @@ def nwis_dataset(station,start_date,end_date,products,
         return None 
 
     if len(datasets)>1:
-        dataset=xr.concat( datasets, dim='time')
+        # it's possible that not all variables appear in all datasets
+        # dataset=xr.concat( datasets, dim='time')
+        dataset=datasets[0]
+        for other in datasets[1:]:
+            dataset=dataset.combine_first(other)
     else:
         dataset=datasets[0]
     return dataset
+
+
+def add_salinity(ds):
+    assert seawater is not None
+    for v in ds.data_vars:
+        if v.startswith('specific_conductance'):
+            salt_name=v.replace('specific_conductance','salinity')
+            if salt_name not in ds:
+                print("%s => %s"%(v,salt_name))
+                salt=seawater.eos80.salt(ds[v].values/1000. / seawater.constants.c3515,
+                                         25.0, # temperature - USGS adjusts to 25degC
+                                         0) # no pressure effects
+                ds[salt_name]=ds[v].dims, salt
+
