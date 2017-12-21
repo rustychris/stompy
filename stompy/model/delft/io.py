@@ -527,7 +527,7 @@ def map_add_z_coordinate(map_ds,total_depth='TotalDepth',coord_type='sigma',
     """
     assert coord_type=='sigma'
 
-    bedlevel=-map_ds.TotalDepth.isel(**{layer_dim:0,'time':0,'drop':True})
+    bedlevel=-map_ds[total_depth].isel(**{layer_dim:0,'time':0,'drop':True})
     dry=(bedlevel==999)
     bedlevel[dry]=0.0
     map_ds['bedlevel']=bedlevel
@@ -535,7 +535,7 @@ def map_add_z_coordinate(map_ds,total_depth='TotalDepth',coord_type='sigma',
     map_ds.bedlevel.attrs['positive']='up'
     map_ds.bedlevel.attrs['long_name']='Bed elevation relative to initial water level'
 
-    tdepth=map_ds.TotalDepth.isel(**{layer_dim:0,'drop':True})
+    tdepth=map_ds[total_depth].isel(**{layer_dim:0,'drop':True})
     eta=tdepth + map_ds.bedlevel
     eta.values[ tdepth.values==-999 ] = 0.0
     map_ds['eta']=eta
