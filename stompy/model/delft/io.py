@@ -557,6 +557,13 @@ def dfm_wind_to_nc(wind_u_fn,wind_v_fn,nc_fn):
     Transcribe DFM 'arcinfo' style gridded wind to
     CF compliant netcdf file (ready for import to erddap)
 
+    Note that the order of rows in the DFM format is weird, and
+    required bug fixes to this code 2017-12-21.  While dy is
+    specified positive, the rows of data are written from north to
+    south.  The DFM text file specifies coordinates for a llcorner
+    and a dy, but that llcorner corresponds to the first column of
+    the *last* row of data written out.  
+
     wind_u_fn:
       path to the amu file for eastward wind
     wind_v_fn:
@@ -580,7 +587,11 @@ def dfm_wind_to_nc(wind_u_fn,wind_v_fn,nc_fn):
                 if line.startswith('### END OF HEADER'):
                     break
                 continue # comment lines
-            key,value = line.split('=',2)
+            try:
+                key,value = line.split('=',2)
+            except ValueError:
+                print("Failed to split key=value for '%s'"%line)
+                raise
             key=key.strip()
             value=value.strip()
 
@@ -711,7 +722,8 @@ def dfm_wind_to_nc(wind_u_fn,wind_v_fn,nc_fn):
             assert count<expected
 
         block=np.concatenate( items ).reshape( header['n_rows'],header['n_cols'] )
-
+        # 2017-12-21: flip so that array index matches coordinate index.
+        block=block[::-1,:]
         time=utils.to_dt64(time_string)
         return time,block
 
@@ -737,7 +749,8 @@ def dfm_wind_to_nc(wind_u_fn,wind_v_fn,nc_fn):
 
 
 def dataset_to_dfm_wind(ds,period_start,period_stop,target_filename_base,
-                        extra_header=None,min_records=1):
+                        extra_header=None,min_records=1,
+                        wind_u='wind_u',wind_v='wind_v',pres='pres'):
     """
     Write wind in an xarray dataset to a pair of gridded meteo files for DFM.
 
@@ -756,6 +769,7 @@ def dataset_to_dfm_wind(ds,period_start,period_stop,target_filename_base,
     returns the number of available records overlapping the requested period.
     If that number is less than min_records, no output is written.
     """
+    
     time_idx_start, time_idx_stop = np.searchsorted(ds.time,[period_start,period_stop])
 
     record_count=time_idx_stop-time_idx_start
@@ -796,17 +810,24 @@ unit1 = m s-1
     fp_u=open(target_filename_base+".amu",'wt')
     fp_v=open(target_filename_base+".amv",'wt')
 
+    if pres in ds:
+        fp_p=open(target_filename_base+".amp",'wt')
+    else:
+        fp_p=None
+
     base_fields=dict(creator="stompy",nodata=nodata,
                      n_cols=len(ds.x),n_rows=len(ds.y),
                      dx=np.median(np.diff(ds.x)),
                      dy=np.median(np.diff(ds.y)),
                      x_llcorner=ds.x[0],
                      y_llcorner=ds.y[0],
-                     extra_header=extra_header,
-                     quantity='x_wind')
+                     extra_header=extra_header)
 
     for fp,quant in [ (fp_u,'x_wind'),
-                      (fp_v,'y_wind') ]:
+                      (fp_v,'y_wind'),
+                      (fp_p,'pres') ]:
+        if fp is None:
+            continue
         # Write the headers:
         fields=dict(quantity=quant)
         fields.update(base_fields)
@@ -816,8 +837,13 @@ unit1 = m s-1
     for time_idx in range(time_idx_start, time_idx_stop):
         if (time_idx-time_idx_start) % 96 == 0:
             print("Written %d/%d time steps"%( time_idx-time_idx_start,time_idx_stop-time_idx_start))
-        u=ds.wind_u.isel(time=time_idx)
-        v=ds.wind_v.isel(time=time_idx)
+        u=ds['wind_u'].isel(time=time_idx)
+        v=ds['wind_v'].isel(time=time_idx)
+        if pres in ds:
+            p=ds[pres].isel(time=time_idx)
+        else:
+            p=None
+            
         t=ds.time.isel(time=time_idx)
 
         # write a time line formatted like this:
@@ -825,15 +851,21 @@ unit1 = m s-1
         time_line="TIME=%f seconds since 1970-01-01 00:00:00 +00:00"%utils.to_unix(t.values)
 
         for fp,data in [ (fp_u,u),
-                         (fp_v,v) ]:
+                         (fp_v,v),
+                         (fp_p,p)]:
+            if fp is None:
+                continue
             # double check order.
             fp.write(time_line) ; fp.write("\n")
-            for row in data.values:
+            # 2017-12-21: flip order of rows to suit DFM convention
+            for row in data.values[::-1]:
                 fp.write(" ".join(["%g"%rowcol for rowcol in row]))
                 fp.write("\n")
 
     fp_u.close()
     fp_v.close()
+    if fp_p is not None:
+        fp_p.close()
     return record_count
 
 class SectionedConfig(object):
@@ -963,7 +995,7 @@ class SectionedConfig(object):
         # have to append it
         if section!=row_sec:
             self.rows.append(section)
-        self.rows.append("%s = %s %s"%(row_key,value,comment or ""))
+        self.rows.append("%s = %s %s"%(key,value,comment or ""))
         
     def __setitem__(self,sec_key,value):
         self.set_value(sec_key,value)
@@ -1015,3 +1047,16 @@ class MDUFile(SectionedConfig):
         t_start = t_ref+int(self['time','tstart'])*tunit
         t_stop = t_ref+int(self['time','tstop'])*tunit
         return t_ref,t_start,t_stop
+    def set_time_range(self,start,stop,ref_date=None):
+        if ref_date is not None:
+            # Make sure ref date is integer number of days
+            assert ref_date==ref_date.astype('M8[D]')
+        else:
+            # Default to truncating the start date
+            ref_date = start.astype('M8[D]')
+
+        self['time','RefDate'] = utils.to_datetime(ref_date).strftime('%Y%m%d')
+        self['time','Tunit'] = 'M' # minutes.  kind of weird, but stick with what was used already
+        self['time','TStart'] = int( (start - ref_date)/ np.timedelta64(1,'m') )
+        self['time','TStop'] = int( (stop - ref_date) / np.timedelta64(1,'m') )
+
