@@ -880,7 +880,8 @@ class SectionedConfig(object):
         filename: path to file to open and parse
         text: a string containing the entire file to parse
         """
-        self.sources=[] # maintain a list of strings identifying where values came from
+        # This isn't being used anywhere -- delete?  and below.
+        # self.sources=[] # maintain a list of strings identifying where values came from
         self.rows=[]    # full text of each line
         
         if filename is not None:
@@ -904,7 +905,8 @@ class SectionedConfig(object):
             fp = open(filename,'rt')
             label=label or filename
 
-        self.sources.append(label)
+        # This isn't being used anywhere -- delete?
+        # self.sources.append(label)
 
         for line in fp:
             # save original text so we can write out a new mdu with
@@ -922,6 +924,8 @@ class SectionedConfig(object):
         brackets.
         value may be a string, or None.  Strings will be trimmed
         comment may be a string, or None.  It includes the leading comment character.
+        Indices are not stable across set_value(), since new entries may get inserted into
+        the middle of a section and shift other rows down.
         """
         section=None
         for idx,row in enumerate(self.rows):
@@ -977,6 +981,8 @@ class SectionedConfig(object):
         #   or a tuple of value and comment, without the leading comment character
         section='[%s]'%sec_key[0].lower()
         key=sec_key[1]
+
+        last_row_of_section={} # map [lower_section] to the index of the last entry in that section
         
         if isinstance(value,tuple):
             value,comment=value
@@ -985,17 +991,25 @@ class SectionedConfig(object):
             comment=None
 
         value=self.val_to_str(value)
+
+        def fmt(key,value,comment):
+            return "%-18s= %-20s %s"%(key,value,comment or "")
         
         for row_idx,row_sec,row_key,row_value,row_comment in self.entries():
+            last_row_of_section[row_sec]=row_idx
+                
             if (row_key.lower() == key.lower()) and (section.lower() == row_sec.lower()):
-                comment = comment or row_comment or ""
-                self.rows[row_idx] = "%-18s= %-20s %s"%(row_key,value,comment)
+                self.rows[row_idx] = fmt(row_key,value,comment or row_comment)
                 return
 
-        # have to append it
-        if section!=row_sec:
+        row_text=fmt(key,value,comment)
+        if section in last_row_of_section:
+            # the section exists
+            last_idx=last_row_of_section[section]
+            self.rows.insert(last_idx+1,row_text)
+        else: # have to append the new section
             self.rows.append(section)
-        self.rows.append("%s = %s %s"%(key,value,comment or ""))
+            self.rows.append(row_text)
         
     def __setitem__(self,sec_key,value):
         self.set_value(sec_key,value)
