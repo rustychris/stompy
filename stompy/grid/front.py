@@ -1225,11 +1225,19 @@ class AdvancingFront(object):
         the grid, keeping a constrained Delaunay triangulation around.
         """
         # oring is stored 1-based, so that the default 0 value is
-        # the nan value.
+        # indicates no data / missing.
         g.add_node_field('oring',np.zeros(g.Nnodes(),'i4'),on_exists='pass')
-        g.add_node_field('fixed',np.zeros(g.Nnodes(),'i4'),on_exists='pass')
+        g.add_node_field('fixed',np.zeros(g.Nnodes(),'i1'),on_exists='pass')
         g.add_node_field('ring_f',-1*np.ones(g.Nnodes(),'f8'),on_exists='pass')
 
+        # track a fixed field on edges, too, as it is not always sufficient
+        # to tag nodes as fixed, since a long edge between two fixed nodes may
+        # or may not be subdividable.  Note that for edges, we are talking about
+        # topology, not the locations, since locations are part of nodes.
+        # for starters, support RIGID (cannot subdivide) and 0, meaning no
+        # additional information beyond existing node and topological constraints.
+        g.add_edge_field('fixed',np.zeros(g.Nedges(),'i1'),on_exists='pass')
+        
         # Subscribe to operations *before* they happen, so that the constrained
         # DT can signal that an invariant would be broken
         self.cdt=self.shadow_cdt_factory(g)
@@ -1541,7 +1549,7 @@ class AdvancingFront(object):
 
     def eval_cost(self,n):
         fn=self.cost_function(n)
-        return fn and fn(self.grid.nodes['x'][n])
+        return (fn and fn(self.grid.nodes['x'][n]))
 
     def optimize_nodes(self,nodes,max_levels=3,cost_thresh=2):
         max_cost=0
@@ -2311,7 +2319,7 @@ class DTChooseStrategy(DTNode):
             nodes += list(self.af.grid.edges['nodes'][j])
         nodes=list(set(nodes))
         assert len(nodes) # something had to change, right?
-        cost = np.max( [self.af.eval_cost(n)
+        cost = np.max( [ (self.af.eval_cost(n) or 0.0)
                         for n in nodes] )
         self.child_post[i]=cost
         return True

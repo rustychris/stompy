@@ -23,16 +23,20 @@ def distance_left_of_line(pnt, qp1, qp2):
     
     return (pnt[0] - qp1[0])*left_vec[0] + (pnt[1]-qp1[1])*left_vec[1]
 
-def circ_to_gen(circ):
+def circ_to_gen(circ,repeat_start=False):
     """
     Given a CGAL circulator, loop once through it, yielding elements
-    as if it were an iterator
+    as if it were an iterator.
+    
+    If repeat_start is True, the first item is returned at the end, too.
     """
     elt0=circ.next()
     yield elt0
     while True:
         eltN=circ.next()
         if eltN==elt0:
+            if repeat_start:
+                yield eltN
             return
         yield eltN
         
@@ -45,7 +49,9 @@ def next_from_vertex(DT, vert, vec):
     last_nbr = None
 
     start = None
-    for nbr in circ_to_gen(DT.incident_vertices(vert)):
+    # we need to track the last and next, which is easiest by visiting
+    # the first neighbor twice, thanks to repeat_start=True
+    for nbr in circ_to_gen(DT.incident_vertices(vert),repeat_start=True):
         if DT.is_infinite(nbr):
             continue
         pnt = np.array( [nbr.point().x(),nbr.point().y()] )
