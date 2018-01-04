@@ -14,6 +14,11 @@ from ..spatial import robust_predicates
 from . import unstructured_grid
 from ..utils import circular_pairs
 
+if six.PY3:
+    def cmp(a,b):
+        return bool(a>b)-bool(a<b)
+
+
 try:
     from scipy import spatial
 except ImportError:

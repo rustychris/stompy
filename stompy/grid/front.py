@@ -557,10 +557,15 @@ class ResampleStrategy(Strategy):
             if n in site.abc:
                 # went too far around!  Bad!
                 return n
+            # Is this overly restrictive?  What if the edges is nice
+            # and long, and just wants a node in the middle?
+            # That should be allowed, until there is some way of annotating
+            # edges as rigid.
+            # But at the moment that breaks things.
             if grid.nodes['fixed'][n] in [site.af.HINT,site.af.SLIDE]:
                 try:
                     n=site.af.resample(n=n,anchor=anchor,scale=scale,
-                                           direction=direction)
+                                       direction=direction)
                 except Curve.CurveException as exc:
                     pass
             return n
@@ -1543,7 +1548,9 @@ class AdvancingFront(object):
 
         for level in range(max_levels):
             for n in nodes:
-                max_cost=max(max_cost,self.relax_node(n))
+                # relax_node can return 0 if there was no cost
+                # function to optimize
+                max_cost=max(max_cost,self.relax_node(n) or 0.0)
             if max_cost <= cost_thresh:
                 break
             if level==0:
@@ -1601,7 +1608,7 @@ class AdvancingFront(object):
         except self.cdt.IntersectingConstraints as exc:
             self.grid.revert(cp)
             self.log.info("Relaxation caused intersection, reverting")
-            return cost
+            return cost(x0)
         
     def relax_slide_node(self,n):
         cost_free=self.cost_function(n)

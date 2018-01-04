@@ -355,9 +355,7 @@ class ShadowCGALCDT(object):
         # that gets through some early crashes.
         
         edges=[]
-        for e in circ:
-            if edges and edges[0] == e:
-                break # come back to start of circulator
+        for e in cgal_line_walk.circ_to_gen(circ):
             if len(edges) > 10000:
                 assert False # probably a bad issue
             edges.append(e)

@@ -826,7 +826,12 @@ def orientation(a,b,c):
     """ maybe there are faster ways when all we care about is 
     yes no, zero.
     """
-    return cmp( counterclockwise(a,b,c),0 )
+    # float cast seems extraneous, but otherwise these are numpy
+    # floats, which make numpy bools, and the cmp hack will return
+    # a numpy bool, where python floats will return an integer
+    ccw=float(counterclockwise(a,b,c))
+    # hack for missing cmp in python3
+    return (ccw>0)-(ccw<0)
 
 
 if __name__ == '__main__':

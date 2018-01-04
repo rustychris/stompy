@@ -16,6 +16,7 @@ from .. import priority_queue
 
 from matplotlib.tri import Triangulation
 from matplotlib.collections import LineCollection
+import matplotlib.pyplot as plt
 
 import numpy as np
 
@@ -340,7 +341,7 @@ class ConstrainedXYZField(field.XYZField):
         if len(self.edges)>0:
             edges = self.X[self.edges]
             coll = LineCollection( edges )
-            gca().add_collection(coll)
+            plt.gca().add_collection(coll)
         field.XYZField.plot(self,**kwargs)
         
     def linesearch(self,a,b):
