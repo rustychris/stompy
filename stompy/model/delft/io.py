@@ -1,4 +1,5 @@
 import os
+import copy
 import datetime
 import io # python io.
 import numpy as np
@@ -142,12 +143,12 @@ def mon_his_file_dataframe(fn):
     return df
 
 
-def inp_tok(fp):
+def inp_tok(fp,comment=';'):
     # tokenizer for parsing rules of delwaq inp file.
     # parses either single-quoted strings, or space-delimited literals.
     for line in fp:
-        if ';' in line:
-            line=line[ : line.index(';')]
+        if comment in line:
+            line=line[ : line.index(comment)]
         # pattern had been
         # r'\s*((\'[^\']+\')|([/:-a-zA-Z_#0-9\.]+))'
         # but that has a bad dash before a, and doesn't permit +, either.
@@ -881,15 +882,29 @@ class SectionedConfig(object):
         text: a string containing the entire file to parse
         """
         # This isn't being used anywhere -- delete?  and below.
-        # self.sources=[] # maintain a list of strings identifying where values came from
         self.rows=[]    # full text of each line
+        self.filename=filename
+        self.base_path=None
         
-        if filename is not None:
-            self.read(filename)
+        if self.filename is not None:
+            self.read(self.filename)
+            self.base_path=os.path.dirname(self.filename)
 
         if text is not None:
             fp = StringIO(text)
             self.read(fp,'text')
+
+    def set_filename(self,fn):
+        """
+        Updates self.filename and base_path, in anticipation of the file
+        being written to a new location (this is so new file paths can be
+        extrapolated before having to write this out)
+        """
+        self.filename=fn
+        self.base_path=os.path.dirname(self.filename)
+        
+    def copy(self):
+        return copy.deepcopy(self)
 
     def read(self, filename, label=None):
         if six.PY2:
@@ -1016,6 +1031,13 @@ class SectionedConfig(object):
     def __getitem__(self,sec_key): 
         return self.get_value(sec_key)
     
+    def filepath(self,sec_key):
+        val=self.get_value(sec_key)
+        if self.base_path:
+            return os.path.join(self.base_path,val)
+        else:
+            return val
+    
     def val_to_str(self,value):
         # make sure that floats are formatted with plenty of digits:
         # and handle annoyance of standard Python types vs. numpy types
@@ -1073,4 +1095,99 @@ class MDUFile(SectionedConfig):
         self['time','Tunit'] = 'M' # minutes.  kind of weird, but stick with what was used already
         self['time','TStart'] = int( (start - ref_date)/ np.timedelta64(1,'m') )
         self['time','TStop'] = int( (stop - ref_date) / np.timedelta64(1,'m') )
+
+
+
+def exp_z_layers(mdu):
+    """
+    This will probably change, not very flexible now.
+    For singly exponential z-layers, return zslay, positive up, starting
+    from the bed.  first element is the bed itself.
+    """
+    ds=xr.open_dataset(mdu.filepath(['geometry','NetFile']))
+    
+    zmax=float(mdu['geometry','WaterLevIni'] )
+    zmin=float(ds.NetNode_z.min())
+    kmx=int(mdu['geometry','kmx'])
+    coefs=[float(s) for s in mdu['geometry','StretchCoef'].split()] # 0.002 0.02 0.8
+
+    ztot=zmax-zmin
+
+    # From unstruc.F90:
+    dzslay=np.zeros(kmx,'f8')
+    zslay=np.zeros(kmx+1,'f8')
+
+    gfi = 1.0 / coefs[1] # this shouldn't do anything
+    gf  = coefs[2]
+    mx=kmx
+    k1=int( coefs[0]*kmx) 
+
+    gfk = gfi**k1
+
+    if gfk == 1.0:
+        gfi = 1.0
+        dzslay[0] = 1.0 / mx
+    else:
+        dzslay[0] = ( 1.0 - gfi ) / ( 1.0 - gfk )* coefs[0]
+
+    for k in range(1,k1):
+        dzslay[k] = dzslay[k-1] * gfi
+
+    gfk = gf**(kmx-k1)
+    if k1 < kmx:
+        if gfk == 1.0:
+            gf = 1.0
+            dzslay[k1] = 1.0 / mx
+        else:
+            dzslay[k1] = ( 1.0 - gf ) / ( 1.0 - gfk ) * ( 1.0 - coefs[0] )
+
+        for k in range(k1+1,mx):
+            dzslay[k] = dzslay[k-1] * gf
+
+    zslay[0] = zmin
+    for k in range(mx):
+        zslay[k+1] = zslay[k] + dzslay[k] * (zmax-zmin)
+
+    ds.close()
+    return zslay
+        
+
+def read_bnd(fn):
+    """
+    Parse DWAQ-style boundary data file
+    
+    Returns a list [ ['boundary_name',array([ boundary_link_idx,[[x0,y0],[x1,y1]] ])], ...]
+    """
+    with open(fn,'rt') as fp:
+        toker=inp_tok(fp)
+        token=lambda: six.next(toker)
+        
+        N_groups=int(token())
+        groups=[]
+        for group_idx in range(N_groups):
+            group_name=token()
+            N_link=int(token())
+            links=np.zeros( N_link,
+                            dtype=[ ('link','i4'),
+                                    ('x','f8',(2,2)) ] )
+            for i in range(N_link):
+                links['link'][i]=int(token())
+                links['x'][i,0,0]=float(token())
+                links['x'][i,0,1]=float(token())
+                links['x'][i,1,0]=float(token())
+                links['x'][i,1,1]=float(token())
+            groups.append( [group_name,links] )
+    return groups
+
+def write_bnd(bnd,fn):
+    with open(fn,'wt') as fp:
+        fp.write("%10d\n"%len(bnd))
+        for name,segs in bnd:
+            fp.write("%s\n"%name)
+            fp.write("%10d\n"%len(segs))
+            for seg in segs:
+                x=seg['x']
+                fp.write("%10d  %.7f  %.7f   %.7f  %.7f\n"%(seg['link'],
+                                                            x[0,0],x[0,1],x[1,0],x[1,1]))
+                
 
