@@ -530,6 +530,8 @@ def haversine(a,b):
 
     Credit to ballsatballs.dotballs, 
     https://stackoverflow.com/questions/29545704/fast-haversine-approximation-python-pandas
+
+    returns distance in km.
     """
     # to radians:
     a=np.asanyarray(a)*np.pi/180.
@@ -1308,6 +1310,9 @@ def poly_circumcenter(points):
 
 def rms(v):
     return np.sqrt( np.mean( v**2 ) )
+
+def nanrms(v):
+    return np.sqrt( np.nanmean( v**2 ) )
 
 
 def circular_pairs(iterable):
