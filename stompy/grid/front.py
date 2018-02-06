@@ -366,7 +366,9 @@ class Curve(object):
             # good enough
             result=far_f,self(far_f)
         else:
-            for maxit in range(10):
+            # if there are large disparities in adjacent edge lengths
+            # it's possible that it takes many iterations here.
+            for maxit in range(20):
                 mid_f=0.5*(close_f+far_f)
                 pnt_mid=self(mid_f)
                 dist_mid=utils.dist(pnt_mid - anchor_pnt)
@@ -557,7 +559,7 @@ class ResampleStrategy(Strategy):
             if n in site.abc:
                 # went too far around!  Bad!
                 return n
-            # Is this overly restrictive?  What if the edges is nice
+            # Is this overly restrictive?  What if the edge is nice
             # and long, and just wants a node in the middle?
             # That should be allowed, until there is some way of annotating
             # edges as rigid.
@@ -1045,7 +1047,11 @@ class TriangleSite(FrontSite):
                              (c,1) ]:
             # used to check for SLIDE and degree
             # not sure whether we should let SLIDE through...
-            if grid.nodes['fixed'][n] in [self.af.HINT,self.af.SLIDE]:
+            # probably want to relax this to allow for subdividing
+            # long edges if the edge itself is not RIGID.  But
+            # we still avoid FREE nodes, since they are not on the boundary
+            # and cannot be resampled
+            if grid.nodes['fixed'][n] in [self.af.HINT,self.af.SLIDE,self.af.RIGID]:
                 try:
                     n_res=self.af.resample(n=n,anchor=b,scale=local_length,direction=direction)
                 except Curve.CurveException as exc:
@@ -1182,6 +1188,7 @@ class AdvancingFront(object):
     # 'fixed' flags:
     #  in order of increasing degrees of freedom in its location.
     # don't use 0 here, so that it's easier to detect uninitialized values
+    UNSET=0
     RIGID=1 # should not be moved at all
     SLIDE=2 # able to slide along a ring.  
     FREE=3  # not constrained
@@ -1315,6 +1322,12 @@ class AdvancingFront(object):
 
         nodes=[last] # anchor is included
 
+        # This isn't quite right --
+        # trav being SLIDE shouldn't stop things, but
+        # if trav is not degree 2, then it should stop
+        # things.
+        # 
+        
         def pred(n):
             # used to check for SLIDE and degree
             # then only checked for HINT.  but in some
@@ -1322,9 +1335,12 @@ class AdvancingFront(object):
             # ahh - but degree is still important.
             # adding that back in
             degree=self.grid.node_degree(n)
-            
-            return (n==trav0) or ( self.grid.nodes['fixed'][n]== self.HINT
-                                   and degree==2 )
+
+            # This was erroneously stepping beyond a degree-3 trav0
+            #return (n==trav0) or ( self.grid.nodes['fixed'][n]==self.HINT
+            #                       and degree==2 )
+            # I think this is the correct precedence:
+            return ( (n==trav0) or (self.grid.nodes['fixed'][n]==self.HINT)) and (degree==2)
 
         while pred(trav) and (trav != anchor) and (span<max_span):
             span += utils.dist( self.grid.nodes['x'][last] -
@@ -1350,8 +1366,9 @@ class AdvancingFront(object):
         move/replace n, such that from anchor to n/new_n the edge
         length is close to scale.
 
-        assumes that n is SLIDE or HINT.
         If n has more than 2 neighbors, does nothing and returns n as is.
+        Used to assume that n was SLIDE or HINT.  Now checks for either
+        nodes['fixed'][n] in (SLIDE,HINT), or that the edge can be subdivided.
 
         normally, a SLIDE node cannot be deleted.  in some cases resample will
         create a new node for n, and it will be a SLIDE node.  in that case, should
@@ -1368,17 +1385,26 @@ class AdvancingFront(object):
         #self.log.debug("resample %d to be %g away from %d in the %s direction"%(n,scale,anchor,
         #                                                                        direction) )
         
-        n_deg=self.grid.node_degree(n)
-        if n_deg!=2:
-            # self.log.debug("Will not resample node %d because degree=%d, not 2"%(n,n_deg))
-            return n
-        
         if direction==1: # anchor to n is t
             he=self.grid.nodes_to_halfedge(anchor,n)
         elif direction==-1:
             he=self.grid.nodes_to_halfedge(n,anchor)
         else:
             assert False
+
+        n_deg=self.grid.node_degree(n)
+
+        # must be able to either muck with n, or split the anchor-n edge
+        # in the past we assumed that this sort of check was already done
+        node_resamplable=(n_deg==2) and (self.grid.nodes['fixed'][n] in [self.HINT,self.SLIDE])
+        j=he.j
+        edge_resamplable=( (self.grid.edges['fixed'][he.j]!=self.RIGID)
+                           and (self.grid.edges['cells'][j,0]<0)
+                           and (self.grid.edges['cells'][j,1]<0) )
+            
+        if not (node_resamplable or edge_resamplable):
+            self.log.info("Edge and node are RIGID/deg!=2, no resampling possible")
+            return n
 
         span_length,span_nodes = self.free_span(he,self.max_span_factor*scale,direction)
         # anchor-n distance should be in there, already.
