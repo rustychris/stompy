@@ -1,12 +1,8 @@
 from __future__ import print_function
 
 import numpy as np
-import pdb
-import nose2
 
 from stompy.grid import exact_delaunay, unstructured_grid
-reload(unstructured_grid)
-reload(exact_delaunay)
 
 Triangulation=exact_delaunay.Triangulation
 from stompy.spatial import robust_predicates

@@ -521,6 +521,32 @@ def dist(a,b=None):
         a=a-b
     return mag(a)
 
+def haversine(a,b):
+    """
+    Calculate the great circle distance between two points
+    on the earth (specified in decimal degrees)
+
+    a,b: longitude/latitude in degrees.
+
+    Credit to ballsatballs.dotballs, 
+    https://stackoverflow.com/questions/29545704/fast-haversine-approximation-python-pandas
+
+    returns distance in km.
+    """
+    # to radians:
+    a=np.asanyarray(a)*np.pi/180.
+    b=np.asanyarray(b)*np.pi/180.
+
+    ab=b-a
+    dlon=ab[...,0]
+    dlat=ab[...,1]
+    #                               lat1                lat2
+    A = np.sin(dlat/2.0)**2 + np.cos(a[...,1]) * np.cos(b[...,1]) * np.sin(dlon/2.0)**2
+
+    C = 2 * np.arcsin(np.sqrt(A))
+    km = 6367 * C
+    return km
+
 
 def dist_along(x,y=None):
     if y is None:
@@ -1286,6 +1312,9 @@ def poly_circumcenter(points):
 
 def rms(v):
     return np.sqrt( np.mean( v**2 ) )
+
+def nanrms(v):
+    return np.sqrt( np.nanmean( v**2 ) )
 
 
 def circular_pairs(iterable):

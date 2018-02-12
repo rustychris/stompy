@@ -1,6 +1,5 @@
+from __future__ import print_function
 import numpy as np
-
-import nose2
 
 from stompy.grid import exact_delaunay
 Triangulation=exact_delaunay.Triangulation
@@ -491,10 +490,10 @@ def test_fuzz1():
     # definitely slows down as the number of nodes gets larger.
     # starting off with <1s per 100 operations, later more like 2s
     for repeat in range(1):
-        print "Repeat: ",repeat
+        print("Repeat: ",repeat)
         for step in range(1000):
             if step%200==0:
-                print "  step: ",step
+                print("  step: ",step)
             toggle=np.random.randint(len(idxs))
             if idxs[toggle]<0:
                 idxs[toggle] = dt.add_node( x=xys[toggle] )

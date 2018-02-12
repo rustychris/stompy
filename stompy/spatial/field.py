@@ -297,7 +297,8 @@ class XYZField(Field):
 
         self.init_listeners()
         
-        
+
+    @with_plt
     def plot(self,**kwargs):
         # this is going to be slow...
         def_args = {'c':self.F,
@@ -305,9 +306,9 @@ class XYZField(Field):
                     'marker':'s',
                     'lw':0}
         def_args.update(kwargs)
-        scatter( self.X[:,0].ravel(),
-                       self.X[:,1].ravel(),
-                       **def_args)
+        plt.scatter( self.X[:,0].ravel(),
+                     self.X[:,1].ravel(),
+                     **def_args)
 
     def bounds(self):
         if self.X.shape[0] == 0:

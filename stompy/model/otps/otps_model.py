@@ -100,9 +100,14 @@ class OTPS(object):
             phases[:,ci] = result[c+'_ph'].values
         result['amp']=('site','const'),amplitudes
         result['ph'] =('site','const'),phases
-        
-        return result
 
+        # Fix up missing outputs -- extract_HC drops repeated points,
+        # so here we match all outputs to input locations by lat/lon
+        ll_output=np.c_[result.Lon,result.Lat]
+
+        remapping=[ np.argmin( utils.haversine(ll,ll_output) )
+                    for ll in lonlats ]
+        return result.isel(site=remapping)
 
 def reconstruct(harms,times):
     t0=times[0].astype('M8[Y]')
