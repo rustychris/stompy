@@ -400,6 +400,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         if isinstance(nc,str):
             # nc=qnc.QDataset(nc)
             nc=xr.open_dataset(nc)
+        elif isinstance(nc,qnc.QDataset):
+            raise Exception("UnstructuredGrid.from_ugrid requires a string or a xarray Dataset")
 
         if mesh_name is None:
             meshes=[]

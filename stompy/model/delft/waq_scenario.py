@@ -841,7 +841,9 @@ class Hydro(object):
         return self._QtodV,self._QtodVabs
 
     def check_volume_conservation_incr(self,seg_select=slice(None),
-                                       err_callback=None):
+                                       tidx_select=slice(None),
+                                       err_callback=None,
+                                       verbose=True):
         """
         Compare time series of segment volumes to the integration of 
         fluxes.  This version loads just two timesteps at a time,
@@ -852,10 +854,21 @@ class Hydro(object):
         included in error calculations.  Use this to omit ghost segments, 
         for instance.
 
-        err_callback(time_index,rel_errors): called for each interval
-         checked, with the index (1...) and relative error per segment.
+        err_callback(time_index,error_summary): called for each interval
+         checked, with the time index and summary of errors.  The first time
+         step (or first of subset when tidx_select is used) is not returned,
+         since the calculation requires two timesteps.
+         
+        see code below for fields of error_summary.  Callback used to get
+        just relative error, but now it's a struct array.
+
+        verbose: print detailed information about the errors, and the worst error.
+
+        returns the last summary (i.e. same thing handed to err_callback)
         """
-        t_secs=self.t_secs
+        assert (tidx_select.step is None) or (tidx_select.step==1),"Times must be consecutive"
+        t_secs=self.t_secs[tidx_select]
+        t_idxs=np.arange(len(self.t_secs))[tidx_select]
 
         QtodV,QtodVabs = self.mats_QtodV()
 
@@ -864,16 +877,28 @@ class Hydro(object):
         except FileNotFoundError:
             plan_areas=None
 
-        for ti,t in enumerate(t_secs):
-            Vnow=self.volumes(t)
+        # Supply more info to the callback
+        # rel_err: abs(err)/(V+abs(dV))
+        # vol_err: error in volume, as Vnow - Vpred
+        # Q_err: vol_err/dt
+        segs=np.arange(self.n_seg)[seg_select]
+        summary=np.zeros(len(segs),[('seg','i4'),('rel_err','f8'),('vol_err','f8'),('Q_err','f8')])
+        summary['seg']=segs
+            
+        # Iterate - i is the count within the steps we're analyzing,
+        # ti is the index into all timesteps, with corresponding timestamps
+        # t_secs[i]
+        for i,ti in enumerate(t_idxs):
+            t_sec=t_secs[i]
+            Vnow=self.volumes(t_sec)
 
             if plan_areas is not None:
-                seg_plan_areas=plan_areas.evaluate(t=t).data
+                seg_plan_areas=plan_areas.evaluate(t=t_sec).data
             else:
                 seg_plan_areas=None
 
-            if ti>0:
-                dt=t_secs[ti]-t_secs[ti-1]
+            if i>0:
+                dt=t_secs[i]-t_secs[i-1]
                 dVmag=QtodVabs.dot(np.abs(Qlast)*dt)
                 Vpred=Vlast + QtodV.dot(Qlast)*dt
 
@@ -884,21 +909,22 @@ class Hydro(object):
                 rel_err[valid]=np.abs(err[valid])/(Vnow+dVmag)[valid]
                 rel_err[~valid] = np.abs(err[~valid])
 
-                # report the error in terms of thickness, to normalize
-                # for area and report a dz which represents the absolute
-                # error
-                # if seg_plan_areas is not None:
-                #     z_err=err[valid] / seg_plan_areas[valid]
-                # else:
-                #     z_err=None
-                    
+                # Supply more info to the callback
+                # seg: 0-based segment index
+                # rel_err: abs(err)/(V+abs(dV))
+                # vol_err: error in volume, as Vnow - Vpred
+                # Q_err: vol_err/dt
+                summary['rel_err'][:]=rel_err[seg_select]
+                summary['vol_err'][:]=err[seg_select]
+                summary['Q_err'][:]=summary['vol_err']/dt
+                                           
                 if err_callback:
-                    err_callback(ti,rel_err)
+                    err_callback(ti,summary)
 
                 rmse=np.sqrt( np.mean( rel_err[seg_select]**2 ) )
-                if rel_err[seg_select].max() > 1e-4:
+                if verbose and (rel_err[seg_select].max() > 1e-4):
                     self.log.warning("****************BAD Volume Conservation*************")
-                    self.log.warning("  t=%10d   RMSE: %e    Max rel. err: %e"%(t,rmse,rel_err[seg_select].max()))
+                    self.log.warning("  t=%10d   RMSE: %e    Max rel. err: %e"%(t_sec,rmse,rel_err[seg_select].max()))
                     self.log.warning("  %d segments above rel err tolerance"%np.sum( rel_err[seg_select]>1e-4 ))
                     self.log.info("Bad segments: %s"%( np.nonzero( rel_err[seg_select]>1e-4 )[0] ) )
 
@@ -915,8 +941,9 @@ class Hydro(object):
                     Qmag=np.max(np.abs(bad_Q))
                     self.log.warning("  Condition of dV: Qmag=%f Qnet=%f mag/net=%f"%(Qmag,bad_Q.sum(),Qmag/bad_Q.sum()))
 
-            Qlast=self.flows(t)
+            Qlast=self.flows(t_sec)
             Vlast=Vnow
+        return summary
 
     # Boundary handling
     # this representation follows the naming in the input file
@@ -1824,6 +1851,63 @@ class HydroFiles(Hydro):
                     return np.zeros(self.n_exch,'f4')
                 return data # all's well.
 
+    def update_flows(self,t,new_flows):
+        """ the 'reverse' of flows(), this will overwrite flow data in the existing
+        flo file.
+
+        This does not currently allow for extending the length of the file-- only
+        existing time steps can be overwritten.
+
+        return True on success, False otherwise
+        """
+        ti=self.t_sec_to_index(t)
+        
+        stride=4+self.n_exch*4
+        flo_fn=self.get_path('flows-file')
+        with open(flo_fn,'rb+') as fp:
+            fp.seek(stride*ti)
+            tstamp_data=fp.read(4)
+            if len(tstamp_data)<4:
+                self.log.info("update_flows: File is too short")
+                return False
+            else:
+                tstamp=np.fromstring(tstamp_data,'i4')[0]
+                if tstamp!=t:
+                    self.log.warning("update_flows: time stamp mismatch: %d != %d"%(tstamp,t))
+                fp.write(new_flows.astype('f4'))
+                return True
+
+    def adjust_boundaries_for_conservation(self,tidx_select=slice(None)):
+        """
+        Adjust for missing boundary exchange fluxes in hydro.
+        Updates flow data in place for boundary exchanges, by checking
+        for mass conservation in segments adjacent to a boundary.
+        Specify tidx_select as a slice to only update a subset of time steps.
+        Note that due to how conservation is defined in DWAQ, tidx_select
+        specifies the "now" timestep, which is fixed by changing "now"-1
+        flows.  This effectively means that the first step in the slice is 
+        ignored.
+        So tidx_select=slice(10,20) would select times t_secs[10]..t_secs[19]
+        for which conservation would be calculated at t_secs[11]..t_secs[19],
+        which would be used to update flows(t_secs[10])..flows(t_secs[18]).
+        Clear?
+        """
+        # Find all segments which have a boundary exchange
+        bc_exchs=np.nonzero( self.pointers[:,0]<0 )[0]
+        bc_adj_segs=self.pointers[bc_exchs,1]-1
+
+        def cb(ti,summary):
+            print("ti=%5d: RMS Q_err: %.5f"%(ti,utils.rms(summary['Q_err'])))
+            flo=self.flows(self.t_secs[ti-1])
+            flo[bc_exchs] += summary['Q_err']
+            self.update_flows(self.t_secs[ti-1],flo)
+
+        self.check_volume_conservation_incr(seg_select=bc_adj_segs,
+                                            tidx_select=tidx_select,
+                                            verbose=False,
+                                            err_callback=cb)
+
+            
     @property
     def pointers(self):
         poi_fn=self.get_path('pointers-file')
@@ -2062,10 +2146,13 @@ class HydroFiles(Hydro):
         # the same as mine, but appears that theirs are consistent
         # with surface layer exchange ids.
         for rec_i,bnd in enumerate(bnds):
-            # bc_exch is a negative boundary element index, which
+            # bc_elt is a negative boundary element index, which
             # can be matched to a "from" segment in poi
-            for bc_exch in bnd[1]['exch']:
-                exch_i=np.nonzero(poi[:,0]==bc_exch)[0]
+            # except note that these are links, not exchanges!
+            for bc_elt in bnd[1]['link']:
+                # This line makes a bit of a leap to match the 2D element
+                # to a pointer record which refers to segments.
+                exch_i=np.nonzero(poi[:,0]==bc_elt)[0]
                 assert len(exch_i)==1
                 exch_i=exch_i[0]
                 # seems that these come in only as horizontal exchanges.
@@ -3952,6 +4039,7 @@ class DwaqAggregator(Hydro):
             "number-water-quality-layers          %s"%( n_layers ),
             "hydrodynamic-file        '%s'"%self.fn_base,
             "aggregation-file         none",
+            "boundaries-file          '%s.bnd'"%self.fn_base,
             # filename handling not as elegant as it could be..
             # e.g. self.vol_filename should probably be self.vol_filepath, then
             # here we could reference the filename relative to the hyd file
@@ -4087,8 +4175,8 @@ class DwaqAggregator(Hydro):
 
         ds['FlowLinkType']=xr.DataArray(2*np.ones(len(links)),dims=['nFlowLink'],
                                         attrs=dict(long_name="type of flowlink",
-                                                   valid_range="1,2",
-                                                   flag_values="1,2",
+                                                   valid_range=[1,2], # "1,2", this causes problems
+                                                   flag_values=[1,2], # "1,2", CF conventions
                                                    flag_meanings=("link_between_1D_flow_elements "
                                                                   "link_between_2D_flow_elements" )))
 
@@ -7411,7 +7499,10 @@ END_MULTIGRID"""%num_layers
         if mode is 'map' and 'quickplot_compat' in output_settings:
             # add in some attributes and fields which might make quickplot happier
             # Add in node depths
-            g=unstructured_grid.UnstructuredGrid.from_ugrid(nc)
+            
+            # g=unstructured_grid.UnstructuredGrid.from_ugrid(nc)
+            x_nc=self.flowgeom_ds()
+            g=unstructured_grid.UnstructuredGrid.from_ugrid(x_nc)
 
             # dicey - assumes particular names for the fields:
             if 'FlowElem_zcc' in nc and 'Node_z' not in nc:
@@ -7456,7 +7547,18 @@ END_MULTIGRID"""%num_layers
                 self._flowgeom=qnc.QDataset(fn)
         
         return self._flowgeom
-
+    _flowgeom_ds=None
+    def flowgeom_ds(self):
+        """ Returns a netcdf dataset with the grid geometry, or None
+        if the data is not around.  Returns as an xarray Dataset.
+        """
+        if self._flowgeom_ds is None:
+            fn=os.path.join(self.base_path,self.hydro.flowgeom_filename)
+            if os.path.exists(fn):
+                self._flowgeom_ds=xr.open_dataset(fn)
+        
+        return self._flowgeom_ds
+    
     #-- Command line access
     def cmd_write_runid(self):
         """
