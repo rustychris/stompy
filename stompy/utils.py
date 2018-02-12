@@ -1277,6 +1277,8 @@ def poly_circumcenter(points):
     """ 
     unbiased (mostly) estimate of circumcenter, by computing circumcenter
     of consecutive groups of 3 points
+    Similar to Janet, though Janet uses two sets of three while this code
+    uses all consecutive groups of three.
     """
     triples=np.array(list(circular_n(points,3)))
     ccs=circumcenter(triples[:,0],triples[:,1],triples[:,2])

@@ -155,7 +155,7 @@ def wkb2shp(shp_name,
             # # asscalar helps out with that
             print( "float valued key is %s"%key)
             field_def = ogr.FieldDefn(key,ogr.OFTReal)
-            field_def.SetWidth(10)
+            field_def.SetWidth(64)
             field_def.SetPrecision(10)
             casters.append( float )
         else:
