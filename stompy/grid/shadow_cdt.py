@@ -90,7 +90,7 @@ class ShadowCDT(exact_delaunay.Triangulation):
         self.remove_constraint(nodes[0],nodes[1])
 
     def delaunay_neighbors(self,gn):
-        n=self.nodemap_g_to_local(gn)
+        n=self.nodemap_g_to_local[gn]
         local_nbrs=self.node_to_nodes(n)
         return self.nodes['g_n'][local_nbrs]
         
@@ -130,7 +130,7 @@ class ShadowCGALCDT(object):
 
     def instrument_grid(self,g):
         vh=np.zeros( g.Nnodes(), dtype=object )
-        g.add_node_field('vh',vh)
+        g.add_node_field('vh',vh,on_exists='overwrite')
         
         g.subscribe_before('add_node',self.before_add_node)
         g.subscribe_after('add_node',self.after_add_node)
@@ -154,13 +154,13 @@ class ShadowCGALCDT(object):
         g.delete_node_field('vh')
 
     def init_from_grid(self,g):
-
         for n in range(g.Nnodes()):
             if n % 50000==0:
                 log.info("init_from_grid: %d/%d"%(n,g.Nnodes()))
             # skip over deleted points:
-            if ~g.nodes['delete'][n]:
-                self.dt_insert(n)
+            if ~g.nodes['deleted'][n]:
+                # self.dt_insert(n)
+                self.after_add_node(g,'dt_insert',n)
         
         # Edges:
         for ji,j in enumerate(g.valid_edge_iter()):
@@ -387,8 +387,9 @@ class ShadowCGALCDT(object):
         my_k={}
         # re: _index
         
-        xy=k['x']
-        pnt = Point_2( k['x'][0], k['x'][1] )
+        xy=g.nodes['x'][n] # k['x']
+
+        pnt = Point_2( xy[0], xy[1] )
         assert self.g.nodes['vh'][n] in [0,None]
         vh = self.g.nodes['vh'][n] = self.DT.insert(pnt)
         self.vh_info[vh] = n

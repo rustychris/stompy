@@ -400,8 +400,6 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         if isinstance(nc,str):
             # nc=qnc.QDataset(nc)
             nc=xr.open_dataset(nc)
-        elif isinstance(nc,qnc.QDataset):
-            raise Exception("UnstructuredGrid.from_ugrid requires a string or a xarray Dataset")
 
         if mesh_name is None:
             meshes=[]
@@ -701,8 +699,6 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 return
             elif on_exists == 'overwrite':
                 self.edges[name] = data
-            else:
-                assert False,"Bad option for on_exists: %s"%on_exists
         else:
             self.edges=recarray_add_fields(self.edges,
                                            [(name,data)])
@@ -720,8 +716,6 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 return
             elif on_exists == 'overwrite':
                 self.nodes[name] = data
-            else:
-                assert False,"Bad option for on_exists: %s"%on_exists
         else:
             self.nodes=recarray_add_fields(self.nodes,
                                            [(name,data)])
@@ -730,7 +724,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         self.nodes=recarray_del_fields(self.nodes,names)
         self.node_dtype=self.nodes.dtype
         
-    def add_cell_field(self,name,data,on_exists='fail'):
+    def add_cell_field(self,name,data):
         """
         modifies cell_dtype to include a new field given by name,
         initialize with data.  NB this requires copying the cells
@@ -739,19 +733,13 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         # will need to get fancier to discern vector dtypes
         # assert data.ndim==1  - maybe no need to be smart?
 
-        if name in np.dtype(self.cell_dtype).names:
-            if on_exists == 'fail':
-                raise GridException("Cell field %s already exists"%name)
-            elif on_exists == 'pass':
-                return
-            elif on_exists == 'overwrite':
-                self.cells[name] = data
-            else:
-                assert False,"Bad option for on_exists: %s"%on_exists
+        self.cells=recarray_add_fields(self.cells,
+                                       [(name,data)])
+        # which is better?  not sure.
+        if 0:
+            # copy, to avoid mutating class' data
+            self.cell_dtype=self.cell_dtype + [(name,data.dtype)]
         else:
-            self.cells=recarray_add_fields(self.cells,
-                                           [(name,data)])
-
             # let recarray_add_fields do the work
             self.cell_dtype=self.cells.dtype
     def delete_cell_field(self,*names):
@@ -970,6 +958,25 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             cell_map[n]=self.add_cell(**kwargs)
 
         return node_map,edge_map,cell_map
+
+    def boundary_cycle(self):
+        # find a point outside the domain:
+        x0=self.nodes['x'].min(axis=0)-1.0
+        # grab nearby edges
+        edges_near=self.select_edges_nearest(x0,count=6)
+        max_nodes=self.Nnodes()
+        potential_cells=self.find_cycles(max_cycle_len=max_nodes,
+                                         starting_edges=edges_near,
+                                         check_area=False)
+        best=(0.0,None) # Area, nodes
+        for pc in potential_cells:
+            segs=self.nodes['x'][pc]
+            A=signed_area(segs)
+            
+            # Looking for the most negative area
+            if A<best[0]:
+                best=(A,pc)
+        return best[1][::-1] # reverse, to return a CCW, positive area string.
         
     def find_cycles(self,max_cycle_len=4,starting_edges=None,check_area=True):
         """ traverse edges, returning a list of lists, each list giving the

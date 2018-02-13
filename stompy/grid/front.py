@@ -1253,9 +1253,11 @@ class AdvancingFront(object):
 
     def shadow_cdt_factory(self,g):
         try:
-            return shadow_cdt.ShadowCGALCDT(g)
+            klass=shadow_cdt.ShadowCGALCDT
         except AttributeError:
-            return shadow_cdt.ShadowCDT(g)
+            klass=shadow_cdt.ShadowCDT
+
+        return klass(g)
         
     def initialize_boundaries(self):
         for curve_i,curve in enumerate(self.curves):
