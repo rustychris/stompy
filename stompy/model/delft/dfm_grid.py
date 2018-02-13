@@ -200,9 +200,11 @@ class DFMGrid(unstructured_grid.UnstructuredGrid):
         # with attributes that tell the correct names, and lacking
         # that go with these as defaults
         # seems we always get nodes and edges
+        edge_start_index=nc[var_edges].attrs.get('start_index',1)
+        
         kwargs=dict(points=np.array([nc[var_points_x].values,
                                      nc[var_points_y].values]).T,
-                    edges=nc[var_edges].values-1)
+                    edges=nc[var_edges].values-edge_start_index)
 
         # some nc files also have elements...
         if var_cells in nc.variables:
@@ -220,8 +222,10 @@ class DFMGrid(unstructured_grid.UnstructuredGrid):
                 cells[bad]=0
                 
             # just to be safe, do this even if it came from Masked.
-            cells[ cells<0 ] = 0 
-            cells-=1
+            cell_start_index=nc[var_cells].attrs.get('start_index',1)
+            cells-=cell_start_index # force to 0-based
+            cells[ cells<0 ] = -1
+
             kwargs['cells']=cells
             if cells_from_edges=='auto':
                 cells_from_edges=False
