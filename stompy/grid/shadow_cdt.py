@@ -154,12 +154,11 @@ class ShadowCGALCDT(object):
         g.delete_node_field('vh')
 
     def init_from_grid(self,g):
-
         for n in range(g.Nnodes()):
-            if n % 50000==0:
+            if n % 10000==0:
                 log.info("init_from_grid: %d/%d"%(n,g.Nnodes()))
             # skip over deleted points:
-            if ~g.nodes['delete'][n]:
+            if ~g.nodes['deleted'][n]:
                 self.dt_insert(n)
         
         # Edges:
@@ -386,9 +385,12 @@ class ShadowCGALCDT(object):
         n=return_value
         my_k={}
         # re: _index
+        # xy=k['x']
+        self.dt_insert(n)
         
-        xy=k['x']
-        pnt = Point_2( k['x'][0], k['x'][1] )
+    def dt_insert(self,n):
+        xy=self.g.nodes['x'][n]
+        pnt = Point_2( xy[0], xy[1] )
         assert self.g.nodes['vh'][n] in [0,None]
         vh = self.g.nodes['vh'][n] = self.DT.insert(pnt)
         self.vh_info[vh] = n

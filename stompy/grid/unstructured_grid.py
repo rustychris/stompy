@@ -766,7 +766,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         
         node_map[:]=-999
         # and this after truncating nodes:
-        node_map[:-1][nsort] = np.arange(self.Nnodes())
+        # This is causing a problem, where Nnodes is smaller than the size of nsort
+        # Should be fixed by taking only active portion of nsort
+        node_map[:-1][nsort[:Nactive]] = np.arange(self.Nnodes())
         node_map[-1] = -1 # missing nodes map -1 to -1
 
         self.edges['nodes'] = node_map[self.edges['nodes']]
@@ -2232,6 +2234,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     def plot_boundary(self,ax=None,**kwargs):
         return self.plot_edges(mask=self.edges['mark']>0,**kwargs)
 
+    def node_clip_mask(self,clip):
+        return within_2d(self.nodes['x'],clip)
+    
     def plot_nodes(self,ax=None,mask=None,values=None,sizes=20,labeler=None,clip=None,
                    **kwargs):
         """ plot nodes as scatter
@@ -2243,7 +2248,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             mask=~self.nodes['deleted']
 
         if clip is not None: # convert clip to mask
-            mask=mask & within_2d(self.nodes['x'],clip)
+            mask=mask & self.node_clip_mask(clip)
 
         if values is not None:
             values=values[mask]

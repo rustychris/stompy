@@ -5,6 +5,7 @@ An advancing front grid generator for use with unstructured_grid
 Largely a port of paver.py.
 
 """
+from __future__ import print_function
 import math
 import numpy as np
 import time
@@ -1131,6 +1132,8 @@ class QuadSite(FrontSite):
         this is where HINT nodes which part of the site are set to SLIDE nodes.
         """
         a,b,c,d = self.abcd
+        print("call to QuadSite: resample_neighbors, %d %d %d %d"%(a,b,c,d))
+        
         # could extend to something more dynamic, like triangle does
         local_para=self.af.para_scale
         local_perp=self.af.perp_scale
@@ -1160,8 +1163,8 @@ class QuadSite(FrontSite):
                     continue
                 
                 # is this the right time to change the fixed status?
-                if self.grid.nodes['fixed'][n] == self.af.HINT:
-                    self.grid.modify_node(n,fixed=self.af.SLIDE)
+                if self.grid.nodes['fixed'][n_res] == self.af.HINT:
+                    self.grid.modify_node(n_res,fixed=self.af.SLIDE)
                 
                 if n!=n_res:
                     log.info("resample_neighbors changed a node")
