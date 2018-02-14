@@ -569,6 +569,30 @@ def point_line_distance(point,line):
     delta -= np.dot(delta,vec) * vec
     return mag(delta)
 
+def point_segment_distance(point,seg,return_alpha=False):
+    """
+    Distance from point to finite segment
+    point: [nd] array
+    seg [2,nd] array
+    """
+    # find the point-line distance
+    delta = point - seg[0]
+    L=mag(seg[1]-seg[0])
+    vec = (seg[1] - seg[0])/L
+    alpha=np.dot(delta,vec) / L
+    if alpha<0:
+        D=dist(point,seg[0])
+    elif alpha>1:
+        D=dist(point,seg[1])
+    else:
+        delta -= np.dot(delta,vec) * vec
+        D=mag(delta)
+    if return_alpha:
+        return D,alpha
+    else:
+        return D
+
+
 # rotate the given vectors/points through the CCW angle in radians
 def rot_fn(angle):
     R = np.array( [[np.cos(angle),-np.sin(angle)],
