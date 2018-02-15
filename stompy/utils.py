@@ -1832,3 +1832,11 @@ def isolate_downcasts(ds,
             times_m[c] = times[s]
             xy_m[c,:] = xy[s]
     tr = Transect(xy=xy_m,times=times_m,elevations=z_mn.T,scalar=scalar_mn.T)
+
+def remove_repeated(A):
+    """
+    A: numpy 1D array
+    return A, without repeated element values.
+    """
+    return np.concatenate( ( A[:1], A[1:][ np.diff(A)!=0 ] ) )
+    

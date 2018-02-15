@@ -335,8 +335,16 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                               cells=grid.cells['nodes'])
         for field in ['cells','mark']:
             self.edges[field] = grid.edges[field]
-        for field in ['mark','edges','_center','_area']:
+        for field in ['mark','_center','_area']:
             self.cells[field] = grid.cells[field]
+        # special handling for edges, so it's not required for max_sides to
+        # match up
+        if self.max_sides < grid.max_sides:
+            assert np.all(grid.cells['edges'][:,self.max_sides:]<0)
+            self.cells['edges']=grid.cells['edges'][:,:self.max_sides]
+        else:
+            self.cells['edges'][:,grid.max_sides:]=self.UNDEFINED
+            self.cells['edges'][:,:grid.max_sides]=grid.cells['edges']
 
     def modify_max_sides(self,max_sides):
         """ 
