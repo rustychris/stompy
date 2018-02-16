@@ -1832,3 +1832,69 @@ def isolate_downcasts(ds,
             times_m[c] = times[s]
             xy_m[c,:] = xy[s]
     tr = Transect(xy=xy_m,times=times_m,elevations=z_mn.T,scalar=scalar_mn.T)
+
+
+def nan_cov(m,rowvar=1,demean=False):
+    """ 
+    covariance of the matrix, follows calling conventions of
+    numpy's cov function w.r.t. rows/columns
+    """
+    # not sure if cov() handles demeaning the same way
+    #if ~any(isnan(m)):
+    #    return cov(m,rowvar=rowvar)
+
+    
+    if rowvar:
+        m = np.transpose(m)
+
+    Ntimes,Nstations = m.shape
+
+    is_complex = (m.dtype.kind == 'c')
+
+    if is_complex:
+        c = np.nan*np.ones( (Nstations,Nstations), np.complex128 )
+    else:
+        c = np.nan*np.ones( (Nstations,Nstations), np.float64 )
+
+    # print("nan_cov: output shape is %s"%( str(c.shape) ))
+        
+    # precompute data that is per-station:
+    valids = ~np.isnan(m)
+    
+    if demean:
+        anoms = np.nan*np.ones_like( m )
+        
+        for station in range(Nstations):
+            vals = m[:,station]
+            anoms[:,station] = vals - np.mean(vals[valids[:,station]])
+    else:
+        anoms = m
+        
+    
+    for row in range(Nstations):
+        for col in range(row+1):
+            
+            v1_anom = anoms[:,row]
+            v2_anom = anoms[:,col]
+
+            # honestly it seems like it should be v2_anom
+            # that gets conjugated, but this gives more physical
+            # results and also agrees with matlabs implementation
+            if v1_anom.dtype.kind == 'c':
+                v1_anom = np.conj(v1_anom)
+            
+            valid = valids[:,row] & valids[:,col]
+            n_valid = valid.sum()
+
+            if n_valid <= 1:
+                c[row,col] = 0
+            else:
+                c[row,col] = 1.0/(valid.sum()-1.0) * (v1_anom*v2_anom)[valid].sum()
+
+            # Entirely possible that the whole matrix is wrong by a conjugate
+            # seems to be worked out now, if bit uneasy
+            if row!=col:
+                c[col,row] = np.conj(c[row,col])
+
+    return c
+
