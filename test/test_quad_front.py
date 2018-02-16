@@ -1,23 +1,30 @@
-from stompy.grid import orthogonalize, front, unstructured_grid, exact_delaunay
+from stompy.grid import orthogonalize, front, unstructured_grid, exact_delaunay,shadow_cdt
 
 from stompy.model.delft import dfm_grid
 from stompy import utils
 
 import matplotlib.pyplot as plt
-
-try:
-    reload
-except NameError:
-    from importlib import reload
+import six
 
 ## 
-reload(unstructured_grid)
-reload(exact_delaunay)
-reload(dfm_grid)
+six.moves.reload_module(unstructured_grid)
+six.moves.reload_module(exact_delaunay)
+six.moves.reload_module(dfm_grid)
 
-#- # 
+## 
 
 g=dfm_grid.DFMGrid("data/lsb_combined_v14_net.nc")
+# Trim that down to speed up things
+clip=(577006.59313042194, 579887.89496937161, 4143066.3785693897, 4145213.4131655102)
+
+node_to_del=np.nonzero(~utils.within_2d(g.nodes['x'],clip))[0]
+
+for n in node_to_del:
+    g.delete_node_cascade(n)
+
+g.renumber() 
+
+##
 
 zoom=(578260, 579037, 4143970., 4144573)
 point_in_poly=(578895, 4144375)
@@ -29,6 +36,8 @@ dim_perp=20.0 # 20m long for edges "perpendicular" to j.
 
 g.edge_to_cells()
 
+
+## 
 #  plt.figure(1).clf()
 #  
 #  fig,ax=plt.subplots(num=1)
@@ -58,7 +67,8 @@ g.edge_to_cells()
 
 ## 
 
-reload(front)
+six.moves.reload_module(shadow_cdt)
+six.moves.reload_module(front)
 
 af=front.AdvancingQuads(grid=g.copy(),scale=dim_par,perp_scale=dim_perp)
 af.grid.edges['para']=0 # avoid issues during dev
@@ -68,27 +78,39 @@ af.orient_quad_edge(j_init,af.PARA)
 
 ## 
 
-af.loop()
+af.loop(5)
 
 ## 
+
+zoom2=(578878.98180805414, 578965.70080642262, 4144452.1100928918, 4144516.7297336115)
 
 plt.figure(1).clf()
 fig,ax=plt.subplots(num=1)
 
-af.grid.plot_edges(ax=ax,clip=zoom)
+af.grid.plot_edges(ax=ax,clip=zoom,lw=0.5)
 af.grid.plot_edges(mask=[j_init],color='r',lw=2)
 
 if 0:
     af.plot_summary(label_nodes=False,clip=zoom)
 
 af.grid.plot_cells(centers=True,clip=zoom)
+af.grid.plot_nodes(labeler=lambda i,r: str(i))
 
-ax.axis(zoom)
+ax.axis(zoom2)
 
-## 
+##
+
+# c=66400
+n=77
+
+##
+
+# Fixed the HINT->SLIDE update problem
+
 # Problem 1: going around a bend it starts making trapezoids, 
 #   never really recovers.  A more nuanced cost function with angles
 #   would help here.
+#  HERE: try pulling in some of the new cost function for triangles.
 
 # Enhancement: there is an obvious place to put a triangle around a bend.
 #   will get there eventually.

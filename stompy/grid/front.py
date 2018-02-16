@@ -5,6 +5,7 @@ An advancing front grid generator for use with unstructured_grid
 Largely a port of paver.py.
 
 """
+from __future__ import print_function
 import math
 import numpy as np
 import time
@@ -204,6 +205,9 @@ class Curve(object):
             # the double mod above might solve that
             idxs=np.searchsorted(self.distances,f,side='right') - 1
             
+            assert not np.any( f>self.distances[-1] ),"Curve: Range or round off problem"
+            idxs=idxs.clip(0,len(self.distances)-2) # to be sure equality doesn't push us off the end
+
             alphas = (f - self.distances[idxs]) / (self.distances[idxs+1]-self.distances[idxs])
             if not np.isscalar(alphas):
                 alphas = alphas[:,None]
@@ -243,62 +247,6 @@ class Curve(object):
             return new_points,sources
         else:
             return new_points
-
-    def OLD_distance_away(self,anchor_f,signed_distance,rtol=0.05):
-        """  Find a point on the curve signed_distance away from the
-        point corresponding to anchor_f, within the given relative tolerance.
-        returns new_f,new_x.
-
-        If a point could not be found within the requested tolerance, raises
-        a self.CurveException.
-
-        Starting implementation is weak - it ignores any knowledge of the piecewise
-        linear geometry.  Will need to be amended to take that into account, since 
-        in its current state it will succumb to local minima/maxima.
-        """
-        anchor_x = self(anchor_f)
-        offset=signed_distance
-        direc=np.sign(signed_distance)
-        target_d=np.abs(signed_distance)
-
-        last_offset=0.0
-        last_d=0.0
-
-        # first loop to bracket the distance:
-        for step in range(10): # ad-hoc limit to avoid bad juju.
-            new_x=self(anchor_f + offset)
-            d=utils.dist(anchor_x-new_x)
-            rel_err=(d - target_d)/target_d
-            if -rtol < rel_err < rtol:
-                return anchor_f + offset,new_x
-            if rel_err<0:
-                if d<last_d:
-                    # this could easily be a local minimum - as this becomes important,
-                    # then it would be better to include some bounds checking, and only
-                    # fail when we can prove that no solution exists.
-                    raise self.CurveException("Distance got smaller - need to be smarter")
-                last_offset=offset
-                last_d=d
-                offset*=1.5
-                continue
-            else:
-                break # can binary search
-        # binary search
-        low_offset=last_offset
-        high_offset=offset
-        for step in range(10):
-            mid_offset = 0.5*(low_offset + high_offset)
-            mid_x = self(anchor_f + mid_offset)
-            mid_d = utils.dist(anchor_x - mid_x)
-            rel_err=(mid_d - target_d)/target_d
-            if -rtol<rel_err<rtol:
-                return anchor_f+mid_offset,mid_x
-            elif mid_d < target_d:
-                low_offset=mid_offset
-            else:
-                high_offset=mid_offset
-        else:
-            raise self.CurveException("Binary search failed")
 
     def distance_away(self,anchor_f,signed_distance,rtol=0.05):
         """  Find a point on the curve signed_distance away from the
@@ -384,18 +332,113 @@ class Curve(object):
                 assert False
         return result
 
-        
+    def point_to_f(self,x,f_start=0,direction=1,rel_tol=1e-4):
+        """
+        Return the ring_f which yields a point close to x.
+        This scans the points in the curve, starting with f_start
+        and proceeding in the given direction.
+
+        if direction is 0, both directions will be attempted and
+        the first valid result returned.
+
+        rel_tol: stop when a point is found within rel_tol*len(segment)
+        of a segment
+        """
+        # Walk along the curve, looking for a segment which approximately
+        # contains x.
+
+        # Have to be careful about exact matches.  distances[i] should always
+        # yield idx_start=i.
+        # But anything in between depends on the direction
+        if direction==1:
+            idx_start=np.searchsorted(self.distances,f_start,side='right') - 1
+        elif direction==-1:
+            idx_start=np.searchsorted(self.distances,f_start,side='left')
+        elif direction==0:
+            # try either, accept any hit.
+            try: 
+                return self.point_to_f(x,f_start=f_start,direction=1,rel_tol=rel_tol)
+            except self.CurveException:
+                return self.point_to_f(x,f_start=f_start,direction=-1,rel_tol=rel_tol)
+        else:
+            raise Exception("direction must be +-1")
+
+        # Start traversing the segments:
+        seg_idx_a=idx_start
+        for i in range(len(self.points)): # max possible traversal
+            seg_idx_b=seg_idx_a + direction
+
+            # Wrapping
+            if seg_idx_b<0:
+                if self.closed:
+                    seg_idx_b += len(self.points)
+                else:
+                    break
+            if seg_idx_b>=len(self.points):
+                if self.closed:
+                    seg_idx_b -= len(self.points)
+                else:
+                    break
+
+            seg=self.points[ [seg_idx_a,seg_idx_b] ]
+            seg_len=utils.dist(seg[0],seg[1])
+            dist,alpha = utils.point_segment_distance(x,seg,return_alpha=True)
+
+            if dist/seg_len < rel_tol: 
+                # How to get to an f from this?
+                new_f=self.distances[seg_idx_a] + direction*alpha*seg_len
+                if not self.closed:
+                    new_f=max(0,min(new_f,self.distances[-1]))
+                return new_f
+
+            seg_idx_a=seg_idx_b
+
+        raise self.CurveException("Failed to find a point within tolerance")
+
     def is_forward(self,fa,fb,fc):
         """ return true if fa,fb and fc are distinct and
         ordered CCW around the curve
         """
         if fa==fb or fb==fc or fc==fa:
             return False
-        d=self.total_distance()
-        return ((fb-fa) % d) < ((fc-fa)%d)
+        if self.closed:
+            d=self.total_distance()
+            return ((fb-fa) % d) < ((fc-fa)%d)
+        else:
+            return fa<fb<fc
+            # return ( (fb-fa) < (fc-fa) )
     def is_reverse(self,fa,fb,fc):
-        return self.is_forward(fc,fb,fa)
+        # for closed curves, is_reverse=not is_forward, but
+        # for open curves, that's not necessarily true.
+        # when degenerate situations are included, then they
+        # are not opposites even for closed curves.
+        if fa==fb or fb==fc or fc==fa:
+            return False
+        if self.closed:
+            d=self.total_distance()
+            return ((fb-fc) % d) < ((fa-fc)%d)
+        else:
+            # return (fa-fb) < (fa-fc)
+            return fc<fb<fa
 
+    def is_ordered(self,fa,fb,fc):
+        """
+        Non-robust check for fb falling between fc.  For a closed
+        curve, this resorts to the heuristic of whether fb falls
+        between fa and fc on the shorter way around.
+        """
+        if self.closed:
+            tdist=self.total_distance()
+            if (fa-fc) % tdist < tdist/2:
+                if self.is_forward(fc,fb,fa):
+                    return True
+            else:
+                if self.is_forward(fa,fb,fc):
+                    return True
+            return False
+        else:
+            return (fa<fb<fc) or (fa>fb>fc)
+        
     def signed_area(self):
         assert self.closed
         return utils.signed_area(self.points)
@@ -564,12 +607,15 @@ class ResampleStrategy(Strategy):
             # That should be allowed, until there is some way of annotating
             # edges as rigid.
             # But at the moment that breaks things.
-            if grid.nodes['fixed'][n] in [site.af.HINT,site.af.SLIDE]:
-                try:
-                    n=site.af.resample(n=n,anchor=anchor,scale=scale,
-                                       direction=direction)
-                except Curve.CurveException as exc:
-                    pass
+            # it shouldn't though.  And the checks here duplicate checks in
+            # af.resample().  So skip the test, and go for it.
+            
+            # if grid.nodes['fixed'][n] in [site.af.HINT,site.af.SLIDE]:
+            try:
+                n=site.af.resample(n=n,anchor=anchor,scale=scale,
+                                   direction=direction)
+            except Curve.CurveException as exc:
+                pass
             return n
                 
         # execute one side at a time, since it's possible for a
@@ -661,7 +707,8 @@ class JoinStrategy(Strategy):
         mover=None
 
         j_ac=grid.nodes_to_edge(na,nc)
-
+        j_ac_oring=0
+        
         if j_ac is not None:
             # special case: nodes are already joined, but there is no
             # cell.
@@ -670,6 +717,8 @@ class JoinStrategy(Strategy):
             # not creation)
             if (grid.edges['cells'][j_ac,0] >=0) or (grid.edges['cells'][j_ac,1]>=0):
                 raise StrategyFailed("Edge already has real cells")
+            # remember for tests below:
+            j_ac_oring=grid.edges['oring'][j_ac]
             grid.delete_edge(j_ac)
             j_ac=None
             
@@ -693,25 +742,22 @@ class JoinStrategy(Strategy):
             if ring!=grid.nodes['oring'][nc]:
                 raise StrategyFailed("Cannot join across rings")
             if grid.nodes['oring'][nb]==ring:
-                # this is a problem if nb falls in between them.
-                fa,fb,fc=grid.nodes['ring_f'][ [na,nb,nc] ]
-                curve=site.af.curves[ring-1]
-                # simple orientation test, such as
-                # (curve.is_forward(fa,fb,fc) or
-                #  curve.is_forward(fc,fb,fa))
-                # is not sufficient, since fb is between them for one
-                # direction or the other.
-                # so choose the shorter distance around between a and
-                # c, and check that b isn't in the middle of that.
-                # not sure that this will be correct in bizarrely small
-                # corner cases
-                tdist=curve.total_distance()
-                if (fa-fc) % tdist < tdist/2:
-                    if curve.is_forward(fc,fb,fa):
-                        raise StrategyFailed("Cannot join across middle node")
-                else:
-                    if curve.is_forward(fa,fb,fc):
-                        raise StrategyFailed("Cannot join across middle node")
+                # This original check is too lenient.  in a narrow
+                # channel, it's possible to have the three nodes
+                # on the same ring, straddling the channel, and this
+                # may allow for a join across the channel.
+                
+                #   # this is a problem if nb falls in between them.
+                #   fa,fb,fc=grid.nodes['ring_f'][ [na,nb,nc] ]
+                #   curve=site.af.curves[ring-1]
+                #   
+                #   if curve.is_ordered(fa,fb,fc):
+                #       raise StrategyFailed("Cannot join across middle node")
+                
+                # instead, check for an edge between a and c.
+                if j_ac_oring!=ring:
+                    raise StrategyFailed("Cannot join non-adjacent along ring")
+                
             # probably okay, not sure if there are more checks to attempt
             if grid.nodes['fixed'][na]==site.af.HINT:
                 mover,anchor=na,nc
@@ -789,11 +835,13 @@ class JoinStrategy(Strategy):
                 # also, it's possible that one of these edges will be a dupe,
                 # in the case of a quad
                 try:
+                    # fairly sure there are tests above which prevent
+                    # this from having to populate additional fields, but
+                    # not positive.
                     jnew=grid.add_edge( nodes=nodes, cells=cells )
                 except exact_delaunay.ConstraintCollinearNode:
                     raise StrategyFailed("Edge was collinear with existing nodes")
                 edits['edges'].append(jnew)
-
 
         for c,data in cells_to_replace:
             nodes=data['nodes']
@@ -1137,6 +1185,8 @@ class QuadSite(FrontSite):
         this is where HINT nodes which part of the site are set to SLIDE nodes.
         """
         a,b,c,d = self.abcd
+        print("call to QuadSite: resample_neighbors, %d %d %d %d"%(a,b,c,d))
+        
         # could extend to something more dynamic, like triangle does
         local_para=self.af.para_scale
         local_perp=self.af.perp_scale
@@ -1166,8 +1216,8 @@ class QuadSite(FrontSite):
                     continue
                 
                 # is this the right time to change the fixed status?
-                if self.grid.nodes['fixed'][n] == self.af.HINT:
-                    self.grid.modify_node(n,fixed=self.af.SLIDE)
+                if self.grid.nodes['fixed'][n_res] == self.af.HINT:
+                    self.grid.modify_node(n_res,fixed=self.af.SLIDE)
                 
                 if n!=n_res:
                     log.info("resample_neighbors changed a node")
@@ -1206,22 +1256,65 @@ class AdvancingFront(object):
         self.grid = self.instrument_grid(grid)
 
         self.curves=[]
-        
-    def add_curve(self,curve,interior=None):
+
+    def add_curve(self,curve=None,interior=None,nodes=None,closed=True):
+        """
+        Add a Curve, upon which nodes can be slid.
+
+        curve: [N,2] array of point locations, or a Curve instance.
+        interior: true to force this curve to be an island.
+
+        nodes: use existing nodes, given by the indices here.
+
+        Any node which is already part of another ring will be set to RIGID,
+        but will retain its original oring.
+
+        The nodes must have existing edges connecting them, and those edges
+        will be assigned to this ring via edges['oring'] and ['ring_sign']
+        """
+        if nodes is not None:
+            curve=self.grid.nodes['x'][nodes]
+
         if not isinstance(curve,Curve):
             if interior is not None:
                 ccw=not interior
             else:
                 ccw=None
-            curve=Curve(curve,ccw=ccw,closed=True)
+            curve=Curve(curve,ccw=ccw,closed=closed)
         elif interior is not None:
             assert curve.closed
             a=curve.signed_area()
             if a>0 and interior:
                 curve=curve.reverse()
-            
+
         self.curves.append( curve )
-        return len(self.curves)-1
+        oring=len(self.curves) # 1-based
+        if nodes is not None:
+            # Update nodes to be on this curve:
+            on_a_ring=self.grid.nodes['oring'][nodes]>0
+
+            self.grid.nodes['oring'][nodes[~on_a_ring]]=oring
+            # curve.distances has an extra entry when a closed loop
+            self.grid.nodes['ring_f'][nodes[~on_a_ring]]=curve.distances[:len(nodes)][~on_a_ring]
+            self.grid.nodes['fixed'][nodes[~on_a_ring]]=self.HINT
+            self.grid.nodes['fixed'][nodes[on_a_ring]]=self.RIGID
+
+            # And update the edges, too:
+            if closed:
+                pairs=utils.circular_pairs(nodes)
+            else:
+                pairs=zip(nodes[:-1],nodes[1:])
+            for a,b in pairs:
+                j=self.grid.nodes_to_edge([a,b])
+                self.grid.edges['oring'][j]=oring
+                if self.grid.edges['nodes'][j,0]==a:
+                    self.grid.edges['ring_sign'][j]=1
+                elif self.grid.edges['nodes'][j,0]==b: # little sanity check
+                    self.grid.edges['ring_sign'][j]=-1
+                else:
+                    assert False,"Failed invariant"
+            
+        return oring-1
 
     def instrument_grid(self,g):
         """
@@ -1244,6 +1337,11 @@ class AdvancingFront(object):
         # for starters, support RIGID (cannot subdivide) and 0, meaning no
         # additional information beyond existing node and topological constraints.
         g.add_edge_field('fixed',np.zeros(g.Nedges(),'i1'),on_exists='pass')
+        # if nonzero, which curve this edge follows
+        g.add_edge_field('oring',np.zeros(g.Nedges(),'i4'),on_exists='pass')
+        # if oring nonzero, then +1 if n1=>n2 is forward on the curve, -1 
+        # otherwise
+        g.add_edge_field('ring_sign',np.zeros(g.Nedges(),'i1'),on_exists='pass')
         
         # Subscribe to operations *before* they happen, so that the constrained
         # DT can signal that an invariant would be broken
@@ -1253,9 +1351,11 @@ class AdvancingFront(object):
 
     def shadow_cdt_factory(self,g):
         try:
-            return shadow_cdt.ShadowCGALCDT(g)
+            klass=shadow_cdt.ShadowCGALCDT
         except AttributeError:
-            return shadow_cdt.ShadowCDT(g)
+            klass=shadow_cdt.ShadowCDT
+
+        return klass(g)
         
     def initialize_boundaries(self):
         for curve_i,curve in enumerate(self.curves):
@@ -1279,7 +1379,9 @@ class AdvancingFront(object):
             for na,nb in pairs:
                 self.grid.add_edge( nodes=[nodes[na],nodes[nb]],
                                     cells=[self.grid.UNMESHED,
-                                           self.grid.UNDEFINED] )
+                                           self.grid.UNDEFINED],
+                                    oring=curve_i+1,
+                                    ring_sign=1 )
 
     def enumerate_sites(self):
         raise Exception("Implement in subclass")
@@ -1322,24 +1424,10 @@ class AdvancingFront(object):
 
         nodes=[last] # anchor is included
 
-        # This isn't quite right --
-        # trav being SLIDE shouldn't stop things, but
-        # if trav is not degree 2, then it should stop
-        # things.
-        # 
-        
         def pred(n):
-            # used to check for SLIDE and degree
-            # then only checked for HINT.  but in some
-            # cases, trav0 was SLIDE, and we'd stop there.
-            # ahh - but degree is still important.
-            # adding that back in
+            # N.B. possible for trav0 to be SLIDE
             degree=self.grid.node_degree(n)
 
-            # This was erroneously stepping beyond a degree-3 trav0
-            #return (n==trav0) or ( self.grid.nodes['fixed'][n]==self.HINT
-            #                       and degree==2 )
-            # I think this is the correct precedence:
             return ( (n==trav0) or (self.grid.nodes['fixed'][n]==self.HINT)) and (degree==2)
 
         while pred(trav) and (trav != anchor) and (span<max_span):
@@ -1457,15 +1545,82 @@ class AdvancingFront(object):
 
         # first, find a point on the original ring which satisfies the target_span
         anchor_oring=self.grid.nodes['oring'][anchor]-1
-        oring=self.grid.nodes['oring'][n]-1
-        if anchor_oring != oring:
-            self.log.warning('resample: anchor and n on different rings.  Will not resample')
-            # could try to get clever and resample n in the "correct" direction.
-            return n
-        curve = self.curves[oring]
+        n_oring=self.grid.nodes['oring'][n]-1
+
+        # Default, may be overwritten below
         anchor_f = self.grid.nodes['ring_f'][anchor]
+        n_f = self.grid.nodes['ring_f'][n]
+        
+        if anchor_oring != n_oring:
+            self.log.warning('resample: anchor and n on different rings.  Cautiously resample')
+            # This used to fail out and not resample.  With internal guide lines which
+            # intersect boundaries, have to be able to handle this situation.
+            # old note: could try to get clever and resample n in the "correct" direction.
+            # return n
+
+            if self.grid.nodes['fixed'][anchor]==self.RIGID:
+                oring=n_oring
+                # reverse lookup to get what anchor's f would be
+                # specify direction=0 because the curve may not have the same
+                # orientation as the Site / half-edge.
+                # that instructs Curve to search in both directions if it is
+                # not a closed curve
+                anchor_f = self.curves[oring].point_to_f(self.grid.nodes['x'][anchor],
+                                                         n_f,
+                                                         direction=0)
+            elif self.grid.nodes['fixed'][n]==self.RIGID:
+                oring=anchor_oring
+                n_f = self.curves[oring].point_to_f(self.grid.nodes['x'][n],
+                                                    anchor_f,
+                                                    direction=0) 
+            else:
+                raise Exception("Differing o-rings, but nobody is RIGID")
+        else:
+            oring=n_oring # roughly corresponds to the edge's ring
+            anchor_f = self.grid.nodes['ring_f'][anchor]
+
+        # Easing into use of explicit edge orings
+        assert oring==self.grid.edges['oring'][j]-1
+        curve = self.curves[oring]
+
+        # at any point might encounter a node from a different ring, but want
+        # to know it's ring_f for this ring.
+        def node_f(m):
+            # first two cases are partially to be sure that equality comparisons will
+            # work.
+            if m==n:
+                return n_f
+            elif m==anchor:
+                return anchor_f
+            elif self.grid.nodes['oring'][m]==oring+1:
+                return self.grid.nodes['ring_f'][m]
+            else:
+                return curve.point_to_f(self.grid.nodes['x'][m],
+                                        n_f,direction=0)
+
+        if 1: # delete this once the new stanza below is trusted
+            # explicitly record whether the curve has the opposite orientation
+            # of the edge.  Hoping to retire this way
+            mid_point = 0.5*(self.grid.nodes['x'][n] + self.grid.nodes['x'][anchor])
+            mid_f=self.curves[oring].point_to_f(mid_point)
+
+            if curve.is_forward(anchor_f,mid_f,n_f):
+                curve_direction=1
+                # a curve forward that bakes in curve_direction
+                rel_curve_fwd=lambda a,b,c: curve.is_forward(a,b,c)
+            else:
+                curve_direction=-1
+                rel_curve_fwd=lambda a,b,c: curve.is_reverse(a,b,c)
+        if 1: # "new" way
+            # logic is confusing
+            edge_ring_sign=self.grid.edges['ring_sign'][he.j]
+            new_curve_direction=(1-2*he.orient)*direction*edge_ring_sign
+            assert new_curve_direction==curve_direction
+            
+            assert edge_ring_sign!=0,"Edge %d has sign %d, should be set"%(he.j,edge_ring_sign)
+
         try:
-            new_f,new_x = curve.distance_away(anchor_f,direction*target_span)
+            new_f,new_x = curve.distance_away(anchor_f,curve_direction*target_span)
         except Curve.CurveException as exc:
             raise
 
@@ -1474,9 +1629,11 @@ class AdvancingFront(object):
         # curvature in the along-curve distance.
         # this leads to a liability that new_f is beyond span_nodes[-1], and
         # we should follow the same treatment as above for n_segments==1
-        end_span_f=self.grid.nodes['ring_f'][span_nodes[-1]]
-        if ((direction==1) == (curve.is_forward(anchor_f,end_span_f,new_f))
-            and end_span_f!=anchor_f):
+        end_span_f=node_f(span_nodes[-1])
+
+        # 2018-02-13: hoping this also changes to curve_direction
+        if ( rel_curve_fwd(anchor_f,end_span_f,new_f)
+             and end_span_f!=anchor_f):
             self.log.warning("n_segments=%s, but distance_away blew past it"%n_segments)
             return handle_one_segment()
             
@@ -1499,14 +1656,14 @@ class AdvancingFront(object):
             
             if direction==1:
                 n_trav=trav.node_fwd()
-                f_trav=self.grid.nodes['ring_f'][n_trav] # HERE EPS??
-                if curve.is_forward( anchor_f, new_f+eps, f_trav ):
-                    break
             else:
                 n_trav=trav.node_rev()
-                f_trav=self.grid.nodes['ring_f'][n_trav]
-                if curve.is_reverse( anchor_f, new_f-eps, f_trav ):
-                    break
+            f_trav=node_f(n_trav)
+
+            # EPS needs some TLC here.  The corner cases have not been
+            # sufficiently take care of, i.e. new_f==f_trav, etc.
+            if rel_curve_fwd(anchor_f, new_f+curve_direction*eps, f_trav ):
+                break
 
             # that half-edge wasn't far enough
             nodes_to_delete.append(n_trav)
@@ -1544,7 +1701,6 @@ class AdvancingFront(object):
                 self.log.info("resample: had to stop short due to intersection")
                 self.grid.revert(cp)
                 return d
-                
 
         # on the other hand, it may be that the next node is too far away, and it
         # would be better to divide the edge than to shift a node from far away.
@@ -1555,6 +1711,7 @@ class AdvancingFront(object):
         try:
             if method=='slide':
                 self.grid.modify_node(nnew,x=new_x,ring_f=new_f)
+                assert self.grid.nodes['oring'][nnew]==oring+1
             else: # 'split'
                 j=self.grid.nodes_to_edge([anchor,nnew])
 
@@ -1655,13 +1812,19 @@ class AdvancingFront(object):
         assert np.isfinite(f0)
         assert ring>=0
 
-        # used to just be f, but I think it's more appropriate to
-        # be f[0]
-        cost_slide=lambda f: cost_free( self.curves[ring](f[0]) )
-
         local_length=self.scale( x0 )
 
         slide_limits=self.find_slide_limits(n,3*local_length)
+
+        # used to just be f, but I think it's more appropriate to
+        # be f[0]
+        def cost_slide(f):
+            # lazy bounded optimization
+            f=f[0]
+            fclip=np.clip(f,*slide_limits)
+            err=(f-fclip)**2
+            return err+cost_free( self.curves[ring](fclip) )
+
         
         new_f = opt.fmin(cost_slide,
                          [f0],
@@ -1671,6 +1834,8 @@ class AdvancingFront(object):
         if not self.curves[ring].is_forward(slide_limits[0],
                                             new_f,
                                             slide_limits[1]):
+            import pdb
+            pdb.set_trace()
             self.log.info("Slide went outside limits")
             return cost_free(x0)
 
@@ -1684,6 +1849,17 @@ class AdvancingFront(object):
             self.log.info("Relaxation caused intersection, reverting")
             return cost_free(x0)
 
+    def node_ring_f(self,n,ring0):
+        """
+        return effective ring_f for node n in terms of ring0.
+        if that's the native ring for n, just return ring_f,
+        otherwise calculates where n would fall on ring0
+        """
+        if self.grid.nodes['oring'][n]-1==ring0:
+            return self.grid.nodes['ring_f'][n]
+        else:
+            return self.curves[ring0].point_to_f(self.grid.nodes['x'][n])
+        
     def find_slide_limits(self,n,cutoff=None):
         """ Returns the range of allowable ring_f for n.
         limits are exclusive
@@ -1692,6 +1868,11 @@ class AdvancingFront(object):
         the segments.  So a point which is cutoff away may be much
         closer as the crow flies.
         """
+        # DBG
+        # if n==1207:
+        #     import pdb
+        #     pdb.set_trace()
+
         n_ring=self.grid.nodes['oring'][n]-1
         n_f=self.grid.nodes['ring_f'][n]
         curve=self.curves[n_ring]
@@ -1700,22 +1881,32 @@ class AdvancingFront(object):
         # find our two neighbors on the ring:check forward:
         nbrs=[]
         for nbr in self.grid.node_to_nodes(n):
-            if self.grid.nodes['oring'][nbr]-1!=n_ring:
+            j=self.grid.nodes_to_edge([n,nbr])
+            j_ring=self.grid.edges['oring'][j]
+            if j_ring==0:
                 continue
+            assert j_ring-1==n_ring
+
+            # The test below is not robust with intersecting curves,
+            # and is why edges have to track their own ring.
+            
+            #if self.grid.nodes['oring'][nbr]-1!=n_ring:
+            #    continue
             nbrs.append(nbr)
-        if len(nbrs)>2:
-            # annoying, but happens.  one or more edges are internal,
-            # and two are along the curve.
-            nbrs.append(n)
-            # sort them along the ring
-            all_f=(self.grid.nodes['ring_f'][nbrs]-n_f) % L
-            order=np.argsort(all_f)
-            nbrs=[ nbrs[order[-1]], nbrs[order[1]] ]
+        # With the above check on edge oring, this should not be necessary.
+        # if len(nbrs)>2:
+        #     # annoying, but happens.  one or more edges are internal,
+        #     # and two are along the curve.
+        #     nbrs.append(n)
+        #     # sort them along the ring - HERE this logic is likely not robust for open curves
+        #     all_f=(self.grid.nodes['ring_f'][nbrs]-n_f) % L 
+        #     order=np.argsort(all_f)
+        #     nbrs=[ nbrs[order[-1]], nbrs[order[1]] ]
         assert len(nbrs)==2
-        
-        if curve.is_forward(self.grid.nodes['ring_f'][nbrs[0]],
+
+        if curve.is_forward(self.node_ring_f(nbrs[0],n_ring),
                             n_f,
-                            self.grid.nodes['ring_f'][nbrs[1]] ):
+                            self.node_ring_f(nbrs[1],n_ring) ):
             pass # already in nice order
         else:
             nbrs=[nbrs[1],nbrs[0]]
@@ -1727,7 +1918,7 @@ class AdvancingFront(object):
             while 1:
                 # beyond cutoff?
                 if ( (cutoff is not None) and
-                     (sgn*(self.grid.nodes['ring_f'][trav[1]] - n_f) )%L > cutoff ):
+                     (sgn*(self.node_ring_f(trav[1],n_ring) - n_f) )%L > cutoff ):
                     break
                 # is trav[1] something which limits the sliding of n?
                 trav_nbrs=self.grid.node_to_nodes(trav[1])
@@ -1755,7 +1946,8 @@ class AdvancingFront(object):
                 trav=[trav[1],nxt]
             stops.append(trav[1])
             
-        return self.grid.nodes['ring_f'][ stops ]
+        return [self.node_ring_f(m,n_ring)
+                for m in stops]
     
     def find_slide_conflicts(self,n,delta_f):
         n_ring=self.grid.nodes['oring'][n]-1
@@ -1773,34 +1965,36 @@ class AdvancingFront(object):
             if self.grid.nodes['oring'][nbr]-1!=n_ring:
                 continue
 
-            nbr_f=self.grid.nodes['ring_f'][nbr]
+            nbr_f=self.node_ring_f(nbr,n_ring)
             if self.grid.node_degree(nbr)!=2:
                 continue
 
             if delta_f>0:
                 # either the nbr is outside our slide area, or could
                 # be in the opposite direction along the ring
-                if curve.is_forward(n_f,n_f+delta_f,nbr_f):
+                
+                if not curve.is_forward(n_f,nbr_f,n_f+delta_f):
                     continue
+
                 to_delete.append(nbr)
                 he=self.grid.nodes_to_halfedge(n,nbr)
                 while 1:
                     he=he.fwd()
                     nbr=he.node_fwd()
-                    nbr_f=self.grid.nodes['ring_f'][nbr]
+                    nbr_f=self.node_ring_f(nbr,n_ring)
                     if curve.is_forward(n_f,n_f+delta_f,nbr_f):
                         break
                     to_delete.append(nbr)
                 break
             else:
-                if curve.is_reverse(n_f,n_f+delta_f,nbr_f):
+                if not curve.is_reverse(n_f,nbr_f,n_f+delta_f):
                     continue
                 to_delete.append(nbr)
                 he=self.grid.nodes_to_halfedge(nbr,n)
                 while 1:
                     he=he.rev()
                     nbr=he.node_rev()
-                    nbr_f=self.grid.nodes['ring_f'][nbr]
+                    nbr_f=self.node_ring_f(nbr,n_ring)
                     if curve.is_reverse(n_f,n_f+delta_f,nbr_f):
                         break
                     to_delete.append(nbr)

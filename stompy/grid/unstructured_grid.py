@@ -335,8 +335,16 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                               cells=grid.cells['nodes'])
         for field in ['cells','mark']:
             self.edges[field] = grid.edges[field]
-        for field in ['mark','edges','_center','_area']:
+        for field in ['mark','_center','_area']:
             self.cells[field] = grid.cells[field]
+        # special handling for edges, so it's not required for max_sides to
+        # match up
+        if self.max_sides < grid.max_sides:
+            assert np.all(grid.cells['edges'][:,self.max_sides:]<0)
+            self.cells['edges']=grid.cells['edges'][:,:self.max_sides]
+        else:
+            self.cells['edges'][:,grid.max_sides:]=self.UNDEFINED
+            self.cells['edges'][:,:grid.max_sides]=grid.cells['edges']
 
     def modify_max_sides(self,max_sides):
         """ 
@@ -400,8 +408,6 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         if isinstance(nc,str):
             # nc=qnc.QDataset(nc)
             nc=xr.open_dataset(nc)
-        elif isinstance(nc,qnc.QDataset):
-            raise Exception("UnstructuredGrid.from_ugrid requires a string or a xarray Dataset")
 
         if mesh_name is None:
             meshes=[]
@@ -701,8 +707,6 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 return
             elif on_exists == 'overwrite':
                 self.edges[name] = data
-            else:
-                assert False,"Bad option for on_exists: %s"%on_exists
         else:
             self.edges=recarray_add_fields(self.edges,
                                            [(name,data)])
@@ -720,8 +724,6 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 return
             elif on_exists == 'overwrite':
                 self.nodes[name] = data
-            else:
-                assert False,"Bad option for on_exists: %s"%on_exists
         else:
             self.nodes=recarray_add_fields(self.nodes,
                                            [(name,data)])
@@ -730,7 +732,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         self.nodes=recarray_del_fields(self.nodes,names)
         self.node_dtype=self.nodes.dtype
         
-    def add_cell_field(self,name,data,on_exists='fail'):
+    def add_cell_field(self,name,data):
         """
         modifies cell_dtype to include a new field given by name,
         initialize with data.  NB this requires copying the cells
@@ -739,19 +741,13 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         # will need to get fancier to discern vector dtypes
         # assert data.ndim==1  - maybe no need to be smart?
 
-        if name in np.dtype(self.cell_dtype).names:
-            if on_exists == 'fail':
-                raise GridException("Cell field %s already exists"%name)
-            elif on_exists == 'pass':
-                return
-            elif on_exists == 'overwrite':
-                self.cells[name] = data
-            else:
-                assert False,"Bad option for on_exists: %s"%on_exists
+        self.cells=recarray_add_fields(self.cells,
+                                       [(name,data)])
+        # which is better?  not sure.
+        if 0:
+            # copy, to avoid mutating class' data
+            self.cell_dtype=self.cell_dtype + [(name,data.dtype)]
         else:
-            self.cells=recarray_add_fields(self.cells,
-                                           [(name,data)])
-
             # let recarray_add_fields do the work
             self.cell_dtype=self.cells.dtype
     def delete_cell_field(self,*names):
@@ -778,7 +774,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         
         node_map[:]=-999
         # and this after truncating nodes:
-        node_map[:-1][nsort] = np.arange(self.Nnodes())
+        # This is causing a problem, where Nnodes is smaller than the size of nsort
+        # Should be fixed by taking only active portion of nsort
+        node_map[:-1][nsort[:Nactive]] = np.arange(self.Nnodes())
         node_map[-1] = -1 # missing nodes map -1 to -1
 
         self.edges['nodes'] = node_map[self.edges['nodes']]
@@ -970,6 +968,25 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             cell_map[n]=self.add_cell(**kwargs)
 
         return node_map,edge_map,cell_map
+
+    def boundary_cycle(self):
+        # find a point outside the domain:
+        x0=self.nodes['x'].min(axis=0)-1.0
+        # grab nearby edges
+        edges_near=self.select_edges_nearest(x0,count=6)
+        max_nodes=self.Nnodes()
+        potential_cells=self.find_cycles(max_cycle_len=max_nodes,
+                                         starting_edges=edges_near,
+                                         check_area=False)
+        best=(0.0,None) # Area, nodes
+        for pc in potential_cells:
+            segs=self.nodes['x'][pc]
+            A=signed_area(segs)
+            
+            # Looking for the most negative area
+            if A<best[0]:
+                best=(A,pc)
+        return best[1][::-1] # reverse, to return a CCW, positive area string.
         
     def find_cycles(self,max_cycle_len=4,starting_edges=None,check_area=True):
         """ traverse edges, returning a list of lists, each list giving the
@@ -2244,6 +2261,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     def plot_boundary(self,ax=None,**kwargs):
         return self.plot_edges(mask=self.edges['mark']>0,**kwargs)
 
+    def node_clip_mask(self,clip):
+        return within_2d(self.nodes['x'],clip)
+    
     def plot_nodes(self,ax=None,mask=None,values=None,sizes=20,labeler=None,clip=None,
                    **kwargs):
         """ plot nodes as scatter
@@ -2255,7 +2275,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             mask=~self.nodes['deleted']
 
         if clip is not None: # convert clip to mask
-            mask=mask & within_2d(self.nodes['x'],clip)
+            mask=mask & self.node_clip_mask(clip)
 
         if values is not None:
             values=values[mask]

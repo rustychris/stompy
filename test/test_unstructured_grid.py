@@ -6,6 +6,8 @@ import nose
 from nose.tools import assert_raises
 
 from stompy.grid import unstructured_grid
+from stompy.model.delft import dfm_grid
+from stompy import utils
 
 
 def test_undo_00():
@@ -125,7 +127,20 @@ def test_merge_nodes():
     gt.merge_nodes(5,11)
     gt.merge_nodes(4,8)
 
+def test_mass_delete():
+    g=dfm_grid.DFMGrid(os.path.join(sample_data,"lsb_combined_v14_net.nc"))
 
+    g.edge_to_cells()
+
+    clip=(577006.59313042194, 579887.89496937161, 4143066.3785693897, 4145213.4131655102)
+
+    node_to_del=np.nonzero(g.node_clip_mask(clip))[0]
+
+    for n in node_to_del:
+        g.delete_node_cascade(n)
+    g.renumber_nodes()
+
+    
 ##         
 def test_pickle():
     ug=unstructured_grid.UnstructuredGrid(max_sides=4)
