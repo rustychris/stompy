@@ -1,9 +1,11 @@
 import datetime
+import os
+import logging
 
 import numpy as np
 import xarray as xr
+import pandas as pd
 import requests
-import logging
 
 log=logging.getLogger('usgs_nwis')
 
@@ -16,20 +18,56 @@ except ImportError:
     seawater=None
 
 
+def nwis_dataset_collection(stations,*a,**k):
+    """
+    Fetch from multiple stations, glue together to a combined dataset.
+    The rest of the options are the same as for nwis_dataset()
+    """
+    ds_per_site=[]
+    for station in stations:
+        ds=nwis_dataset(station,*a,**k)
+        ds['site']=('site',),[station]
+        ds_per_site.append(ds)
+
+    # And now glue those all together, but no filling of gaps yet.
+    # would need to add 'site' as a dimension on data variables for this to work
+    # dataset=ds_per_gage[0]
+    #for other in ds_per_gage[1:]:
+    #    dataset=dataset.combine_first(other)
+
+    # As cases of missing data come up, this will have to get smarter about padding
+    # individual sites.
+    return xr.concat( ds_per_site, dim='site')
+        
 def nwis_dataset(station,start_date,end_date,products,
-                 days_per_request=None):
+                 days_per_request=None,frequency='realtime',
+                 cache_dir=None):
     """
     Retrieval script for USGS waterdata.usgs.gov
     
     Retrieve one or more data products from a single station.
-    station: string or numeric identifier for COOPS station
+    station: string or numeric identifier for COOPS station.
+
     product: string identifying the variable to retrieve.  See all_products at 
     the top of this file.
     start_date,end_date: period to retrieve, as python datetime, matplotlib datenum,
     or numpy datetime64.
+
     days_per_request: batch the requests to fetch smaller chunks at a time.
+    if this is an integer, then chunks will start with start_date, then start_date+days_per_request,
+    etc.
+      if this is a string, it is interpreted as the frequency argument to pandas.PeriodIndex.
+    so 'M' will request month-aligned chunks.  this has the advantage that requests for different
+    start dates will still be aligned to integer periods, and can reuse cached data.
+   
+    cache_dir: if specified, save each chunk as a netcdf file in this directory,
+      with filenames that include the gage, period and products.  The directory must already
+      exist.
 
     returns an xarray dataset.
+
+    frequency: defaults to "realtime" which should correspond to the original 
+      sample frequency.  Alternatively, "daily" which access daily average values.
 
     Note that names of variables are inferred from parameter codes where possible,
     but this is not 100% accurate with respect to the descriptions provided in the rdb,
@@ -45,9 +83,13 @@ def nwis_dataset(station,start_date,end_date,products,
     # Only for small requests of recent data:
     # base_url="https://waterdata.usgs.gov/nwis/uv"
     # Otherwise it redirects to here:
-    base_url="https://nwis.waterdata.usgs.gov/usa/nwis/uv/"
-    # ?format=rdb&begin_date=2012-08-01&cb_00060=on&site_no=11337190&end_date=2012-08-15&period=&cb_00010=on
-
+    if frequency=='realtime':
+        base_url="https://nwis.waterdata.usgs.gov/usa/nwis/uv/"
+    elif frequency=='daily':
+        base_url="https://waterdata.usgs.gov/nwis/dv"
+    else:
+        raise Exception("Unknown frequency: %s"%(frequency))
+    
     params['period']=''
 
     # generator for dicing up the request period
@@ -57,6 +99,14 @@ def nwis_dataset(station,start_date,end_date,products,
 
         if days_per_request is None:
             yield (start_date,end_date)
+        elif isinstance(days_per_request,str):
+            periods=pd.PeriodIndex(start=start_date,end=end_date,freq=days_per_request)
+            for period in periods:
+                # The round() call both avoids a warning about nanoseconds, and
+                # makes this output equivalent to the days_per_request~integer
+                # case below
+                yield (period.start_time.to_pydatetime(),
+                       period.end_time.round('h').to_pydatetime())
         else:
             interval=datetime.timedelta(days=days_per_request)
 
@@ -70,19 +120,35 @@ def nwis_dataset(station,start_date,end_date,products,
     last_url=None
     
     for interval_start,interval_end in periods(start_date,end_date,days_per_request):
-        log.info("Fetching %s -- %s"%(interval_start,interval_end))
 
         params['begin_date']=utils.to_datetime(interval_start).strftime('%Y-%m-%d')
         params['end_date']  =utils.to_datetime(interval_end).strftime('%Y-%m-%d')
 
-        req=requests.get(base_url,params=params)
-        data=req.text
-        ds=rdb.rdb_to_dataset(text=data)
-        if ds is None: # There was no data there
-            log.warning("    no data found for this period")
-            continue
-        ds.attrs['url']=req.url
+        if cache_dir is not None:
+            cache_fn=os.path.join(cache_dir,
+                                  "%s_%s_%s_%s.nc"%(station,
+                                                    "-".join(["%d"%p for p in products]),
+                                                    params['begin_date'],
+                                                    params['end_date']))
+        else:
+            cache_fn=None
+            
+        if (cache_fn is not None) and os.path.exists(cache_fn):
+            log.info("Cached   %s -- %s"%(interval_start,interval_end))
+            ds=xr.open_dataset(cache_fn)
+        else:
+            log.info("Fetching %s -- %s"%(interval_start,interval_end))
+            req=requests.get(base_url,params=params)
+            data=req.text
+            ds=rdb.rdb_to_dataset(text=data)
+            if ds is None: # There was no data there
+                log.warning("    no data found for this period")
+                continue
+            ds.attrs['url']=req.url
 
+            if cache_fn is not None:
+                ds.to_netcdf(cache_fn)
+                
         # USGS returns data inclusive of the requested date range - leading to some overlap
         if len(datasets):
             ds=ds.isel(time=ds.time>datasets[-1].time[-1])

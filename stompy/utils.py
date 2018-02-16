@@ -1833,7 +1833,6 @@ def isolate_downcasts(ds,
             xy_m[c,:] = xy[s]
     tr = Transect(xy=xy_m,times=times_m,elevations=z_mn.T,scalar=scalar_mn.T)
 
-
 def nan_cov(m,rowvar=1,demean=False):
     """ 
     covariance of the matrix, follows calling conventions of
@@ -1898,3 +1897,10 @@ def nan_cov(m,rowvar=1,demean=False):
 
     return c
 
+def remove_repeated(A):
+    """
+    A: numpy 1D array
+    return A, without repeated element values.
+    """
+    return np.concatenate( ( A[:1], A[1:][ np.diff(A)!=0 ] ) )
+    

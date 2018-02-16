@@ -6544,7 +6544,7 @@ class DispArray(object):
         self.data=data
     def matches(self,name):
         for patt in self.patts:
-            if re.match(patt,name):
+            if re.match(patt,name,flags=re.IGNORECASE):
                 return True
         return False
     def text(self,write_supporting=True):
@@ -6674,6 +6674,7 @@ class Scenario(scriptable.Scriptable):
         self.src_tags=[]
         
         self.dispersions=NamedObjects(scenario=self)
+        self.velocities=NamedObjects(scenario=self)
 
         if hydro:
             print( "Setting hydro")
@@ -8067,6 +8068,11 @@ INCLUDE '{self.atr_filename}'  ; attributes file
         #  if any goes with each substance
         return len(self.scenario.dispersions)
 
+    @property 
+    def n_velocities(self):
+        # same deal as dispersions
+        return len(self.scenario.velocites)
+
     @property
     def dispersions_declaration(self):
         """ the count and substance assignment for dispersion arrays
@@ -8087,6 +8093,25 @@ INCLUDE '{self.atr_filename}'  ; attributes file
         return "\n".join(lines)
 
     @property
+    def velocities_declaration(self):
+        """ the count and substance assignment for velocity arrays
+        """
+        lines=[" {} ; velocity arrays".format(len(self.scenario.velocities))]
+        if len(self.scenario.velocities):
+            subs=list( self.scenario.substances.keys() )[:self.scenario.n_active_substances]
+            assignments=np.zeros(len(subs),'i4') # 1-based
+
+            for ai,a in enumerate(self.scenario.velocities.values()):
+                lines.append(" '{}'".format(a.name))
+                for subi,sub in enumerate(subs):
+                    if a.matches(sub):
+                        assignments[subi]=ai+1 # to 1-based
+            lines.append( " ".join(["%d"%assign for assign in assignments])  + " ; assign to substances" )
+        else:
+            self.log.info("No velocity arrays, will skip assignment to substances")
+        return "\n".join(lines)
+    
+    @property
     def dispersions_definition(self):
         if len(self.scenario.dispersions)==0:
             return ""
@@ -8102,7 +8127,7 @@ INCLUDE '{self.atr_filename}'  ; attributes file
 
             for exch_i in range(hydro.n_exch_x):
                 vals=[disp.data[exch_i] for disp in disps]
-                lines.append( " ".join(["%.3e"%v for v in vals]) + "; from each array" )
+                lines.append( " ".join(["%.3e"%v for v in vals]) )
 
             assert hydro.n_exch_y==0 # not implemented
                 
@@ -8118,6 +8143,38 @@ INCLUDE '{self.atr_filename}'  ; attributes file
                 fp.write("\n".join(lines))
             return "INCLUDE '{}'".format(disp_filename)
 
+    @property
+    def velocities_definition(self):
+        if len(self.scenario.velocities)==0:
+            return ""
+        else:
+            lines=['1 ; ASCII data',
+                   '1 ; information is constant in time, provided without defaults']
+
+            hydro=self.scenario.hydro
+
+            # add x direction:
+            lines.append("1.0 ; scale factor for x")
+            velos=self.scenario.velocities.values()
+
+            for exch_i in range(hydro.n_exch_x):
+                vals=[velo.data[exch_i] for velo in velos]
+                lines.append( " ".join(["%.3e"%v for v in vals]) )
+
+            assert hydro.n_exch_y==0 # not implemented
+                
+            lines.append("1.0 ; scale factor for z")
+
+            for exch_i in range(hydro.n_exch_x+hydro.n_exch_y,hydro.n_exch):
+                vals=[velo.data[exch_i] for velo in velos]
+                lines.append( " ".join(["%.3e"%v for v in vals]) )
+                
+            # Write them out to a separate text file
+            velo_filename='velocities.dat'
+            with open(os.path.join(self.scenario.base_path,velo_filename),'wt') as fp:
+                fp.write("\n".join(lines))
+            return "INCLUDE '{}'".format(velo_filename)
+        
     @property
     def base_x_dispersion(self):
         return self.scenario.base_x_dispersion
@@ -8135,8 +8192,8 @@ INCLUDE '{self.atr_filename}'  ; attributes file
  {self.n_exch_y}  ; exchanges in direction 2
  {self.n_exch_z}  ; exchanges in direction 3
 ; 
- {self.dispersions_declaration}
- 0  ; velocity arrays
+ {self.dispersions_declaration} ; dispersions
+ {self.velocities_declaration} ; velocities
 ; 
  1  ; first form is used for input 
  0  ; exchange pointer option
@@ -8145,7 +8202,6 @@ INCLUDE '{self.atr_filename}'  ; attributes file
  1  ; first dispersion option nr - these constants will be added in.
  1.0 1.0 1.0   ; scale factors in 3 directions
  {self.base_x_dispersion} {self.base_y_dispersion} {self.base_z_dispersion} ; dispersion in x,y,z directions
-; this is where the GUI puts an INCLUDE 'test.dsp'
 {self.dispersions_definition}
 ; 
  -2  ; first area option
@@ -8153,10 +8209,9 @@ INCLUDE '{self.atr_filename}'  ; attributes file
 ; 
  -2  ; first flow option
 '{self.flo_filename}'  ; flow file
-; 
-; Maybe this is where explicit dispersion arrays go??
-; No explicit velocity arrays
-; 
+; Velocities
+{self.velocities_definition}
+; Lengths
   1  ; length vary
  0   ; length option
 '{self.len_filename}'  ; length file
