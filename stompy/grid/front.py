@@ -707,7 +707,8 @@ class JoinStrategy(Strategy):
         mover=None
 
         j_ac=grid.nodes_to_edge(na,nc)
-
+        j_ac_oring=0
+        
         if j_ac is not None:
             # special case: nodes are already joined, but there is no
             # cell.
@@ -716,6 +717,8 @@ class JoinStrategy(Strategy):
             # not creation)
             if (grid.edges['cells'][j_ac,0] >=0) or (grid.edges['cells'][j_ac,1]>=0):
                 raise StrategyFailed("Edge already has real cells")
+            # remember for tests below:
+            j_ac_oring=grid.edges['oring'][j_ac]
             grid.delete_edge(j_ac)
             j_ac=None
             
@@ -739,13 +742,22 @@ class JoinStrategy(Strategy):
             if ring!=grid.nodes['oring'][nc]:
                 raise StrategyFailed("Cannot join across rings")
             if grid.nodes['oring'][nb]==ring:
-                # this is a problem if nb falls in between them.
-                fa,fb,fc=grid.nodes['ring_f'][ [na,nb,nc] ]
-                curve=site.af.curves[ring-1]
-
-                if curve.is_ordered(fa,fb,fc):
-                    raise StrategyFailed("Cannot join across middle node")
-            
+                # This original check is too lenient.  in a narrow
+                # channel, it's possible to have the three nodes
+                # on the same ring, straddling the channel, and this
+                # may allow for a join across the channel.
+                
+                #   # this is a problem if nb falls in between them.
+                #   fa,fb,fc=grid.nodes['ring_f'][ [na,nb,nc] ]
+                #   curve=site.af.curves[ring-1]
+                #   
+                #   if curve.is_ordered(fa,fb,fc):
+                #       raise StrategyFailed("Cannot join across middle node")
+                
+                # instead, check for an edge between a and c.
+                if j_ac_oring!=ring:
+                    raise StrategyFailed("Cannot join non-adjacent along ring")
+                
             # probably okay, not sure if there are more checks to attempt
             if grid.nodes['fixed'][na]==site.af.HINT:
                 mover,anchor=na,nc
@@ -1586,7 +1598,7 @@ class AdvancingFront(object):
                 return curve.point_to_f(self.grid.nodes['x'][m],
                                         n_f,direction=0)
 
-        if 1:
+        if 1: # delete this once the new stanza below is trusted
             # explicitly record whether the curve has the opposite orientation
             # of the edge.  Hoping to retire this way
             mid_point = 0.5*(self.grid.nodes['x'][n] + self.grid.nodes['x'][anchor])
@@ -1800,18 +1812,19 @@ class AdvancingFront(object):
         assert np.isfinite(f0)
         assert ring>=0
 
-        # used to just be f, but I think it's more appropriate to
-        # be f[0]
-        cost_slide=lambda f: cost_free( self.curves[ring](f[0]) )
-
         local_length=self.scale( x0 )
 
-        # if n==1207: 
-        #     print("DBG DBG DBG")
-        #     import pdb
-        #     pdb.set_trace()
-            
         slide_limits=self.find_slide_limits(n,3*local_length)
+
+        # used to just be f, but I think it's more appropriate to
+        # be f[0]
+        def cost_slide(f):
+            # lazy bounded optimization
+            f=f[0]
+            fclip=np.clip(f,*slide_limits)
+            err=(f-fclip)**2
+            return err+cost_free( self.curves[ring](fclip) )
+
         
         new_f = opt.fmin(cost_slide,
                          [f0],

@@ -386,9 +386,14 @@ class ShadowCGALCDT(object):
         # re: _index
         self.dt_insert(n)
         
-    def dt_insert(self,n):
-        xy=self.g.nodes['x'][n]
-        pnt = Point_2( xy[0], xy[1] )
+    def dt_insert(self,n,x=None):
+        """
+        specify x to override the location, otherwise it comes from 
+        the grid.
+        """
+        if x is None:
+            x=self.g.nodes['x'][n]
+        pnt = Point_2( x[0], x[1] )
         assert self.g.nodes['vh'][n] in [0,None]
         vh = self.g.nodes['vh'][n] = self.DT.insert(pnt)
         self.vh_info[vh] = n
@@ -422,6 +427,7 @@ class ShadowCGALCDT(object):
         if len(to_remove) != len(g.node_to_edges(n)):
             # Usually means that there is an inconsistency in the CDT
             log.error("WARNING: modify_node len(DT constraints) != len(pnt2edges(i))")
+            import pdb
             pdb.set_trace()
             
         # remove all of the constraints in one go:
@@ -437,7 +443,10 @@ class ShadowCGALCDT(object):
         # all constraints (instead of potentially creating new constraints,
         # and having to delete them and roll back)
 
-        self.after_add_node(g,'modify_node',n,**k)
+        # This throws away k['x']
+        # self.after_add_node(g,'modify_node',n,**k)
+        # This is clearer and keeps the right 'x'
+        self.dt_insert(n,k['x'])
 
         exc=None
         
@@ -494,10 +503,10 @@ class ShadowCGALCDT(object):
         nodes=g.edges['nodes'][j]
         self.remove_constraint(nodes[0],nodes[1])
         
-    def plot_dt(self):
+    def plot_dt(self,ax=None):
         from matplotlib import pyplot,collections
 
-        pyplot.clf()
+        # pyplot.clf()
 
         segs=[]
         csegs=[]
@@ -515,7 +524,7 @@ class ShadowCGALCDT(object):
             else:
                 segs.append(seg)
         ecoll=collections.LineCollection(segs)
-        ax=pyplot.gca()
+        ax=ax or pyplot.gca()
         ax.add_collection(ecoll)
         ccoll=collections.LineCollection(csegs,color='m')
         ax.add_collection(ccoll)
