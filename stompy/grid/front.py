@@ -1484,14 +1484,19 @@ class AdvancingFront(object):
 
         # must be able to either muck with n, or split the anchor-n edge
         # in the past we assumed that this sort of check was already done
-        node_resamplable=(n_deg==2) and (self.grid.nodes['fixed'][n] in [self.HINT,self.SLIDE])
         j=he.j
         edge_resamplable=( (self.grid.edges['fixed'][he.j]!=self.RIGID)
                            and (self.grid.edges['cells'][j,0]<0)
                            and (self.grid.edges['cells'][j,1]<0) )
-            
-        if not (node_resamplable or edge_resamplable):
-            self.log.info("Edge and node are RIGID/deg!=2, no resampling possible")
+
+        # node_resamplable=(n_deg==2) and (self.grid.nodes['fixed'][n] in [self.HINT,self.SLIDE])
+
+        # it's possible to have a node that, based on the above test, is resamplable,
+        # but the edge is not (because the edge test includes the possibility of
+        # a cell on the opposite side).  
+        #if not (node_resamplable or edge_resamplable):
+        if not edge_resamplable:
+            self.log.debug("Edge and node are RIGID/deg!=2, no resampling possible")
             return n
 
         span_length,span_nodes = self.free_span(he,self.max_span_factor*scale,direction)
@@ -2025,6 +2030,7 @@ class AdvancingFront(object):
 
         self.grid.modify_node(n,x=curve(new_f),ring_f=new_f)
 
+    loop_count=0
     def loop(self,count=0):
         while 1:
             site=self.choose_site()
@@ -2034,6 +2040,7 @@ class AdvancingFront(object):
                 self.log.error("Failed to advance. Exiting loop early")
                 return False
             count-=1
+            self.loop_count+=1
             if count==0:
                 break
         return True
