@@ -32,9 +32,11 @@ from ..spatial import medial_axis as ma
 #  is removed - it's not good from the simplification point of view, either...
 #  
 
-def adjust_scale(geo,scale,r=None,min_edge_length=1.0):
+def adjust_scale(geo,scale=None,r=None,min_edge_length=1.0):
     """ The alternative to smooth - creates a new scale that is smaller
-    where needed to match the clearances in geo
+    where needed to match the clearances in geo.
+    This is crufty and probably only a starting point for something
+    functional.
 
     geo: the shoreline polygon
     scale: the XYZField describing the requested scale
@@ -43,13 +45,11 @@ def adjust_scale(geo,scale,r=None,min_edge_length=1.0):
        can force insertion of Steiner points
     """
     # global adjust_geo,new_scale,tri,bdry_ma
-    
+
     if not isinstance(scale,field.XYZField):
         raise ValueError("density must be an XYZField")
 
-    old_scale = scale
     scale = field.ConstrainedScaleField(scale.X, scale.F)
-    new_scale = scale
 
     if r is not None:
         scale.r = r
@@ -67,10 +67,14 @@ def adjust_scale(geo,scale,r=None,min_edge_length=1.0):
     diam = 2*radii
 
     # The possible new way, starting with too many points and paring down...
-    X = np.concatenate( (scale.X,vcenters) )
-    F = np.concatenate( (scale.F,diam) )
+    if scale is not None:
+        new_X = np.concatenate( (scale.X,vcenters) )
+        new_F = np.concatenate( (scale.F,diam) )
+    else:
+        new_X=vcenters
+        new_F=diam
+
     scale = field.ConstrainedScaleField(X,F)
-    new_scale = scale
     scale.remove_invalid()
 
     return scale
@@ -102,7 +106,7 @@ def apollonius_scale(geo,r,min_edge_length=1.0,process_islands=True):
         for int_ring in geo.interiors:
             p = int_ring.convex_hull
 
-            points = array(p.exterior.coords)
+            points = np.array(p.exterior.coords)
             center = points.mean(axis=0)
 
             # brute force - find the maximal distance between
@@ -127,12 +131,12 @@ def apollonius_scale(geo,r,min_edge_length=1.0,process_islands=True):
             # of edges, so go conservative here:
             island_scales.append( feature_scale / 3.0 )
 
-        island_centers = array(island_centers)
-        island_scales = array(island_scales)
+        island_centers = np.array(island_centers)
+        island_scales = np.array(island_scales)
 
         if len(island_centers) > 0:
-            vcenters = concatenate( (vcenters,island_centers) )
-            diam = concatenate( (diam,island_scales) )
+            vcenters = np.concatenate( (vcenters,island_centers) )
+            diam = np.concatenate( (diam,island_scales) )
         print("Done with islands")
 
     # The possible new way, starting with too many points and paring down...

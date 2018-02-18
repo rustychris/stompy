@@ -191,7 +191,7 @@ class Graph(object):
         plt.draw()
         
     def plot_elements(self,colors=None):
-        i = array([0,1,2,0])
+        i = np.array([0,1,2,0])
         
         all_lines = self.nodes[self.elements[:,i]]
         coll = LineCollection(all_lines)
@@ -282,7 +282,7 @@ class Boundary(object):
 
             rings = [geo.exterior] + list(geo.interiors)
             for ring in rings:
-                orig_nodes = array(ring.coords)
+                orig_nodes = np.array(ring.coords)
                 if clean_geo:
                     orig_nodes = self.remove_repeated(orig_nodes)
                     
@@ -291,7 +291,7 @@ class Boundary(object):
                 
                 n_nodes = these_nodes.shape[0]
                 n = np.arange(n_nodes)
-                these_edges = start_n + transpose( np.array([n,(n+1)%n_nodes]) )
+                these_edges = start_n + np.transpose( np.array([n,(n+1)%n_nodes]) )
                 
                 all_nodes.append(these_nodes)
                 all_edges.append(these_edges)
@@ -707,7 +707,7 @@ class VoronoiDiagram(Graph):
                         l.append(a)
 
                 # keep it as a list for now.
-                self.dual_lookup[k] = node_mapping[ array(l) ].tolist()
+                self.dual_lookup[k] = node_mapping[ np.array(l) ].tolist()
 
         # new node is between the old two nodes:
         self.nodes[a] = 0.5*(self.nodes[a] + self.nodes[b])

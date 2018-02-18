@@ -1719,6 +1719,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         The opposite of merge_edges, take an existing edge and insert
         a node into the middle of it.
         Does not allow for any cells to be involved.
+        Defaults to midpoint
         """
         nA,nC=self.edges['nodes'][j]
         assert np.all( self.edge_to_cells(j) < 0 )
