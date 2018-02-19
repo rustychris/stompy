@@ -647,9 +647,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 # array with fewer than maxsides
                 Nnode_in = cells.shape[1]
                 self.cells['nodes'][:,:Nnode_in] = cells
-                self.cells['_center'] = np.nan # signal stale
-                self.cells['_area'] = np.nan   # signal stale
-                self.cells['edges'] = self.UNKNOWN # and no data here
+        self.cells['_center'] = np.nan # signal stale
+        self.cells['_area'] = np.nan   # signal stale
+        self.cells['edges'] = self.UNKNOWN # and no data here
 
         if isinstance(edges,int):
             self.edges = np.zeros(edges,self.edge_dtype)

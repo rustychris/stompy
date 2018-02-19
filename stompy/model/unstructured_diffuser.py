@@ -1,9 +1,5 @@
 from __future__ import division
 from __future__ import print_function
-from builtins import str
-from builtins import range
-from builtins import object
-from past.utils import old_div
 
 import itertools
 
@@ -56,7 +52,7 @@ class Diffuser(object):
         """
         if cell is None:
             cell = self.grid.point_to_cell(xy)
-        else:
+        if xy is None:
             xy = self.grid.cells_center()[cell]
             
         assert on_duplicate=='add'
