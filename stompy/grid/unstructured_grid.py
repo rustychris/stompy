@@ -732,7 +732,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         self.nodes=recarray_del_fields(self.nodes,names)
         self.node_dtype=self.nodes.dtype
         
-    def add_cell_field(self,name,data):
+    def add_cell_field(self,name,data,on_exists='fail'):
         """
         modifies cell_dtype to include a new field given by name,
         initialize with data.  NB this requires copying the cells
@@ -740,15 +740,16 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         """
         # will need to get fancier to discern vector dtypes
         # assert data.ndim==1  - maybe no need to be smart?
-
-        self.cells=recarray_add_fields(self.cells,
-                                       [(name,data)])
-        # which is better?  not sure.
-        if 0:
-            # copy, to avoid mutating class' data
-            self.cell_dtype=self.cell_dtype + [(name,data.dtype)]
+        if name in np.dtype(self.cell_dtype).names:
+            if on_exists == 'fail':
+                raise GridException("Node field %s already exists"%name)
+            elif on_exists == 'pass':
+                return
+            elif on_exists == 'overwrite':
+                self.cells[name] = data
         else:
-            # let recarray_add_fields do the work
+            self.cells=recarray_add_fields(self.cells,
+                                           [(name,data)])
             self.cell_dtype=self.cells.dtype
     def delete_cell_field(self,*names):
         self.cells=recarray_del_fields(self.cells,names)
@@ -1264,6 +1265,35 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             if not self.cells['deleted'][c]:
                 centroids[ci]= np.array(self.cell_polygon(c).centroid)
         return centroids
+
+    def cells_centroid_py(self):
+        """
+        This is not currently any faster than using the above shapely 
+        code, but is pasted in here since it may become faster with 
+        some tweaking, or be more amenable to numba or cython acceleration
+        in the future.
+        """
+        A=self.cells_area()
+        cxy=np.zeros( (self.Ncells(),2), np.float64)
+
+        refs=self.nodes['x'][self.cells['nodes'][:,0]]
+
+        all_pnts=self.nodes['x'][self.cells['nodes']] - refs[:,None,:]
+
+        for c in np.nonzero(~self.cells['deleted'])[0]:
+            nodes=self.cell_to_nodes(c)
+
+            i=np.arange(len(nodes))
+            ip1=(i+1)%len(nodes)
+            nA=all_pnts[c,i]
+            nB=all_pnts[c,ip1]
+
+            tmp=(nA[:,0]*nB[:,1] - nB[:,0]*nA[:,1])
+            cxy[c,0] = ( (nA[:,0]+nB[:,0])*tmp).sum()
+            cxy[c,1] = ( (nA[:,1]+nB[:,1])*tmp).sum()
+        cxy /= 6*A[:,None]    
+        cxy += refs
+        return cxy
     
     def cells_center(self,refresh=False,mode='first3'):
         """ calling this method is preferable to direct access to the

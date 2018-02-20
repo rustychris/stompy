@@ -1,5 +1,4 @@
 from __future__ import print_function
-from builtins import range
 # reads in tide_consts.txt and sets basically the same info (a subset) of
 # what tide_data.py sets
 
