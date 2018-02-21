@@ -30,7 +30,7 @@ from matplotlib.tri import Triangulation
 from matplotlib.collections import PolyCollection, LineCollection
 from matplotlib.path import Path
 
-from ..spatial import gen_spatial_index
+from ..spatial import gen_spatial_index, proj_utils
 from ..utils import (mag, circumcenter, circular_pairs,signed_area, poly_circumcenter,
                      orient_intersection,array_append,within_2d, to_unit,
                      recarray_add_fields,recarray_del_fields)
@@ -345,6 +345,16 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         else:
             self.cells['edges'][:,grid.max_sides:]=self.UNDEFINED
             self.cells['edges'][:,:grid.max_sides]=grid.cells['edges']
+
+    def reproject(self,src_srs,dest_srs):
+        xform=proj_utils.mapper(src_srs,dest_srs)
+        new_g=self.copy()
+        new_g.nodes['x'] = xform(self.nodes['x'])
+        new_g.cells['_center']=np.nan
+        new_g._node_index=None
+        new_g._cell_center_index=None
+
+        return new_g
 
     def modify_max_sides(self,max_sides):
         """ 
