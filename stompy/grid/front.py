@@ -1551,38 +1551,28 @@ class AdvancingFront(object):
         # first, find a point on the original ring which satisfies the target_span
         anchor_oring=self.grid.nodes['oring'][anchor]-1
         n_oring=self.grid.nodes['oring'][n]-1
+        oring=self.grid.edges['oring'][j]-1 
 
         # Default, may be overwritten below
         anchor_f = self.grid.nodes['ring_f'][anchor]
         n_f = self.grid.nodes['ring_f'][n]
         
-        if anchor_oring != n_oring:
-            self.log.warning('resample: anchor and n on different rings.  Cautiously resample')
-            # This used to fail out and not resample.  With internal guide lines which
-            # intersect boundaries, have to be able to handle this situation.
-            # old note: could try to get clever and resample n in the "correct" direction.
-            # return n
-
-            if self.grid.nodes['fixed'][anchor]==self.RIGID:
-                oring=n_oring
-                # reverse lookup to get what anchor's f would be
-                # specify direction=0 because the curve may not have the same
-                # orientation as the Site / half-edge.
-                # that instructs Curve to search in both directions if it is
-                # not a closed curve
-                anchor_f = self.curves[oring].point_to_f(self.grid.nodes['x'][anchor],
-                                                         n_f,
-                                                         direction=0)
-            elif self.grid.nodes['fixed'][n]==self.RIGID:
-                oring=anchor_oring
-                n_f = self.curves[oring].point_to_f(self.grid.nodes['x'][n],
-                                                    anchor_f,
-                                                    direction=0) 
+        if anchor_oring != oring:
+            self.log.warning('resample: anchor on different rings.  Cautiously resample')
+            if n_oring==oring:
+                f_start=n_f # can use n to speed up point_to_f
             else:
-                raise Exception("Differing o-rings, but nobody is RIGID")
-        else:
-            oring=n_oring # roughly corresponds to the edge's ring
-            anchor_f = self.grid.nodes['ring_f'][anchor]
+                f_start=0.0 # not valid, so full search in point_to_f
+
+            anchor_f = self.curves[oring].point_to_f(self.grid.nodes['x'][anchor],
+                                                     n_f,
+                                                     direction=0)
+
+        if n_oring != oring:
+            # anchor_f is valid regardless of its original oring
+            n_f = self.curves[oring].point_to_f(self.grid.nodes['x'][n],
+                                                anchor_f,
+                                                direction=0) 
 
         # Easing into use of explicit edge orings
         assert oring==self.grid.edges['oring'][j]-1
