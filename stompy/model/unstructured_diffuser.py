@@ -18,13 +18,31 @@ class Diffuser(object):
     dt = 0.5
     alpha=0 # first order decay
     
-    def __init__(self,grid):
+    def __init__(self,grid,edge_depth=None,cell_depth=None):
+        """
+        edge_depth: [Nedges] array of stricly positive flux-face heights
+        for edges.
+
+        cell_depth: [Ncells] array of strictly positive cell thicknesses
+        """
         self.dirichlet_bcs = []
         self.neumann_bcs = []
 
         self.forced_cells = set()
         self.grid = grid
         self.init_grid_geometry()
+
+        if edge_depth is None:
+            self.dzf = np.ones(self.grid.Nedges())
+        else:
+            assert np.all( edge_depth>0 )
+            self.dzf=edge_depth
+
+        if cell_depth is None:
+            self.dzc = np.ones(self.grid.Ncells())
+        else:
+            assert np.all( cell_depth>0 )
+            self.dzc = cell_depth
 
     class PointOutsideDomain(Exception):
         pass
@@ -81,15 +99,6 @@ class Diffuser(object):
 
         self.normal_j = self.grid.edges_normals()
         self.area_c = self.grid.cells_area()
-
-        try:
-            self.dzf = self.grid.edges['depth_max'].clip(0.1,np.inf)
-        except ValueError:
-            self.dzf = np.ones(self.grid.Nedges())
-        try:
-            self.dzc = self.grid.cells['depth_max'].clip(0.1,np.inf)
-        except ValueError:
-            self.dzc = np.ones(self.grid.Ncells())
 
         self.K_j = 100*np.ones(self.grid.Nedges()) 
 

@@ -37,6 +37,7 @@ def interp_to_time_per_ll(df,tstamp,lat_col='latitude',lon_col='longitude',
 def weighted_grid_extrapolation(g,samples,alpha=1e-5,
                                 x_col='x',y_col='y',value_col='value',weight_col='weight',
                                 cell_col=None,
+                                edge_depth=None,cell_depth=None,
                                 return_weights=False):
     """ 
     g: instance of UnstructuredGrid
@@ -56,9 +57,9 @@ def weighted_grid_extrapolation(g,samples,alpha=1e-5,
         x_col=None
         y_col=None
         
-    D=unstructured_diffuser.Diffuser(g)
+    D=unstructured_diffuser.Diffuser(g,edge_depth=edge_depth,cell_depth=cell_depth)
     D.set_decay_rate(alpha)
-    Dw=unstructured_diffuser.Diffuser(g)
+    Dw=unstructured_diffuser.Diffuser(g,edge_depth=edge_depth,cell_depth=cell_depth)
     Dw.set_decay_rate(alpha)
 
     for i in range(len(samples)):
