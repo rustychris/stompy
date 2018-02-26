@@ -8,11 +8,15 @@ Largely a port of paver.py.
 from __future__ import print_function
 import math
 import numpy as np
+from collections import defaultdict
+
 import time
 from scipy import optimize as opt
 import pdb
 import logging
 log=logging.getLogger(__name__)
+
+from shapely import geometry
 
 from . import (unstructured_grid,
                exact_delaunay,
@@ -1593,26 +1597,31 @@ class AdvancingFront(object):
                 return curve.point_to_f(self.grid.nodes['x'][m],
                                         n_f,direction=0)
 
-        if 1: # delete this once the new stanza below is trusted
+        if 0: # delete this once the new stanza below is trusted
             # explicitly record whether the curve has the opposite orientation
-            # of the edge.  Hoping to retire this way
+            # of the edge.  Hoping to retire this way.
+            # This is actually dangerous, as the mid_point does not generally
+            # fall on the line, and so we have to give it a generous rel_tol.
             mid_point = 0.5*(self.grid.nodes['x'][n] + self.grid.nodes['x'][anchor])
             mid_f=self.curves[oring].point_to_f(mid_point)
 
             if curve.is_forward(anchor_f,mid_f,n_f):
                 curve_direction=1
-                # a curve forward that bakes in curve_direction
-                rel_curve_fwd=lambda a,b,c: curve.is_forward(a,b,c)
             else:
                 curve_direction=-1
-                rel_curve_fwd=lambda a,b,c: curve.is_reverse(a,b,c)
         if 1: # "new" way
             # logic is confusing
             edge_ring_sign=self.grid.edges['ring_sign'][he.j]
-            new_curve_direction=(1-2*he.orient)*direction*edge_ring_sign
-            assert new_curve_direction==curve_direction
+            curve_direction=(1-2*he.orient)*direction*edge_ring_sign
+            #assert new_curve_direction==curve_direction
             
             assert edge_ring_sign!=0,"Edge %d has sign %d, should be set"%(he.j,edge_ring_sign)
+
+        # a curve forward that bakes in curve_direction
+        if curve_direction==1:
+            rel_curve_fwd=lambda a,b,c: curve.is_forward(a,b,c)
+        else:
+            rel_curve_fwd=lambda a,b,c: curve.is_reverse(a,b,c)
 
         try:
             new_f,new_x = curve.distance_away(anchor_f,curve_direction*target_span)
@@ -1730,6 +1739,11 @@ class AdvancingFront(object):
         return (fn and fn(self.grid.nodes['x'][n]))
 
     def optimize_nodes(self,nodes,max_levels=3,cost_thresh=2):
+        """
+        iterate over the given set of nodes, optimizing each location,
+        and possibly expanding the set of nodes in order to optimize
+        a larger area.
+        """
         max_cost=0
 
         for level in range(max_levels):
@@ -1754,13 +1768,28 @@ class AdvancingFront(object):
         """
         Given a set of elements (which presumably have been modified
         and need tuning), jostle nodes around to improve the cost function
+
+        Returns an updated edits with any additional changes.  No promise
+        that it's the same object or a copy.
         """
-        nodes = edits.get('nodes',[])
+        if 'nodes' not in edits:
+            edits['nodes']=[]
+
+        nodes = list(edits.get('nodes',[]))
+
         for c in edits.get('cells',[]):
             for n in self.grid.cell_to_nodes(c):
                 if n not in nodes:
                     nodes.append(n)
-        return self.optimize_nodes(nodes,**kw)
+
+        def track_node_edits(g,func_name,n,**k):
+            if n not in edits['nodes']:
+                edits['nodes'].append(n)
+                
+        self.grid.subscribe_after('modify_node',track_node_edits)
+        self.optimize_nodes(nodes,**kw)
+        self.grid.unsubscribe_after('modify_node',track_node_edits)
+        return edits
 
     def relax_node(self,n):
         """ Move node n, subject to its constraints, to minimize
@@ -2051,7 +2080,12 @@ class AdvancingFront(object):
                 cp=self.grid.checkpoint()
                 self.log.info("Chose strategy %s"%( actions[best] ) )
                 edits=actions[best].execute(site)
-                self.optimize_edits(edits)
+                opt_edits=self.optimize_edits(edits)
+                
+                failures=self.check_edits(opt_edits)
+                if len(failures['cells'])>0:
+                    self.log.info("Some cells failed")
+                    raise StrategyFailed("Cell geometry violation")
                 # could commit?
             except self.cdt.IntersectingConstraints as exc:
                 # arguably, this should be caught lower down, and rethrown
@@ -2068,6 +2102,9 @@ class AdvancingFront(object):
             self.log.error("Exhausted the actions!")
             return False
         return True
+
+    def check_edits(self,edits):
+        return defaultdict(list)
         
     zoom=None
     def plot_summary(self,ax=None,
@@ -2121,6 +2158,27 @@ class AdvancingTriangles(AdvancingFront):
 
             sites.append( TriangleSite(self,nodes=[a,b,c]) )
         return sites
+
+    def check_edits(self,edits):
+        """
+        edits: {'nodes':[n1,n2,...],
+                'cells': ...,
+                'edges': ... }
+        Checks for any elements which fail geometric checks, such
+        as orthogonality.
+        """
+        failures=defaultdict(list)
+        cells=set( edits.get('cells',[]) )
+
+        for n in edits.get('nodes',[]):
+            cells.update( self.grid.node_to_cells(n) )
+
+        for c in list(cells):
+            pnts=self.grid.nodes['x'][self.grid.cell_to_nodes(c)]
+            cc=circumcenter_py(pnts[0],pnts[1],pnts[2])
+            if not self.grid.cell_polygon(c).contains(geometry.Point(cc)):
+                failures['cells'].append(c)
+        return failures
 
     cost_method='cc_py'
     def cost_function(self,n):
@@ -2195,14 +2253,24 @@ class AdvancingTriangles(AdvancingFront):
                 # cc_fac=-4. # not bad
                 cc_fac=-2. # a little nicer shape
                 # clip to 100, to avoid overflow in math.exp
-                cc_cost += ( math.exp(min(100,cc_fac*leftAB/local_length)) +
-                             math.exp(min(100,cc_fac*leftBC/local_length)) +
-                             math.exp(min(100,cc_fac*leftCA/local_length)) )
+                if 0:
+                    # this can favor isosceles too much
+                    cc_cost += ( math.exp(min(100,cc_fac*leftAB/local_length)) +
+                                 math.exp(min(100,cc_fac*leftBC/local_length)) +
+                                 math.exp(min(100,cc_fac*leftCA/local_length)) )
+                else:
+                    # maybe?
+                    cc_cost += ( math.exp(min(100,cc_fac*leftAB/magABs)) +
+                                 math.exp(min(100,cc_fac*leftBC/magBCs)) +
+                                 math.exp(min(100,cc_fac*leftCA/magCAs)) )
                 
                 scale_cost+=(magABs-local_length)**2 + (magBCs-local_length)**2 + (magCAs-local_length)**2
 
             scale_cost /= local_length*local_length
-            return cc_cost+scale_cost
+            # With even weighting between these, some edges are pushed long rather than
+            # having nice angles.
+            # 3 is a shot in the dark.
+            return 3*cc_cost+scale_cost
 
         if self.cost_method=='base':
             return cost
