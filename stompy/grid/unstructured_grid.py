@@ -333,9 +333,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         self.from_simple_data(points=grid.nodes['x'],
                               edges=grid.edges['nodes'],
                               cells=grid.cells['nodes'])
-        for field in ['cells','mark']:
+        for field in ['cells','mark','deleted']:
             self.edges[field] = grid.edges[field]
-        for field in ['mark','_center','_area']:
+        for field in ['mark','_center','_area','deleted']:
             self.cells[field] = grid.cells[field]
         # special handling for edges, so it's not required for max_sides to
         # match up
@@ -1527,7 +1527,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         edges=self.cell_to_edges(c)
         return np.any( self.edge_to_cells()[edges] < 0 )
     def is_boundary_edge(self,e):
-        return np.any(self.edge_to_cells()[e] < 0)
+        return np.any(self.edge_to_cells(e) < 0)
 
     def cell_to_adjacent_boundary_cells(self,c):
         """

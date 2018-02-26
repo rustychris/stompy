@@ -1743,8 +1743,12 @@ class AdvancingFront(object):
                 # just try re-optimizing once
                 pass
             else:
-                pass
+                # pass
                 # expand list of nodes one level
+                new_nodes=set(nodes)
+                for n in nodes:
+                    new_nodes.update(self.grid.node_to_nodes(n))
+                nodes=list(new_nodes)
 
     def optimize_edits(self,edits,**kw):
         """
