@@ -12,7 +12,6 @@ import logging
 
 log=logging.getLogger('delft.io')
 
-from . import waq_scenario as waq
 from ... import utils
 
 def parse_his_file(fn):
@@ -426,6 +425,8 @@ def read_map(fn,hyd,use_memmap=True,include_grid=True):
     note that missing values at this time are not handled - they'll remain as
     the delwaq standard -999.0.
     """
+    from . import waq_scenario as waq
+
     if not isinstance(hyd,waq.Hydro):
         hyd=waq.HydroFiles(hyd)
 
@@ -956,7 +957,7 @@ class SectionedConfig(object):
                 
     def parse_row(self,row):
         section_patt=r'^(\[[A-Za-z0-9 ]+\])([#;].*)?$'
-        value_patt = r'^([A-Za-z0-9_]+)\s*=([^#;]*)([#;].*)?$'
+        value_patt = r'^([A-Za-z0-9_ ]+)\s*=([^#;]*)([#;].*)?$'
         blank_patt = r'^\s*([#;].*)?$'
         
         m_sec = re.match(section_patt, row)
@@ -965,7 +966,7 @@ class SectionedConfig(object):
 
         m_val = re.match(value_patt, row)
         if m_val is not None:
-            return m_val.group(1), m_val.group(2).strip(), m_val.group(3)
+            return m_val.group(1).strip(), m_val.group(2).strip(), m_val.group(3)
 
         m_cmt = re.match(blank_patt, row)
         if m_cmt is not None:
@@ -1049,14 +1050,16 @@ class SectionedConfig(object):
         else:
             return str(value)
 
-    def write(self,filename):
+    def write(self,filename=None):
         """
-        Write this config out to a text file
+        Write this config out to a text file.
         filename: defaults to self.filename
         check_changed: if True, and the file already exists and is not materially different,
           then do nothing.  Good for avoiding unnecessary changes to mtimes.
         backup: if true, copy any existing file to <filename>.bak
         """
+        if filename is None:
+            filename=self.filename
         with open(filename,'wt') as fp:
             for line in self.rows:
                 fp.write(line)
