@@ -1,3 +1,4 @@
+import os
 import datetime
 
 import numpy as np
@@ -8,6 +9,7 @@ import logging
 log=logging.getLogger('noaa_coops')
 
 from ... import utils
+from .common import periods
 
 all_products=dict(
     water_level="water_level",
@@ -80,7 +82,7 @@ def coops_json_to_ds(json,params):
 
 
 def coops_dataset(station,start_date,end_date,products,
-                  days_per_request=None):
+                  days_per_request=None,cache_dir=None):
     """
     bare bones retrieval script for NOAA Tides and Currents data.
     In particular, no error handling yet, doesn't batch requests, no caching,
@@ -98,14 +100,16 @@ def coops_dataset(station,start_date,end_date,products,
                                  product=product,
                                  start_date=start_date,
                                  end_date=end_date,
-                                 days_per_request=days_per_request)
+                                 days_per_request=days_per_request,
+                                 cache_dir=cache_dir)
         if ds is not None:
             ds_per_product.append(ds)
     ds_merged=xr.merge(ds_per_product,join='outer')
     return ds_merged
 
 def coops_dataset_product(station,product,
-                          start_date,end_date,days_per_request=None):
+                          start_date,end_date,days_per_request=None,
+                          cache_dir=None):
     """
     Retrieve a single data product from a single station.
     station: string or numeric identifier for COOPS station
@@ -114,6 +118,15 @@ def coops_dataset_product(station,product,
     start_date,end_date: period to retrieve, as python datetime, matplotlib datenum,
     or numpy datetime64.
     days_per_request: batch the requests to fetch smaller chunks at a time.
+    if this is an integer, then chunks will start with start_date, then start_date+days_per_request,
+    etc.
+      if this is a string, it is interpreted as the frequency argument to pandas.PeriodIndex.
+    so 'M' will request month-aligned chunks.  this has the advantage that requests for different
+    start dates will still be aligned to integer periods, and can reuse cached data.
+   
+    cache_dir: if specified, save each chunk as a netcdf file in this directory,
+      with filenames that include the gage, period and products.  The directory must already
+      exist.
 
     returns an xarray dataset, or None if no data could be fetched
     """
@@ -123,63 +136,68 @@ def coops_dataset_product(station,product,
     # not supported by this script: bin
     datums=['NAVD','MSL']
 
-    def periods(start_date,end_date,days_per_request):
-        start_date=utils.to_datetime(start_date)
-        end_date=utils.to_datetime(end_date)
-
-        if days_per_request is None:
-            yield (start_date,end_date)
-        else:
-            interval=datetime.timedelta(days=days_per_request)
-
-            while start_date<end_date:
-                next_date=min(start_date+interval,end_date)
-                yield (start_date,next_date)
-                start_date=next_date
-
     datasets=[]
 
     for interval_start,interval_end in periods(start_date,end_date,days_per_request):
         log.info("Fetching %s -- %s"%(interval_start,interval_end))
 
-        params=dict(begin_date=fmt_date(interval_start),
-                    end_date=fmt_date(interval_end),
-                    station=str(station),
-                    time_zone='gmt', # always!
-                    application='stompy',
-                    units='metric',
-                    format='json',
-                    product=product)
-        if product in ['water_level','hourly_height',"one_minute_water_level"]:
-            while 1:
-                # not all stations have NAVD, so fall back to MSL
-                params['datum']=datums[0] 
-                req=requests.get(base_url,params=params)
-                try:
-                    data=req.json()
-                except ValueError: # thrown by json parsing
-                    log.warning("Likely server error retrieving JSON data from tidesandcurrents.noaa.gov")
-                    data=dict(error=dict(message="Likely server error"))
-                    break
-                if ('error' in data) and ("datum" in data['error']['message'].lower()):
-                    # Actual message like 'The supported Datum values are: MHHW, MHW, MTL, MSL, MLW, MLLW, LWI, HWI'
-                    log.info(data['error']['message'])
-                    datums.pop(0) # move on to next datum
-                    continue # assume it's because the datum is missing
-                break
+        if cache_dir is not None:
+            begin_str=utils.to_datetime(interval_start).strftime('%Y-%m-%d')
+            end_str  =utils.to_datetime(interval_end).strftime('%Y-%m-%d')
+
+            cache_fn=os.path.join(cache_dir,
+                                  "%s_%s_%s_%s.nc"%(station,
+                                                    product,
+                                                    begin_str,
+                                                    end_str))
         else:
-            req=requests.get(base_url,params=params)
-            data=req.json()
+            cache_fn=None
+        if (cache_fn is not None) and os.path.exists(cache_fn):
+            log.info("Cached   %s -- %s"%(interval_start,interval_end))
+            ds=xr.open_dataset(cache_fn)
+        else:
 
-        if 'error' in data:
-            msg=data['error']['message']
-            if "No data was found" in msg:
-                # station does not have this data for this time.
-                log.warning("No data found for this period")
-            # Regardless, if there was an error we got no data.
-            continue
+            params=dict(begin_date=fmt_date(interval_start),
+                        end_date=fmt_date(interval_end),
+                        station=str(station),
+                        time_zone='gmt', # always!
+                        application='stompy',
+                        units='metric',
+                        format='json',
+                        product=product)
+            if product in ['water_level','hourly_height',"one_minute_water_level"]:
+                while 1:
+                    # not all stations have NAVD, so fall back to MSL
+                    params['datum']=datums[0] 
+                    req=requests.get(base_url,params=params)
+                    try:
+                        data=req.json()
+                    except ValueError: # thrown by json parsing
+                        log.warning("Likely server error retrieving JSON data from tidesandcurrents.noaa.gov")
+                        data=dict(error=dict(message="Likely server error"))
+                        break
+                    if ('error' in data) and ("datum" in data['error']['message'].lower()):
+                        # Actual message like 'The supported Datum values are: MHHW, MHW, MTL, MSL, MLW, MLLW, LWI, HWI'
+                        log.info(data['error']['message'])
+                        datums.pop(0) # move on to next datum
+                        continue # assume it's because the datum is missing
+                    break
+            else:
+                req=requests.get(base_url,params=params)
+                data=req.json()
 
-        ds=coops_json_to_ds(data,params)
+            if 'error' in data:
+                msg=data['error']['message']
+                if "No data was found" in msg:
+                    # station does not have this data for this time.
+                    log.warning("No data found for this period")
+                # Regardless, if there was an error we got no data.
+                continue
+
+            ds=coops_json_to_ds(data,params)
+            if cache_fn is not None:
+                ds.to_netcdf(cache_fn)
+
         if len(datasets)>0:
             # avoid duplicates in case they overlap
             ds=ds.isel(time=ds.time.values>datasets[-1].time.values[-1])
