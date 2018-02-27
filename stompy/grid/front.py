@@ -509,7 +509,6 @@ class WallStrategy(Strategy):
         j2=grid.add_edge(nodes=[nb,nd],cells=unmesh2)
         new_c=grid.add_cell(nodes=[nb,nc,nd],
                             edges=[j0,j1,j2])
-
         return {'nodes': [nd],
                 'cells': [new_c] }
 
@@ -739,7 +738,7 @@ class JoinStrategy(Strategy):
         elif grid.nodes['oring'][na]>0 and grid.nodes['oring'][nc]>0:
             # *might* be legal but requires more checks:
             ring=grid.nodes['oring'][na]
-            if ring!=grid.nodes['oring'][nc]:
+            if ring!=grid.nodes['oring'][nc]: # this can maybe get relaxed to join onto a fixed node on multiple rings
                 raise StrategyFailed("Cannot join across rings")
             if grid.nodes['oring'][nb]==ring:
                 # This original check is too lenient.  in a narrow
@@ -837,8 +836,10 @@ class JoinStrategy(Strategy):
                 try:
                     # fairly sure there are tests above which prevent
                     # this from having to populate additional fields, but
-                    # not positive.
-                    jnew=grid.add_edge( nodes=nodes, cells=cells )
+                    # not positive. 2018-02-26: need to think about oring.
+                    jnew=grid.add_edge( nodes=nodes, cells=cells,
+                                        oring=data['oring'],ring_sign=data['ring_sign'],
+                                        fixed=data['fixed'] )
                 except exact_delaunay.ConstraintCollinearNode:
                     raise StrategyFailed("Edge was collinear with existing nodes")
                 edits['edges'].append(jnew)
@@ -1104,7 +1105,7 @@ class TriangleSite(FrontSite):
                     n_res=self.af.resample(n=n,anchor=b,scale=local_length,direction=direction)
                 except Curve.CurveException as exc:
                     self.resample_status=False
-                    continue
+                    n_res=n
 
                 if n!=n_res:
                     log.info("resample_neighbors changed a node")
@@ -1463,9 +1464,9 @@ class AdvancingFront(object):
         n retain SLIDE, too? is it the responsibility of resample(), or the caller?
         can we at least guarantee that no other nodes need to be changing status?
 
-        as it stands, if this code creates a new node, it is given fixed=SLIDE.
-        it is up to the caller to reset the fixed of the original
-        node to HINT, if that is what is desired.  
+        in the past, new nodes created here were given fixed=SLIDE.  This is
+        probably better set to HINT, as the SLIDE nodes can get in the way if
+        they aren't used immediately for a cell.
 
         Returns the resampled node index -- often same as n, but may be a different
         node.
@@ -1711,8 +1712,11 @@ class AdvancingFront(object):
                 j=self.grid.nodes_to_edge([anchor,nnew])
 
                 # get a newer nnew
+                # This used to set fixed=SLIDE, but since there is no additional
+                # topology attached to nnew, it probably makes more sense for it
+                # to be HINT. changed 2018-02-26
                 jnew,nnew = self.grid.split_edge(j,x=new_x,ring_f=new_f,oring=oring+1,
-                                                 fixed=self.SLIDE)
+                                                 fixed=self.HINT)
         except self.cdt.IntersectingConstraints as exc:
             self.log.info("resample - slide() failed. will return node at original loc")
             self.grid.revert(cp)
