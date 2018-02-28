@@ -1847,6 +1847,9 @@ class AdvancingFront(object):
         local_length=self.scale( x0 )
 
         slide_limits=self.find_slide_limits(n,3*local_length)
+        # if this fails, need to fix find_slide_limits to
+        # ensure circular strings return monotonic slide_limits
+        assert slide_limits[1]>slide_limits[0]
 
         # used to just be f, but I think it's more appropriate to
         # be f[0]
@@ -1857,7 +1860,6 @@ class AdvancingFront(object):
             err=(f-fclip)**2
             return err+cost_free( self.curves[ring](fclip) )
 
-        
         new_f = opt.fmin(cost_slide,
                          [f0],
                          xtol=local_length*1e-4,
@@ -1866,10 +1868,26 @@ class AdvancingFront(object):
         if not self.curves[ring].is_forward(slide_limits[0],
                                             new_f,
                                             slide_limits[1]):
-            import pdb
-            pdb.set_trace()
-            self.log.info("Slide went outside limits")
-            return cost_free(x0)
+            # Would be better to just optimize within bounds.
+            # still, can check the two bounds, and if the 
+            # cost is lower, return one of them.
+            self.log.warning("Slide went outside limits")
+            base_cost=cost_free(x0)
+
+            slide_length=(slide_limits[1] - slide_limits[0])
+            lower_f=0.95*slide_limits[0]+0.05*slide_limits[1]
+            upper_f=0.05*slide_limits[1]+0.95*slide_limits[1]
+            lower_cost=cost_slide([lower_f])
+            upper_cost=cost_slide([upper_f])
+            if lower_cost<upper_cost and lower_cost<base_cost:
+                self.log.warning("Truncate slide on lower end")
+                new_f=[lower_f]
+            elif upper_cost<base_cost:
+                new_f=[upper_f]
+                self.log.warning("Truncate slide on upper end")
+            else:
+                self.log.warning("Couldn't truncate slide.")
+                return base_cost
 
         cp=self.grid.checkpoint()
         try:
@@ -2217,7 +2235,7 @@ class AdvancingTriangles(AdvancingFront):
         edge_points = self.grid.nodes['x'][edges]
 
         def cost(x,edge_points=edge_points,local_length=local_length):
-            return front.one_point_cost(x,edge_points,target_length=local_length)
+            return one_point_cost(x,edge_points,target_length=local_length)
 
         Alist=[ [ e[0],e[1] ]
                 for e in edge_points[:,0,:] ]
@@ -2254,27 +2272,38 @@ class AdvancingTriangles(AdvancingFront):
                 vecCA=[CAs[0]/magCAs, CAs[1]/magCAs]
                 leftCA=vecCA[0]*deltaCA[1] - vecCA[1]*deltaCA[0]
 
-                # cc_fac=-4. # not bad
-                cc_fac=-2. # a little nicer shape
+                cc_fac=-4. # not bad
+                # cc_fac=-2. # a little nicer shape
                 # clip to 100, to avoid overflow in math.exp
                 if 0:
                     # this can favor isosceles too much
-                    cc_cost += ( math.exp(min(100,cc_fac*leftAB/local_length)) +
-                                 math.exp(min(100,cc_fac*leftBC/local_length)) +
-                                 math.exp(min(100,cc_fac*leftCA/local_length)) )
+                    this_cc_cost = ( math.exp(min(100,cc_fac*leftAB/local_length)) +
+                                     math.exp(min(100,cc_fac*leftBC/local_length)) +
+                                     math.exp(min(100,cc_fac*leftCA/local_length)) )
                 else:
                     # maybe?
-                    cc_cost += ( math.exp(min(100,cc_fac*leftAB/magABs)) +
-                                 math.exp(min(100,cc_fac*leftBC/magBCs)) +
-                                 math.exp(min(100,cc_fac*leftCA/magCAs)) )
+                    this_cc_cost = ( math.exp(min(100,cc_fac*leftAB/magABs)) +
+                                     math.exp(min(100,cc_fac*leftBC/magBCs)) +
+                                     math.exp(min(100,cc_fac*leftCA/magCAs)) )
                 
-                scale_cost+=(magABs-local_length)**2 + (magBCs-local_length)**2 + (magCAs-local_length)**2
+                # mixture
+                # 0.3: let's the scale vary too much between the cells
+                #      adjacent to n
+                alpha=1.0
+                avg_length=alpha*local_length + (1-alpha)*(magABs+magBCs+magCAs)/3
+                this_scale_cost=( (magABs-avg_length)**2 
+                                  + (magBCs-avg_length)**2 
+                                  + (magCAs-avg_length)**2 )
+                this_scale_cost/=avg_length*avg_length
+                
+                cc_cost+=this_cc_cost
+                scale_cost+=this_scale_cost
 
-            scale_cost /= local_length*local_length
             # With even weighting between these, some edges are pushed long rather than
             # having nice angles.
             # 3 is a shot in the dark.
-            return 3*cc_cost+scale_cost
+            # 50 is more effective at avoiding a non-orthogonal cell
+            return 50*cc_cost+scale_cost
 
         if self.cost_method=='base':
             return cost
