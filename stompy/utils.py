@@ -1097,7 +1097,7 @@ def to_dnum(x):
         if pd is not None and isinstance(x,pd.DataFrame) or isinstance(x,pd.Series):
             x=x.index.values
 
-        if np.issubdtype(x.dtype,np.float):
+        if np.issubdtype(x.dtype,np.floating): # used to be np.float, but that is deprecated
             return x
         if isinstance(x[0],datetime.datetime) or isinstance(x[0],datetime.date):
             return date2num(x)
@@ -1663,11 +1663,12 @@ def recarray_add_fields(A,new_fields):
     where data must be the same length as A.  So far, no support for
     non-scalar values
     """
+    hello=1
     new_dtype=A.dtype.descr
     for name,val in new_fields:
         # handle non-scalar fields
         # assume that the first dimension is the "record" dimension
-        new_dtype.append( (name,val.dtype,val.shape[1:] ) )
+        new_dtype.append( (str(name),val.dtype,val.shape[1:] ) )
     new_names=[name for name,val in new_fields]
     new_values=[val for name,val in new_fields]
     new_A=np.zeros( len(A), dtype=new_dtype)

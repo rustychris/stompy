@@ -8,11 +8,15 @@ Largely a port of paver.py.
 from __future__ import print_function
 import math
 import numpy as np
+from collections import defaultdict
+
 import time
 from scipy import optimize as opt
 import pdb
 import logging
 log=logging.getLogger(__name__)
+
+from shapely import geometry
 
 from . import (unstructured_grid,
                exact_delaunay,
@@ -509,7 +513,6 @@ class WallStrategy(Strategy):
         j2=grid.add_edge(nodes=[nb,nd],cells=unmesh2)
         new_c=grid.add_cell(nodes=[nb,nc,nd],
                             edges=[j0,j1,j2])
-
         return {'nodes': [nd],
                 'cells': [new_c] }
 
@@ -739,7 +742,7 @@ class JoinStrategy(Strategy):
         elif grid.nodes['oring'][na]>0 and grid.nodes['oring'][nc]>0:
             # *might* be legal but requires more checks:
             ring=grid.nodes['oring'][na]
-            if ring!=grid.nodes['oring'][nc]:
+            if ring!=grid.nodes['oring'][nc]: # this can maybe get relaxed to join onto a fixed node on multiple rings
                 raise StrategyFailed("Cannot join across rings")
             if grid.nodes['oring'][nb]==ring:
                 # This original check is too lenient.  in a narrow
@@ -837,8 +840,10 @@ class JoinStrategy(Strategy):
                 try:
                     # fairly sure there are tests above which prevent
                     # this from having to populate additional fields, but
-                    # not positive.
-                    jnew=grid.add_edge( nodes=nodes, cells=cells )
+                    # not positive. 2018-02-26: need to think about oring.
+                    jnew=grid.add_edge( nodes=nodes, cells=cells,
+                                        oring=data['oring'],ring_sign=data['ring_sign'],
+                                        fixed=data['fixed'] )
                 except exact_delaunay.ConstraintCollinearNode:
                     raise StrategyFailed("Edge was collinear with existing nodes")
                 edits['edges'].append(jnew)
@@ -1104,7 +1109,7 @@ class TriangleSite(FrontSite):
                     n_res=self.af.resample(n=n,anchor=b,scale=local_length,direction=direction)
                 except Curve.CurveException as exc:
                     self.resample_status=False
-                    continue
+                    n_res=n
 
                 if n!=n_res:
                     log.info("resample_neighbors changed a node")
@@ -1463,9 +1468,9 @@ class AdvancingFront(object):
         n retain SLIDE, too? is it the responsibility of resample(), or the caller?
         can we at least guarantee that no other nodes need to be changing status?
 
-        as it stands, if this code creates a new node, it is given fixed=SLIDE.
-        it is up to the caller to reset the fixed of the original
-        node to HINT, if that is what is desired.  
+        in the past, new nodes created here were given fixed=SLIDE.  This is
+        probably better set to HINT, as the SLIDE nodes can get in the way if
+        they aren't used immediately for a cell.
 
         Returns the resampled node index -- often same as n, but may be a different
         node.
@@ -1593,26 +1598,31 @@ class AdvancingFront(object):
                 return curve.point_to_f(self.grid.nodes['x'][m],
                                         n_f,direction=0)
 
-        if 1: # delete this once the new stanza below is trusted
+        if 0: # delete this once the new stanza below is trusted
             # explicitly record whether the curve has the opposite orientation
-            # of the edge.  Hoping to retire this way
+            # of the edge.  Hoping to retire this way.
+            # This is actually dangerous, as the mid_point does not generally
+            # fall on the line, and so we have to give it a generous rel_tol.
             mid_point = 0.5*(self.grid.nodes['x'][n] + self.grid.nodes['x'][anchor])
             mid_f=self.curves[oring].point_to_f(mid_point)
 
             if curve.is_forward(anchor_f,mid_f,n_f):
                 curve_direction=1
-                # a curve forward that bakes in curve_direction
-                rel_curve_fwd=lambda a,b,c: curve.is_forward(a,b,c)
             else:
                 curve_direction=-1
-                rel_curve_fwd=lambda a,b,c: curve.is_reverse(a,b,c)
         if 1: # "new" way
             # logic is confusing
             edge_ring_sign=self.grid.edges['ring_sign'][he.j]
-            new_curve_direction=(1-2*he.orient)*direction*edge_ring_sign
-            assert new_curve_direction==curve_direction
+            curve_direction=(1-2*he.orient)*direction*edge_ring_sign
+            #assert new_curve_direction==curve_direction
             
             assert edge_ring_sign!=0,"Edge %d has sign %d, should be set"%(he.j,edge_ring_sign)
+
+        # a curve forward that bakes in curve_direction
+        if curve_direction==1:
+            rel_curve_fwd=lambda a,b,c: curve.is_forward(a,b,c)
+        else:
+            rel_curve_fwd=lambda a,b,c: curve.is_reverse(a,b,c)
 
         try:
             new_f,new_x = curve.distance_away(anchor_f,curve_direction*target_span)
@@ -1711,8 +1721,11 @@ class AdvancingFront(object):
                 j=self.grid.nodes_to_edge([anchor,nnew])
 
                 # get a newer nnew
+                # This used to set fixed=SLIDE, but since there is no additional
+                # topology attached to nnew, it probably makes more sense for it
+                # to be HINT. changed 2018-02-26
                 jnew,nnew = self.grid.split_edge(j,x=new_x,ring_f=new_f,oring=oring+1,
-                                                 fixed=self.SLIDE)
+                                                 fixed=self.HINT)
         except self.cdt.IntersectingConstraints as exc:
             self.log.info("resample - slide() failed. will return node at original loc")
             self.grid.revert(cp)
@@ -1730,6 +1743,11 @@ class AdvancingFront(object):
         return (fn and fn(self.grid.nodes['x'][n]))
 
     def optimize_nodes(self,nodes,max_levels=3,cost_thresh=2):
+        """
+        iterate over the given set of nodes, optimizing each location,
+        and possibly expanding the set of nodes in order to optimize
+        a larger area.
+        """
         max_cost=0
 
         for level in range(max_levels):
@@ -1743,20 +1761,39 @@ class AdvancingFront(object):
                 # just try re-optimizing once
                 pass
             else:
-                pass
+                # pass
                 # expand list of nodes one level
+                new_nodes=set(nodes)
+                for n in nodes:
+                    new_nodes.update(self.grid.node_to_nodes(n))
+                nodes=list(new_nodes)
 
     def optimize_edits(self,edits,**kw):
         """
         Given a set of elements (which presumably have been modified
         and need tuning), jostle nodes around to improve the cost function
+
+        Returns an updated edits with any additional changes.  No promise
+        that it's the same object or a copy.
         """
-        nodes = edits.get('nodes',[])
+        if 'nodes' not in edits:
+            edits['nodes']=[]
+
+        nodes = list(edits.get('nodes',[]))
+
         for c in edits.get('cells',[]):
             for n in self.grid.cell_to_nodes(c):
                 if n not in nodes:
                     nodes.append(n)
-        return self.optimize_nodes(nodes,**kw)
+
+        def track_node_edits(g,func_name,n,**k):
+            if n not in edits['nodes']:
+                edits['nodes'].append(n)
+                
+        self.grid.subscribe_after('modify_node',track_node_edits)
+        self.optimize_nodes(nodes,**kw)
+        self.grid.unsubscribe_after('modify_node',track_node_edits)
+        return edits
 
     def relax_node(self,n):
         """ Move node n, subject to its constraints, to minimize
@@ -1810,6 +1847,9 @@ class AdvancingFront(object):
         local_length=self.scale( x0 )
 
         slide_limits=self.find_slide_limits(n,3*local_length)
+        # if this fails, need to fix find_slide_limits to
+        # ensure circular strings return monotonic slide_limits
+        assert slide_limits[1]>slide_limits[0]
 
         # used to just be f, but I think it's more appropriate to
         # be f[0]
@@ -1820,7 +1860,6 @@ class AdvancingFront(object):
             err=(f-fclip)**2
             return err+cost_free( self.curves[ring](fclip) )
 
-        
         new_f = opt.fmin(cost_slide,
                          [f0],
                          xtol=local_length*1e-4,
@@ -1829,10 +1868,26 @@ class AdvancingFront(object):
         if not self.curves[ring].is_forward(slide_limits[0],
                                             new_f,
                                             slide_limits[1]):
-            import pdb
-            pdb.set_trace()
-            self.log.info("Slide went outside limits")
-            return cost_free(x0)
+            # Would be better to just optimize within bounds.
+            # still, can check the two bounds, and if the 
+            # cost is lower, return one of them.
+            self.log.warning("Slide went outside limits")
+            base_cost=cost_free(x0)
+
+            slide_length=(slide_limits[1] - slide_limits[0])
+            lower_f=0.95*slide_limits[0]+0.05*slide_limits[1]
+            upper_f=0.05*slide_limits[1]+0.95*slide_limits[1]
+            lower_cost=cost_slide([lower_f])
+            upper_cost=cost_slide([upper_f])
+            if lower_cost<upper_cost and lower_cost<base_cost:
+                self.log.warning("Truncate slide on lower end")
+                new_f=[lower_f]
+            elif upper_cost<base_cost:
+                new_f=[upper_f]
+                self.log.warning("Truncate slide on upper end")
+            else:
+                self.log.warning("Couldn't truncate slide.")
+                return base_cost
 
         cp=self.grid.checkpoint()
         try:
@@ -2047,7 +2102,12 @@ class AdvancingFront(object):
                 cp=self.grid.checkpoint()
                 self.log.info("Chose strategy %s"%( actions[best] ) )
                 edits=actions[best].execute(site)
-                self.optimize_edits(edits)
+                opt_edits=self.optimize_edits(edits)
+                
+                failures=self.check_edits(opt_edits)
+                if len(failures['cells'])>0:
+                    self.log.info("Some cells failed")
+                    raise StrategyFailed("Cell geometry violation")
                 # could commit?
             except self.cdt.IntersectingConstraints as exc:
                 # arguably, this should be caught lower down, and rethrown
@@ -2064,6 +2124,9 @@ class AdvancingFront(object):
             self.log.error("Exhausted the actions!")
             return False
         return True
+
+    def check_edits(self,edits):
+        return defaultdict(list)
         
     zoom=None
     def plot_summary(self,ax=None,
@@ -2118,6 +2181,27 @@ class AdvancingTriangles(AdvancingFront):
             sites.append( TriangleSite(self,nodes=[a,b,c]) )
         return sites
 
+    def check_edits(self,edits):
+        """
+        edits: {'nodes':[n1,n2,...],
+                'cells': ...,
+                'edges': ... }
+        Checks for any elements which fail geometric checks, such
+        as orthogonality.
+        """
+        failures=defaultdict(list)
+        cells=set( edits.get('cells',[]) )
+
+        for n in edits.get('nodes',[]):
+            cells.update( self.grid.node_to_cells(n) )
+
+        for c in list(cells):
+            pnts=self.grid.nodes['x'][self.grid.cell_to_nodes(c)]
+            cc=circumcenter_py(pnts[0],pnts[1],pnts[2])
+            if not self.grid.cell_polygon(c).contains(geometry.Point(cc)):
+                failures['cells'].append(c)
+        return failures
+
     cost_method='cc_py'
     def cost_function(self,n):
         """
@@ -2151,7 +2235,7 @@ class AdvancingTriangles(AdvancingFront):
         edge_points = self.grid.nodes['x'][edges]
 
         def cost(x,edge_points=edge_points,local_length=local_length):
-            return front.one_point_cost(x,edge_points,target_length=local_length)
+            return one_point_cost(x,edge_points,target_length=local_length)
 
         Alist=[ [ e[0],e[1] ]
                 for e in edge_points[:,0,:] ]
@@ -2188,17 +2272,38 @@ class AdvancingTriangles(AdvancingFront):
                 vecCA=[CAs[0]/magCAs, CAs[1]/magCAs]
                 leftCA=vecCA[0]*deltaCA[1] - vecCA[1]*deltaCA[0]
 
-                # cc_fac=-4. # not bad
-                cc_fac=-2. # a little nicer shape
+                cc_fac=-4. # not bad
+                # cc_fac=-2. # a little nicer shape
                 # clip to 100, to avoid overflow in math.exp
-                cc_cost += ( math.exp(min(100,cc_fac*leftAB/local_length)) +
-                             math.exp(min(100,cc_fac*leftBC/local_length)) +
-                             math.exp(min(100,cc_fac*leftCA/local_length)) )
+                if 0:
+                    # this can favor isosceles too much
+                    this_cc_cost = ( math.exp(min(100,cc_fac*leftAB/local_length)) +
+                                     math.exp(min(100,cc_fac*leftBC/local_length)) +
+                                     math.exp(min(100,cc_fac*leftCA/local_length)) )
+                else:
+                    # maybe?
+                    this_cc_cost = ( math.exp(min(100,cc_fac*leftAB/magABs)) +
+                                     math.exp(min(100,cc_fac*leftBC/magBCs)) +
+                                     math.exp(min(100,cc_fac*leftCA/magCAs)) )
                 
-                scale_cost+=(magABs-local_length)**2 + (magBCs-local_length)**2 + (magCAs-local_length)**2
+                # mixture
+                # 0.3: let's the scale vary too much between the cells
+                #      adjacent to n
+                alpha=1.0
+                avg_length=alpha*local_length + (1-alpha)*(magABs+magBCs+magCAs)/3
+                this_scale_cost=( (magABs-avg_length)**2 
+                                  + (magBCs-avg_length)**2 
+                                  + (magCAs-avg_length)**2 )
+                this_scale_cost/=avg_length*avg_length
+                
+                cc_cost+=this_cc_cost
+                scale_cost+=this_scale_cost
 
-            scale_cost /= local_length*local_length
-            return cc_cost+scale_cost
+            # With even weighting between these, some edges are pushed long rather than
+            # having nice angles.
+            # 3 is a shot in the dark.
+            # 50 is more effective at avoiding a non-orthogonal cell
+            return 50*cc_cost+scale_cost
 
         if self.cost_method=='base':
             return cost
