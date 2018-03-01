@@ -157,6 +157,7 @@ def nwis_dataset(station,start_date,end_date,products,
     if len(datasets)==0:
         # could try to construct zero-length dataset, but that sounds like a pain
         # at the moment.
+        log.warning("   no data for station %s for any periods!"%station)
         return None 
 
     if len(datasets)>1:

@@ -599,11 +599,15 @@ def rot_fn(angle):
                    [np.sin(angle),np.cos(angle)]] )
     def fn(pnts):
         pnts=np.asarray(pnts)
-        orig_shape=pnts.shape
         # could make the multi-dimensional side smarter...
-        pnts=pnts.reshape([-1,2])
-        pnts=np.tensordot(R,pnts,axes=(1,-1) ).transpose() 
-        pnts=pnts.reshape(orig_shape)
+        if pnts.ndim>1:
+            orig_shape=pnts.shape
+            pnts=pnts.reshape([-1,2])
+            pnts=np.tensordot(R,pnts,axes=(1,-1) ).transpose() 
+            pnts=pnts.reshape(orig_shape)
+        else:
+            # This isn't very tested...
+            pnts=np.dot(R,pnts)
         return pnts
     return fn
 

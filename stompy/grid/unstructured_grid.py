@@ -997,7 +997,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             # Looking for the most negative area
             if A<best[0]:
                 best=(A,pc)
-        return best[1][::-1] # reverse, to return a CCW, positive area string.
+        return np.array(best[1][::-1]) # reverse, to return a CCW, positive area string.
         
     def find_cycles(self,max_cycle_len=4,starting_edges=None,check_area=True):
         """ traverse edges, returning a list of lists, each list giving the
