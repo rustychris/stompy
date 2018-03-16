@@ -78,7 +78,20 @@ af.orient_quad_edge(j_init,af.PARA)
 
 ## 
 
-af.loop(5)
+plt.figure(1).clf()
+fig,ax=plt.subplots(num=1)
+
+af.grid.plot_edges(color='k',lw=0.5)
+af.grid.plot_nodes(labeler='id')
+zoom=(578973.9386167785, 579021.8038241524, 4144502.1423333557, 4144537.809633044)
+ax.axis(zoom)
+
+##
+
+# pdb.run("af.loop(1)")
+site=af.choose_site() # fine.
+resampled_success = af.resample_neighbors(site)
+
 
 ## 
 
