@@ -92,7 +92,6 @@ ax.axis(zoom)
 site=af.choose_site() # fine.
 resampled_success = af.resample_neighbors(site)
 
-
 ## 
 
 zoom2=(578878.98180805414, 578965.70080642262, 4144452.1100928918, 4144516.7297336115)

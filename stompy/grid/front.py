@@ -1846,9 +1846,6 @@ class AdvancingFront(object):
         local_length=self.scale( x0 )
 
         slide_limits=self.find_slide_limits(n,3*local_length)
-        # if this fails, need to fix find_slide_limits to
-        # ensure circular strings return monotonic slide_limits
-        assert slide_limits[1]>slide_limits[0]
 
         # used to just be f, but I think it's more appropriate to
         # be f[0]
@@ -1991,8 +1988,12 @@ class AdvancingFront(object):
                 trav=[trav[1],nxt]
             stops.append(trav[1])
             
-        return [self.node_ring_f(m,n_ring)
+        limits=[self.node_ring_f(m,n_ring)
                 for m in stops]
+        # if this fails, need to fix find_slide_limits to
+        # ensure circular strings return monotonic slide_limits
+        assert limits[0] < limits[1]
+        return limits
     
     def find_slide_conflicts(self,n,delta_f):
         """ Find nodes in the way of sliding node n
@@ -2401,6 +2402,20 @@ class AdvancingQuads(AdvancingFront):
             # if it's -99.
             if self.grid.edges['cells'][j,1-side]==self.grid.UNKNOWN:
                 self.grid.edges['cells'][j,1-side]=self.grid.UNDEFINED
+
+            # infer the fixed nature of the edge
+            if self.grid.edges['cells'][j,1-side]>=0:
+                self.grid.edges['fixed'][j]=self.RIGID
+            # Add in the edge data to link it to this curve
+            if self.grid.edges['oring'][j]==0:
+                # only give it a ring if it is not already on a ring.
+                # There may be reason to override this in the future, since the ring
+                # information may be stale from an existing grid, and now we want
+                # to regenerate it.
+                self.grid.edges['oring'][j]=1+curve_idx
+                # side=0 when the edge is going the same direction as the
+                # ring, which in turn should be ring_sign=1.
+                self.grid.edges['ring_sign']=1-2*side 
             
     def orient_quad_edge(self,j,orient):
         self.grid.edges['para'][j]=orient
