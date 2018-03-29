@@ -2768,6 +2768,29 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             strings.append( feat_nodes )
         return strings
 
+    def select_nodes_boundary_segment(self, coords, ccw=True):
+        """
+        bc_coords: [ [x0,y0], [x1,y1] ] coordinates, defining
+        start and end of boundary segment, traversing CCW boundary of
+        grid.
+
+        if ccw=False, then traverse the boundary CW instead of CCW.
+
+        returns [n0,n1,...] nodes along boundary between those locations.
+        """
+        self.edge_to_cells()
+        start_n,end_n=[ self.select_nodes_nearest(xy) 
+                        for xy in coords]
+        cycle=np.asarray( self.boundary_cycle() )
+        start_i=np.nonzero( cycle==start_n )[0][0]
+        end_i=np.nonzero( cycle==end_n )[0][0]
+
+        if start_i<end_i:
+            boundary_nodes=cycle[start_i:end_i+1]
+        else:
+            boundary_nodes=np.r_[ cycle[start_i:], cycle[:end_i]]
+        return boundary_nodes
+
     def select_nodes_intersecting(self,geom=None,xxyy=None,invert=False,as_type='mask'):
         sel = np.zeros(self.Nnodes(),np.bool8) # initialized to False
 
