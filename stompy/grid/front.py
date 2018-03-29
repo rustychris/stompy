@@ -1,5 +1,4 @@
 """
-
 An advancing front grid generator for use with unstructured_grid
 
 Largely a port of paver.py.
@@ -1876,9 +1875,10 @@ class AdvancingFront(object):
 
             slide_length=(slide_limits[1] - slide_limits[0])
             lower_f=0.95*slide_limits[0]+0.05*slide_limits[1]
-            upper_f=0.05*slide_limits[1]+0.95*slide_limits[1]
+            upper_f=0.05*slide_limits[0]+0.95*slide_limits[1]
             lower_cost=cost_slide([lower_f])
             upper_cost=cost_slide([upper_f])
+
             if lower_cost<upper_cost and lower_cost<base_cost:
                 self.log.warning("Truncate slide on lower end")
                 new_f=[lower_f]
@@ -1918,11 +1918,6 @@ class AdvancingFront(object):
         the segments.  So a point which is cutoff away may be much
         closer as the crow flies.
         """
-        # DBG
-        # if n==1207:
-        #     import pdb
-        #     pdb.set_trace()
-
         n_ring=self.grid.nodes['oring'][n]-1
         n_f=self.grid.nodes['ring_f'][n]
         curve=self.curves[n_ring]
@@ -2000,6 +1995,12 @@ class AdvancingFront(object):
                 for m in stops]
     
     def find_slide_conflicts(self,n,delta_f):
+        """ Find nodes in the way of sliding node n
+        to a new ring_f=old_oring_f + delta_f.
+        N.B. this does not appear to catch situations 
+        where n falls exactly on an existing node, though
+        it should (i.e. it's a bug)
+        """
         n_ring=self.grid.nodes['oring'][n]-1
         n_f=self.grid.nodes['ring_f'][n]
         new_f=n_f + delta_f
@@ -2064,7 +2065,7 @@ class AdvancingFront(object):
         return to_delete
     
     def slide_node(self,n,delta_f):
-        conflicts=self.find_slide_conflicts(n,delta_f)
+        conflicts=self.find_slide_conflicts(n,delta_f) 
         for nbr in conflicts:
             self.grid.merge_edges(node=nbr)
 
