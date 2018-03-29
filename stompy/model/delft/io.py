@@ -465,8 +465,8 @@ def read_map(fn,hyd,use_memmap=True,include_grid=True):
     framesize=(4+4*n_subs*n_segs)
     nframes,extra=divmod(bytes_left,framesize)
     if extra!=0:
-        log.warning("Reading map file %s: bad length %d extra bytes (or %d missing)"%(
-            fn,extra,framesize-extra))
+        log.warning("Reading map file %s: %d or %d frames? bad length %d extra bytes (or %d missing)"%(
+            fn,nframes,nframes+1,extra,framesize-extra))
 
     # Specify nframes in cases where the filesizes don't quite match up.
     mapped=np.memmap(fn,[ ('tsecs','i4'),
@@ -525,6 +525,9 @@ def map_add_z_coordinate(map_ds,total_depth='TotalDepth',coord_type='sigma',
     Makes an arbitrary assumption that the first output time step is roughly
     mean sea level.  Obviously wrong, but a starting point.
 
+    Given the ordering of layers in dwaq output, the sigma coordinate created 
+    here is decreasing from 1 to 0.
+
     Modifies map_ds in place, also returning it.
     """
     assert coord_type=='sigma'
@@ -546,7 +549,9 @@ def map_add_z_coordinate(map_ds,total_depth='TotalDepth',coord_type='sigma',
     map_ds.eta.attrs['long_name']='Sea surface elevation relative initial time step'
 
     Nlayers=len(map_ds[layer_dim])
-    map_ds['sigma']=(layer_dim,), (0.5+np.arange(Nlayers)) / float(Nlayers)
+    # This is where sigma is made to be decreasing to capture the order of
+    # layers in DWAQ output.
+    map_ds['sigma']=(layer_dim,), (0.5+np.arange(Nlayers))[::-1] / float(Nlayers)
     map_ds.sigma.attrs['standard_name']="ocean_sigma_coordinate"
     map_ds.sigma.attrs['positive']='up'
     map_ds.sigma.attrs['units']=""
@@ -1101,16 +1106,24 @@ class MDUFile(SectionedConfig):
 
 
 
-def exp_z_layers(mdu):
+def exp_z_layers(mdu,zmin=None,zmax=None):
     """
     This will probably change, not very flexible now.
     For singly exponential z-layers, return zslay, positive up, starting
     from the bed.  first element is the bed itself.
+
+    zmin: deepest depth, positive up.  Defaults to ds.NetNode_z.min(),
+       read from the net file specified in mdu.
+    zmax: top of water column.  Defaults to WaterLevIni in mdu.
     """
-    ds=xr.open_dataset(mdu.filepath(['geometry','NetFile']))
-    
-    zmax=float(mdu['geometry','WaterLevIni'] )
-    zmin=float(ds.NetNode_z.min())
+
+    if zmax is None:
+        zmax=float(mdu['geometry','WaterLevIni'] )
+    if zmin is None:
+        ds=xr.open_dataset(mdu.filepath(['geometry','NetFile']))
+        zmin=float(ds.NetNode_z.min())
+        ds.close()
+        
     kmx=int(mdu['geometry','kmx'])
     coefs=[float(s) for s in mdu['geometry','StretchCoef'].split()] # 0.002 0.02 0.8
 
@@ -1151,7 +1164,7 @@ def exp_z_layers(mdu):
     for k in range(mx):
         zslay[k+1] = zslay[k] + dzslay[k] * (zmax-zmin)
 
-    ds.close()
+
     return zslay
         
 
