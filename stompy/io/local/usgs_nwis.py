@@ -42,7 +42,7 @@ def nwis_dataset_collection(stations,*a,**k):
         
 def nwis_dataset(station,start_date,end_date,products,
                  days_per_request=None,frequency='realtime',
-                 cache_dir=None):
+                 cache_dir=None,clip=True):
     """
     Retrieval script for USGS waterdata.usgs.gov
     
@@ -64,6 +64,9 @@ def nwis_dataset(station,start_date,end_date,products,
     cache_dir: if specified, save each chunk as a netcdf file in this directory,
       with filenames that include the gage, period and products.  The directory must already
       exist.
+
+    clip: if True, even if more data is downloaded than requested, only return the requested
+    period
 
     returns an xarray dataset.
 
@@ -148,6 +151,13 @@ def nwis_dataset(station,start_date,end_date,products,
             dataset=dataset.combine_first(other)
     else:
         dataset=datasets[0]
+
+    if clip:
+        dataset=dataset.isel(time=(dataset.time.values>=start_date)&(dataset.time.values<end_date))
+
+    dataset.load() # force read into memory before closing files
+    for d in datasets:
+        d.close()
     return dataset
 
 
