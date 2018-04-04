@@ -593,9 +593,15 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     @staticmethod
     def from_shp(shp_fn):
         # bit of extra work to find the number of nodes required
-        nsides=[len(geom.exterior.coords)
-                for geom in wkb2shp.shp2geom(shp_fn)['geom']]
-        g=UnstructuredGrid(max_sides=np.max(nsides))
+        feats=wkb2shp.shp2geom(shp_fn)['geom']
+        if feats[0].type=='Polygon':
+            nsides=[len(geom.exterior.coords)
+                    for geom in wkb2shp.shp2geom(shp_fn)['geom']]
+            nsides=np.max(nsides)
+        else:
+            nsides=10 # total punt
+
+        g=UnstructuredGrid(max_sides=nsides)
         g.add_from_shp(shp_fn)
         return g
     def add_from_shp(self,shp_fn):
@@ -621,6 +627,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 # this used to be just add_cell(), but new logic in add_cell()
                 # really needs edges to exist first.
                 self.add_cell_and_edges(nodes=nodes)
+            elif geo.type=='LineString':
+                coords=np.array(geo)
+                nodes=[self.add_or_find_node(x=x)
+                       for x in coords]
+                for a,b in zip(nodes[:-1],nodes[1:]):
+                    self.add_edge(nodes=[a,b])
             else:
                 raise GridException("Not ready for geometry type %s"%geo.type)
         # still need to collapse duplicate nodes
