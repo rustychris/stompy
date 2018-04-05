@@ -2319,6 +2319,9 @@ class DwaqAggregator(Hydro):
     _flowgeoms_xr=None
     def open_flowgeom_ds(self,p):
         """ Same as open_flowgeom(), but transitioning to xarray dataset instead of qnc.
+
+        This also adds in some fields which can be inferred in the case the original data
+        is missing them, namely FlowElemDomain, FlowElemGlobalNr
         """
         if self._flowgeoms_xr is None:
             self._flowgeoms_xr={}
@@ -2326,6 +2329,37 @@ class DwaqAggregator(Hydro):
         if p not in self._flowgeoms_xr:
             hyd=self.open_hyd(p)
             fg=xr.open_dataset(hyd.get_path('grid-coordinates-file'))
+            
+            import pdb
+            pdb.set_trace()
+            if 'NetElemNode' in fg['NetNode_x'].dims:
+                self.log.info("Trying to triage bad dimensions in NetCDF (probably ddcouplefm output)")
+                netnode_x=fg.NetNode_x.values
+                netnode_y=fg.NetNode_y.values
+                netnode_z=fg.NetNode_z.values
+
+                del fg['NetNode_x']
+                del fg['NetNode_y']
+                del fg['NetNode_z']
+
+                netelemnode = fg.NetElemNode.values
+                del fg['NetElemNode']
+
+                fg['NetNode_x']=('nNetNode',),netnode_x
+                fg['NetNode_y']=('nNetNode',),netnode_y
+                fg['NetNode_z']=('nNetNode',),netnode_z
+                fg['NetElemNode']=('nNetElem','nNetElemMaxNode'),netelemnode
+                    
+            if self.nprocs==1:
+                elem_dim='nFlowElem'
+                n_elem=len(fg[elem_dim])
+                if 'FlowElemGlobalNr' not in fg:
+                    self.log.info("Synthesizing multi domain data for single domain run")
+                    fg['FlowElemGlobalNr']=(elem_dim,),1+np.arange(n_elem,dtype=np.int32)
+                if 'FlowElemDomain' not in fg:
+                    fg['FlowElemDomain']  =(elem_dim,),np.zeros(n_elem,np.int32)
+
+            
             self._flowgeoms_xr[p] = fg
             
         return self._flowgeoms_xr[p]
@@ -2407,13 +2441,18 @@ class DwaqAggregator(Hydro):
         max_lnks_2d_per_proc=0
 
         for p in range(self.nprocs):
-            nc=self.open_flowgeom(p)
-            max_gid=max(max_gid, nc.FlowElemGlobalNr[:].max() )
-            max_elts_2d_per_proc=max(max_elts_2d_per_proc,len(nc.dimensions['nFlowElem']))
-            max_lnks_2d_per_proc=max(max_lnks_2d_per_proc,len(nc.dimensions['nFlowLink']))
+            nc=self.open_flowgeom_ds(p)
+            if 'FlowElemGlobalNr' in nc:
+                max_gid=max(max_gid, nc.FlowElemGlobalNr[:].max() )
+            elif self.nprocs==1:
+                max_gid=len(nc['nFlowElem'])
+            else:
+                raise Exception("Need global element numbers for multi-processor run")
+            max_elts_2d_per_proc=max(max_elts_2d_per_proc,len(nc['nFlowElem']))
+            max_lnks_2d_per_proc=max(max_lnks_2d_per_proc,len(nc['nFlowLink']))
             # nc.close() # now we cache this
 
-        n_global_elements=max_gid # ids should be 1-based, so this is also the count
+        n_global_elements=int(max_gid) # ids should be 1-based, so this is also the count
 
         # For exchanges, have to be get a bit more involved - in fact, just consult
         # the hyd file, since we don't know whether closed exchanges are included or not.
@@ -2522,7 +2561,12 @@ class DwaqAggregator(Hydro):
             self.log.info("init_elt_mapping: proc=%d"%p)
             # used to use circumcenters, but that can be problematic
             nc=self.open_flowgeom_ds(p)
-            ccz=nc.FlowElem_zcc[:].values
+            try:
+                # typically positive down
+                ccz=nc.FlowElem_zcc[:].values
+            except AttributeError:
+                # typically positive up, negate to be consistent with FlowElem_zcc
+                ccz=-nc.FlowElem_bl[:].values
                 
             ncg=dfm_grid.DFMGrid(nc)
             g_centroids=ncg.cells_centroid()
@@ -2531,8 +2575,15 @@ class DwaqAggregator(Hydro):
 
             dom_id=nc.FlowElemDomain.values
             global_ids=nc.FlowElemGlobalNr.values - 1  # make 0-based
-            areas=nc.FlowElem_bac.values
+            
+            try:
+                areas=nc.FlowElem_bac.values
+            except AttributeError:
+                self.log.info("Cell area missing in netcdf, will be computed from grid")
+                areas=ncg.cells_area()
 
+            # The datum doesn't matter, volumes are just calculated to get a proper
+            # average bed depth.
             vols=areas*ccz # volume to nominal MSL
 
             n_local_elt=len(ccx)
@@ -2610,7 +2661,7 @@ class DwaqAggregator(Hydro):
                     self.agg_seg[seg]['active']=False
                     
         for p in range(self.nprocs):
-            nc=self.open_flowgeom(p) 
+            nc=self.open_flowgeom_ds(p) 
             seg_to_2d=None # lazy loaded
 
             dom_id=nc.FlowElemDomain[:]
