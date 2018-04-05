@@ -2330,8 +2330,6 @@ class DwaqAggregator(Hydro):
             hyd=self.open_hyd(p)
             fg=xr.open_dataset(hyd.get_path('grid-coordinates-file'))
             
-            import pdb
-            pdb.set_trace()
             if 'NetElemNode' in fg['NetNode_x'].dims:
                 self.log.info("Trying to triage bad dimensions in NetCDF (probably ddcouplefm output)")
                 netnode_x=fg.NetNode_x.values
@@ -2352,13 +2350,16 @@ class DwaqAggregator(Hydro):
                     
             if self.nprocs==1:
                 elem_dim='nFlowElem'
+                link_dim='nFlowLink'
                 n_elem=len(fg[elem_dim])
+                n_link=len(fg[link_dim])
                 if 'FlowElemGlobalNr' not in fg:
                     self.log.info("Synthesizing multi domain data for single domain run")
                     fg['FlowElemGlobalNr']=(elem_dim,),1+np.arange(n_elem,dtype=np.int32)
                 if 'FlowElemDomain' not in fg:
                     fg['FlowElemDomain']  =(elem_dim,),np.zeros(n_elem,np.int32)
-
+                if 'FlowLinkDomain' not in fg:
+                    fg['FlowLinkDomain']  =(link_dim,),np.zeros(n_link,np.int32)
             
             self._flowgeoms_xr[p] = fg
             
@@ -2575,7 +2576,7 @@ class DwaqAggregator(Hydro):
 
             dom_id=nc.FlowElemDomain.values
             global_ids=nc.FlowElemGlobalNr.values - 1  # make 0-based
-            
+
             try:
                 areas=nc.FlowElem_bac.values
             except AttributeError:
@@ -2664,9 +2665,9 @@ class DwaqAggregator(Hydro):
             nc=self.open_flowgeom_ds(p) 
             seg_to_2d=None # lazy loaded
 
-            dom_id=nc.FlowElemDomain[:]
+            dom_id=nc.FlowElemDomain.values
             n_local_elt=len(dom_id)
-            global_ids=nc.FlowElemGlobalNr[:]-1 # make 0-based
+            global_ids=nc.FlowElemGlobalNr.values-1 # make 0-based
 
             for local_i in range(n_local_elt):
                 global_id=global_ids[local_i]
@@ -2759,12 +2760,12 @@ class DwaqAggregator(Hydro):
 
             seg_active=hyd.seg_active()
             
-            nc=self.open_flowgeom(p) # for subdomain ownership
+            nc=self.open_flowgeom_ds(p) # for subdomain ownership
 
-            elem_dom_id=nc.FlowElemDomain[:] # domains are numbered from 0
+            elem_dom_id=nc.FlowElemDomain.values # domains are numbered from 0
 
             if self.link_ownership=="FlowLinkDomain":
-                link_dom_id=nc.FlowLinkDomain[:]
+                link_dom_id=nc.FlowLinkDomain.values
             else:
                 # otherwise, don't even load it.  probably means we can't trust it.
                 pass 
@@ -2772,7 +2773,7 @@ class DwaqAggregator(Hydro):
             n_hor=hyd['number-horizontal-exchanges']
             n_ver=hyd['number-vertical-exchanges']
 
-            nFlowElem=len(nc.dimensions['nFlowElem'])
+            nFlowElem=len(nc['nFlowElem'])
 
             pointers2d=pointers[:,:2].copy()
             sel=(pointers2d>0) # only map non-boundary segments
@@ -2784,7 +2785,7 @@ class DwaqAggregator(Hydro):
             # on order, but only for the top layer?
             # should be...
 
-            links=nc.FlowLink[:] # 1-based
+            links=nc.FlowLink.values # 1-based
             def local_elts_to_link(from_2d,to_2d):
                 # slow - have to lookup the link
                 sela=(links[:,0]==from_2d)&(links[:,1]==to_2d)
@@ -3140,13 +3141,15 @@ class DwaqAggregator(Hydro):
 
                 n_local_to = len(self.seg_agg_to_local[agg_to])
                 if n_local_from>1:
-                    print("What?")
-                    import pdb
-                    pdb.set_trace()
+                    # 2018-04-05: this caution was probably left over from a merge-only
+                    # run.  This can and should happen on aggregation runs.
+                    #print("What?")
+                    #import pdb
+                    #pdb.set_trace()
                     count[agg_j]+=999 # signal that we can't use unaggregated data here.
                     continue
                 if n_local_to>1:
-                    print("Really?")
+                    # print("Really?")
                     count[agg_j]+=999 # signal that we can't use unaggregated data here.
                     continue
 
@@ -3299,9 +3302,10 @@ class DwaqAggregator(Hydro):
                 self.agg_exch_hash[(count,agg_to)]=idx
             sgn=1
         elif agg_to<0: # does this happen?
-            self.log.warning("get_exchange with a negative/boundary for the *to* segment")
-            import pdb
-            pdb.set_trace()
+            # It can happen if the aggregation polygons don't cover the entire input grid 
+            self.log.warning("get_exchange with a negative/boundary for the *to* segment - likely incomplete coverage")
+            #import pdb
+            #pdb.set_trace()
             assert self.agg_boundaries # if this is a problem, port the above stanza to here.
             agg_to=REINDEX
             if agg_from not in self.agg_exch_hash:
@@ -4341,6 +4345,167 @@ class DwaqAggregator(Hydro):
         ds.attrs['Conventions'] = "CF-1.5:Deltares-0.1" 
         return ds
 
+    def create_bnd(self):
+        """
+        populate self.bnd, same format as read_bnd()
+        but based on pulling the names from the subdomains.
+
+        Note that this was originally developed in MultiAggregator, but is now
+        being adapted for more general use.  The original MultiAggregator
+        implementation is included in that class
+
+        Note that if BCs are *not* aggregated, the data returned here can have
+        multiple boundary entries for the same x coordinate / coordinates
+        """
+        # Subdomains do not list sources in FlowLink, but the aggregated grid does
+        # at least for now.
+        bc_names={}
+        # Collect subdomain geometry as it maps to aggregated domain
+        bc_x=defaultdict(list)
+
+        # finally, get back to a
+        geom=self.get_geom()
+
+        flow_link_inside=geom.FlowLink.values.min(axis=1)
+        flow_link_outside=geom.FlowLink.values.max(axis=1)
+        # outside is the larger of the 1-based element indices
+        # len(nFlowElem) is the largest 1-based value of an inside element
+        # set those to -1
+        # What I want here is the negative bc id
+        nFlowElem=len(geom.nFlowElem)
+        bc_links= flow_link_outside>nFlowElem
+        flow_link_outside[bc_links] = nFlowElem - flow_link_outside[bc_links]
+
+        # iterate over bnds from each subdomain
+        for proc in range(self.nprocs):
+            sub_hyd=self.open_hyd(proc)
+            sub_hyd.infer_2d_elements()
+
+            # CHANGE
+            #sub_geom=sub_hyd.get_geom() # for MultiAggregator -
+            sub_geom=self.open_flowgeom_ds(proc) # for DwaqAggregator
+
+            sub_nFlowElem=len(sub_geom.nFlowElem)
+            sub_bnds=sub_hyd.read_bnd()
+            sub_g=dfm_grid.DFMGrid(sub_geom)
+
+            sub_hyd.infer_2d_links()
+
+            for sub_bnd in sub_bnds:
+                name,segs=sub_bnd
+                for seg in segs:
+                    # This link_id is negative
+                    # This "link_id" is really the negative index to the boundary
+                    # element
+                    link_id=seg['link']
+                    # Get its positive counterpart: this is a 0-based index to
+                    # a boundary element
+                    bc_elt_pos=sub_hyd.n_2d_elements - link_id - 1
+                    x=seg['x']
+
+                    # Can we now get back to the local link this belongs to?
+                    # Then go from that local link to an aggregated link
+                    if np.all( x[0] == x[1] ):
+                        # print("Vertical/source entry")
+                        # Would like figure out which entry in FlowLink to point to
+                        # the aggregated output includes these source links in FlowLink
+                        # but the source domains do not
+                        # Can it be found based on coordinate?
+                        # Not an exact match.
+                        x0=x[0]
+                        elt_inside=sub_g.select_cells_nearest(x[0],inside=True)
+                        elt_outside=None # subdomains don't have these in FlowLink
+                    else:
+                        # print("Horizontal bnd entry")
+                        link1,fromto=np.nonzero( sub_geom.FlowLink.values==bc_elt_pos+1)
+                        if len(link1)!=1:
+                            print("Trouble finding the FlowLink which goes with this bc element")
+                            print("  link1: %s"%link1)
+                        link1=link1[0]
+                        fromto=fromto[0]
+
+                        # this link in terms of local elements, as 0-based
+                        elt_inside=sub_geom.FlowLink.values[link1,1-fromto] - 1 
+                        elt_outside=sub_geom.FlowLink.values[link1,fromto]  - 1
+
+                    # this comes as 1-based, based on waq_scenario.py code.
+                    elt_inside_global=sub_geom.FlowElemGlobalNr.values[elt_inside] - 1
+
+                    # Is it local to this proc?
+                    elt_is_local=sub_geom.FlowElemDomain.values[elt_inside]==proc
+
+                    elt_agg=self.elt_global_to_agg_2d[elt_inside_global]
+
+                    if (not elt_is_local) or (elt_agg<0):
+                        # only consider inside elements which are in the aggregation
+                        # only get data from the owner of the inside element
+                        continue 
+
+                    # This is the right processor to get data from, and
+                    # this element is within the aggregation
+
+                    # elt_agg is 0-based
+                    bc_flow_links=np.nonzero( (flow_link_inside==elt_agg+1) & (flow_link_outside<0) )[0]
+                    # Used to assert this was a unique match
+                    if 0:
+                        assert len(bc_flow_links)==1
+                        bc_id=flow_link_outside[bc_flow_links[0]]
+                        bc_names[bc_id]=name
+                        bc_x[bc_id].append(x)
+                    else:
+                        # Now allow multiple -- may cause problems with writing them out, though.
+                        for bc_flow_link in bc_flow_links:
+                            bc_id=flow_link_outside[bc_flow_links[0]]
+                            if bc_id in bc_names:
+                                continue
+                            bc_names[bc_id]=name
+                            bc_x[bc_id].append(x) # Will have to deal with this x not being unique!
+                            break
+
+        # Reverse that mapping
+        bc_ids_for_name=defaultdict(list)
+
+        for k in bc_names:
+            name=bc_names[k]
+            bc_ids_for_name[name].append(k)
+
+        bnds=[]
+        for name in bc_ids_for_name:
+            bc_ids=bc_ids_for_name[name]
+            links=np.zeros( len(bc_ids), [('link','i4'),('x','f8',(2,2))] )
+            links['link']=bc_ids
+
+            for i,bc_id in enumerate(bc_ids):
+                if len(bc_x[bc_id])==1:
+                    links['x'][i]=bc_x[bc_id][0]
+                else:
+                    self.log.warning("Don't know how to combine multiple segment")
+                    # This happens when multiple BCs enter a single element
+                    # 2018-04-05: is that correct?  I think this is when one name maps
+                    # to multiple BC links
+                    links['x'][i]=bc_x[bc_id][0]
+            bnds.append( [name,links])
+
+        self.bnd = bnds
+        return self.bnd
+
+    @property
+    def bnd_filename(self):
+        # Maybe this should be in Hydro, instead of copied to HydroFiles and
+        # MultiAggregator?
+        return os.path.join(self.scenario.base_path, self.fn_base+".bnd")
+        
+    def write_boundary_links(self):
+        """
+        On the way to following the .bnd format
+        """
+        dest_fn=self.bnd_filename
+
+        bnd=self.create_bnd()
+        
+        dio.write_bnd(bnd,dest_fn)
+
+    
 class HydroAggregator(DwaqAggregator):
     """ Aggregate hydro, where the source hydro is already in one hydro
     object.
@@ -4648,6 +4813,10 @@ class HydroMultiAggregator(DwaqAggregator):
         populate self.bnd, same format as read_bnd()
         but based on pulling the names from the subdomains
         """
+        # Hopefully one implementation suffices, but the original implementation
+        # is retained below for the short term.
+        return super(HydroMultiAggregator,self).create_bnd()
+    
         # Subdomains do not list sources in FlowLink, but the aggregated grid does
         # at least for now.
         bc_names={}
@@ -4763,22 +4932,6 @@ class HydroMultiAggregator(DwaqAggregator):
 
         self.bnd = bnds
         return self.bnd
-    
-    @property
-    def bnd_filename(self):
-        # Maybe this should be in Hydro, instead of copied to HydroFiles and
-        # MultiAggregator?
-        return os.path.join(self.scenario.base_path, self.fn_base+".bnd")
-        
-    def write_boundary_links(self):
-        """
-        On the way to following the .bnd format
-        """
-        dest_fn=self.bnd_filename
-
-        bnd=self.create_bnd()
-        
-        dio.write_bnd(bnd,dest_fn)
 
 class HydroStructured(Hydro):
     """
