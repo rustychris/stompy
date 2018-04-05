@@ -3031,6 +3031,40 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             return np.array( [self.nodes_to_edge(path[i],path[i+1])
                               for i in range(len(path)-1)] )
 
+
+    def create_dual(self,center='centroid',create_cells=False):
+        """
+        Very basic dual-grid construction.  Does not yet create cells,
+        just being used to simplify connectivity of an aggregation grid.
+        """
+        assert not create_cells,"Not yet supported"
+        gd=UnstructuredGrid()
+
+        if center=='centroid':
+            cc=self.cells_centroid()
+        else:
+            cc=self.cells_center()
+
+        gd.add_node_field('dual_cell',np.zeros(0,'i4'))
+        gd.add_edge_field('dual_edge',np.zeros(0,'i4'))
+
+        for c in self.valid_cell_iter():
+            # redundant, but we both force the index of this
+            # to be c, but also store a dual_cell index.  This
+            # be streamlined once it's clear that dual_cell is not needed.
+            gd.add_node(_index=c,x=cc[c],dual_cell=c)
+
+        e2c=self.edge_to_cells()
+
+        for j in self.valid_edge_iter():
+            if e2c[j].min() < 0:
+                continue # boundary
+            dj_exist=gd.nodes_to_edge(e2c[j])
+            if dj_exist is None:
+                dj=gd.add_edge(nodes=e2c[j],dual_edge=j)
+
+        return gd
+        
     def cells_connected_components(self,edge_mask,cell_mask=None,randomize=True):
         """
         Label the cells of the grid based on connections. 
