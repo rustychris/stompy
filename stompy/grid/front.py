@@ -1990,8 +1990,10 @@ class AdvancingFront(object):
             
         limits=[self.node_ring_f(m,n_ring)
                 for m in stops]
-        # if this fails, need to fix find_slide_limits to
-        # ensure circular strings return monotonic slide_limits
+        # make sure limits are monotonic increasing.  for circular,
+        # this may require bumping up 
+        if curve.closed and (limits[0]>limits[1]):
+            limits[1] += curve.total_distance()
         assert limits[0] < limits[1]
         return limits
     
@@ -2386,9 +2388,9 @@ class AdvancingQuads(AdvancingFront):
             degree=self.grid.node_degree(n)
             assert degree >= 2
             if degree==2:
-                self.grid.nodes['fixed']=self.HINT # self.SLIDE
+                self.grid.nodes['fixed'][n]=self.HINT # self.SLIDE
             else:
-                self.grid.nodes['fixed']=self.RIGID
+                self.grid.nodes['fixed'][n]=self.RIGID
 
         # and mark the internal edges as unmeshed:
         for na,nb in utils.circular_pairs(pc):
@@ -2415,7 +2417,7 @@ class AdvancingQuads(AdvancingFront):
                 self.grid.edges['oring'][j]=1+curve_idx
                 # side=0 when the edge is going the same direction as the
                 # ring, which in turn should be ring_sign=1.
-                self.grid.edges['ring_sign']=1-2*side 
+                self.grid.edges['ring_sign'][j]=1-2*side 
             
     def orient_quad_edge(self,j,orient):
         self.grid.edges['para'][j]=orient
