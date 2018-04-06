@@ -65,7 +65,7 @@ def lowpass_godin(data,in_t_days,*args,**kwargs):
     
 
 def lowpass_fir(x,winsize,ignore_nan=True,axis=-1,mode='same',use_fft=False,
-                nan_weight_threshold=0.5):
+                nan_weight_threshold=0.49):
     """
     In the absence of exact filtering needs, choose the window 
     size to match the cutoff period.  Signals with a frequency corresponding to
@@ -83,6 +83,8 @@ def lowpass_fir(x,winsize,ignore_nan=True,axis=-1,mode='same',use_fft=False,
     mode: same as for scipy.signal convolve operations
     use_fft: using the fft is faster, but sometimes less robust
     nan_weight_threshold: items with a weight less than this will be marked nan
+      the default value is slightly less than half, to avoid numerical roundoff
+      issues with 0.49999999 < 0.5
     """
     # hanning windows have first/last elements==0.
     # but it's counter-intuitive - so force a window with nonzero
