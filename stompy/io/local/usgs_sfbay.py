@@ -4,13 +4,24 @@ Access SFEI ERDDAP copy of USGS SF Bay Water Quality data.
 Note that SFEI ERDDAP is not necessarily up to date!
 """
 import os
+import six
 
 import numpy as np
 import matplotlib.pyplot as plt
 import xarray as xr
 
+import datetime
+import requests
+import pandas as pd
+import hashlib
+from bs4 import BeautifulSoup, Comment
+import re
+
 from stompy import (utils,xr_utils)
 from stompy.spatial import proj_utils
+
+StringIO=six.StringIO
+
 
 usgs_erddap="http://sfbaynutrients.sfei.org/erddap/tabledap/usgs_sfb_nutrients"
 
@@ -141,78 +152,174 @@ def cruise_dataset(start,stop):
 # data which was posted:
 
 # Included for reference for future development of a proper function
-if 0:
-    import StringIO
-    import datetime
-    import requests
-    from bs4 import BeautifulSoup, Comment
-    import re
 
-    form_vars="""\
-    col:realdate
-    col:stat
-    col:depth
-    col:dscrchl
-    col:calcchl
-    col:salin
-    col:temp
-    col:sigt
-    dstart:1990
-    p11:
-    p12:
-    p21:
-    p22:
-    p31:
-    p32:
-    type1:year
-    type2:---
-    type3:---
-    value1:2012
-    value2:
-    value3:
-    comp1:ge
-    comp2:gt
-    comp3:gt
-    conj2:AND
-    conj3:AND
-    sort1:fulldate
-    asc1:on
-    sort2:stat
-    asc2:on
-    sort3:---
-    asc3:on
-    out:comma
-    parm:on
-    minrow:0
-    maxrow:99999
-    ftype:easy
-    """
+# available columns:
+usgs_sfbay_columns=[ ('realdate','Date (MM/DD/YYYY)'),
+                     ('jdate','Julian Date (YYYYDDD)'),
+                     ('days','Days since 01/01/1990'), # hardcoded 1990 as dstart
+                     ('decdate','Decimal Date'),
+                     ('time','Time of Day '),
+                     ('stat','Station Number'),
+                     ('dist','Distance from Station 36'),
+                     ('depth','Depth'),
+                     ('dscrchl','Discrete Chlorophyll'),
+                     ('chlrat','Chlorophyll a/a+PHA ratio'),
+                     ('fluor','Fluorescence'),
+                     ('calcchl','Calculated Chlorophyll'),
+                     ('dscroxy','Discrete Oxygen'),
+                     ('oxy','Oxygen electrode output'),
+                     ('oxysat','Oxygen Saturation %'),
+                     ('calcoxy','Calculated Oxygen'),
+                     ('dscrspm','Discrete SPM'),
+                     ('obs','Optical Backscatter'),
+                     ('calcspm','Calculated SPM'),
+                     ('dscrexco','Measured Extinction Coeff'),
+                     ('excoef','Calculated Extinction Coeff'),
+                     ('salin','Salinity'),
+                     ('temp','Temperature'),
+                     ('sigt','Sigma-t'),
+                     # ('height','Tide Height at SF'),
+                     ('no2','Nitrite'),
+                     ('no32','Nitrate+Nitrite'),
+                     ('nh4','Ammonium'),
+                     ('po4','Phosphate'),
+                     ('si','Silicate'),
+                     ]
 
-    params=[s.split(':') for s in form_vars.split()]
 
-    url="https://sfbay.wr.usgs.gov/cgi-bin/sfbay/dataquery/query16.pl"
+station_locs=None
+def station_number_to_lonlat(s):
+    global station_locs
+    if station_locs is None:
+        this_dir=os.path.dirname(__file__)
+        # The web API doesn't provide lat/lon
+        station_locs=pd.read_csv(os.path.join(this_dir,'usgs_sfbay_station_locations.csv'),
+                                 skiprows=[1]).set_index('StationNumber')
+    return station_locs.loc[float(s),[ 'longitude','latitude']].values
 
-    result=requests.post(url,params)
 
-    text=result.text
+# This is a snapshot to give a sense of some of the options, but not everything
+# (very little, really) is exposed in the method below
+form_vars="""\
+col:realdate
+col:stat
+col:depth
+col:dscrchl
+col:calcchl
+col:salin
+col:temp
+col:sigt
+dstart:1990
+p11:
+p12:
+p21:
+p22:
+p31:
+p32:
+type1:year
+type2:---
+type3:---
+value1:2012
+value2:
+value3:
+comp1:ge
+comp2:gt
+comp3:gt
+conj2:AND
+conj3:AND
+sort1:fulldate
+asc1:on
+sort2:stat
+asc2:on
+sort3:---
+asc3:on
+out:comma
+parm:on
+minrow:0
+maxrow:99999
+ftype:easy
+"""
 
-    soup = BeautifulSoup(text, 'html.parser')
-    #comments = soup.findAll(text=lambda text:isinstance(text, Comment))
-    #[comment.extract() for comment in comments]
 
-    data = soup.find('pre')
-    data1=data.get_text()
 
-    # Remove HTML comments
-    data2=re.sub(r'<!--[^>]*>','',data1)
+def query_usgs_sfbay(period_start, period_end, cache_dir=None):
+    params=[]
 
-    df = pd.read_csv(StringIO.StringIO(data2),skiprows=[1],parse_dates=["Date"] )
+    for column,text in usgs_sfbay_columns:
+        params.append( ('col',column) )
 
-    # Shorten names
-    df1=df.rename(columns={'Station Number':'Station',
-                           'Discrete Chlorophyll':'dChl ug/L',
-                           'Calculated Chlorophyll':'cChl ug/L',
-                           'Salinity':'sal',
-                           'Temperature':"T",
-                           'Sigma-t':'sigmat'})
+    params += [('dstart','1990'),
+               ('p11',''),
+               ('p12',''),
+               ('p21',''),
+               ('p22',''),
+               ('p31',''),
+               ('p32','')]
+
+    comps=dict(type1='---',value1='',comp1='gt',
+               type2='---',value2='',comp2='gt',
+               type3='---',value3='',comp3='gt')
+
+    filter_count=0
+
+    for t,comp in [ (period_start,'ge'),
+                    (period_end,'lt') ]:
+        if t is not None:
+            filter_count+=1
+            comps['type%d'%filter_count]='jdate'
+            comps['comp%d'%filter_count]=comp
+            comps['value%d'%filter_count]=str(utils.to_jdate(t))
+
+    for fld in ['type','value','comp']:
+        for comp_i in [1,2,3]:
+            fld_name=fld+str(comp_i)
+            params.append( (fld_name, comps[fld_name] ) )
+
+    params+= [ ('conj2','AND'),
+               ('conj3','AND'),
+               ('sort1','fulldate'),
+               ('asc1','on'),
+               ('sort2','stat'),
+               ('asc2','on'),
+               ('sort3','---'),
+               ('asc3','on'),
+               ('out','comma'),
+               ('parm','on'),
+               ('minrow','0'),
+               ('maxrow','99999'),
+               ('ftype','easy')
+    ]
+
+    if cache_dir is not None:
+        fmt="%Y%m%d"
+        cache_file=os.path.join(cache_dir,'usgs_sfbay_%s_%s.csv'%(utils.to_datetime(period_start).strftime(fmt),
+                                                                  utils.to_datetime(period_end).strftime(fmt)))
+    else:
+        cache_file=None
+
+    def fetch():
+        url="https://sfbay.wr.usgs.gov/cgi-bin/sfbay/dataquery/query16.pl"
+        result=requests.post(url,params)
+        text=result.text
+        soup = BeautifulSoup(text, 'html.parser')
+        data = soup.find('pre')
+        data1=data.get_text()
+        data2=re.sub(r'<!--[^>]*>','',data1) # Remove HTML comments
+        return data2
     
+    if cache_file is None:
+        data2=fetch()
+    else:
+        if not os.path.exists(cache_file):
+            data2=fetch()
+            with open(cache_file,'wt') as fp:
+                fp.write(data2)
+        else:
+            # print("Reading from cache")
+            with open(cache_file,'rt') as fp:
+                data2=fp.read()
+                
+    df = pd.read_csv(StringIO(data2),skiprows=[1],parse_dates=["Date"] )
+
+    return df
+

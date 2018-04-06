@@ -1161,6 +1161,19 @@ def to_unix(t):
         dt0=datetime.datetime(1970, 1, 1)
         return (dt - dt0).total_seconds()
 
+def to_jdate(t):
+    """
+    Convert a time-like scalar t to integer julian date, e.g. 2016291
+    (year and day of year concatenated)
+    The first of the year is 000, so add 1 if you want 2016-01-01 to be
+    2016001.
+    """
+    dt=to_datetime(t)
+    dt0=dt.replace(day=1,month=1,hour=0,minute=0,second=0)
+    doy=dt.toordinal() - dt0.toordinal()
+    return dt0.year * 1000 + doy
+    
+    
 def unix_to_dt64(t):
     """
     Convert a floating point unix timestamp to numpy datetime64 

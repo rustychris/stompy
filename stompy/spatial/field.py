@@ -2047,35 +2047,38 @@ class SimpleGrid(QuadrilateralGrid):
         cgrid = self.to_curvilinear()
 
         return cgrid.apply_xform(xform)
+
+    def rect_to_indexes(self,xxyy):
+        xmin,xmax,ymin,ymax = xxyy
+        
+        dx,dy = self.delta()
+
+        min_col = int( max( np.floor( (xmin - self.extents[0]) / dx ), 0) )
+        max_col = int( min( np.ceil( (xmax - self.extents[0]) / dx ), self.F.shape[1]-1) )
+
+        min_row = int( max( np.floor( (ymin - self.extents[2]) / dy ), 0) )
+        max_row = int( min( np.ceil( (ymax - self.extents[2]) / dy ), self.F.shape[0]-1) )
+
+        return [min_row,max_row,min_col,max_col]
         
     def crop(self,rect=None,indexes=None):
         dx,dy = self.delta()
         
         if rect is not None:
-            xmin,xmax,ymin,ymax = rect
+            indexes=self.rect_to_indexes(rect)
 
+        assert indexes is not None,"Must specify one of rect or indexes"
 
-            min_col = int( max( np.floor( (xmin - self.extents[0]) / dx ), 0) )
-            max_col = int( min( np.ceil( (xmax - self.extents[0]) / dx ), self.F.shape[1]-1) )
-
-            min_row = int( max( np.floor( (ymin - self.extents[2]) / dy ), 0) )
-            max_row = int( min( np.ceil( (ymax - self.extents[2]) / dy ), self.F.shape[0]-1) )
-
-            # print(min_row, max_row, min_col, max_col)
-            return self.crop(indexes=[min_row,max_row,min_col,max_col])
-        elif indexes is not None:
-            min_row,max_row,min_col,max_col = indexes
-            newF = self.F[min_row:max_row+1, min_col:max_col+1]
-            new_extents = [self.extents[0] + min_col*dx,
-                           self.extents[0] + max_col*dx,
-                           self.extents[2] + min_row*dy,
-                           self.extents[2] + max_row*dy ]
+        min_row,max_row,min_col,max_col = indexes
+        newF = self.F[min_row:max_row+1, min_col:max_col+1]
+        new_extents = [self.extents[0] + min_col*dx,
+                       self.extents[0] + max_col*dx,
+                       self.extents[2] + min_row*dy,
+                       self.extents[2] + max_row*dy ]
             
-            return SimpleGrid(extents = new_extents,
-                              F = newF,
-                              projection = self.projection() )
-        else:
-            raise Exception("must specify one of rect [default] or indexes")
+        return SimpleGrid(extents = new_extents,
+                          F = newF,
+                          projection = self.projection() )
 
     def bounds(self):
         return np.array(self.extents)
@@ -2324,17 +2327,30 @@ class SimpleGrid(QuadrilateralGrid):
         self.F[~valid] = np.nan
 
     
-    def polygon_mask(self,poly):
+    def polygon_mask(self,poly,crop=True):
         """ similar to mask_outside, but:
         much faster due to outsourcing tests to GDAL
         returns a boolean array same size as self.F, with True for 
         pixels inside the polygon.
+
+        crop: if True, optimize by cropping the source raster first.  should
+        provide identical results, but may not be identical due to roundoff.
         """
         # could be made even simpler, by creating OGR features directly from the
         # polygon, rather than create a full-on datasource.
         # likewise, could jump straight to creating a target raster, rather 
         # than creating a SimpleGrid just to get the metadata right.
-        import wkb2shp
+        if crop:
+            xyxy=poly.bounds
+            xxyy=[xyxy[0], xyxy[2], xyxy[1], xyxy[3]]
+            indexes=self.rect_to_indexes(xxyy)
+            mask_crop=self.crop(indexes=indexes).polygon_mask(poly,crop=False)
+            full_mask=np.zeros(self.F.shape,np.bool)
+            min_row,max_row,min_col,max_col = indexes
+            full_mask[min_row:max_row+1,min_col:max_col+1]=mask_crop
+            return full_mask
+            
+        from . import wkb2shp
         raster_ds=self.write_gdal('Memory')
         poly_ds=wkb2shp.wkb2shp("Memory",[poly])
         target_field=SimpleGrid(F=np.zeros(self.F.shape,np.int32),
@@ -2520,7 +2536,7 @@ class SimpleGrid(QuadrilateralGrid):
                                   0, self.extents[3]-0.5*dy, 0, dy ] )
 
         # set the reference info
-        if self.projection() is not None:
+        if self.projection() not in ('',None):
             srs = osr.SpatialReference()
             if srs.SetFromUserInput(self.projection()) != 0:
                 log.warning("Failed to set projection (%s) on GDAL output"%(self.projection()))

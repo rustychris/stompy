@@ -593,9 +593,15 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     @staticmethod
     def from_shp(shp_fn):
         # bit of extra work to find the number of nodes required
-        nsides=[len(geom.exterior.coords)
-                for geom in wkb2shp.shp2geom(shp_fn)['geom']]
-        g=UnstructuredGrid(max_sides=np.max(nsides))
+        feats=wkb2shp.shp2geom(shp_fn)['geom']
+        if feats[0].type=='Polygon':
+            nsides=[len(geom.exterior.coords)
+                    for geom in wkb2shp.shp2geom(shp_fn)['geom']]
+            nsides=np.max(nsides)
+        else:
+            nsides=10 # total punt
+
+        g=UnstructuredGrid(max_sides=nsides)
         g.add_from_shp(shp_fn)
         return g
     def add_from_shp(self,shp_fn):
@@ -621,6 +627,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 # this used to be just add_cell(), but new logic in add_cell()
                 # really needs edges to exist first.
                 self.add_cell_and_edges(nodes=nodes)
+            elif geo.type=='LineString':
+                coords=np.array(geo)
+                nodes=[self.add_or_find_node(x=x)
+                       for x in coords]
+                for a,b in zip(nodes[:-1],nodes[1:]):
+                    self.add_edge(nodes=[a,b])
             else:
                 raise GridException("Not ready for geometry type %s"%geo.type)
         # still need to collapse duplicate nodes
@@ -2768,6 +2780,29 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             strings.append( feat_nodes )
         return strings
 
+    def select_nodes_boundary_segment(self, coords, ccw=True):
+        """
+        bc_coords: [ [x0,y0], [x1,y1] ] coordinates, defining
+        start and end of boundary segment, traversing CCW boundary of
+        grid.
+
+        if ccw=False, then traverse the boundary CW instead of CCW.
+
+        returns [n0,n1,...] nodes along boundary between those locations.
+        """
+        self.edge_to_cells()
+        start_n,end_n=[ self.select_nodes_nearest(xy) 
+                        for xy in coords]
+        cycle=np.asarray( self.boundary_cycle() )
+        start_i=np.nonzero( cycle==start_n )[0][0]
+        end_i=np.nonzero( cycle==end_n )[0][0]
+
+        if start_i<end_i:
+            boundary_nodes=cycle[start_i:end_i+1]
+        else:
+            boundary_nodes=np.r_[ cycle[start_i:], cycle[:end_i]]
+        return boundary_nodes
+
     def select_nodes_intersecting(self,geom=None,xxyy=None,invert=False,as_type='mask'):
         sel = np.zeros(self.Nnodes(),np.bool8) # initialized to False
 
@@ -2996,6 +3031,40 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             return np.array( [self.nodes_to_edge(path[i],path[i+1])
                               for i in range(len(path)-1)] )
 
+
+    def create_dual(self,center='centroid',create_cells=False):
+        """
+        Very basic dual-grid construction.  Does not yet create cells,
+        just being used to simplify connectivity of an aggregation grid.
+        """
+        assert not create_cells,"Not yet supported"
+        gd=UnstructuredGrid()
+
+        if center=='centroid':
+            cc=self.cells_centroid()
+        else:
+            cc=self.cells_center()
+
+        gd.add_node_field('dual_cell',np.zeros(0,'i4'))
+        gd.add_edge_field('dual_edge',np.zeros(0,'i4'))
+
+        for c in self.valid_cell_iter():
+            # redundant, but we both force the index of this
+            # to be c, but also store a dual_cell index.  This
+            # be streamlined once it's clear that dual_cell is not needed.
+            gd.add_node(_index=c,x=cc[c],dual_cell=c)
+
+        e2c=self.edge_to_cells()
+
+        for j in self.valid_edge_iter():
+            if e2c[j].min() < 0:
+                continue # boundary
+            dj_exist=gd.nodes_to_edge(e2c[j])
+            if dj_exist is None:
+                dj=gd.add_edge(nodes=e2c[j],dual_edge=j)
+
+        return gd
+        
     def cells_connected_components(self,edge_mask,cell_mask=None,randomize=True):
         """
         Label the cells of the grid based on connections. 

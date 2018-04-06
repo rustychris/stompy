@@ -157,9 +157,12 @@ def nwis_dataset(station,start_date,end_date,products,
         dataset=datasets[0]
 
     if clip:
-        time_sel=(dataset.time>=start_date) & (dataset.time<end_date)
+        time_sel=(dataset.time.values>=start_date) & (dataset.time.values<end_date)
         dataset=dataset.isel(time=time_sel)
 
+    dataset.load() # force read into memory before closing files
+    for d in datasets:
+        d.close()
     return dataset
 
 
