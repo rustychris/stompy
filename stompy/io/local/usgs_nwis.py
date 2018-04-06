@@ -38,11 +38,14 @@ def nwis_dataset_collection(stations,*a,**k):
 
     # As cases of missing data come up, this will have to get smarter about padding
     # individual sites.
-    return xr.concat( ds_per_site, dim='site')
+    collection=xr.concat( ds_per_site, dim='site')
+    for ds in ds_per_site:
+        ds.close() # free up FDs
+    return collection 
         
 def nwis_dataset(station,start_date,end_date,products,
                  days_per_request=None,frequency='realtime',
-                 cache_dir=None):
+                 cache_dir=None,clip=True):
     """
     Retrieval script for USGS waterdata.usgs.gov
     
@@ -65,10 +68,12 @@ def nwis_dataset(station,start_date,end_date,products,
       with filenames that include the gage, period and products.  The directory must already
       exist.
 
-    returns an xarray dataset.
+    clip: if True, then even if more data was fetched, return only the period requested.
 
     frequency: defaults to "realtime" which should correspond to the original 
       sample frequency.  Alternatively, "daily" which access daily average values.
+
+    returns an xarray dataset.
 
     Note that names of variables are inferred from parameter codes where possible,
     but this is not 100% accurate with respect to the descriptions provided in the rdb,
@@ -146,8 +151,15 @@ def nwis_dataset(station,start_date,end_date,products,
         dataset=datasets[0]
         for other in datasets[1:]:
             dataset=dataset.combine_first(other)
+        for stale in datasets:
+            stale.close() # maybe free up FDs?
     else:
         dataset=datasets[0]
+
+    if clip:
+        time_sel=(dataset.time>=start_date) & (dataset.time<end_date)
+        dataset=dataset.isel(time=time_sel)
+
     return dataset
 
 
