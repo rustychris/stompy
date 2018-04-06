@@ -1127,6 +1127,7 @@ class Hydro(object):
             # e.g. self.vol_filename should probably be self.vol_filepath, then
             # here we could reference the filename relative to the hyd file
             "grid-indices-file     '%s.bnd'"%self.fn_base,# lies, damn lies
+            "boundaries-file       '%s.bnd'"%self.fn_base, # this one might be true.
             "grid-coordinates-file '%s'"%self.flowgeom_filename,
             "attributes-file       '%s.atr'"%self.fn_base,
             "volumes-file          '%s.vol'"%self.fn_base,
@@ -2330,7 +2331,7 @@ class DwaqAggregator(Hydro):
             hyd=self.open_hyd(p)
             fg=xr.open_dataset(hyd.get_path('grid-coordinates-file'))
             
-            if 'NetElemNode' in fg['NetNode_x'].dims:
+            if ('NetNode_x' in fg) and ('NetElemNode' in fg['NetNode_x'].dims):
                 self.log.info("Trying to triage bad dimensions in NetCDF (probably ddcouplefm output)")
                 netnode_x=fg.NetNode_x.values
                 netnode_y=fg.NetNode_y.values
@@ -2696,7 +2697,8 @@ class DwaqAggregator(Hydro):
                     # layers).  that is what lets us use k (being the index
                     # of local segments in this local elt) as an equivalent
                     # to k_agg
-                    one_agg_seg=self.get_agg_segment(agg_k=k,agg_elt=agg_elt)
+                    agg_k=self.get_agg_k(proc=p,k=k,seg=local_3d)
+                    one_agg_seg=self.get_agg_segment(agg_k=agg_k,agg_elt=agg_elt)
                     self.seg_local['agg'][p,local_3d]=one_agg_seg
                     self.seg_local['ghost'][p,local_3d]=local_elt_is_ghost
                     self.agg_seg[one_agg_seg]['active']=True
@@ -2706,6 +2708,9 @@ class DwaqAggregator(Hydro):
         for agg_segi,agg_seg in enumerate(self.agg_seg):
             if not agg_seg['active']:
                 self.inactive_segs.append(agg_segi)
+
+    def get_agg_k(self,proc,k,seg):
+        return k # no vertical aggregation
 
     link_ownership="FlowLinkDomain" # trust subdomain FlowLinkDomain to resolve ownership
     # "owner_of_min_elem" # link ownership goes to owner of the element with min. global nr.
@@ -3994,39 +3999,22 @@ class DwaqAggregator(Hydro):
         # 2017-01-5: used to call temperature 'temperature', but for dwaq it should
         #            be temp.
 
-        if 0: # old approach, reached into the files of the unaggregated runs
-            # aside from reaching around the abstraction a bit, this also
-            # suffers from using the wrong time steps, as it assumes that
-            # self.t_secs applies to all parameters
-            for label,pname in [('vert-diffusion-file','VertDisper'),
-                                ('salinity-file','salinity'),
-                                ('temperature-file','temp')]:
-                # see if the first processor has it
-                if hyd0[label]=='none':
-                    continue
-                fn=hyd0.get_path(label)
-                if not os.path.exists(fn):
-                    self.log.info("DwaqAggregator: seg function %s (label=%s) not found"%(fn,label))
-                    continue
-                hparams[pname]=ParameterSpatioTemporal(func_t=self.seg_func(label=label),
-                                                       times=self.t_secs,
-                                                       hydro=self)
-        else: # new approach - use unaggregated parameter objects.
-            hyd0_params=hyd0.parameters(force=False)
+        # new approach - use unaggregated parameter objects.
+        hyd0_params=hyd0.parameters(force=False)
 
-            # could also loop over the parameters that hyd0 has, and just be sure
-            # step over the ones that will be replaced, like surf.
-            
-            for pname in ['VertDisper','salinity','temp']:
-                # see if the first processor has it
-                if pname in hyd0_params:
-                    hyd0_param=hyd0_params[pname]
-                    # in the past, used the label to grab this from each unaggregated
-                    # source.
-                    # now we use the parameter name
-                    hparams[pname]=ParameterSpatioTemporal(func_t=self.seg_func(param_name=pname),
-                                                           times=hyd0_param.times,
-                                                           hydro=self)
+        # could also loop over the parameters that hyd0 has, and just be sure
+        # step over the ones that will be replaced, like surf.
+
+        for pname in ['VertDisper','salinity','temp']:
+            # see if the first processor has it
+            if pname in hyd0_params:
+                hyd0_param=hyd0_params[pname]
+                # in the past, used the label to grab this from each unaggregated
+                # source.
+                # now we use the parameter name
+                hparams[pname]=ParameterSpatioTemporal(func_t=self.seg_func(param_name=pname),
+                                                       times=hyd0_param.times,
+                                                       hydro=self)
 
         return hparams
 
@@ -5059,7 +5047,10 @@ class FilterHydroBC(Hydro):
     group_boundary_element = forwardTo('orig','group_boundary_elements')
 
     seg_active = forwardTo('orig','seg_active')
-    
+
+    bnd_filename = forwardTo('orig','bnd_filename')
+    write_boundary_links = forwardTo('orig','write_boundary_links')
+
     def apply_filter(self):
         self.filt_volumes=np.array( [self.orig.volumes(t) for t in self.orig.t_secs] )
         self.filt_flows  =np.array( [self.orig.flows(t)   for t in self.orig.t_secs] )
@@ -5321,8 +5312,8 @@ class FilterAll(FilterHydroBC):
     run into a subtidal run.
     """
     
-    def __init__(self,orig):
-        super(FilterAll,self).__init__(orig,selection='all')
+    def __init__(self,original,**kw):
+        super(FilterAll,self).__init__(original,selection='all',**kw)
 
     def adjust_plan_areas(self):
         """ 
