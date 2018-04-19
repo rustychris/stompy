@@ -45,11 +45,17 @@ def path(append):
         sys.path.append(append)
         
 def add_to(instance):
-    def decorator(f):
-        import types
-        f = types.MethodType(f, instance, instance.__class__)
-        setattr(instance, f.func_name, f)
-        return f
+    if six.PY2:
+        def decorator(f):
+            import types
+            f = types.MethodType(f, instance, instance.__class__)
+            setattr(instance, f.func_name, f)
+            return f
+    else:
+        def decorator(f):
+            f=f.__get__(instance,type(instance))
+            setattr(instance,f.__name__,f)
+            
     return decorator
 
 class Bucket(object):

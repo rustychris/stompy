@@ -1849,7 +1849,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 edge_map[j]=jother
                 # wait to delete j until after cells have been moved to jother.
             else:
-                self.log.info("Modifying edge j=%d"%j)
+                self.log.debug("Modifying edge j=%d"%j)
                 self.modify_edge(j,nodes=newnodes)
 
         # -- Transition any cells.  

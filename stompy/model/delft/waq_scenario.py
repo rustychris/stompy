@@ -2234,6 +2234,11 @@ class DwaqAggregator(Hydro):
     # segments.
     sparse_layers=True
 
+    # Force links between unaggregated elements to be consistent with links
+    # in the aggregation polygon by nudging elements between aggregated
+    # elements.  See init_elt_mapping
+    nudge_elements=True
+
     # if True, boundary exchanges are combined so that any given segment has
     # at most one boundary exchange
     # if False, these exchanges are kept distinct, leading to easier addressing
@@ -2618,6 +2623,98 @@ class DwaqAggregator(Hydro):
             else:
                 self.log.debug(msg)
 
+
+        if (not self.merge_only) and self.nudge_elements:
+            global_remapped={} # global id => nudged element.
+            agg_g=unstructured_grid.UnstructuredGrid.from_shp(self.agg_shp)
+            
+            for nudge_iter in range(5):
+                nudge_count=0
+                # First, identify problem edges
+                for proc in range(self.nprocs):
+                    self.log.info("Checking proc %d for inconsistent links"%proc)
+                    nc=self.open_flowgeom_ds(proc)
+                    proc_global_ids=nc.FlowElemGlobalNr.values - 1  # make 0-based
+                    ncg=dfm_grid.DFMGrid(nc)
+                    # This is slow, but on the chance that the grid is from a merged
+                    # hydro run, this is necessary (or the code below needs to be rewritten
+                    # to cope with duplicate edges from a merged hydro run).
+                    self.log.info("Overly conservative cleanup pass on grid")
+                    dfm_grid.cleanup_multidomains(ncg)
+                    self.log.info(" ... done with cleanup pass")
+
+                    e2c=ncg.edge_to_cells()
+                    for j in np.nonzero(e2c.min(axis=1)>=0)[0]: # only internal edges
+                        loc_c1,loc_c2=e2c[j]
+                        # which aggregation polygons do these map to?
+                        glb_c1,glb_c2=proc_global_ids[ e2c[j] ]
+                        agg_1,agg_2=self.elt_global_to_agg_2d[ [glb_c1,glb_c2] ]
+                        if (agg_1<0) or (agg_2<0):
+                            continue # not concerned about edges leaving the domain
+
+                        agg_j=agg_g.cells_to_edge(agg_1,agg_2)
+                        if agg_j is None:
+                            self.log.info("proc %d, j=%d is a problem edge"%(proc,j))
+
+                            # First attempt: assume that loc_c1 can be nudged to a different
+                            # aggregated element.  This resulted in some cases where it was
+                            # nudged multiple times.
+
+                            # Default to nudging c1, but if it has already been nudged due
+                            # to some other edge, try flipping around and nudging c2
+                            if glb_c1 in global_remapped:
+                                assert glb_c2 not in global_remapped,"Both sides of this edge have been remapped!"
+                                self.log.info("   Problem edge will be flipped")
+                                loc_c1,loc_c2=loc_c2,loc_c1
+                                glb_c1,glb_c2=glb_c2,glb_c1
+                                agg_1,agg_2=agg_2,agg_1
+
+                            # Try to find a new home for loc_c1:
+                            # First get the list of allowable new elements for c1:
+                            agg_c1_nbrs=np.unique( agg_g.cell_to_cells(agg_1) )
+                            agg_c1_nbrs=agg_c1_nbrs[ agg_c1_nbrs>=0 ]
+                            agg_c2_nbrs=np.unique( agg_g.cell_to_cells(agg_2) )
+                            agg_c2_nbrs=agg_c2_nbrs[ agg_c2_nbrs>=0 ]
+
+                            # tempting to just slide c1 over into the same element as c2, but
+                            # that would just make the problem worse since c1 will almost certainly
+                            # have neighbors in agg_c1, but now they are farther from the real edge
+                            # potential_agg_c1s=np.concatenate( (agg_c2_nbrs,[agg_2]) )
+
+                            # potential_agg_c1s=agg_c2_nbrs # close, but still leaves some bad edges
+                            # This may be too strict -- there is an assumption that c1 has additional
+                            # unaggregated edges with other cells in agg_c1.  In that case, we can only
+                            # move c1 to a new element X such that agg_c1-X and X-agg_c2 are both
+                            # allowable.
+                            potential_agg_c1s=np.intersect1d( agg_c1_nbrs, agg_c2_nbrs)
+                            assert len(potential_agg_c1s), "May have been too strict with intersection"
+
+                            new_agg_1=None
+                            c1_poly=ncg.cell_polygon(loc_c1)
+                            geometric_matches=[]
+                            for potential_agg_c1 in potential_agg_c1s:
+                                nbr_poly=agg_g.cell_polygon(potential_agg_c1)
+                                if nbr_poly.intersects(c1_poly):
+                                    new_agg_1=potential_agg_c1
+                                    # for testing - does it match geometrically to multiple choices?
+                                    geometric_matches.append(potential_agg_c1)
+                            if new_agg_1 is None:
+                                self.log.warning("No matches with geometry, will use topology for proc=%d loc_c1=%d"%(proc,loc_c1))
+                                new_agg_1=potential_agg_c1s[0] # punt. Could try computing distances?
+                            # assert new_agg_1 is not None
+
+                            if len(geometric_matches)>1:
+                                self.log.warning(" Multiple choices of where to map this problem cell")
+
+                            # Record that it has been nudged, to avoid un-nudging later
+                            global_remapped[glb_c1]=new_agg_1
+                            self.elt_global_to_agg_2d[glb_c1]=new_agg_1
+                            nudge_count+=1
+                if nudge_count==0:
+                    break
+                else:
+                    self.log.info('Had to nudge %d elements - will loop again'%nudge_count)
+                
         # and normalize those depths
         self.elements['zcc'] = self.elements['zcc'] / self.elements['plan_area']
 
