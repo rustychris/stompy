@@ -1838,10 +1838,20 @@ class HydroFiles(Hydro):
         stride=4+self.n_exch*4
         flo_fn=self.get_path('flows-file')
 
-        # HERE
-        #if memmap and self._flows_mmap is not False:
-        #    if self._flows_mmap is None:
-        #        self._flows_mmap=HERE
+        if memmap and self._flows_mmap is not False:
+            if self._flows_mmap is None:
+                dtype=[ ('tstamp','<i4'),
+                        ('flow','<f4',self.n_exch) ]
+                self._flows_mmap=np.memmap(flo_fn, dtype,
+                                           mode='r')
+            if ti>=len(self._flows_mmap):
+                self.log.warning("Flow data ends early by %d steps"%(len(self.t_secs)-1-ti))
+                return np.zeros(self.n_exch,'f4')
+            
+            tstamp=self._flows_mmap['tstamp'][ti]
+            if tstamp!=t:
+                self.log.warning("flows: time stamp mismatch: %d != %d"%(tstamp,t))
+            return self._flows_mmap['flow'][ti]
         
         with open(flo_fn,'rb') as fp:
             fp.seek(stride*ti)
