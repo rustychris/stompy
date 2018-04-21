@@ -248,6 +248,11 @@ def parse_time0(time0):
 # just a start.  And really this stuff should be rolled into the Scenario
 # class, so it builds up a Scenario
 def parse_boundary_conditions(inp_file):
+    def dequote(s):
+        s=s.strip()
+        if s[0] in ['"',"'"]:
+            s=s.strip(s[0])
+        return s
     with open(inp_file,'rt') as fp:
         tokr=inp_tok(fp)
 
@@ -261,11 +266,16 @@ def parse_boundary_conditions(inp_file):
                 n_thatcher = int(tok)
                 break
             else:
-                bc_id=str_or_num
-                bc_typ=next(tokr)
-                bc_grp=next(tokr)
+                bc_id=dequote(tok)
+                bc_typ=dequote(next(tokr))
+                bc_grp=dequote(next(tokr))
                 bcs.append( (bc_id,bc_typ,bc_grp) )
 
+        # The actual items are not yet implemented -- this is where
+        # the inp file would assign concentrations or fluxes to
+        # specific boundary exchanges are groups defined above
+        bc_items=[] 
+    return bcs,bc_items
 
 def read_pli(fn,one_per_line=True):
     """
@@ -420,7 +430,9 @@ def read_map(fn,hyd,use_memmap=True,include_grid=True):
       this must be enabled.
 
     include_grid: the returned dataset also includes grid geometry, suitable
-       for unstructured_grid.from_ugrid(ds)
+       for unstructured_grid.from_ugrid(ds).  
+       WARNING: there is currently a bug which causes this grid to have errors.
+       probably a one-off error of some sort.
 
     note that missing values at this time are not handled - they'll remain as
     the delwaq standard -999.0.

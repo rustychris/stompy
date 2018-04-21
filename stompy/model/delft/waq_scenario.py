@@ -1822,17 +1822,27 @@ class HydroFiles(Hydro):
             rel_symlink(self.get_path('flows-file'),
                         self.flo_filename)
 
-
-    def flows(self,t):
+    _flows_mmap=None
+    def flows(self,t,memmap=False):
         """ returns flow rates ~ np.zeros(self.n_exch,'f4'), for given timestep.
         flows in m3/s.  Sometimes there is no flow data for the last timestep,
         since flow is integrated over [t,t+dt].  Checks file size and may return
         zero flow
+
+        memmap: if True, attempt to memory map the file for faster access.  If
+        successful, the memory mapped data is referenced by self._flows_mmap.
+        When _flows_mmap is False, as opposed to None, then the attempt failed.
         """
         ti=self.t_sec_to_index(t)
         
         stride=4+self.n_exch*4
         flo_fn=self.get_path('flows-file')
+
+        # HERE
+        #if memmap and self._flows_mmap is not False:
+        #    if self._flows_mmap is None:
+        #        self._flows_mmap=HERE
+        
         with open(flo_fn,'rb') as fp:
             fp.seek(stride*ti)
             tstamp_data=fp.read(4)
@@ -5148,6 +5158,33 @@ class FilterHydroBC(Hydro):
     bnd_filename = forwardTo('orig','bnd_filename')
     write_boundary_links = forwardTo('orig','write_boundary_links')
 
+    _pad=None
+    @property
+    def pad(self):
+        if self._pad is None:
+            npad=int(5*self.lp_secs / self.dt)
+            self._pad=np.zeros(npad)
+        return self._pad
+    
+    _dt=None
+    @property
+    def dt(self):
+        if self._dt is None:
+            self._dt=np.median(np.diff(self.t_secs))
+        return self._dt
+            
+    def lowpass(self,data):
+        pad =self.pad
+        npad=len(pad)
+        
+        flow_padded=np.concatenate( ( pad, 
+                                      data,
+                                      pad) )
+        lp_flows=filters.lowpass(flow_padded,
+                                 cutoff=self.lp_secs,dt=self.dt)
+        lp_flows=lp_flows[npad:-npad] # trim the pad
+        return lp_flows
+    
     def apply_filter(self):
         self.filt_volumes=np.array( [self.orig.volumes(t) for t in self.orig.t_secs] )
         self.filt_flows  =np.array( [self.orig.flows(t)   for t in self.orig.t_secs] )
@@ -5162,19 +5199,13 @@ class FilterHydroBC(Hydro):
         # signal than FIR filter.
         # but there can be some transients at the beginning, so pad the flows
         # out with 0s:
-        npad=int(5*self.lp_secs / dt)
-        pad =np.zeros(npad)
+        # npad=int(5*self.lp_secs / dt)
         
         for j in self.exchanges_to_filter():
             # j: index into self.pointers.  
             segA,segB=pointers[j,:2]
 
-            flow_padded=np.concatenate( ( pad, 
-                                          self.filt_flows[:,j],
-                                          pad) )
-            lp_flows=filters.lowpass(flow_padded,
-                                     cutoff=self.lp_secs,dt=dt)
-            lp_flows=lp_flows[npad:-npad] # trim the pad
+            lp_flows=self.lowpass(self.filt_flows[:,j])
             
             # separate into tidal and subtidal constituents
             tidal_flows=self.filt_flows[:,j]-lp_flows
