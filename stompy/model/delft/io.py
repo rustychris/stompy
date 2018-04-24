@@ -156,6 +156,31 @@ def inp_tok(fp,comment=';'):
             yield m[0]
 
 
+def inp_tok_include(fp,fn,**kw):
+    """
+    Wrap inp_tok and handle INCLUDE tokens transparently.
+    Note that also requires the filename
+    """
+    tokr=inp_tok(fp,**kw)
+
+    while 1:
+        tok=next(tokr)
+        if tok.upper()!='INCLUDE':
+            yield tok
+        else:
+            inc_fn=next(tokr)
+            if inc_fn[0] in ["'",'"']:
+                inc_fn=inc_fn.strip(inc_fn[0])
+            inc_path=os.path.join( os.path.dirname(fn),
+                                   inc_fn )
+            # print("Will include %s"%inc_path)
+            
+            with open(inc_path,'rt') as inc_fp:
+                inc_tokr=inp_tok_include(inc_fp,inc_path,**kw)
+                for tok in inc_tokr:
+                    yield tok
+            # print("Done with include")
+            
             
 def parse_inp_monitor_locations(inp_file):
     """
@@ -248,13 +273,21 @@ def parse_time0(time0):
 # just a start.  And really this stuff should be rolled into the Scenario
 # class, so it builds up a Scenario
 def parse_boundary_conditions(inp_file):
+    """
+    Parse section 5 of DWAQ input file.
+    Returns bcs,items
+    bcs: BC links
+    items: match data and bc links.
+     - strings are folded to lowercase
+    
+    """
     def dequote(s):
         s=s.strip()
         if s[0] in ['"',"'"]:
             s=s.strip(s[0])
         return s
     with open(inp_file,'rt') as fp:
-        tokr=inp_tok(fp)
+        tokr=inp_tok_include(fp,inp_file)
 
         while next(tokr)!='#4':
             continue
@@ -263,7 +296,7 @@ def parse_boundary_conditions(inp_file):
         while 1:
             tok = next(tokr)
             if tok[0] in "-0123456789":
-                n_thatcher = int(tok)
+                thatcher = int(tok)
                 break
             else:
                 bc_id=dequote(tok)
@@ -271,10 +304,63 @@ def parse_boundary_conditions(inp_file):
                 bc_grp=dequote(next(tokr))
                 bcs.append( (bc_id,bc_typ,bc_grp) )
 
+        if thatcher==0: # no lags
+            pass
+        else:
+            assert False,"Parsing Thatcher-Harleman lags not yet implemented"
+            
         # The actual items are not yet implemented -- this is where
         # the inp file would assign concentrations or fluxes to
         # specific boundary exchanges are groups defined above
-        bc_items=[] 
+        bc_items=[]
+
+        tok=next(tokr)
+        while 1: # iterate over BC blocks
+            defs=[]
+            while 1: # iterate over the 3 subparts of a block
+                if tok.upper()=='ITEM':
+                    # Read names of BC items, which could also be integers
+                    item_block=[]
+                    while 1:
+                        tok=next(tokr)
+                        if tok[0] in ["'",'"']:
+                            item_block.append(dequote(tok).lower())
+                            continue
+                        elif tok[0] in "0123456789":
+                            item_block.append(int(tok))
+                        else:
+                            break
+                    defs.append( ('item',item_block) )
+                elif tok.upper()=='CONCENTRATION':
+                    # Read the names of scalars
+                    # Read names of BC items, which could also be integers
+                    conc_block=[]
+                    while 1:
+                        tok=next(tokr)
+                        if tok.upper() not in ['DATA','ITEM']:
+                            conc_block.append(dequote(tok).lower())
+                            continue
+                        else:
+                            break
+                    defs.append( ('concentration',conc_block) )
+                elif tok.upper()=='DATA':
+                    matrix=np.zeros( ( len(defs[0][1]),
+                                       len(defs[1][1]) ), 'f8')
+                    for row_i,row in enumerate(defs[0][1]):
+                        for col_i,col in enumerate(defs[1][1]):
+                            matrix[row_i,col_i]=float(next(tokr))
+                    defs.append( ('data',matrix) )
+                    tok=next(tokr)
+                else:
+                    break # must not have been a BC block
+            if len(defs)==0:
+                assert tok=='#5'
+                break # great - not a block
+            elif len(defs)==3:
+                bc_items.append(defs)
+            else:
+                assert False,"Incomplete BC block"
+        
     return bcs,bc_items
 
 def read_pli(fn,one_per_line=True):
