@@ -1025,7 +1025,7 @@ class Hydro(object):
     def t_sec_to_index(self,t):
         """ 
         This used to be called time_to_index, but since it accepts time as an integer
-        number rof seconds, better to make that clear in the name
+        number of seconds, better to make that clear in the name
         """
         return np.searchsorted(self.t_secs,t).clip(0,len(self.t_secs)-1)
 
