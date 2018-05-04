@@ -864,7 +864,8 @@ def dataset_to_dfm_wind(ds,period_start,period_stop,target_filename_base,
       this dataset, already in the proper coordinates system, coordinates of x and 
       y, and the wind variables named wind_u and wind_v.
     period_start,period_stop: 
-      include data from the dataset on or after period_start, and up to period_stop.
+      include data from the dataset on or after period_start, and up to period_stop, 
+    inclusive
     target_filename_base:
       the path and filename for output, without the .amu and .amv extensions.
     extra_header: 
@@ -875,8 +876,10 @@ def dataset_to_dfm_wind(ds,period_start,period_stop,target_filename_base,
     If that number is less than min_records, no output is written.
     """
     
-    time_idx_start, time_idx_stop = np.searchsorted(ds.time,[period_start,period_stop])
-
+    time_idx_start = np.searchsorted(ds.time,period_start,side='left')
+    # make stop inclusive by using side='right'
+    time_idx_stop  = np.searchsorted(ds.time,period_stop,side='right')
+    
     record_count=time_idx_stop-time_idx_start
     if record_count<min_records:
         return record_count
@@ -939,9 +942,11 @@ unit1 = m s-1
         header=header_template%fields
         fp.write(header)
 
+    count=0
     for time_idx in range(time_idx_start, time_idx_stop):
+        count+=1
         if (time_idx-time_idx_start) % 96 == 0:
-            print("Written %d/%d time steps"%( time_idx-time_idx_start,time_idx_stop-time_idx_start))
+            log.info("Written %d/%d time steps"%( time_idx-time_idx_start,time_idx_stop-time_idx_start))
         u=ds['wind_u'].isel(time=time_idx)
         v=ds['wind_v'].isel(time=time_idx)
         if pres in ds:
@@ -967,6 +972,8 @@ unit1 = m s-1
                 fp.write(" ".join(["%g"%rowcol for rowcol in row]))
                 fp.write("\n")
 
+    log.info("Wrote %d time steps"%count)
+                
     fp_u.close()
     fp_v.close()
     if fp_p is not None:
