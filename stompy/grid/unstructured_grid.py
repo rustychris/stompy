@@ -2619,7 +2619,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             for c in np.nonzero(mask)[0]:
                 ax.text(xy[c,0],xy[c,1],labeler(c,self.cells[c]))
 
-        ax.axis('equal')
+        # ax.axis('equal') # this causes problems in new matplotlib with shared axes
         return coll
     
     def edges_length(self):
