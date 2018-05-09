@@ -68,6 +68,17 @@ class GridException(Exception):
 class Missing(GridException):
     pass
 
+def request_square(ax):
+    """
+    Attempt to set a square aspect ratio on matplotlib axes ax
+    """
+    # in older matplotlib, this was sufficient:
+    # ax.axis('equal')
+    # But in newer matplotlib, if the axes are shared,
+    # that fails.
+    # Maybe this is better?
+    plt.setp(ax,aspect=1.0,adjustable='box-forced')
+    
 
 class HalfEdge(object):
     def __init__(self,grid,edge,orient):
@@ -2348,7 +2359,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                         self.nodes['x'][mask][:,1],
                         sizes,
                         **kwargs)
-        ax.axis('equal')
+        request_square(ax)
         return coll
     
     def plot_edges(self,ax=None,mask=None,values=None,clip=None,labeler=None,
@@ -2394,7 +2405,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                         labeler(n,self.edges[n]))
 
         ax.add_collection(lcoll)
-        ax.axis('equal')
+        request_square(ax)
         return lcoll
 
     def plot_halfedges(self,ax=None,mask=None,values=None,clip=None,
@@ -2619,7 +2630,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             for c in np.nonzero(mask)[0]:
                 ax.text(xy[c,0],xy[c,1],labeler(c,self.cells[c]))
 
-        # ax.axis('equal') # this causes problems in new matplotlib with shared axes
+        request_square(ax)
         return coll
     
     def edges_length(self):
