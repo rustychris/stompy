@@ -2481,9 +2481,9 @@ class SimpleGrid(QuadrilateralGrid):
 
         s_srs = s_srs or self.projection()
         self.write_gdal(tmp_src_fn)
-        output=subprocess.check_output("%s -s_srs %s -t_srs %s -dstnodata 'nan' %s %s %s"%(self.gdalwarp,s_srs,t_srs,
-                                                                                           extra,
-                                                                                           tmp_src_fn,tmp_dest_fn),
+        output=subprocess.check_output("%s -s_srs '%s' -t_srs '%s' -dstnodata 'nan' %s %s %s"%(self.gdalwarp,s_srs,t_srs,
+                                                                                               extra,
+                                                                                               tmp_src_fn,tmp_dest_fn),
                                        shell=True)
         self.last_warp_output=output # dirty, but maybe helpful
         

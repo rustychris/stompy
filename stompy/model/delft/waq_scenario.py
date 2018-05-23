@@ -523,10 +523,21 @@ class Hydro(object):
         except NotImplementedError:
             self.log.info("Bottom depths will be inferred")
 
-        self.log.debug("Adding VertDisper parameter")
-        hyd['VertDisper']=ParameterSpatioTemporal(func_t=self.vert_diffs,
-                                                  times=self.t_secs,
-                                                  hydro=self)
+        try:
+            # Hmm - clunky, but not a good existing way to deterine whether
+            # there is vertical diffusion data or not
+            self.vert_diffs(0)
+            has_vert_diffs=True
+        except Exception as exc:
+            self.log.info("No vertical dispersion (%s)"%str(exc))
+            has_vert_diffs=False
+
+        if has_vert_diffs:
+            self.log.debug("Adding VertDisper parameter")
+            hyd['VertDisper']=ParameterSpatioTemporal(func_t=self.vert_diffs,
+                                                      times=self.t_secs,
+                                                      hydro=self)
+
         self.log.debug("Adding depths parameter")
         try:
             hyd['DEPTH']=self.depths()
@@ -874,7 +885,7 @@ class Hydro(object):
 
         try:
             plan_areas=self.planform_areas()
-        except FileNotFoundError:
+        except OSError: # FileNotFoundError only exists in >=3.3
             plan_areas=None
 
         # Supply more info to the callback
@@ -1492,7 +1503,7 @@ class HydroFiles(Hydro):
     .hyd file.
     """
     # if True, allow symlinking to original files where possible.
-    enable_write_symlink=False
+    enable_write_symlink=True
 
     def __init__(self,hyd_path,**kw):
         self.hyd_path=hyd_path
@@ -1610,9 +1621,8 @@ class HydroFiles(Hydro):
             n_elts=nx*ny
             # bit of sanity check:
             if os.path.exists(self.get_path('grid-coordinates-file')):
-                nc=qnc.QDataset( self.get_path('grid-coordinates-file') )
-                n_elts_nc=len(nc.dimensions['nFlowElem'])
-                nc.close()
+                g=dfm_grid.DFMGrid(self.get_path('grid-coordinates-file'))
+                n_elts_nc=g.Ncells() 
                 assert n_elts_nc==n_elts
 
             # assumes dense exchanges
@@ -1813,6 +1823,7 @@ class HydroFiles(Hydro):
             return f(t_sec)
 
     def vert_diffs(self,t_sec):
+        # This used to have a really screwy label
         return self.seg_func(t_sec,label='vert-diffusion-file')
 
     def write_flo(self):
@@ -2065,8 +2076,6 @@ class HydroFiles(Hydro):
             except KeyError:
                 return None
             try:
-                #ug=ugrid.Ugrid(orig)
-                #self._grid=ug.grid()
                 self._grid=unstructured_grid.UnstructuredGrid.from_ugrid(orig)
             except (IndexError,AssertionError):
                 self.log.warning("Grid wouldn't load as ugrid, trying dfm grid")
@@ -2078,14 +2087,16 @@ class HydroFiles(Hydro):
         super(HydroFiles,self).add_parameters(hyd)
 
         # can probably add bottomdept,depth,salinity.
-
+        print("Incoming parameters are %s"%list(hyd.keys()))
+        
         # do NOT include surfaces-files here - it's a different format.
         for var,key in [('vertdisper','vert-diffusion-file'),
-                        #('tau','shear-stresses-file'),
+                        ('tau','shear-stresses-file'),  # play 'em if you got 'em.
                         ('temp','temperature-file'),
                         ('salinity','salinity-file')]:
             fn=self.get_path(key)
             if os.path.exists(fn):
+                print("%s does exist, so will add it to the parameters"%fn)
                 hyd[var]=ParameterSpatioTemporal(seg_func_file=fn,enable_write_symlink=True,
                                                  hydro=self)
         return hyd
@@ -2096,11 +2107,12 @@ class HydroFiles(Hydro):
         If the files don't exist, return False, log an info message.
         """
         path = self.get_dir()
-        try:
-            links=np.loadtxt(os.path.join(path,'links.csv'),dtype='i4')
+        links_fn=os.path.join(path,'links.csv')
+        if os.path.exists(links_fn):
+            links=np.loadtxt(links_fn,dtype='i4')
             exch_to_2d_link = np.loadtxt(os.path.join(path,'exch_to_2d_link.csv'),
                                          dtype=[('link','i4'),('sgn','i4')])
-        except FileNotFoundError:
+        else:
             return False
         self.links=links
         self.exch_to_2d_link=exch_to_2d_link
@@ -6080,7 +6092,10 @@ class Substance(object):
 
     def __init__(self,initial=None,name=None,scenario=None,active=True):
         self.name = name or "unnamed"
-        self.initial=initial or Initial(default=0.0)
+        if initial is None:
+            self.initial=Initial(default=0.0)
+        else:
+            self.initial=Initial.from_user(initial)
         self.scenario=scenario
         self.active=active
         self.initial.scenario=scenario
@@ -6130,6 +6145,12 @@ class Initial(object):
     # what is the soonest that we know about hydro geometry?
     # the substances know the scenario, but that's before 
 
+    @staticmethod
+    def from_user(v):
+        if isinstance(v,Initial):
+            return v
+        else:
+            return Initial(default=v)
 
 class ModelForcing(object):
     """ 
@@ -7030,6 +7051,7 @@ class Scenario(scriptable.Scriptable):
         if self.hydro is not None:
             self.hydro_parameters=self.init_hydro_parameters()
         self.substances=self.init_substances()
+        assert self.substances is not None, "init_substances() did not return anything."
         self.init_bcs()
         self.init_loads()
 
