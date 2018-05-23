@@ -1,4 +1,5 @@
 import os
+import glob
 import copy
 import datetime
 import io # python io.
@@ -506,12 +507,13 @@ def add_suffix_to_feature(feat,suffix):
 
 
 
-def read_map(fn,hyd,use_memmap=True,include_grid=True):
+def read_map(fn,hyd=None,use_memmap=True,include_grid=True,return_grid=False):
     """
     Read binary D-Water Quality map output, returning an xarray dataset.
 
     fn: path to .map file
-    hyd: path to .hyd file describing the hydrodynamics.
+    hyd: path to .hyd file describing the hydrodynamics. if None, search for .hyd 
+     in the same folders as the map file.
     use_memmap: use memory mapping for file access.  Currently
       this must be enabled.
 
@@ -526,6 +528,10 @@ def read_map(fn,hyd,use_memmap=True,include_grid=True):
     from . import waq_scenario as waq
 
     if not isinstance(hyd,waq.Hydro):
+        if hyd==None:
+            hyds=glob.glob( os.path.join(os.path.dirname(fn),"*.hyd"))
+            assert len(hyds)==1,"hyd=auto only works when there is exactly 1 (not %d) hyd files"%(len(hyds))
+            hyd=hyds[0]
         hyd=waq.HydroFiles(hyd)
 
     nbytes=os.stat(fn).st_size # 420106552 
@@ -603,7 +609,10 @@ def read_map(fn,hyd,use_memmap=True,include_grid=True):
         # not sure why this doesn't work.
         g.write_to_xarray(ds=ds)
 
-    return ds
+    if return_grid:
+        return ds,g
+    else:
+        return ds
 
 def map_add_z_coordinate(map_ds,total_depth='TotalDepth',coord_type='sigma',
                          layer_dim='layer'):
