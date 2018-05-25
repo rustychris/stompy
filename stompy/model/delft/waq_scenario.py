@@ -1926,7 +1926,7 @@ class HydroFiles(Hydro):
         """
         # Find all segments which have a boundary exchange
         bc_exchs=np.nonzero( self.pointers[:,0]<0 )[0]
-        bc_adj_segs=self.pointers[bc_exchs,1]-1
+        bc_adj_segs=self.pointers[bc_exchs,1]-1 # make 0-based
 
         def cb(ti,summary):
             print("ti=%5d: RMS Q_err: %.5f"%(ti,utils.rms(summary['Q_err'])))
