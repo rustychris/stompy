@@ -426,8 +426,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         fields: 'auto' [new] populate additional node,edge and cell fields
         based on matching dimensions.
         """
-        if isinstance(nc,str):
-            # nc=qnc.QDataset(nc)
+        if isinstance(nc,six.string_types):
             nc=xr.open_dataset(nc)
 
         if mesh_name is None:
