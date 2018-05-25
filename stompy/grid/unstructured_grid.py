@@ -2040,10 +2040,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         max_nodes defaults to self.max_sides.
         Return None if nothing is found, otherwise a list of node indexes.
         """
-        if max_nodes<0:
-            max_nodes=self.Nnodes()
-        elif max_nodes is None:
+        if max_nodes is None:
             max_nodes=self.max_sides
+        elif max_nodes<0:
+            max_nodes=self.Nnodes()
 
         # lame stand-in for a true bounding polygon test
         edges_near=self.select_edges_nearest(x,count=6)
