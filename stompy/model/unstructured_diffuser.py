@@ -83,7 +83,7 @@ class Diffuser(object):
         """ pre-calculate geometric quantities related to the grid
         for use in the discretization
         """
-        self.vc = self.grid.cells_center()
+        self.vc = self.grid.cells_center() # circumcenters
         self.ec = self.grid.edges_center()
         
         self.c1 = self.grid.edges['cells'][:,0]

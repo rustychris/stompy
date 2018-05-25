@@ -1277,6 +1277,7 @@ class AdvancingFront(object):
         will be assigned to this ring via edges['oring'] and ['ring_sign']
         """
         if nodes is not None:
+            nodes=np.asarray(nodes)
             curve=self.grid.nodes['x'][nodes]
 
         if not isinstance(curve,Curve):
