@@ -466,8 +466,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     start_index=1
                     logging.warning("Variable %s has bad start_index, assume %d"%(varname,start_index))
                 elif max_idx==len(node_xy)-1:
+                    if start_index is not None:
+                        # This is the default, so only complain if something erroneous was specified.
+                        logging.warning("Variable %s has bad start_index, assume 0"%(varname))
                     start_index=0
-                    logging.warning("Variable %s has bad start_index, assume %d"%(varname,start_index))
                 else:
                     start_index=0
                     logging.warning("Variable %s has bad start_index, punting with %d"%(varname,start_index))

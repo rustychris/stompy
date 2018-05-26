@@ -1,5 +1,14 @@
-""" Generic support for recording operations, with the option
+""" 
+Generic support for recording operations, with the option
 of undoing those operations.
+
+TODO: Allow for commiting only part of the history.  Currently
+commit() discards the entire stack.  
+
+Could be better to maintain a linked list of checkpoints, each 
+checkpoint references one before it.  Then commiting a checkpoint
+means deleting its reference to commits before it.
+
 """
 
 class OpHistory(object):

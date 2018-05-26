@@ -147,7 +147,7 @@ def one_point_cost(pnt,edges,target_length=5.0):
     min_len = min( min_ab,min_ca )
     max_len = max( min_ab,min_ca )
 
-    undershoot = target_length**2 / min_len
+    undershoot = target_length**2 / min_len # TODO: min_len can be 0.0
     overshoot  = max_len / target_length**2
 
     length_penalty = 0
@@ -604,6 +604,7 @@ class ResampleStrategy(Strategy):
             if n in site.abc:
                 # went too far around!  Bad!
                 return n
+
             # Is this overly restrictive?  What if the edge is nice
             # and long, and just wants a node in the middle?
             # That should be allowed, until there is some way of annotating
@@ -1363,6 +1364,9 @@ class AdvancingFront(object):
         return klass(g)
         
     def initialize_boundaries(self):
+        """
+        Add nodes and edges to the the grid from curves.
+        """
         for curve_i,curve in enumerate(self.curves):
             curve_points,srcs=curve.upsample(self.scale,return_sources=True)
 
@@ -1487,6 +1491,10 @@ class AdvancingFront(object):
 
         n_deg=self.grid.node_degree(n)
 
+        if self.grid.nodes['oring'][n]==0:
+            self.log.debug("Node is not on a ring, no resampling possible")
+            return n
+            
         # must be able to either muck with n, or split the anchor-n edge
         # in the past we assumed that this sort of check was already done
         j=he.j
@@ -1739,6 +1747,8 @@ class AdvancingFront(object):
         raise Exception("Implement in subclass")
 
     def eval_cost(self,n):
+        if self.grid.nodes['fixed'][n]==self.RIGID:
+            return 0.0
         fn=self.cost_function(n)
         return (fn and fn(self.grid.nodes['x'][n]))
 
@@ -2510,7 +2520,7 @@ class DTNode(object):
         # in cases where init of the node makes some changes,
         # this should be updated
         self.cp=af.grid.checkpoint() 
-        self.active_child=None
+        self.active_child=None # we don't manipulate this, but just signal that it's fresh
     def set_options(self,options,priors):
         self.options=options
         self.child_prior=priors
@@ -2525,9 +2535,11 @@ class DTNode(object):
             return False
         return self.parent.revert_to_here()
     def revert_to_here(self):
+        """
+        rewind to the state when we first encountered this node 
+        """
         self.af.grid.revert(self.cp)
         self.af.current=self
-        self.active_child=None
 
     def try_child(self,i):
         assert False # implemented by subclass
@@ -2597,7 +2609,6 @@ class DTChooseSite(DTNode):
         self.child_post[i] = self.child_prior[i]
         
         self.af.current=self.children[i]
-        self.active_child=i
         return True
     
     def best_child(self,count=0,cb=None):
@@ -2663,4 +2674,5 @@ class DTChooseStrategy(DTNode):
         cost = np.max( [ (self.af.eval_cost(n) or 0.0)
                         for n in nodes] )
         self.child_post[i]=cost
+
         return True
