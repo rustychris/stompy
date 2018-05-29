@@ -2002,9 +2002,15 @@ class AdvancingFront(object):
         limits=[self.node_ring_f(m,n_ring)
                 for m in stops]
         # make sure limits are monotonic increasing.  for circular,
-        # this may require bumping up 
+        # this may require some modulo
         if curve.closed and (limits[0]>limits[1]):
-            limits[1] += curve.total_distance()
+            if limits[1] < n_f:
+                limits[1] += curve.total_distance()
+            elif limits[0] > n_f:
+                limits[0] -= curve.total_distance()
+            else:
+                assert False,"Not sure how to get the range to enclose n"
+                
         assert limits[0] < limits[1]
         return limits
     
