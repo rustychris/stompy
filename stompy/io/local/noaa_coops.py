@@ -45,21 +45,31 @@ all_datums=dict(
 def coops_json_to_ds(json,params):
     """ Mold the JSON response from COOPS into a dataset
     """
-    meta=json['metadata']
-    data=json['data']
     
     ds=xr.Dataset()
-    ds['station']=( ('station',), [meta['id']])
-    for k in ['name','lat','lon']:
-        val=meta[k]
-        if k in ['lat','lon']:
-            val=float(val)
-        ds[k]= ( ('station',), [val])
+    if 'metadata' in json:
+        meta=json['metadata']
+    
+        ds['station']=( ('station',), [meta['id']])
+        for k in ['name','lat','lon']:
+            val=meta[k]
+            if k in ['lat','lon']:
+                val=float(val)
+            ds[k]= ( ('station',), [val])
+    else:
+        # predictions do not come back with metadata
+        ds['station']= ('station',),[params['station']]
 
     times=[]
     values=[]
     qualities=[]
-    
+
+    if 'data' in json:
+        data=json['data']
+    elif 'predictions' in json:
+        # Why do they present predictions data in such a different format?
+        data=json['predictions']
+        
     for row in data:
         # {'f': '0,0,0,0', 'q': 'v', 's': '0.012', 't': '2010-12-01 00:00', 'v': '0.283'}
         try:
@@ -75,7 +85,7 @@ def coops_json_to_ds(json,params):
     if bad_count:
         log.warning("%d of %d data values were missing"%(bad_count,len(values)))
         
-    if params['product'] == 'water_level':
+    if params['product'] in ['water_level','predictions']:
         ds[params['product']].attrs['datum'] = params['datum']
         
     return ds
@@ -165,7 +175,7 @@ def coops_dataset_product(station,product,
                         units='metric',
                         format='json',
                         product=product)
-            if product in ['water_level','hourly_height',"one_minute_water_level"]:
+            if product in ['water_level','hourly_height',"one_minute_water_level","predictions"]:
                 while 1:
                     # not all stations have NAVD, so fall back to MSL
                     params['datum']=datums[0] 

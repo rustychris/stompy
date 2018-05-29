@@ -426,8 +426,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         fields: 'auto' [new] populate additional node,edge and cell fields
         based on matching dimensions.
         """
-        if isinstance(nc,str):
-            # nc=qnc.QDataset(nc)
+        if isinstance(nc,six.string_types):
             nc=xr.open_dataset(nc)
 
         if mesh_name is None:
@@ -467,8 +466,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     start_index=1
                     logging.warning("Variable %s has bad start_index, assume %d"%(varname,start_index))
                 elif max_idx==len(node_xy)-1:
+                    if start_index is not None:
+                        # This is the default, so only complain if something erroneous was specified.
+                        logging.warning("Variable %s has bad start_index, assume 0"%(varname))
                     start_index=0
-                    logging.warning("Variable %s has bad start_index, assume %d"%(varname,start_index))
                 else:
                     start_index=0
                     logging.warning("Variable %s has bad start_index, punting with %d"%(varname,start_index))
@@ -2062,10 +2063,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         max_nodes defaults to self.max_sides.
         Return None if nothing is found, otherwise a list of node indexes.
         """
-        if max_nodes<0:
-            max_nodes=self.Nnodes()
-        elif max_nodes is None:
+        if max_nodes is None:
             max_nodes=self.max_sides
+        elif max_nodes<0:
+            max_nodes=self.Nnodes()
 
         # lame stand-in for a true bounding polygon test
         edges_near=self.select_edges_nearest(x,count=6)
