@@ -517,6 +517,28 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                                 adder( vname, nc[vname].values )
                 
         return ug
+    
+    @staticmethod
+    def read_suntans_hybrid(path='.',points='points.dat',edges='edges.dat',cells='cells.dat'):
+        """
+        Read text-based suntans format which can accomodate arbitrary numbers of sides.
+        This can be read/written by Janet.
+        """
+        points=os.path.join(path,points)
+        edges=os.path.join(path,edges)
+        cells=os.path.join(path,cells)
+
+        xyz=np.loadtxt(points)
+
+        edge_nnmcc=np.loadtxt(edges).astype('i4')
+
+
+        e2c=self.edge_to_cells().copy()
+        e2c[e2c<0]=-1
+        markers=np.zeros(len(e2c))
+        markers[e2c[:,1]<0]=2
+
+        assert False, "Not yet completed"
 
     def write_to_xarray(self,ds=None,mesh_name='mesh'):
         """ write grid definition, ugrid-ish, to a new xarray dataset
@@ -4230,6 +4252,7 @@ class UnTRIM08Grid(UnstructuredGrid):
             depth_stat_to_subgrid(cells,self.cells,self.cells_area(),self.cells[depth_stat])
         if edges is not False:
             depth_stat_to_subgrid(edges,self.edges,self.edges_length(),self.edges[depth_stat])
+
         
     def read_from_file(self,grd_fn):
         """ 
