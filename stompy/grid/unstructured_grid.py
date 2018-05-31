@@ -426,8 +426,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         fields: 'auto' [new] populate additional node,edge and cell fields
         based on matching dimensions.
         """
-        if isinstance(nc,str):
-            # nc=qnc.QDataset(nc)
+        if isinstance(nc,six.string_types):
             nc=xr.open_dataset(nc)
 
         if mesh_name is None:
@@ -455,11 +454,28 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         node_xy = np.array([node_x,node_y]).T
         def process_as_index(varname):
             ncvar=nc[varname]
+            idxs=ncvar.values
             try:
-                start_index=ncvar.start_index
-            except AttributeError:
-                start_index=0
-            idxs=ncvar[...] - start_index
+                start_index=ncvar.attrs['start_index']
+            except KeyError:
+                start_index=None
+                
+            if start_index not in [0,1]:
+                max_idx=np.nanmax(idxs)
+                if max_idx==len(node_xy):
+                    start_index=1
+                    logging.warning("Variable %s has bad start_index, assume %d"%(varname,start_index))
+                elif max_idx==len(node_xy)-1:
+                    if start_index is not None:
+                        # This is the default, so only complain if something erroneous was specified.
+                        logging.warning("Variable %s has bad start_index, assume 0"%(varname))
+                    start_index=0
+                else:
+                    start_index=0
+                    logging.warning("Variable %s has bad start_index, punting with %d"%(varname,start_index))
+
+            idxs = idxs - start_index
+            
             # force the move to numpy land
             idxs=np.asanyarray(idxs)
             
@@ -502,6 +518,28 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                                 adder( vname, nc[vname].values )
                 
         return ug
+    
+    @staticmethod
+    def read_suntans_hybrid(path='.',points='points.dat',edges='edges.dat',cells='cells.dat'):
+        """
+        Read text-based suntans format which can accomodate arbitrary numbers of sides.
+        This can be read/written by Janet.
+        """
+        points=os.path.join(path,points)
+        edges=os.path.join(path,edges)
+        cells=os.path.join(path,cells)
+
+        xyz=np.loadtxt(points)
+
+        edge_nnmcc=np.loadtxt(edges).astype('i4')
+
+
+        e2c=self.edge_to_cells().copy()
+        e2c[e2c<0]=-1
+        markers=np.zeros(len(e2c))
+        markers[e2c[:,1]<0]=2
+
+        assert False, "Not yet completed"
 
     def write_to_xarray(self,ds=None,mesh_name='mesh'):
         """ write grid definition, ugrid-ish, to a new xarray dataset
@@ -2025,10 +2063,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         max_nodes defaults to self.max_sides.
         Return None if nothing is found, otherwise a list of node indexes.
         """
-        if max_nodes<0:
-            max_nodes=self.Nnodes()
-        elif max_nodes is None:
+        if max_nodes is None:
             max_nodes=self.max_sides
+        elif max_nodes<0:
+            max_nodes=self.Nnodes()
 
         # lame stand-in for a true bounding polygon test
         edges_near=self.select_edges_nearest(x,count=6)
@@ -3371,6 +3409,50 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 fp.write("%d %d %d "%(nodes[0],nodes[1],nodes[2]))
                 nbrs=self.cell_to_cells(i,ordered=True) 
                 fp.write("%d %d %d\n"%(nbrs[0],nbrs[1],nbrs[2]))
+
+    def write_suntans_hybrid(self,path='.',points='points.dat',edges='edges.dat',cells='cells.dat'):
+        """
+        Write text-based suntans format which can accomodate arbitrary numbers of sides.
+        This can be read by Janet.
+        """
+        xy=self.nodes['x']
+        z=np.zeros(len(xy))
+        xyz=np.c_[ xy, z]
+
+        point_fn=os.path.join(path,points)
+        np.savetxt(point_fn,xyz,fmt="%.8e")
+
+        edge_nodes=self.edges['nodes']
+
+        e2c=self.edge_to_cells().copy()
+        e2c[e2c<0]=-1
+        markers=np.zeros(len(e2c))
+        markers[e2c[:,1]<0]=2
+
+        edge_fn=os.path.join(path,edges)
+
+        edge_nnmcc=np.c_[edge_nodes,markers,e2c]
+        np.savetxt(edge_fn,edge_nnmcc,fmt='%d')
+
+        cell_fn=os.path.join(path,cells)
+        cc=self.cells_center()
+
+        with open(cell_fn,'wt') as fp:
+            for c in range(self.Ncells()):
+                nsides=self.cell_Nsides(c)
+                txt=["%d %.8e %.8e"%(nsides,cc[c,0],cc[c,1])]
+
+                for n in self.cells['nodes'][c,:nsides]:
+                    txt.append(str(n))
+
+                for nbr in self.cell_to_cells(c):
+                    if nbr<0:
+                        txt.append("-1")
+                    else:
+                        txt.append(str(nbr))
+                txt.append("\n")
+                fp.write(" ".join(txt))
+                
         
     def write_untrim08(self,fn):
         """ write this grid out in the untrim08 format.  Since untrim grids have
@@ -4171,6 +4253,7 @@ class UnTRIM08Grid(UnstructuredGrid):
             depth_stat_to_subgrid(cells,self.cells,self.cells_area(),self.cells[depth_stat])
         if edges is not False:
             depth_stat_to_subgrid(edges,self.edges,self.edges_length(),self.edges[depth_stat])
+
         
     def read_from_file(self,grd_fn):
         """ 

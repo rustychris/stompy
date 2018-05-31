@@ -1,3 +1,10 @@
+"""
+Read and write DFM formatted netcdf grids (old-style, not quite ugrid)
+
+Also includes methods for modifying depths on a grid to allow inflows
+in poorly resolved areas which would otherwise be dry.
+"""
+
 from __future__ import print_function
 from stompy.grid import unstructured_grid
 import numpy as np
@@ -6,6 +13,7 @@ log=logging.getLogger(__name__)
 
 from shapely import geometry
 import xarray as xr
+
 
 # TODO: migrate to xarray
 from ...io import qnc
@@ -164,7 +172,17 @@ def write_dfm(ug,nc_fn,overwrite=False):
 
 class DFMGrid(unstructured_grid.UnstructuredGrid):
     def __init__(self,nc=None,fn=None,
-                 cells_from_edges='auto',max_sides=6):
+                 cells_from_edges='auto',max_sides=6,cleanup=False):
+        """
+        nc: An xarray dataset or path to netcdf file holding the grid
+        fn: path to netcdf file holding the grid (redundant with nc)
+        cells_from_edges: 'auto' create cells based on edges if cells do not exist in the dataset
+          specify True or False to force or disable this.
+        max_sides: maximum number of sides per cell, used both for initializing datastructures, and
+          for determining cells from edge connectivity.
+        cleanup: for grids created from multiple subdomains, there are sometime duplicate edges and nodes.
+          this will remove those duplicates, though there are no guarantees of indices.
+        """
         if nc is None:
             assert fn
             #nc=qnc.QDataset(fn)
@@ -216,8 +234,6 @@ class DFMGrid(unstructured_grid.UnstructuredGrid):
             if isinstance(cells,np.ma.MaskedArray):
                 cells=cells.filled(0)
 
-            # Used to be np.float, but I think floating is more appropriate,
-            # and hopefully won't trigger warnings
             if np.issubdtype(cells.dtype,np.floating):
                 bad=np.isnan(cells)
                 cells=cells.astype(np.int32)
@@ -240,21 +256,43 @@ class DFMGrid(unstructured_grid.UnstructuredGrid):
         if cells_from_edges: # True or 'auto'
             self.max_sides=max_sides
 
+
         # Partition handling - at least the output of map_merge
         # does *not* remap indices in edges and cells
         if 'partitions_node_start' in nc.variables:
-            import pdb
-            pdb.set_trace()
+            nodes_are_contiguous = np.all( np.diff(nc.partitions_node_start.values) == nc.partitions_node_count.values[:-1] )
+            assert nodes_are_contiguous, "Merged grids can only be handled when node indices are contiguous"
+        else:
+            nodes_are_contiguous=True
+
+        if 'partitions_edge_start' in nc.variables:
+            edges_are_contiguous = np.all( np.diff(nc.partitions_edge_start.values) == nc.partitions_edge_count.values[:-1] )
+            assert edges_are_contiguous, "Merged grids can only be handled when edge indices are contiguous"
+        else:
+            edges_are_contiguous=True
+
+        if 'partitions_face_start' in nc.variables:
+            faces_are_contiguous = np.all( np.diff(nc.partitions_face_start.values) == nc.partitions_face_count.values[:-1] )
+            assert faces_are_contiguous, "Merged grids can only be handled when face indices are contiguous"
+            if cleanup:
+                log.warning("Some MPI grids have duplicate cells, which cannot be cleaned, but cleanup=True")
+        else:
+            face_are_contiguous=True
+
+        if 0: # This is for hints to possibly handling non-contiguous indices in the future. caveat emptor.
             node_offsets=nc.partitions_node_start.values-1
-            
+
             cell_missing=kwargs['cells']<0
 
-            cell_domains=nc.FlowElemDomain.values # hope that's 0-based?
+            if 'FlowElemDomain' in nc:
+                cell_domains=nc.FlowElemDomain.values # hope that's 0-based?
+            else:
+                HERE
 
             cell_node_offsets=node_offsets[cell_domains]
 
             kwargs['cells']+=cell_node_offsets[:,None]
-            
+
             # for part_i in range(nc.NumPartitionsInFile):
             #     edge_start=nc.partitions_edge_start.values[part_i]
             #     edge_count=nc.partitions_edge_count.values[part_i]
@@ -271,7 +309,7 @@ class DFMGrid(unstructured_grid.UnstructuredGrid):
             # And force valid values for over-the-top cells:
             bad=kwargs['cells']>=len(kwargs['points'])
             kwargs['cells'][bad]=0
-                
+
         super(DFMGrid,self).__init__(**kwargs)
 
         if cells_from_edges:
@@ -280,6 +318,9 @@ class DFMGrid(unstructured_grid.UnstructuredGrid):
 
         if var_depth in nc.variables: # have depth at nodes
             self.nodes['depth']=nc[var_depth].values.copy()
+
+        if cleanup:
+            cleanup_multidomains(self)
 
 
 def cleanup_multidomains(grid):
@@ -343,3 +384,42 @@ def polyline_to_boundary_edges(g,linestring,rrtol=3.0):
           if linestring_geom.intersects(probe_geom)]
     edge_hits=boundary_edges[hits]
     return edge_hits
+
+
+def dredge_boundary(g,linestring,dredge_depth):
+    """
+    Lower bathymetry in the vicinity of external boundary, defined
+    by a linestring.
+
+    g: instance of unstructured_grid, with a node field 'depth'
+    linestring: [N,2] array of coordinates
+    dredge_depth: positive-up bed-level for dredged areas
+
+    Modifies depth information in-place.
+    """
+    # Carve out bathymetry near sources:
+    cells_to_dredge=[]
+
+    feat_edges=polyline_to_boundary_edges(g,linestring)
+    assert len(feat_edges)
+    cells_to_dredge=g.edges['cells'][feat_edges].max(axis=1)
+
+    nodes_to_dredge=np.concatenate( [g.cell_to_nodes(c)
+                                     for c in cells_to_dredge] )
+    nodes_to_dredge=np.unique(nodes_to_dredge)
+
+    g.nodes['depth'][nodes_to_dredge] = np.minimum(g.nodes['depth'][nodes_to_dredge],
+                                                   dredge_depth)
+
+
+def dredge_discharge(g,linestring,dredge_depth):
+    linestring=np.asarray(linestring)
+    pnt=linestring[-1,:]
+    cell=g.select_cells_nearest(pnt,inside=True)
+    assert cell is not None
+    nodes_to_dredge=g.cell_to_nodes(cell)
+
+    g.nodes['depth'][nodes_to_dredge] = np.minimum(g.nodes['depth'][nodes_to_dredge],
+                                                   dredge_depth)
+        
+    
