@@ -216,7 +216,9 @@ class DFMGrid(unstructured_grid.UnstructuredGrid):
             if isinstance(cells,np.ma.MaskedArray):
                 cells=cells.filled(0)
 
-            if np.issubdtype(cells.dtype,np.float):
+            # Used to be np.float, but I think floating is more appropriate,
+            # and hopefully won't trigger warnings
+            if np.issubdtype(cells.dtype,np.floating):
                 bad=np.isnan(cells)
                 cells=cells.astype(np.int32)
                 cells[bad]=0
