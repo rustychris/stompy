@@ -33,7 +33,11 @@ class _PointIndexKDTree(object):
         self._kdtree = self.KDTree(cell_centers)
 
     def nearest(self,xxyy,count):
+        xxyy=np.asarray(xxyy)
         distances,hits=self._kdtree.query(xxyy[np.array([0,2])],count)
+        if count==1:
+            # kdtree silently turns it into scalar
+            hits=[hits]
         return self.idx_to_original[hits]
 
     def insert(self,point_tuple):
