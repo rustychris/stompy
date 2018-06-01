@@ -401,7 +401,8 @@ def dredge_boundary(g,linestring,dredge_depth):
     cells_to_dredge=[]
 
     feat_edges=polyline_to_boundary_edges(g,linestring)
-    assert len(feat_edges)
+    if len(feat_edges)==0:
+        raise Exception("No boundary edges matched by %s"%(str(linestring)))
     cells_to_dredge=g.edges['cells'][feat_edges].max(axis=1)
 
     nodes_to_dredge=np.concatenate( [g.cell_to_nodes(c)
