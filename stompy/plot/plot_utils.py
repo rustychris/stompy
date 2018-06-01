@@ -229,11 +229,15 @@ def plot_tri(tri,**kwargs):
 
 
 def scalebar(xy,L=None,aspect=0.05,unit_factor=1,fmt="%.0f",label_txt=None,fractions=[0,0.5,1.0],
-             ax=None,xy_transform=None,dy=None,
+             divisions=None,
+             ax=None,xy_transform=None,dy=None,lw=0.5,
              style='altboxes'):
     """ Draw a simple scale bar with labels - bottom left
     is given by xy.  
     xy_transform: units for interpreting xy.  If not given
+
+    The divisions are either inferred from the max length L and fractions of it, or
+    by specify a list of lengths in divisions
     """
     ax = ax or plt.gca()
 
@@ -245,12 +249,19 @@ def scalebar(xy,L=None,aspect=0.05,unit_factor=1,fmt="%.0f",label_txt=None,fract
                                 ax.transData,xoffset=xy[0])
         txt_trans=xy_transform
         xy=[0,xy[1]] # x offset now rolled into xy_transform
-    
-    if L is None:
-        xmin,xmax,ymin,ymax = ax.axis()
-        L = 0.2 * (xmax - xmin)
+
+    if divisions is not None:
+        L=divisions[-1]
+    else:
+        if L is None:
+            xmin,xmax,ymin,ymax = ax.axis()
+            L = 0.2 * (xmax - xmin)
+        divisions=[f*L for f in fractions]
+        
     xmin,ymin = xy
     dx = L
+    # This is dangerous, as L is in data coordinates, but y may be in data or
+    # axes coordinates depending on what xy_transform was passed in.
     dy = dy or (aspect*L)
     # xmax = xmin + L
     ymax = ymin + dy
@@ -262,10 +273,10 @@ def scalebar(xy,L=None,aspect=0.05,unit_factor=1,fmt="%.0f",label_txt=None,fract
         # one filled black box:
         objs.append( ax.fill([xmin,xmin+dx,xmin+dx,xmin],
                              [ymin,ymin,ymax,ymax],
-                             'k', edgecolor='k',transform=xy_transform) )
-        for i in range(len(fractions)-1):
-            xleft=xmin+dx*fractions[i]
-            xright=xmin+dx*fractions[i+1]
+                             'k', edgecolor='k',transform=xy_transform,lw=lw) )
+        for i in range(len(divisions)-1):
+            xleft=xmin+divisions[i]
+            xright=xmin+divisions[i+1]
             xlist=[xleft,xright,xright,xleft]
 
             if style=='altboxes':
@@ -274,28 +285,27 @@ def scalebar(xy,L=None,aspect=0.05,unit_factor=1,fmt="%.0f",label_txt=None,fract
                 # print ybot,ytop
                 objs.append( ax.fill(xlist,
                                      [ybot,ybot,ytop,ytop],
-                                     'w', edgecolor='k',transform=xy_transform) )
+                                     'w', edgecolor='k',transform=xy_transform,lw=lw) )
             else:
                 if y%2==0:
                     objs.append( ax.fill(xlist,
                                          [ymin,ymin,ymax,ymax],
-                                         'w', edgecolor='k',transform=xy_transform) )
+                                         'w', edgecolor='k',lw=lw,transform=xy_transform) )
     baseline=ymax + 0.25*dy
-    for frac in fractions:
-        frac_txt=fmt%(unit_factor* frac*L)
-        txts.append( ax.text(xmin+frac*dx,baseline,
-                             frac_txt,
+    for div in divisions:
+        div_txt=fmt%(unit_factor* div)
+        txts.append( ax.text(xmin+div,baseline,
+                             div_txt,
                              ha='center',
                              transform=txt_trans)
                  )
-    # annotate(fmt%(unit_factor*L), [xmin+dx,ymax+0.25*dy], ha='center')
 
     # Really would like for the label to be on the same baseline
     # as the fraction texts, and typeset along with the last
     # label, but allowing the number of the last label to be
     # centered on its mark
     if label_txt:
-        txts.append( ax.text(xmin+frac*dx,baseline," "*len(frac_txt) + label_txt,ha='left',
+        txts.append( ax.text(xmin+div,baseline," "*len(div_txt) + label_txt,ha='left',
                              transform=txt_trans) )
     return objs,txts
         
