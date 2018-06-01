@@ -12,7 +12,12 @@ import numpy as np
 import xarray as xr
 import datetime
 import requests
+from requests.compat import json
+
 import os
+import logging
+
+log=logging # logging.getLogger('cimis')
 
 from ... import utils
 
@@ -42,8 +47,16 @@ def cimis_json_to_xr(data):
         print("No data")
         return None
 
-    df['Date']= ( ('Date',), [ "%s %s"%(rec['Date'],rec['Hour'])
+    df['Date']= ( ('time',), [ "%s %s"%(rec['Date'],rec['Hour'])
                                for rec in records] )
+
+    # annoying convention where midnight is 2400.                                                                                                                                      
+    datetimes=[ (datetime.datetime.strptime(s.replace('2400','0000'),
+                                            '%Y-%m-%d %H%M')
+                 + datetime.timedelta(days=int(s.endswith('2400'))))
+                for s in df.Date.values]
+    dt64s=[utils.to_dt64(dt) for dt in datetimes]
+    df['time']=('time',),dt64s
 
     def cnv(s):
         try:
@@ -57,8 +70,8 @@ def cimis_json_to_xr(data):
         # use zip to transpose the lists
         qc,value = zip( *[ (rec[field]['Qc'],cnv(rec[field]['Value']))
                            for rec in records ] )
-        df[field]=( ('Date',), np.array(value) )
-        df[field+'_qc'] = ( ('Date',), np.array(qc) )
+        df[field]=( ('time',), np.array(value) )
+        df[field+'_qc'] = ( ('time',), np.array(qc) )
 
         df[field].attrs['units']=records[0][field]['Unit']
 
@@ -66,19 +79,36 @@ def cimis_json_to_xr(data):
 
     return df
 
-def cimis_fetch_station_metadata(station,df=None,cimis_key=None):
+def cimis_fetch_station_metadata(station,df=None,cimis_key=None,cache_dir=None):
     """
     Return an xr.Dataset with station metadata for the station ID
     (integer) supplied.
     cimis_key is not needed, but accepted.
     """
     df=df or xr.Dataset()
-    req=requests.get("http://et.water.ca.gov/api/station/%s"%station,
-                     headers=dict(Accept='application/json'))
-    station_meta=req.json()
+    if cache_dir is not None:
+        cache_fn=os.path.join(cache_dir,"station_metadata-%s.json"%station)
+    else:
+        cache_fn=None
+
+    # The Latin-1 business here is because CIMIS uses 0xBA for a degree sign, and
+    # that trips up python unicode.  Latin-1 in theory means don't transform any
+    # bytes -- just write it out, and pretend we all agree on the high byte symbols.
+    if (cache_fn is not None) and os.path.exists(cache_fn):
+        log.warning("Station metadata from cache")
+        with open(cache_fn,'rb') as fp:
+            station_meta=json.loads(fp.read().decode('Latin-1'))
+    else:
+        log.warning("Station metadata from download")
+        req=requests.get("http://et.water.ca.gov/api/station/%s"%station,
+                         headers=dict(Accept='application/json'))
+        if cache_fn is not None:
+            with open(cache_fn,'wb') as fp:
+                fp.write(req.text.encode('Latin-1'))
+        station_meta=req.json()
 
     # add station metadata to attrs:
-    stn=data['Stations'][0]
+    stn=station_meta['Stations'][0]
 
     df.attrs['elevation'] = float(stn['Elevation'])
     df.attrs['is_active'] = stn['IsActive']
@@ -108,6 +138,9 @@ def cimis_fetch_to_xr(stations, # Union City
                 'hly-rel-hum','hly-res-wind',
                 'hly-sol-rad','hly-wind-dir',
                 'hly-wind-spd']
+        fields_label="all"
+    else:
+        fields_label="_".join(fields)
 
     if isinstance(stations,np.int) or isinstance(stations,str):
         stations=[stations]
@@ -119,33 +152,56 @@ def cimis_fetch_to_xr(stations, # Union City
 
     all_ds=[]
     for interval_start,interval_end in periods(start_date,end_date,days_per_request):
-        req=requests.get(url,params=dict(appKey=cimis_key,
-                                         targets=",".join(stations), 
-                                         startDate=start_date,
-                                         endDate=end_date,
-                                         unitOfMeasure='M', # metric please
-                                         dataItems=",".join( fields ) ))
-        ds=cimis_json_to_xr(req.json())
-        all_ds.append(ds)
-        time.sleep(1.5) # be kind
+        if cache_dir is not None:
+            begin_str=utils.to_datetime(interval_start).strftime('%Y-%m-%d')
+            end_str  =utils.to_datetime(interval_end).strftime('%Y-%m-%d')
 
-    if 1:
-        return all_ds # DBG
+            # Coming up with a good cache name is a bit tricky since it might have a bunch
+            # of fields, and a bunch of stations.
+            # Most typical situation is fetching all fields for one station, and at least
+            # that usage yields reasonable filenames here
+            cache_fn=os.path.join(cache_dir,
+                                  "%s_%s_%s_%s.nc"%("_".join(stations),
+                                                    fields_label,
+                                                    begin_str,
+                                                    end_str))
+        else:
+            cache_fn=None
+
+        if (cache_fn is not None) and os.path.exists(cache_fn):
+            log.warning("Cached   %s -- %s"%(interval_start,interval_end))
+            ds=xr.open_dataset(cache_fn)
+        else:
+            log.warning("Requesting %s to %s"%(interval_start,interval_end))
+            req=requests.get(url,params=dict(appKey=cimis_key,
+                                             targets=",".join(stations), 
+                                             startDate=interval_start,
+                                             endDate=interval_end,
+                                             unitOfMeasure='M', # metric please
+                                             dataItems=",".join( fields ) ))
+            ds=cimis_json_to_xr(req.json())
+            if cache_fn is not None:
+                ds.to_netcdf(cache_fn)
+            time.sleep(1.0) # be kind
+            
+        all_ds.append(ds)
 
     if len(all_ds)==1:
         ds=all_ds[0]
-    elif len(add_ds)==0:
+    elif len(all_ds)==0:
         return None
     else:
-        ds=xr.concat( all_ds, dim='time')
+        ds=xr.concat(all_ds, dim='time')
+        # account for overlaps
+        sel=utils.select_increasing(ds.time.values)
+        [x.close() for x in all_ds] # reduce the number of netcdf handles left open
+        ds=ds.isel(time=sel)
 
     if station_meta:
         if len(stations)!=1:
             print("Can only record station metadata for a single station")
         else:
-            cimis_fetch_station_metadata(stations[0],df=ds)
+            cimis_fetch_station_metadata(stations[0],df=ds,cache_dir=cache_dir)
 
     return ds
-
-## 
 
