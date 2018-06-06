@@ -1980,10 +1980,15 @@ class SimpleGrid(QuadrilateralGrid):
             ims = ax.imshow
         else:
             ims = plt.imshow
+
+        if 'offset' in kwargs:
+            offset=kwargs.pop('offset')
+        else:
+            offset=[0,0]
             
         return ims(maskedF,origin='lower',
-                   extent=[self.extents[0]-0.5*dx, self.extents[1]+0.5*dx,
-                           self.extents[2]-0.5*dy, self.extents[3]+0.5*dy],
+                   extent=[self.extents[0]-0.5*dx + offset[0], self.extents[1]+0.5*dx + offset[0],
+                           self.extents[2]-0.5*dy + offset[1], self.extents[3]+0.5*dy + offset[1]],
                    **kwargs)
 
     def xy(self):
