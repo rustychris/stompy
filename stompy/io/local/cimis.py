@@ -4,6 +4,8 @@ Programmatic access to CIMIS data
 The CIMIS API requires a key, which can be obtained for free.  That key will be 
 read in from CIMIS_KEY in the environment, or can be passed into these functions
 as the cimis_key keyword argument
+
+cimis_fetch_to_xr(), documented below, is the main entry point
 """
 
 from __future__ import print_function
@@ -15,9 +17,7 @@ import requests
 from requests.compat import json
 
 import os
-import logging
-
-log=logging # logging.getLogger('cimis')
+import logging as log
 
 from ... import utils
 
@@ -25,6 +25,7 @@ from .common import periods
 
 ## 
 
+# Web service requests URL
 url="http://et.water.ca.gov/api/data"
 
 def cimis_json_to_xr(data):
@@ -50,7 +51,7 @@ def cimis_json_to_xr(data):
     df['Date']= ( ('time',), [ "%s %s"%(rec['Date'],rec['Hour'])
                                for rec in records] )
 
-    # annoying convention where midnight is 2400.                                                                                                                                      
+    # annoying convention where midnight is 2400.
     datetimes=[ (datetime.datetime.strptime(s.replace('2400','0000'),
                                             '%Y-%m-%d %H%M')
                  + datetime.timedelta(days=int(s.endswith('2400'))))
@@ -87,7 +88,12 @@ def cimis_fetch_station_metadata(station,df=None,cimis_key=None,cache_dir=None):
     """
     df=df or xr.Dataset()
     if cache_dir is not None:
-        cache_fn=os.path.join(cache_dir,"station_metadata-%s.json"%station)
+        assert os.path.exists(cache_dir)
+
+        # Be nice and make a cimis subdirectory
+        cache_sub_dir=os.path.join(cache_dir,'cimis')
+        os.path.exists(cache_sub_dir) or os.mkdir(cache_sub_dir)
+        cache_fn=os.path.join(cache_sub_dir,"station_metadata-%s.json"%station)
     else:
         cache_fn=None
 
@@ -120,12 +126,41 @@ def cimis_fetch_station_metadata(station,df=None,cimis_key=None,cache_dir=None):
     df.attrs['longitude']=lon
     return df
 
-def cimis_fetch_to_xr(stations, # Union City
+def cimis_fetch_to_xr(stations, 
                       start_date,end_date,
                       fields=None,
                       station_meta=True,
-                      days_per_request=None,cache_dir=None,
+                      days_per_request="10D",cache_dir=None,
                       cimis_key=None):
+    """
+    Download data for one or more CIMIS stations.
+
+    stations: a single value or a list of values giving the numeric id of the station(s)
+      IDs can be supplied as an integer or string.  e.g. 171, [171], "171", ["168",142]
+
+    start_date,end_date: period to download.  Can be specified as floating point datenum,
+     python datetime, or numpy datetime64.
+
+    fields: None to fetch all known fields, or ["hly-eto","hly-sol-rad",...] to get a subset.
+    
+    station_meta: Download station metadata 
+
+    days_per_request: break the request up into chunks no longer than this many days.
+      Optionally specify a pandas PeriodIndex string (e.g. "10D" for 10 day periods).  This
+      has the added effect of making the requests line up to even multiples of the given 
+      period, which allows for caching results even when requests are not for the same
+      period.
+
+    cache_dir: path to a directory which already exists, to hold cached data.  This is 
+      currently only used when days_per_request is a pandas-style string.  Providing
+      this path enables caching.
+
+    cimis_key: CIMIS data download requires an API key.  This parameter will override
+      the CIMIS_KEY environment variable.
+
+
+    Returns: an xarray Dataset
+    """
     if cimis_key is None:
         try:
             cimis_key=os.environ['CIMIS_KEY']
