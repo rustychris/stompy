@@ -1195,7 +1195,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 b=nodes[(i+1)%len(nodes)]
                 j=self.nodes_to_edge(a,b)
                 if j is None:
-                    print( "Failed to find an edge" )
+                    print( "Failed to find an edge, c=%d, nodes=%d,%d"%(c,a,b) )
                     continue
                 # will have to trial-and-error to get the right
                 # left/right sense here.
