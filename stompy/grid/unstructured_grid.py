@@ -2528,6 +2528,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         nc1 = e2c[:,0]
         nc2 = e2c[:,1].copy()
         nc2[nc2<0] = nc1[nc2<0]
+        nc1[nc1<0] = nc2[nc1<0]
 
         to_show = (disc[nc1]!=disc[nc2]) & np.isfinite(scalar[nc1]+scalar[nc2]) 
 
