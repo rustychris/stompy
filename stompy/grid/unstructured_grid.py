@@ -2393,6 +2393,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
           internal masking of deleted edges.
         and set scalar values on edges with values
          - values can have size either Nedges, or sum(mask)
+        labeler: function(id,rec) => string for adding text labels.  Specify 'id'
+          for the common case of labeling edges by id.
         """
         ax = ax or plt.gca()
 
@@ -2420,6 +2422,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         lcoll = LineCollection(segs,**kwargs)
 
         if labeler is not None:
+            if labeler=='id':
+                labeler=lambda i,r: str(i)
+                
             ec=self.edges_center()
             # weirdness to account for mask being indices vs. bitmask
             for n in np.arange(self.Nedges())[mask]:
@@ -2593,6 +2598,34 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         ax=kwargs.pop('ax',None) or plt.gca()
         tri=self.mpl_triangulation()
         return ax.tricontourf(tri,values,*args,**kwargs)
+
+    def smooth_matrix(self):
+        """ 
+        Smoothing on the grid.  Returns a sparse matrix suitable for repeated
+        application to a cell-centered scalar field, each time replacing
+        a cell with the average of its neighbors.
+
+        Assume that grid scale is an okay proxy for diffusion rate, so that
+        it's better to just average within the neighborhood rather than compute
+        diffusivities.
+
+        This is *not* a proper, finite volume diffusion.  It does not conserve mass.
+        """
+        from scipy import sparse
+        from scipy.sparse import linalg
+
+        N=self.Ncells()
+        D=sparse.dok_matrix((N,N),np.float64)
+
+        f=1.
+        for c in range(self.Ncells()):
+            nbrs=np.array( self.cell_to_cells(c) )
+            nbrs=nbrs[nbrs>=0]
+            D[c,c]=1-f
+            for nbr in nbrs:
+                D[c,nbr] = f/float(len(nbrs))
+
+        return D.tocsr()
         
     def edge_clip_mask(self,xxyy):
         centers=self.edges_center()
@@ -2609,7 +2642,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         """
         centers: scatter plot of cell centers.  otherwise polygon plot
         labeler: f(cell_idx,cell_record) => string for labeling.
-        centroid: if True, use centroids instead of centers
+        centroid: if True, use centroids instead of centers.  if an array, 
+          use that as the center point rather than circumcenters or centroids
         """
         ax = ax or plt.gca()
         
@@ -2627,7 +2661,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             values = values[mask]
 
         if centers or labeler:
-            if centroid:
+            if isinstance(centroid,np.ndarray):
+                xy=centroid
+            elif centroid:
                 xy=self.cells_centroid()
             else:
                 xy=self.cells_center()

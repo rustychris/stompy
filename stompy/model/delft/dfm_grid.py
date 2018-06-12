@@ -385,7 +385,6 @@ def polyline_to_boundary_edges(g,linestring,rrtol=3.0):
     edge_hits=boundary_edges[hits]
     return edge_hits
 
-
 def dredge_boundary(g,linestring,dredge_depth):
     """
     Lower bathymetry in the vicinity of external boundary, defined
