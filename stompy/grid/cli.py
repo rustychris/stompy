@@ -5,9 +5,12 @@ Access this with something like:
   python -m stompy.grid.cli <args>
 """
 # why has python gone through three iterations of argument parsing modules?
+from __future__ import print_function
 import sys
 import argparse
 import logging as log
+
+from . import unstructured_grid
 
 parser = argparse.ArgumentParser(description='Manipulate unstructured grids.')
 
@@ -26,13 +29,23 @@ class ReadGrid(Op):
 
         if fmt=='suntans':
             g=unstructured_grid.SuntansGrid(path)
-            stack.append(g)
-            log.info("Reading grid (%d cells, %d edges, %d nodes)"%(g.Ncells(),g.Nedges(),g.Nnodes()))
+        elif fmt=='ugrid':
+            g=unstructured_grid.UnstructuredGrid.from_ugrid(path)
+        elif fmt=='untrim':
+            g=unstructured_grid.UnTRIM08Grid(path)
+        elif fmt=='dfm':
+            from stompy.model.delft import dfm_grid
+            if not path.endswith('_net.nc'):
+                log.warning("Read DFM grid from filename not ending in '_net.nc'")
+            g=dfm_grid.DFMGrid(path)
         else:
             log.error("Did not understand format %s"%fmt)
             sys.exit(1)
+        stack.append(g)
+        log.info("Reading grid (%d cells, %d edges, %d nodes)"%(g.Ncells(),g.Nedges(),g.Nnodes()))
 
 class WriteGrid(Op):
+    clobber=False
     def run(self,args):
         fmt,path=args[0].split(':')
         log.info("Writing %s as %s"%(path,fmt))
@@ -61,25 +74,41 @@ class WriteGrid(Op):
             from stompy.model.delft import dfm_grid
             if not path.endswith('_net.nc'):
                 log.warning("Writing DFM grid to filename not ending in '_net.nc'")
-            dfm_grid.write_dfm(g,path)
+            dfm_grid.write_dfm(g,path,overwrite=self.clobber)
         else:
             log.error("Did not understand format %s"%fmt)
             sys.exit(1)
 
+class SetClobber(Op):
+    def run(self,args):
+        WriteGrid.clobber=True
 
 parser.add_argument("-i", "--input", help="Read a grid",
                     nargs=1,action=ReadGrid)
 parser.add_argument("-o", "--output", help="Write a grid",
                     nargs=1,action=WriteGrid)
+parser.add_argument("-c", "--clobber", help="Allow overwriting of existing grids",
+                    nargs=0,action=SetClobber)
 
-if __name__ == '__main__':
-    args = parser.parse_args()
-    from . import unstructured_grid
 
+def parse_and_run(cmd=None):
+    # In case there are repeated calls from a script:
+    del ops[:]
+    del stack[:]
+
+    if cmd is not None:
+        # allows for calling cli.py in a script, but with the exact same commandline.
+        # Except that this doesn't work?  It gives an error related to ipython arguments
+        # and the real sys.argv, rather than the argv I just specified.
+        argv=cmd.split()
+        print("Parsing %r"%argv)
+        args=parser.parse_args(argv)
+    else:
+        args=parser.parse_args()
+        
     for impl,args in ops:
         impl.run(args)
-        
 
-    
-    
+if __name__ == '__main__':
+    parse_and_run()
 
