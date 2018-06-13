@@ -858,11 +858,12 @@ def right_align(axs):
 
 def cbar(*args,**kws):
     extras=kws.pop('extras',[])
+    symmetric=kws.pop('sym',False)
     cbar=plt.colorbar(*args,**kws)
-    cbar_interactive(cbar,extras=extras)
+    cbar_interactive(cbar,extras=extras,symmetric=symmetric)
     return cbar
 
-def cbar_interactive(cbar,extras=[]):
+def cbar_interactive(cbar,extras=[],symmetric=False):
     """ click in the upper or lower end of the colorbar to
     adjust the respective limit.
     left click to increase, right click to decrease
@@ -908,12 +909,15 @@ def cbar_interactive(cbar,extras=[]):
                 rel=0.1
             elif event.button==3:
                 rel=-0.1
-            if coord<0.4:
-                mod_norm(rel_min=rel)
-            elif coord>0.6:
-                mod_norm(rel_max=rel)
+            if symmetric:
+                mod_norm(rel_min=rel,rel_max=-rel)
             else:
-                mod_norm(reset=True)
+                if coord<0.4:
+                    mod_norm(rel_min=rel)
+                elif coord>0.6:
+                    mod_norm(rel_max=rel)
+                else:
+                    mod_norm(reset=True)
     fig=cbar.ax.figure
     cid=fig.canvas.mpl_connect('button_press_event',cb_u_cbar)
     return cb_u_cbar
