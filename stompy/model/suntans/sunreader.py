@@ -1,11 +1,14 @@
-from __future__ import division
 from __future__ import print_function
-from builtins import zip
-from builtins import str
-from builtins import map
-from builtins import range
-from builtins import object
-from past.utils import old_div
+from __future__ import division
+
+# These were added by 2to3, but seem to cause more issues than they solve
+# from builtins import zip
+# from builtins import str
+# from builtins import map
+# from builtins import range
+# from builtins import object
+# from past.utils import old_div
+
 import re
 import pprint
 import sys, os, shutil, time

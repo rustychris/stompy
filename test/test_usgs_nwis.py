@@ -1,3 +1,7 @@
+import os
+import shutil
+import time
+
 import numpy as np
 from stompy.io.local import usgs_nwis
 
@@ -20,3 +24,37 @@ def test_provisional():
                               np.datetime64("2015-12-10"),
                               np.datetime64("2015-12-20"),
                               products=[72178])
+
+def test_missing():
+    station="11162765"
+    t_start=np.datetime64('2016-10-01')
+    t_stop=np.datetime64('2016-12-01')
+    # This period has some missing data identified by '***' which 
+    # caused problems in older versions of rdb.py
+    ds=usgs_nwis.nwis_dataset(station,
+                              t_start,t_stop,
+                              products=[95,90860],
+                              days_per_request=20)
+
+def test_caching():
+    station="11162765"
+    t_start=np.datetime64('2016-10-01')
+    t_stop=np.datetime64('2016-12-01')
+
+    cache_dir='tmp_cache'
+    if os.path.exists(cache_dir):
+        # Start clean
+        shutil.rmtree(cache_dir)
+
+    os.mkdir(cache_dir)
+
+    timings=[]
+    for trial in [0,1]:
+        t0=time.time()
+        ds=usgs_nwis.nwis_dataset(station,
+                                  t_start,t_stop,
+                                  products=[95,90860],
+                                  days_per_request='10D',cache_dir=cache_dir)
+        timings.append(time.time() - t0)
+
+    assert timings[0]>5*timings[1]

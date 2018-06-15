@@ -607,37 +607,21 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                                            (self.nodes,'node') ]:
                     for field in src_data.dtype.names:
                         if field.startswith('_'):
-                            continue
+                            continue # presumed to be private, probably auto-calculated.
                         if field in ['cells','nodes','edges','deleted']:
                             continue # already included
                         if src_data[field].ndim != 1:
                             continue # not smart enough for that yet
-                        if field in ds:
+                        if np.issubdtype(src_data[field].dtype,np.object_):
+                            logging.warning("write_ugrid: will drop %s"%field)
+                            continue
+                        if field in ds: # avoid duplicate names
                             out_field = dim_name + "_" + field
                         else:
                             out_field=field
                             
                         ds[out_field] = (dim_name,),src_data[field]
             ds.to_netcdf(fn)
-            
-        if 0: # old qnc-based code
-            nc=qnc.empty(fn)
-
-            nc[mesh_name]=1
-            mesh_var=nc.variables[mesh_name]
-            mesh_var.cf_role='mesh_topology'
-
-            mesh_var.node_coordinates='node_x node_y'
-            nc['node_x']['node']=self.nodes['x'][:,0]
-            nc['node_y']['node']=self.nodes['x'][:,1]
-
-            mesh_var.face_node_connectivity='face_node'
-            nc['face_node']['face','maxnode_per_face']=self.cells['nodes']
-
-            mesh_var.edge_node_connectivity='edge_node'
-            nc['edge_node']['edge','node_per_edge']=self.edges['nodes']
-
-            nc.close()
 
     @staticmethod
     def from_shp(shp_fn):
