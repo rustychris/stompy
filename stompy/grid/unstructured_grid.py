@@ -2500,7 +2500,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                              labeler(j,side) )
         return coll
     
-    def scalar_contour(self,scalar,V=10,smooth=True):
+    def scalar_contour(self,scalar,V=10,smooth=True,boundary='reflect'):
         """ Generate a collection of edges showing the contours of a
         cell-centered scalar.
 
@@ -2511,20 +2511,35 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         smooth: control whether one pass of 3-point smoothing is
         applied.
 
+        boundary: 
+          'reflect' assumes zero gradient at boundaries, such that
+             contours will never fall on a boundary.
+          numeric value: apply the given constant as the out-of-domain value.
+
         returns a LineCollection 
         """
         if isinstance(V,int):
             V = np.linspace( np.nanmin(scalar),np.nanmax(scalar),V )
 
+        # bin the scalar values
         disc = np.searchsorted(V,scalar) # nan=>last index
 
+        # Start with the 'reflect" approach for boundaries:
         e2c=self.edge_to_cells()
-        nc1 = e2c[:,0]
+        nc1 = e2c[:,0].copy() # be sure we don't muck with grid internals
         nc2 = e2c[:,1].copy()
         nc2[nc2<0] = nc1[nc2<0]
         nc1[nc1<0] = nc2[nc1<0]
+        disc_nc1=disc[nc1] # per-edge discretized scalar value on 'left'
+        disc_nc2=disc[nc2] # per-edge discretized scalar value on 'right'
 
-        to_show = (disc[nc1]!=disc[nc2]) & np.isfinite(scalar[nc1]+scalar[nc2]) 
+        if boundary!='reflect':
+            disc_boundary=np.searchsorted(V,boundary)
+            # Edges with cell 0 outside..
+            disc_nc1[ (e2c[:,0]<0) ] = disc_boundary
+            disc_nc2[ (e2c[:,1]<0) ] = disc_boundary
+        
+        to_show = (disc_nc1!=disc_nc2) & np.isfinite(scalar[nc1]+scalar[nc2])
 
         segs = self.nodes['x'][ self.edges[to_show]['nodes'], :]
 
