@@ -3199,7 +3199,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         xy: coordinate to query around
         count: if None, return a single index, otherwise return an array of
           indices (even if count==1)
-        inside: 
+        inside:
           False => use faster query, but no guarantee that xy is inside the returned cell
           True  => verify that xy is inside the returned cell, may return None.  cannot
            be used with count.  Even with True, the search isn't exhaustive and a really
@@ -3231,7 +3231,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 if len(results)==real_count:
                     break
             hits=results
-        
+
         if inside: # check whether the point is truly inside the cell
             # -- using shapely to determine contains, may be slower than matplotlib
             #  pnt=geometry.Point(xy[0],xy[1])
@@ -3240,7 +3240,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             # -- using matplotlib to determine contains
             for hit in hits:
                 if self.cell_path(hit).contains_point(xy):
-                    return hit            
+                    return hit
             return None
 
         if count is None:
@@ -3250,7 +3250,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 return None
         else:
             return hits
-    
+
     def point_to_cell(self,xy):
         """ like select_cells_nearest, but verifies that the point
         is inside the cell.
