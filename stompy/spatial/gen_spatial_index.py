@@ -47,6 +47,17 @@ class _PointIndexKDTree(object):
         NotImplementedError("KDTree in use by gen_spatial_index; delete not allowed; install rtree...")
 
 
+def rect_index_class_factory(implementation='rtree'):
+    if implementation in ['rtree','best']:
+        try:
+            from rtree.index import Rtree 
+            return Rtree
+        except ImportError:
+            if implementation=='rtree':
+                raise
+            # otherwise fall through to next best
+    raise Exception("Failed to load any spatial index based on implementation='%s'"%implementation)
+    
 def point_index_class_factory(implementation='best'):
     if implementation in ['rtree','best']:
         try:
@@ -87,3 +98,9 @@ except ImportError:
     logging.info("Spatial index not available")
     PointIndex=None
 
+try:
+    RectIndex=rect_index_class_factory()
+except ImportError:
+    logging.info("Spatial index of rectangles not available")
+    RectIndex=None
+    

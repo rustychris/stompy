@@ -50,7 +50,7 @@ except ImportError:
     
 # load both types of indices, so we can choose per-field
 # which one to use
-from .gen_spatial_index import PointIndex
+from .gen_spatial_index import PointIndex,RectIndex
 
 # Older code tried to use multiple implementations
 # import stree
@@ -3367,7 +3367,7 @@ class MultiRasterField(Field):
         tuples = [(i,extent,None) 
                   for i,extent in enumerate(self.sources['extent'])]
         
-        self.index = Rtree(tuples,interleaved=False)
+        self.index = RectIndex(tuples,interleaved=False)
 
     def report(self):
         """ Short text representation of the layers found and their resolutions
