@@ -183,18 +183,16 @@ class DFMGrid(unstructured_grid.UnstructuredGrid):
         cleanup: for grids created from multiple subdomains, there are sometime duplicate edges and nodes.
           this will remove those duplicates, though there are no guarantees of indices.
         """
+        self.filename=None
+        
         if nc is None:
             assert fn
-            #nc=qnc.QDataset(fn)
-            # Trying out xarray instead
+            self.filename=fn
             nc=xr.open_dataset(fn)
 
         if isinstance(nc,str):
-            #nc=qnc.QDataset(nc)
+            self.filename=nc
             nc=xr.open_dataset(nc)
-
-        #if isinstance(nc,xr.Dataset):
-        #    raise Exception("Pass the filename or a qnc.QDataset.  Not ready for xarray")
 
         # Default names for fields
         var_points_x='NetNode_x'
