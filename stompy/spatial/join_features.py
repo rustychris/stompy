@@ -1,8 +1,10 @@
 from __future__ import print_function
 
+from optparse import OptionParser
+
 # try to connect features that really ought to be connected:
-from matplotlib.pyplot import *
-from numpy import *
+import numpy as np
+
 import shapely.wkb,shapely.geometry
 try:
     from osgeo import ogr
@@ -82,7 +84,7 @@ def merge_lines(layer=None,segments=None):
                 raise Exception("All features must be linestrings")
 
             # read the points into a numpy array:
-            points = array(shapely.wkb.loads(geo.ExportToWkb()).coords)
+            points = np.array(shapely.wkb.loads(geo.ExportToWkb()).coords)
         else:
             try:
                 fid,points = next_seg()
@@ -140,16 +142,16 @@ def merge_lines(layer=None,segments=None):
         # to be redirected from featB:
         # also be sure to skip the repeated poin
         if all(coordsA[0]==coordsB[0]):
-            coordsC = concatenate((coordsA[::-1],coordsB[1:]))
+            coordsC = np.concatenate((coordsA[::-1],coordsB[1:]))
             redirect = coordsB[-1]
         elif all(coordsA[-1]==coordsB[0]):
-            coordsC = concatenate((coordsA,coordsB[1:]))
+            coordsC = np.concatenate((coordsA,coordsB[1:]))
             redirect = coordsB[-1]
         elif all(coordsA[0]==coordsB[-1]):
-            coordsC = concatenate((coordsB,coordsA[1:]))
+            coordsC = np.concatenate((coordsB,coordsA[1:]))
             redirect = coordsB[0]
         elif all(coordsA[-1]==coordsB[-1]):
-            coordsC = concatenate((coordsA[:-1],coordsB[::-1]))
+            coordsC = np.concatenate((coordsA[:-1],coordsB[::-1]))
             redirect = coordsB[0]
         else:
             log.error( "No match:" )
@@ -339,7 +341,7 @@ def arc_to_close_line(points,n_arc_points=40):
     
     # Find the centroid of the original points.
     geo = shapely.geometry.Polygon(points)
-    centroid = array(geo.centroid)
+    centroid = np.array(geo.centroid)
 
     # for now, assume a 180 degree arc:
     arc_center = (points[0]+points[-1])/2.0
@@ -359,16 +361,16 @@ def arc_to_close_line(points,n_arc_points=40):
     # how many steps in the arc? ultimately could be tied to the desired spatial
     # resolution, or at least that great (since it will get filtered down to the
     # desired resolution, but not filtered up)
-    angles = linspace(0,arc_dir*pi,n_arc_points)
-    arc_points = zeros((n_arc_points,2),float64)
+    angles = np.linspace(0,arc_dir*np.pi,n_arc_points)
+    arc_points = np.zeros((n_arc_points,2),np.float64)
 
     # rotate the start vector
     for i in range(n_arc_points):
         angle = angles[i]
-        xx = cos(angle)
-        xy = -sin(angle)
-        yx = sin(angle)
-        yy = cos(angle)
+        xx = np.cos(angle)
+        xy = -np.sin(angle)
+        yx = np.sin(angle)
+        yy = np.cos(angle)
 
         new_x = start_vector[0]*xx + start_vector[1]*xy
         new_y = start_vector[0]*yx + start_vector[1]*yy
@@ -466,9 +468,19 @@ def process_layer(orig_layer,output_name,tolerance=0.0,
       the linestring A-B-B-C will become A-B-C.
     single_feature: only save the biggest feature
     """
+    orig_srs=None
+    orig_srs_text=None
+
     if isinstance(orig_layer,str):
         ods = ogr.Open(orig_layer)
         orig_layer = ods.GetLayer(0)
+        
+    try:
+        orig_srs=ods.GetSpatialRef()
+        orig_srs_text=orig_srs.ExportToWkt()
+    except Exception as exc:
+        log.error("Attempted to get spatial ref: %s"%exc)
+            
 
     ### The actual geometry processing: ###
     ### <processing>
@@ -485,7 +497,7 @@ def process_layer(orig_layer,output_name,tolerance=0.0,
         
         for fi in range(len(new_features)):
             pnts = new_features[fi]
-            valid = ones( len(pnts), 'bool8')
+            valid = np.ones( len(pnts), np.bool8)
             # go with a slower but safer loop here -
             last_valid=0
             for i in range(1,len(pnts)):
@@ -524,8 +536,38 @@ def process_layer(orig_layer,output_name,tolerance=0.0,
     # Write it all out to a shapefile:
     progress_message("Writing output")
 
+    kws={}
+    if orig_srs_text is not None:
+        kws['srs_text']=orig_srs_text
+        
     wkb2shp.wkb2shp(output_name,geoms,
-                    overwrite=True)
+                    overwrite=True,**kws)
 
     return output_name
 
+if __name__ == '__main__':
+    parser = OptionParser(usage="usage: %prog [options] input.shp output.shp")
+    parser.add_option("-p", "--poly",
+                      help="create polygons from closed linestrings",
+                      action="store_true",
+                      dest='create_polygons',default=False)
+    parser.add_option("-a", "--arc", dest="close_arc", default=False,
+                      action="store_true",
+                      help="close the largest open linestring with a circular arc")
+    parser.add_option("-t","--tolerance", dest="tolerance", type="float", default=0.0,
+                      metavar="DISTANCE",
+                      help="Tolerance for joining two endpoints, in geographic units")
+    parser.add_option("-m","--multiple", dest="single_feature", default=True,
+                      action="store_false",metavar="SINGLE_FEATURE")
+    
+    (options, args) = parser.parse_args()
+    input_shp,output_shp = args
+    
+    ods = ogr.Open(input_shp)
+    layer = ods.GetLayer(0)
+
+    process_layer(layer,output_shp,
+                  create_polygons=options.create_polygons,close_arc=options.close_arc,
+                  tolerance=options.tolerance,single_feature=options.single_feature)
+    
+    

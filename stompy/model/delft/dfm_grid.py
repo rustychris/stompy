@@ -183,18 +183,16 @@ class DFMGrid(unstructured_grid.UnstructuredGrid):
         cleanup: for grids created from multiple subdomains, there are sometime duplicate edges and nodes.
           this will remove those duplicates, though there are no guarantees of indices.
         """
+        self.filename=None
+        
         if nc is None:
             assert fn
-            #nc=qnc.QDataset(fn)
-            # Trying out xarray instead
+            self.filename=fn
             nc=xr.open_dataset(fn)
 
         if isinstance(nc,str):
-            #nc=qnc.QDataset(nc)
+            self.filename=nc
             nc=xr.open_dataset(nc)
-
-        #if isinstance(nc,xr.Dataset):
-        #    raise Exception("Pass the filename or a qnc.QDataset.  Not ready for xarray")
 
         # Default names for fields
         var_points_x='NetNode_x'
@@ -385,7 +383,6 @@ def polyline_to_boundary_edges(g,linestring,rrtol=3.0):
     edge_hits=boundary_edges[hits]
     return edge_hits
 
-
 def dredge_boundary(g,linestring,dredge_depth):
     """
     Lower bathymetry in the vicinity of external boundary, defined
@@ -401,7 +398,8 @@ def dredge_boundary(g,linestring,dredge_depth):
     cells_to_dredge=[]
 
     feat_edges=polyline_to_boundary_edges(g,linestring)
-    assert len(feat_edges)
+    if len(feat_edges)==0:
+        raise Exception("No boundary edges matched by %s"%(str(linestring)))
     cells_to_dredge=g.edges['cells'][feat_edges].max(axis=1)
 
     nodes_to_dredge=np.concatenate( [g.cell_to_nodes(c)

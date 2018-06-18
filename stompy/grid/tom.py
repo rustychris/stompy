@@ -67,6 +67,7 @@ class Tom(object):
     slide_interior = 1
     scale_factor = 1.0
     scale_ratio_for_cutoff = 1.0
+    output_path="."
     
     # These are not currently mutable from the command line
     # but could be.
@@ -78,7 +79,7 @@ class Tom(object):
     scale_shp_field_name='scale'
     density_map = None
 
-
+    
     # non-customizable instance variables
     original_boundary_geo = None
     
@@ -104,6 +105,7 @@ class Tom(object):
         print("         -c N                 # checkpoint interval         ")
         print("         -d                   # disable smoothing ")
         print("         -o                   # enable optimization ")
+        print("         -O path              # set output path")
         print("         -r checkpoint.pav    # resume from a checkpoint    ")
         print("         -v N                 # set verbosity level N")
         print("         -n                   # ready the shoreline, but don't mesh it")
@@ -140,7 +142,7 @@ class Tom(object):
         
     def run(self,argv):
         try:
-            opts,rest = getopt.getopt(argv[1:],'hb:s:a:t:i:c:r:dv:np:om:i:f:g:C:',
+            opts,rest = getopt.getopt(argv[1:],'hb:s:a:t:i:c:r:dv:np:om:i:f:g:C:O:',
                                       ['slide-interior',
                                        'rigid-interior'])
         except getopt.GetoptError as e:
@@ -179,6 +181,8 @@ class Tom(object):
                 self.dry_run=1
             elif opt == '-o':
                 self.optimize = 1
+            elif opt == '-O':
+                self.output_path=val
             elif opt == '-m':
                 self.density_map = val
             elif opt == '-i':
@@ -219,8 +223,8 @@ class Tom(object):
             if self.smooth:
                 self.p.smooth()
                 # and write out the smoothed shoreline
-                wkb2shp.wkb2shp(self.smoothed_poly_shp,[self.p.poly],
-                                overwrite=True)
+                wkb2shp.wkb2shp(os.path.join(self.output_path,self.smoothed_poly_shp),
+                                [self.p.poly],overwrite=True)
 
             int_args = self.prepare_interiors()
 
@@ -243,14 +247,17 @@ class Tom(object):
             starting_step = self.p.step
             self.create_grid()
 
-            if (not os.path.exists('final.pav')) or self.p.step > starting_step:
-                self.p.write_complete('final.pav')
-            if (not os.path.exists('final.pdf')) or self.p.step > starting_step:
-                self.plot_intermediate(fn='final.pdf',color_by_step=False)
+            final_pav_fn=os.path.join( self.output_path,'final.pav')
+            final_pdf_fn=os.path.join( self.output_path,'final.pdf')
+            
+            if (not os.path.exists(final_pav_fn)) or self.p.step > starting_step:
+                self.p.write_complete(final_pav_fn)
+            if (not os.path.exists(final_pdf_fn)) or self.p.step > starting_step:
+                self.plot_intermediate(fn=final_pdf_fn,color_by_step=False)
 
             # write grid as shapefile
             if self.output_shp:
-                print("Writing shapefile with %d features (edgse)"%(self.p.Nedges()))
+                print("Writing shapefile with %d features (edges)"%(self.p.Nedges()))
                 self.p.write_shp(self.output_shp,only_boundaries=0,overwrite=1)
                 # by reading the suntans grid output back in, we should get boundary edges
                 # marked as 1 - self.p probably doesn't have these markers
@@ -448,7 +455,7 @@ class Tom(object):
             print("Renumbering:")
             p.renumber()
             print("Writing suntans output")
-            p.write_suntans('.')
+            p.write_suntans(self.output_path)
         except paver.FillFailed:
             print("Paver failed.")
             print("plotting the aftermath")

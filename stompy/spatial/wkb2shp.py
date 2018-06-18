@@ -196,7 +196,7 @@ def wkb2shp(shp_name,
 
 # kind of the reverse of the above
 def shp2geom(shp_fn,use_wkt=False,target_srs=None,
-             source_srs=None):
+             source_srs=None,return_srs=False):
     """
     Read a shapefile into memory as a numpy array.
     Data is returned as a record array, with geometry as a shapely
@@ -208,6 +208,9 @@ def shp2geom(shp_fn,use_wkt=False,target_srs=None,
     but the shapefile does not specify a projection, and source_srs is not given,
     then an exception is raised.  source_srs will override the projection in 
     the shapefile if specified.
+
+    return_srs: return a tuple, second item being the text representation of the project, or
+     None if no projection information was found.
     """
     ods = ogr.Open(shp_fn)
     if ods is None:
@@ -235,6 +238,7 @@ def shp2geom(shp_fn,use_wkt=False,target_srs=None,
         def geom_xform(g):
             return ops.transform(xform,g)
     else:
+        target_srs=layer.GetSpatialRef()
         def geom_xform(g):
             return g
 
@@ -295,7 +299,11 @@ def shp2geom(shp_fn,use_wkt=False,target_srs=None,
         recs.append(field_array)
 
     recs = np.array( recs, dtype=layer_dtype)
-    return recs
+
+    if return_srs:
+        return recs, target_srs.ExportToWkt()
+    else:
+        return recs
 
     
 

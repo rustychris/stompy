@@ -293,6 +293,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                    ('deleted',np.bool8)]
 
     ##
+    filename=None
+    
     def __init__(self,
                  grid = None,
                  edges=[],points=[],cells=[],
@@ -427,7 +429,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         based on matching dimensions.
         """
         if isinstance(nc,six.string_types):
+            filename=nc
             nc=xr.open_dataset(nc)
+        else:
+            filename=None
 
         if mesh_name is None:
             meshes=[]
@@ -516,8 +521,30 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                                 struct[vname]=nc[vname].values
                             else:
                                 adder( vname, nc[vname].values )
-                
+        ug.filename=filename
         return ug
+    
+    @staticmethod
+    def read_suntans_hybrid(path='.',points='points.dat',edges='edges.dat',cells='cells.dat'):
+        """
+        Read text-based suntans format which can accomodate arbitrary numbers of sides.
+        This can be read/written by Janet.
+        """
+        points=os.path.join(path,points)
+        edges=os.path.join(path,edges)
+        cells=os.path.join(path,cells)
+
+        xyz=np.loadtxt(points)
+
+        edge_nnmcc=np.loadtxt(edges).astype('i4')
+
+
+        e2c=self.edge_to_cells().copy()
+        e2c[e2c<0]=-1
+        markers=np.zeros(len(e2c))
+        markers[e2c[:,1]<0]=2
+
+        assert False, "Not yet completed"
 
     def write_to_xarray(self,ds=None,mesh_name='mesh'):
         """ write grid definition, ugrid-ish, to a new xarray dataset
@@ -585,37 +612,21 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                                            (self.nodes,'node') ]:
                     for field in src_data.dtype.names:
                         if field.startswith('_'):
-                            continue
+                            continue # presumed to be private, probably auto-calculated.
                         if field in ['cells','nodes','edges','deleted']:
                             continue # already included
                         if src_data[field].ndim != 1:
                             continue # not smart enough for that yet
-                        if field in ds:
+                        if np.issubdtype(src_data[field].dtype,np.object_):
+                            logging.warning("write_ugrid: will drop %s"%field)
+                            continue
+                        if field in ds: # avoid duplicate names
                             out_field = dim_name + "_" + field
                         else:
                             out_field=field
                             
                         ds[out_field] = (dim_name,),src_data[field]
             ds.to_netcdf(fn)
-            
-        if 0: # old qnc-based code
-            nc=qnc.empty(fn)
-
-            nc[mesh_name]=1
-            mesh_var=nc.variables[mesh_name]
-            mesh_var.cf_role='mesh_topology'
-
-            mesh_var.node_coordinates='node_x node_y'
-            nc['node_x']['node']=self.nodes['x'][:,0]
-            nc['node_y']['node']=self.nodes['x'][:,1]
-
-            mesh_var.face_node_connectivity='face_node'
-            nc['face_node']['face','maxnode_per_face']=self.cells['nodes']
-
-            mesh_var.edge_node_connectivity='edge_node'
-            nc['edge_node']['edge','node_per_edge']=self.edges['nodes']
-
-            nc.close()
 
     @staticmethod
     def from_shp(shp_fn):
@@ -1173,7 +1184,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 b=nodes[(i+1)%len(nodes)]
                 j=self.nodes_to_edge(a,b)
                 if j is None:
-                    print( "Failed to find an edge" )
+                    print( "Failed to find an edge, c=%d, nodes=%d,%d"%(c,a,b) )
                     continue
                 # will have to trial-and-error to get the right
                 # left/right sense here.
@@ -2387,6 +2398,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
           internal masking of deleted edges.
         and set scalar values on edges with values
          - values can have size either Nedges, or sum(mask)
+        labeler: function(id,rec) => string for adding text labels.  Specify 'id'
+          for the common case of labeling edges by id.
         """
         ax = ax or plt.gca()
 
@@ -2414,6 +2427,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         lcoll = LineCollection(segs,**kwargs)
 
         if labeler is not None:
+            if labeler=='id':
+                labeler=lambda i,r: str(i)
+                
             ec=self.edges_center()
             # weirdness to account for mask being indices vs. bitmask
             for n in np.arange(self.Nedges())[mask]:
@@ -2484,7 +2500,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                              labeler(j,side) )
         return coll
     
-    def scalar_contour(self,scalar,V=10,smooth=True):
+    def scalar_contour(self,scalar,V=10,smooth=True,boundary='reflect'):
         """ Generate a collection of edges showing the contours of a
         cell-centered scalar.
 
@@ -2495,19 +2511,35 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         smooth: control whether one pass of 3-point smoothing is
         applied.
 
+        boundary: 
+          'reflect' assumes zero gradient at boundaries, such that
+             contours will never fall on a boundary.
+          numeric value: apply the given constant as the out-of-domain value.
+
         returns a LineCollection 
         """
         if isinstance(V,int):
             V = np.linspace( np.nanmin(scalar),np.nanmax(scalar),V )
 
+        # bin the scalar values
         disc = np.searchsorted(V,scalar) # nan=>last index
 
+        # Start with the 'reflect" approach for boundaries:
         e2c=self.edge_to_cells()
-        nc1 = e2c[:,0]
+        nc1 = e2c[:,0].copy() # be sure we don't muck with grid internals
         nc2 = e2c[:,1].copy()
         nc2[nc2<0] = nc1[nc2<0]
+        nc1[nc1<0] = nc2[nc1<0]
+        disc_nc1=disc[nc1] # per-edge discretized scalar value on 'left'
+        disc_nc2=disc[nc2] # per-edge discretized scalar value on 'right'
 
-        to_show = (disc[nc1]!=disc[nc2]) & np.isfinite(scalar[nc1]+scalar[nc2]) 
+        if boundary!='reflect':
+            disc_boundary=np.searchsorted(V,boundary)
+            # Edges with cell 0 outside..
+            disc_nc1[ (e2c[:,0]<0) ] = disc_boundary
+            disc_nc2[ (e2c[:,1]<0) ] = disc_boundary
+        
+        to_show = (disc_nc1!=disc_nc2) & np.isfinite(scalar[nc1]+scalar[nc2])
 
         segs = self.nodes['x'][ self.edges[to_show]['nodes'], :]
 
@@ -2586,6 +2618,34 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         ax=kwargs.pop('ax',None) or plt.gca()
         tri=self.mpl_triangulation()
         return ax.tricontourf(tri,values,*args,**kwargs)
+
+    def smooth_matrix(self):
+        """ 
+        Smoothing on the grid.  Returns a sparse matrix suitable for repeated
+        application to a cell-centered scalar field, each time replacing
+        a cell with the average of its neighbors.
+
+        Assume that grid scale is an okay proxy for diffusion rate, so that
+        it's better to just average within the neighborhood rather than compute
+        diffusivities.
+
+        This is *not* a proper, finite volume diffusion.  It does not conserve mass.
+        """
+        from scipy import sparse
+        from scipy.sparse import linalg
+
+        N=self.Ncells()
+        D=sparse.dok_matrix((N,N),np.float64)
+
+        f=1.
+        for c in range(self.Ncells()):
+            nbrs=np.array( self.cell_to_cells(c) )
+            nbrs=nbrs[nbrs>=0]
+            D[c,c]=1-f
+            for nbr in nbrs:
+                D[c,nbr] = f/float(len(nbrs))
+
+        return D.tocsr()
         
     def edge_clip_mask(self,xxyy):
         centers=self.edges_center()
@@ -2602,7 +2662,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         """
         centers: scatter plot of cell centers.  otherwise polygon plot
         labeler: f(cell_idx,cell_record) => string for labeling.
-        centroid: if True, use centroids instead of centers
+        centroid: if True, use centroids instead of centers.  if an array, 
+          use that as the center point rather than circumcenters or centroids
         """
         ax = ax or plt.gca()
         
@@ -2620,7 +2681,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             values = values[mask]
 
         if centers or labeler:
-            if centroid:
+            if isinstance(centroid,np.ndarray):
+                xy=centroid
+            elif centroid:
                 xy=self.cells_centroid()
             else:
                 xy=self.cells_center()
@@ -4231,6 +4294,7 @@ class UnTRIM08Grid(UnstructuredGrid):
             depth_stat_to_subgrid(cells,self.cells,self.cells_area(),self.cells[depth_stat])
         if edges is not False:
             depth_stat_to_subgrid(edges,self.edges,self.edges_length(),self.edges[depth_stat])
+
         
     def read_from_file(self,grd_fn):
         """ 

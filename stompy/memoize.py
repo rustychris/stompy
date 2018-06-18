@@ -52,13 +52,14 @@ class LRUDict(object):
                 self.data.popitem(last=False)
 
 def memoize_key(*args,**kwargs):
-    if 0: # old way
-        return str(args) + str(kwargs)
-    else:
-        # new way - slower, but highly unlikely to get false positives
-        return hashlib.md5(pickle.dumps( (args,kwargs) )).hexdigest()
+    # new way - slower, but highly unlikely to get false positives
+    return hashlib.md5(pickle.dumps( (args,kwargs) )).hexdigest()
 
-def memoize(lru=None,cache_dir=None):
+def memoize_key_str(*args,**kwargs):
+    return str(args) + str(kwargs)
+
+
+def memoize(lru=None,cache_dir=None,key_method='pickle'):
     """
     add as a decorator to classes, instance methods, regular methods
     to cache results.
@@ -70,7 +71,7 @@ def memoize(lru=None,cache_dir=None):
     if cache_dir is not None:
         cache_dir=os.path.abspath( cache_dir )
 
-    def memoize1(obj):
+    def memoize1(obj,key_method=key_method):
         if lru is not None:
             cache = obj.cache = LRUDict(size_limit=lru)
         else:
@@ -83,7 +84,12 @@ def memoize(lru=None,cache_dir=None):
         @functools.wraps(obj)
         def memoizer(*args, **kwargs):
             recalc= memoizer.recalculate or memoize.recalculate
-            key = memoize_key(args,**kwargs)
+            if key_method=='pickle':
+                key = memoize_key(args,**kwargs)
+            elif key_method=='str':
+                key = memoize_key_str(args,**kwargs)
+            else:
+                raise Exception("Bad key_method %s"%key_method)
             value_src=None
 
             if cache_dir is not None:
