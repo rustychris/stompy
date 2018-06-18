@@ -293,6 +293,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                    ('deleted',np.bool8)]
 
     ##
+    filename=None
+    
     def __init__(self,
                  grid = None,
                  edges=[],points=[],cells=[],
@@ -427,7 +429,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         based on matching dimensions.
         """
         if isinstance(nc,six.string_types):
+            filename=nc
             nc=xr.open_dataset(nc)
+        else:
+            filename=None
 
         if mesh_name is None:
             meshes=[]
@@ -516,7 +521,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                                 struct[vname]=nc[vname].values
                             else:
                                 adder( vname, nc[vname].values )
-                
+        ug.filename=filename
         return ug
     
     @staticmethod
