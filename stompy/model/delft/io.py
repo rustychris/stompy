@@ -1218,6 +1218,41 @@ class MDUFile(SectionedConfig):
         self['time','TStart'] = int( (start - ref_date)/ np.timedelta64(1,'m') )
         self['time','TStop'] = int( (stop - ref_date) / np.timedelta64(1,'m') )
 
+    def partition(self,nprocs,dfm_bin_dir=None,mpi_bin_dir=None):
+        if nprocs<=1:
+            return
+        
+        # As of r52184, explicitly built with metis support, partitioning can be done automatically
+        # from here.
+        if mpi_bin_dir is None:
+            mpi_bin_dir=dfm_bin_dir
+
+        dflowfm="dflowfm"
+        gen_parallel="generate_parallel_mdu.sh"
+        if dfm_bin_dir is not None:
+            dflowfm=os.path.join(dfm_bin_dir,dflowfm)
+            gen_parallel=os.path.join(dfm_bin_dir,gen_parallel)
+
+        mpiexec="mpiexec"
+        if mpi_bin_dir is not None:
+            mpiexec=os.path.join(mpi_bin_dir,mpiexec)
+
+        cmd="%s -n %d %s/dflowfm --partition:ndomains=%d %s"%(mpiexec,nprocs,dflowfm,nprocs,
+                                                              self['geometry','NetFile'])
+        pwd=os.getcwd()
+        try:
+            os.chdir(mdu.base_path)
+            res=subprocess.call(cmd,shell=True)
+        finally:
+            os.chdir(pwd)
+
+        # similar, but for the mdu:
+        cmd="%s %s %d 6"%(gen_parallel,os.path.basename(mdu.filename),nprocs)
+        try:
+            os.chdir(mdu.base_path)
+            res=subprocess.call(cmd,shell=True)
+        finally:
+            os.chdir(pwd)
 
 
 def exp_z_layers(mdu,zmin=None,zmax=None):
