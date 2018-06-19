@@ -1,5 +1,5 @@
 """
-Grid manipulation related command line interface.  
+Grid manipulation related command line interface.
 
 Access this with something like:
   python -m stompy.grid.cli <args>
@@ -21,7 +21,7 @@ class Op(argparse.Action):
     def __call__(self, parser, namespace, values, option_string=None):
         #print '%r %r %r' % (namespace, values, option_string)
         ops.append( (self,values) )
-    
+
 class ReadGrid(Op):
     def run(self,args):
         fmt,path=args[0].split(':')
@@ -53,23 +53,23 @@ class WriteGrid(Op):
         g=stack[-1] # by default, do not pop from stack
 
         if fmt=='suntans':
-            g.write_suntans(path)
+            g.write_suntans(path,overwrite=self.clobber)
         elif fmt=='suntans_hybrid':
-            g.write_suntans_hybrid(path)
+            g.write_suntans_hybrid(path,overwrite=self.clobber)
         elif fmt=='ugrid':
-            g.write_ugrid(path)
+            g.write_ugrid(path,overwrite=self.clobber)
         elif fmt=='untrim':
-            g.write_untrim08(path)
+            g.write_untrim08(path,overwrite=self.clobber)
         elif fmt=='cell_shp':
-            g.write_cells_shp(path)
+            g.write_cells_shp(path,overwrite=self.clobber)
         elif fmt=='boundary_shp':
-            g.write_shore_shp(path)
+            g.write_shore_shp(path,overwrite=self.clobber)
         elif fmt=='edge_shp':
-            g.write_edges_shp(path)
+            g.write_edges_shp(path,overwrite=self.clobber)
         elif fmt=='node_shp':
-            g.write_node_shp(path)
+            g.write_node_shp(path,overwrite=self.clobber)
         elif fmt=='fishptm':
-            g.write_ptm_gridfile(path)
+            g.write_ptm_gridfile(path,overwrite=self.clobber)
         elif fmt=='dfm':
             from stompy.model.delft import dfm_grid
             if not path.endswith('_net.nc'):

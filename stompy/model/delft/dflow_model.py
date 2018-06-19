@@ -1,22 +1,24 @@
 import ..generic.model as gen_model
 import .io as dio
 
+import inspect
+
 class DFlowModel(gen_model.Model):
     dfm_bin_dir=None # .../bin  giving directory containing dflowfm
     num_procs=1 
     run_dir="." # working directory when running dflowfm
-    
+
     mdu_basename='flowfm.mdu'
 
     mdu=None
-    
+
     def __init__(self):
         pass
-    
+
     def load_mdu(self,fn):
         self.mdu=dio.MDUFile(fn)
-        
-    
+
+
 # class Scalar(gen_bc.Scalar):
 #     def write_(self,model,feature,grid):
 #         print("Writing feature: %s"%(feature['name']))

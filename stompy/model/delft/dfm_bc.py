@@ -10,10 +10,10 @@ import six
 import os
 
 import numpy as np
-import .io as dio
+from . import io as dio
 from ...io.local import noaa_coops
 from ... import utils, filters
-import .dfm_grid
+from . import dfm_grid
 
 class BC(object):
     cache_dir=None
@@ -27,7 +27,7 @@ class BC(object):
     # def factory(feat):
     #     code='[' + feat['src'] + ']'
     #     return eval(code)
-            
+
     def set_feature(self,feature):
         """
         For boundary conditions derived from a shapefile feature, save
@@ -35,7 +35,7 @@ class BC(object):
         the class def is evaluated, and then we can pass things to it.
         """
         self.feature=feature
-            
+
 class Scalar(BC):
     def __init__(self,name,value):
         """
@@ -44,7 +44,7 @@ class Scalar(BC):
         """
         self.name=name
         self.value=value
-        
+
     def write(self,mdu,feature,grid):
         print("Writing feature: %s"%(feature['name']))
 
@@ -97,7 +97,7 @@ class WaterLevel(BC):
         bc_fn=mdu.filepath( ['external forcing','ExtForceFile'] )
 
         assert feature['geom'].type=='LineString'
-        
+
         pli_data=[ (name, np.array(feature['geom'].coords)) ]
         base_fn=os.path.join(mdu.base_path,"%s_%s"%(name,var_name))
         pli_fn=base_fn+'.pli'

@@ -1301,8 +1301,14 @@ try:
             # how do we stop on a circulator?
             first_v = None
             # somehow it fails HERE, with self.vh[n] being an int, rather
-            # than a vertex handle.  
-            for v in self.DT.incident_vertices(self.vh[n]):
+            # than a vertex handle.
+
+            # Note that in some cases, this is not an iterator but a circulator
+            # (that's a CGAL thing, not a python thing), and it cannot be used
+            # in a regular for loop
+            circ=self.DT.incident_vertices(self.vh[n])
+            while 1:
+                v=circ.next()
                 if first_v is None:
                     first_v = v
                 elif first_v == v:
@@ -1374,7 +1380,8 @@ try:
             f_circ = self.DT.incident_faces( self.vh[n] )
             first_f = next(f_circ)
             f = first_f
-            for f in f_circ:
+            while 1:
+                f=f_circ.next()
                 if f == first_f:
                     break
                 diams.append( self.face_diameter(f) )
@@ -1407,7 +1414,9 @@ try:
             # choose a starting face
             best_f = None
             f_circ = self.DT.incident_faces(vh)
-            first_f = next(f_circ)
+            # python 3 notices that f_circ is not an iterator, and complains
+            # about use of next()
+            first_f = f_circ.next()
             f = first_f
             while 1:
                 # get the vertices of this face:
@@ -1434,9 +1443,8 @@ try:
                     best_f = f
                     break
 
-                f = next(f_circ)
+                f = f_circ.next()
                 if f == first_f:
-                    # raise Exception("Went all the way around...")
                     # this can happen when starting from a vertex and aiming
                     # outside the convex hull
                     return None
@@ -1653,9 +1661,12 @@ try:
 
             last_left_distance=None
             last_nbr = None
-            
+
             start = None
-            for nbr in self.DT.incident_vertices(vert):
+            v_circ=self.DT.incident_vertices(vert)
+            while 1:
+                nbr=v_circ.next()
+
                 if self.DT.is_infinite(nbr):
                     continue
                 pnt = np.array( [nbr.point().x(),nbr.point().y()] )
@@ -1675,7 +1686,7 @@ try:
                 if left_distance==0.0:
                     vert_xy=[vert.point().x(),vert.point().y()]
                     progress=exact_delaunay.rel_ordered(vert_xy,pnt,qp1,qp2)
-                            
+
                     if progress:
                         return ['v',nbr]
 
@@ -1684,32 +1695,39 @@ try:
                 # block below.  If it were inside the block, then we would miss the
                 # case where we see the infinite vertex (which makes last_left_distance
                 # undefined), and then see the exact match.
-                
+
                 if last_left_distance is not None and last_left_distance < 0:
                     # left_distance == 0.0 used to be here.
                     if left_distance > 0:
                         # what is the face between the last one and this one??
                         # it's vertices are vert, nbr, last_nbr
-                        for face in self.DT.incident_faces(vert):
+                        f_circ=self.DT.incident_faces(vert)
+                        f0=None
+                        while 1: # for face in :
+                            face=f_circ.next()
                             for j in range(3):
                                 if face.vertex(j) == nbr:
                                     for k in range(3):
                                         if face.vertex(k) == last_nbr:
                                             return ['f',face]
+                            if f0 is None:
+                                f0=face
+                            else:
+                                assert face!=f0,"Failed to leave circulator loop"
                         raise Exception("Found a good pair of incident vertices, but failed to find the common face.")
-                
+
                 # Sanity check - if we've gone all the way around
                 if start is None:
                     start = nbr
                 else: # must not be the first time through the loop:
                     if nbr == start:
                         raise Exception("This is bad - we checked all vertices and didn't find a good neighbor")
-                
+
                 last_left_distance = left_distance
                 last_nbr = nbr
                 if self.DT.is_infinite(nbr):
                     last_left_distance = None
-                
+
             raise Exception("Fell through!")
 
         def next_from_edge(self, edge, vec):
@@ -1822,22 +1840,22 @@ try:
                 print("Walking the line: ",p1,p2)
             
             hits = [ ['v',v1] ]
-            
+
             # do the search:
             # Note that we really need a better equality test here
             # hits[-1][1] != v2 doesn't work beac
             def obj_eq(a,b):
                 return type(a)==type(b) and a==b
-            
+
             while not obj_eq(hits[-1][1], v2):
                 # if we just came from a vertex, choose a new face in the given direction
                 if hits[-1][0] == 'v':
                     if self.verbose > 1:
                         print("Last hit was the vertex at %s"%(hits[-1][1].point()))
-                    
+
                     # like face_in_direction, but also check for possibility that
                     # an edge is coincident with the query line.
- 
+
                     next_item = self.next_from_vertex( hits[-1][1],(p1,p2) )
 
                     if self.verbose > 1:
@@ -1845,14 +1863,21 @@ try:
 
                     if next_item[0] == 'v':
                         # Find the edge connecting these two:
-                        for e in self.DT.incident_edges( next_item[1] ):
+                        e0=None
+                        e_circ=self.DT.incident_edges( next_item[1] )
+                        while 1:
+                            e=e_circ.next()
                             f,v_opp = e
-                                
+
                             if f.vertex( (v_opp+1)%3 ) == hits[-1][1] or \
                                f.vertex( (v_opp+2)%3 ) == hits[-1][1]:
                                 hits.append( ['e', (f,v_opp)] )
                                 break
-                        
+                            if e0 is None: # sanity check
+                                e0=e
+                            elif e0==e:
+                                raise Exception("Checked all edges, didn't find a hit")
+
                 elif hits[-1][0] == 'f':
                     # either we cross over an edge into another face, or we hit
                     # one of the vertices.
@@ -1875,7 +1900,7 @@ try:
                             hits.append( middle_edge )
                         else:
                             raise Exception("Two faces in a row, but couldn't find the edge between them")
-                    
+
                 elif hits[-1][0] == 'e':
                     # This one is easy - just have to check which end of the edge is in the
                     # desired direction
@@ -1896,7 +1921,7 @@ try:
                     hits[i][1] = [ self.vh_info[ hits[i][1] ] ]
                 elif hits[i][0] == 'e':
                     f,v_opp = hits[i][1]
-                    
+
                     hits[i][1] = [ self.vh_info[ f.vertex( (v_opp+1)%3 ) ], self.vh_info[ f.vertex( (v_opp+2)%3 ) ] ]
                 elif hits[i][0] == 'f':
                     f = hits[i][1]
@@ -1904,11 +1929,11 @@ try:
                     hits[i][1] = [ self.vh_info[ f.vertex(0) ],
                                    self.vh_info[ f.vertex(1) ],
                                    f.vertex(2) ]
-                
+
             # have to go back through, and where successive items are faces, we must
             # have crossed cleanly through an edge, and that should be inserted, too
             return hits
-        
+
         def check_line_is_clear_new(self,n1=None,n2=None,v1=None,v2=None,p1=None,p2=None):
             """ returns a list of vertex tuple for constrained segments that intersect
             the given line.
