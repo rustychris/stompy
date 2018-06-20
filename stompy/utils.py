@@ -1135,7 +1135,7 @@ def to_dt64(x):
     elif isinstance(x,pd.Timestamp):
         return x.to_datetime64()
     else:
-        if np.issubdtype(x.dtype, np.float):
+        if np.issubdtype(x.dtype, np.floating):
             x=num2date(x)
 
         x=np.asarray(x)
