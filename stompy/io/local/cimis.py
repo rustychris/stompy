@@ -86,7 +86,8 @@ def cimis_fetch_station_metadata(station,df=None,cimis_key=None,cache_dir=None):
     (integer) supplied.
     cimis_key is not needed, but accepted.
     """
-    df=df or xr.Dataset()
+    if df is None:
+        df=xr.Dataset()
     if cache_dir is not None:
         assert os.path.exists(cache_dir)
 
