@@ -10,6 +10,7 @@ import pandas as pd
 import re
 import xarray as xr
 import six
+from collections import defaultdict
 
 import logging
 
@@ -1007,6 +1008,8 @@ class SectionedConfig(object):
         self.rows=[]    # full text of each line
         self.filename=filename
         self.base_path=None
+        # For flags which do not get written into the config file.
+        self.flags=defaultdict(lambda:None)
 
         if self.filename is not None:
             self.read(self.filename)
