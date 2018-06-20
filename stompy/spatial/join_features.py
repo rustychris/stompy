@@ -35,7 +35,7 @@ log=logging.getLogger('join_features')
 
 def progress_printer(str,steps_done=None,steps_total=None):
     if steps_done is not None and steps_total is not None:
-        log.info( "%s -- %d%%"%(str,100.0*steps_done/steps_total) ) 
+        log.info( "%s -- %d%%"%(str,100.0*steps_done/steps_total) )
     elif steps_done:
         log.info( "%s -- %d"%(str,steps_done) )
     else:
@@ -45,9 +45,9 @@ progress_message = progress_printer
 
 # in a few cases (<0.01% ??) the prepared geometry will report a different answer
 # than the real geometry.  But the prepared geomtries are an order of magnitude
-# faster...  
+# faster...
 trust_prepared = True
-    
+
 def merge_lines(layer=None,segments=None):
     """ Given an ogr LineString layer, merge linestrings by matching
     endpoints, and return a list of arrays of points.
@@ -58,12 +58,12 @@ def merge_lines(layer=None,segments=None):
 
     this version only handles *exact* matches between endpoints
     """
-    
+
     # a hash that maps x,y values to feature ids
     endpoints = {}
     features = {} # map feature id to a list of points
     # map old feature ids to new ones:
-    remapper = {}        
+    remapper = {}
 
     progress_message("Reading features")
 
@@ -71,7 +71,7 @@ def merge_lines(layer=None,segments=None):
         layer.ResetReading()
     else:
         next_seg = lambda it=enumerate(segments): six.next(it)
-        
+
     while 1:
         if layer:
             feat = layer.GetNextFeature()
@@ -474,13 +474,13 @@ def process_layer(orig_layer,output_name,tolerance=0.0,
     if isinstance(orig_layer,str):
         ods = ogr.Open(orig_layer)
         orig_layer = ods.GetLayer(0)
-        
+
     try:
-        orig_srs=ods.GetSpatialRef()
+        orig_srs=orig_layer.GetSpatialRef()
         orig_srs_text=orig_srs.ExportToWkt()
     except Exception as exc:
         log.error("Attempted to get spatial ref: %s"%exc)
-            
+
 
     ### The actual geometry processing: ###
     ### <processing>

@@ -195,23 +195,23 @@ class Tom(object):
                 self.slide_interior = 1
             elif opt == '--rigid-interior':
                 self.slide_interior = 0
-        
+
         self.check_parameters()
-        
+
         log_fp = open('tom.log','wt')
         log_fp.write( "TOM log:\n")
         log_fp.write( " ".join(argv) )
         log_fp.close()
-        
+
         if not self.resume_checkpoint_fn:
             bound_args = self.prepare_boundary()
             density_args = self.prepare_density()
-            
+
             args = {}
             args.update(bound_args)
             args.update(density_args)
             args['slide_internal_guides'] = self.slide_interior
-            
+
             # Wait until after smoothing to add degenerate interior lines
             # args.update(self.prepare_interiors())
 
@@ -219,7 +219,7 @@ class Tom(object):
             self.p.verbose = self.verbosity
 
             self.p.scale_ratio_for_cutoff = self.scale_ratio_for_cutoff
-            
+
             if self.smooth:
                 self.p.smooth()
                 # and write out the smoothed shoreline
@@ -228,7 +228,7 @@ class Tom(object):
 
             int_args = self.prepare_interiors()
 
-            if int_args.has_key('degenerates'):
+            if 'degenerates' in int_args:
                 for degen in int_args['degenerates']:
                     self.p.clip_and_add_degenerate_ring( degen )
         else:
@@ -249,7 +249,7 @@ class Tom(object):
 
             final_pav_fn=os.path.join( self.output_path,'final.pav')
             final_pdf_fn=os.path.join( self.output_path,'final.pdf')
-            
+
             if (not os.path.exists(final_pav_fn)) or self.p.step > starting_step:
                 self.p.write_complete(final_pav_fn)
             if (not os.path.exists(final_pdf_fn)) or self.p.step > starting_step:

@@ -1,5 +1,7 @@
 import os
 import glob
+import subprocess
+
 import copy
 import datetime
 import io # python io.
@@ -22,7 +24,7 @@ def parse_his_file(fn):
     --
     parse mixed ascii/binary history files as output by delwaq.
     applies to both monitoring output and balance output.
-        
+
     returns tuple:
       sim_descs - descriptive text from inp file.
       time0 - text line giving time origin and units
@@ -30,7 +32,7 @@ def parse_his_file(fn):
       fields - names of fields, separate into substance and process
       frames - actual data, and timestamps
     """
-    fp=open(fn,'rb') 
+    fp=open(fn,'rb')
 
     sim_descs=np.fromfile(fp,'S40',4)
     time0=sim_descs[3]
@@ -80,7 +82,7 @@ def his_file_xarray(fn,region_exclude=None,region_include=None):
     """
     Read a delwaq balance file, return the result as an xarray.
     region_exclude: regular expression for region names to omit from the result
-    region_include: regular expression for region names to include.  
+    region_include: regular expression for region names to include.
 
     Defaults to returning all regions.
     """
@@ -176,14 +178,14 @@ def inp_tok_include(fp,fn,**kw):
             inc_path=os.path.join( os.path.dirname(fn),
                                    inc_fn )
             # print("Will include %s"%inc_path)
-            
+
             with open(inc_path,'rt') as inc_fp:
                 inc_tokr=inp_tok_include(inc_fp,inc_path,**kw)
                 for tok in inc_tokr:
                     yield tok
             # print("Done with include")
-            
-            
+
+
 def parse_inp_monitor_locations(inp_file):
     """
     returns areas[name]=>[seg1,...] , transects[name]=>[+-exch1, ...]
@@ -222,7 +224,7 @@ def parse_inp_monitor_locations(inp_file):
 def parse_inp_transects(inp_file):
     # with open(inp_file,'rt') as fp:
     #     tokr=inp_tok(fp)
-    # 
+    #
     #     while next(tokr)!='#1':
     #         continue
     #     for _ in range(4):  # clock/date formats, integration float
@@ -247,9 +249,9 @@ def parse_inp_transects(inp_file):
     #             name,style,ecount = next(tokr),next(tokr),int(next(tokr))
     #             exchs=[int(next(tokr)) for _ in range(ecount)]
     #             transects[name.strip("'")]=exchs
-    
+
     areas,transects=parse_inp_monitor_locations(inp_file)
-    
+
     return transects
 
 def parse_time0(time0):
@@ -267,7 +269,7 @@ def parse_time0(time0):
     # make it clear it's UTC:
     dt=dt.replace('-','T').replace('/','-') + "Z"
     origin=np.datetime64(dt)
-    unit=np.timedelta64(int(m.group(2)),m.group(3)) 
+    unit=np.timedelta64(int(m.group(2)),m.group(3))
 
     return (origin, unit)
 
@@ -963,7 +965,7 @@ unit1 = m s-1
             p=ds[pres].isel(time=time_idx)
         else:
             p=None
-            
+
         t=ds.time.isel(time=time_idx)
 
         # write a time line formatted like this:
@@ -983,7 +985,7 @@ unit1 = m s-1
                 fp.write("\n")
 
     log.info("Wrote %d time steps"%count)
-                
+
     fp_u.close()
     fp_v.close()
     if fp_p is not None:
@@ -991,14 +993,14 @@ unit1 = m s-1
     return record_count
 
 class SectionedConfig(object):
-    """ 
+    """
     Handles reading and writing of config-file like formatted files.
     Follows some of the API of the standard python configparser
     """
     inline_comment_prefixes=('#',';')
-    
+
     def __init__(self,filename=None,text=None):
-        """ 
+        """
         filename: path to file to open and parse
         text: a string containing the entire file to parse
         """
@@ -1008,7 +1010,7 @@ class SectionedConfig(object):
         self.base_path=None
         # For flags which do not get written into the config file.
         self.flags=defaultdict(lambda:None)
-        
+
         if self.filename is not None:
             self.read(self.filename)
             self.base_path=os.path.dirname(self.filename)
@@ -1025,7 +1027,7 @@ class SectionedConfig(object):
         """
         self.filename=fn
         self.base_path=os.path.dirname(self.filename)
-        
+
     def copy(self):
         return copy.deepcopy(self)
 
@@ -1034,7 +1036,7 @@ class SectionedConfig(object):
             file_base = file
         else:
             file_base = io.IOBase
-            
+
         if isinstance(filename, file_base):
             label = label or 'n/a'
             fp=filename
@@ -1068,20 +1070,20 @@ class SectionedConfig(object):
         section=None
         for idx,row in enumerate(self.rows):
             parsed=self.parse_row(row)
-            
+
             if parsed[0] is None: # blank line
                 continue # don't send back blank rows
-            
+
             if parsed[0][0]=='[':
                 section=parsed[0]
 
             yield [idx,section] + list(parsed)
-                
+
     def parse_row(self,row):
         section_patt=r'^(\[[A-Za-z0-9 ]+\])([#;].*)?$'
         value_patt = r'^([A-Za-z0-9_ ]+)\s*=([^#;]*)([#;].*)?$'
         blank_patt = r'^\s*([#;].*)?$'
-        
+
         m_sec = re.match(section_patt, row)
         if m_sec is not None:
             return m_sec.group(1), None, m_sec.group(2)
@@ -1099,8 +1101,8 @@ class SectionedConfig(object):
 
     def get_value(self,sec_key):
         """
-        return the string-valued settings for a given key.  
-        if they key is not found, returns None.  
+        return the string-valued settings for a given key.
+        if they key is not found, returns None.
         If the key is present but with no value, returns the empty string
         """
         section='[%s]'%sec_key[0].lower()
@@ -1121,7 +1123,7 @@ class SectionedConfig(object):
         key=sec_key[1]
 
         last_row_of_section={} # map [lower_section] to the index of the last entry in that section
-        
+
         if isinstance(value,tuple):
             value,comment=value
             comment='# ' + comment
@@ -1132,10 +1134,10 @@ class SectionedConfig(object):
 
         def fmt(key,value,comment):
             return "%-18s= %-20s %s"%(key,value,comment or "")
-        
+
         for row_idx,row_sec,row_key,row_value,row_comment in self.entries():
             last_row_of_section[row_sec]=row_idx
-                
+
             if (row_key.lower() == key.lower()) and (section.lower() == row_sec.lower()):
                 self.rows[row_idx] = fmt(row_key,value,comment or row_comment)
                 return
@@ -1148,19 +1150,19 @@ class SectionedConfig(object):
         else: # have to append the new section
             self.rows.append(section)
             self.rows.append(row_text)
-        
+
     def __setitem__(self,sec_key,value):
         self.set_value(sec_key,value)
-    def __getitem__(self,sec_key): 
+    def __getitem__(self,sec_key):
         return self.get_value(sec_key)
-    
+
     def filepath(self,sec_key):
         val=self.get_value(sec_key)
         if self.base_path:
             return os.path.join(self.base_path,val)
         else:
             return val
-    
+
     def val_to_str(self,value):
         # make sure that floats are formatted with plenty of digits:
         # and handle annoyance of standard Python types vs. numpy types
@@ -1186,7 +1188,7 @@ class SectionedConfig(object):
             for line in self.rows:
                 fp.write(line)
                 fp.write("\n")
-    
+
 class MDUFile(SectionedConfig):
     """
     Read/write MDU files, with an interface similar to python's
@@ -1221,7 +1223,41 @@ class MDUFile(SectionedConfig):
         self['time','TStart'] = int( (start - ref_date)/ np.timedelta64(1,'m') )
         self['time','TStop'] = int( (stop - ref_date) / np.timedelta64(1,'m') )
 
+    def partition(self,nprocs,dfm_bin_dir=None,mpi_bin_dir=None):
+        if nprocs<=1:
+            return
 
+        # As of r52184, explicitly built with metis support, partitioning can be done automatically
+        # from here.
+        if mpi_bin_dir is None:
+            mpi_bin_dir=dfm_bin_dir
+
+        dflowfm="dflowfm"
+        gen_parallel="generate_parallel_mdu.sh"
+        if dfm_bin_dir is not None:
+            dflowfm=os.path.join(dfm_bin_dir,dflowfm)
+            gen_parallel=os.path.join(dfm_bin_dir,gen_parallel)
+
+        mpiexec="mpiexec"
+        if mpi_bin_dir is not None:
+            mpiexec=os.path.join(mpi_bin_dir,mpiexec)
+
+        cmd="%s -n %d %s --partition:ndomains=%d %s"%(mpiexec,nprocs,dflowfm,nprocs,
+                                                      self['geometry','NetFile'])
+        pwd=os.getcwd()
+        try:
+            os.chdir(self.base_path)
+            res=subprocess.call(cmd,shell=True)
+        finally:
+            os.chdir(pwd)
+
+        # similar, but for the mdu:
+        cmd="%s %s %d 6"%(gen_parallel,os.path.basename(self.filename),nprocs)
+        try:
+            os.chdir(self.base_path)
+            res=subprocess.call(cmd,shell=True)
+        finally:
+            os.chdir(pwd)
 
 def exp_z_layers(mdu,zmin=None,zmax=None):
     """
@@ -1294,7 +1330,7 @@ def read_bnd(fn):
     with open(fn,'rt') as fp:
         toker=inp_tok(fp)
         token=lambda: six.next(toker)
-        
+
         N_groups=int(token())
         groups=[]
         for group_idx in range(N_groups):
@@ -1322,5 +1358,5 @@ def write_bnd(bnd,fn):
                 x=seg['x']
                 fp.write("%10d  %.7f  %.7f   %.7f  %.7f\n"%(seg['link'],
                                                             x[0,0],x[0,1],x[1,0],x[1,1]))
-                
+
 

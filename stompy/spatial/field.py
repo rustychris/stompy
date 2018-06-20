@@ -50,7 +50,7 @@ except ImportError:
     
 # load both types of indices, so we can choose per-field
 # which one to use
-from .gen_spatial_index import PointIndex
+from .gen_spatial_index import PointIndex,RectIndex
 
 # Older code tried to use multiple implementations
 # import stree
@@ -276,7 +276,7 @@ class Field(object):
         else:
             valuator == getattr(self,valuator)
             newF = valuator(X)
-            
+
         return SimpleGrid(extents=[xmin,xmax,ymin,ymax],
                           F=newF,projection=self.projection())
 
@@ -296,7 +296,6 @@ class XYZField(Field):
         self.from_file = from_file
 
         self.init_listeners()
-        
 
     @with_plt
     def plot(self,**kwargs):
@@ -734,14 +733,14 @@ class XYZField(Field):
 
         if prep:
             chooser = np.zeros(len(self.F),bool8)
-            
+
             prep_poly = prep(poly)
             for i in range(len(self.F)):
                 chooser[i] = prep_poly.contains( geometry.Point(self.X[i]) )
         else:
             # this only works with the stree implementation.
             chooser = self.index.inside_polygon(poly)
-            
+
         if len(chooser) == 0:
             print("Clip to polygon got no points!")
             print("Returning empty field")
@@ -815,16 +814,15 @@ class XYZField(Field):
             F.append( feat.GetField(value_field) )
 
             geo = feat.GetGeometryRef()
-            
+
             X.append( geo.GetPoint_2D() )
         X = np.array( X )
         F = np.array( F )
         return XYZField(X=X,F=F,from_file=shp_name)
 
-            
     def write_shp(self,shp_name,value_field='value'):
         drv = ogr.GetDriverByName('ESRI Shapefile')
-        
+
         ### open the output shapefile
         if os.path.exists(shp_name) and shp_name.find('.shp')>=0:
             print("removing ",shp_name)
@@ -999,6 +997,13 @@ class XYZField(Field):
             cir = Circle( bdry[i], radius=l[i])
             ax.add_patch(cir)
 
+    # Pickle support -
+    def __getstate__(self):
+        """ the CGAL.ApolloniusGraph can't be pickled - have to recreate it
+            """
+        d = self.__dict__.copy()
+        d['_lin_interper']=None
+        return d
 
 class PyApolloniusField(XYZField):
     """ 
@@ -3367,7 +3372,7 @@ class MultiRasterField(Field):
         tuples = [(i,extent,None) 
                   for i,extent in enumerate(self.sources['extent'])]
         
-        self.index = Rtree(tuples,interleaved=False)
+        self.index = RectIndex(tuples,interleaved=False)
 
     def report(self):
         """ Short text representation of the layers found and their resolutions
@@ -3496,8 +3501,10 @@ class MultiRasterField(Field):
 
         if len(hits) == 0:
             return []
-        
-        hits = hits[ np.argsort( self.sources[hits], order=('order','resolution')) ]
+
+        # include filename here to resolve ties, avoiding the fallback behavior which
+        # may error out when comparing None
+        hits = hits[ np.argsort( self.sources[hits], order=('order','resolution','filename')) ]
         return hits
 
     def extract_tile(self,xxyy=None,res=None):

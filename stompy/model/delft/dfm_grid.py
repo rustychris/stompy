@@ -183,18 +183,16 @@ class DFMGrid(unstructured_grid.UnstructuredGrid):
         cleanup: for grids created from multiple subdomains, there are sometime duplicate edges and nodes.
           this will remove those duplicates, though there are no guarantees of indices.
         """
+        self.filename=None
+        
         if nc is None:
             assert fn
-            #nc=qnc.QDataset(fn)
-            # Trying out xarray instead
+            self.filename=fn
             nc=xr.open_dataset(fn)
 
         if isinstance(nc,str):
-            #nc=qnc.QDataset(nc)
+            self.filename=nc
             nc=xr.open_dataset(nc)
-
-        #if isinstance(nc,xr.Dataset):
-        #    raise Exception("Pass the filename or a qnc.QDataset.  Not ready for xarray")
 
         # Default names for fields
         var_points_x='NetNode_x'
@@ -355,7 +353,7 @@ def polyline_to_boundary_edges(g,linestring,rrtol=3.0):
     roughly 3 cell length scales out from the boundary.
     """
     linestring=np.asanyarray(linestring)
-    
+
     g.edge_to_cells()
     boundary_edges=np.nonzero( np.any(g.edges['cells']<0,axis=1) )[0]
     adj_cells=g.edges['cells'][boundary_edges].max(axis=1)
@@ -385,7 +383,6 @@ def polyline_to_boundary_edges(g,linestring,rrtol=3.0):
     edge_hits=boundary_edges[hits]
     return edge_hits
 
-
 def dredge_boundary(g,linestring,dredge_depth):
     """
     Lower bathymetry in the vicinity of external boundary, defined
@@ -399,6 +396,9 @@ def dredge_boundary(g,linestring,dredge_depth):
     """
     # Carve out bathymetry near sources:
     cells_to_dredge=[]
+
+    linestring=np.asarray(linestring)
+    assert linestring.ndim==2,"dredge_boundary requires [N,2] array of points"
 
     feat_edges=polyline_to_boundary_edges(g,linestring)
     if len(feat_edges)==0:
@@ -422,5 +422,5 @@ def dredge_discharge(g,linestring,dredge_depth):
 
     g.nodes['depth'][nodes_to_dredge] = np.minimum(g.nodes['depth'][nodes_to_dredge],
                                                    dredge_depth)
-        
-    
+
+
