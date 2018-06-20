@@ -353,7 +353,7 @@ def polyline_to_boundary_edges(g,linestring,rrtol=3.0):
     roughly 3 cell length scales out from the boundary.
     """
     linestring=np.asanyarray(linestring)
-    
+
     g.edge_to_cells()
     boundary_edges=np.nonzero( np.any(g.edges['cells']<0,axis=1) )[0]
     adj_cells=g.edges['cells'][boundary_edges].max(axis=1)
@@ -397,6 +397,9 @@ def dredge_boundary(g,linestring,dredge_depth):
     # Carve out bathymetry near sources:
     cells_to_dredge=[]
 
+    linestring=np.asarray(linestring)
+    assert linestring.ndim==2,"dredge_boundary requires [N,2] array of points"
+
     feat_edges=polyline_to_boundary_edges(g,linestring)
     if len(feat_edges)==0:
         raise Exception("No boundary edges matched by %s"%(str(linestring)))
@@ -419,5 +422,5 @@ def dredge_discharge(g,linestring,dredge_depth):
 
     g.nodes['depth'][nodes_to_dredge] = np.minimum(g.nodes['depth'][nodes_to_dredge],
                                                    dredge_depth)
-        
-    
+
+
