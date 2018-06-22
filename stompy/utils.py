@@ -154,12 +154,12 @@ def bounds(pnts):
     """
     lower=pnts
     upper=pnts
-                   
+
     while lower.ndim> 1:
         lower=lower.min(axis=0)
         upper=upper.max(axis=0)
     return np.array([lower,upper])
-        
+
 def center_to_interval(c):
     """
     c: coordinates of centers,
@@ -194,6 +194,8 @@ def center_to_edge(c,dx_single=None,axis=0):
     return d
 
 def center_to_edge_2d(X,Y,dx_single=None,dy_single=None):
+    if np.any(np.isnan(X)) or np.any(np.isnan(Y)):
+        log.warning('center_to_edge2d() does not cope well with nan')
     if X.ndim==Y.ndim==1:
         Xpad=center_to_edge(X,dx_single=dx_single)
         Ypad=center_to_edge(Y,dx_single=dy_single)
@@ -218,8 +220,8 @@ def center_to_edge_2d(X,Y,dx_single=None,dy_single=None):
     else:
         raise Exception("Not ready for mixed 1d 2d dimensions")
     return Xpad,Ypad
-    
-    
+
+
 class BruteKDE(object):
     def __init__(self,values,weights,bw):
         self.values=values

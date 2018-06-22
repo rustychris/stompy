@@ -14,7 +14,6 @@ def as_density(d):
         orig_density = d
         d = lambda X,orig_density=orig_density: orig_density * ones(X.shape[:-1])
     return d
-    
 
 def upsample_linearring(points,density,closed_ring=1,return_sources=False):
     new_segments = []
@@ -26,23 +25,21 @@ def upsample_linearring(points,density,closed_ring=1,return_sources=False):
 
     for i in range(len(points)):
         A = points[i]
-        
+
         if i+1 == len(points) and not closed_ring:
             new_segments.append( [A] )
             sources.append( [i] )
             break
-            
+
         B = points[(i+1)%len(points)]
 
         l = norm(B-A)
         # print "Edge length is ",l
 
         scale = density( 0.5*(A+B) )
-
         # print "Scale is ",scale
-        
+
         npoints = max(1,round( l/scale ))
-        
         # print "N points ",npoints
 
         alphas = arange(npoints) / float(npoints)
@@ -60,7 +57,7 @@ def upsample_linearring(points,density,closed_ring=1,return_sources=False):
     else:
         return new_points
 
-        
+
 def downsample_linearring(points,density,factor=None,closed_ring=1):
     """ Makes sure that points aren't *too* close together
     Allow them to be 0.3*density apart, but any edges shorter than that will
@@ -76,7 +73,7 @@ def downsample_linearring(points,density,factor=None,closed_ring=1):
     last_valid=0
     for i in range(1,len(points)):
         scale = density( 0.5*(points[last_valid] + points[i]) )
-        
+
         if norm( points[last_valid]-points[i] ) < scale:
             if i==len(points)-1:
                 # special case to avoid moving the last vertex
@@ -89,23 +86,21 @@ def downsample_linearring(points,density,factor=None,closed_ring=1):
 
     return points[valid]
 
-    
 def resample_linearring(points,density,closed_ring=1,return_sources=False):
     """  similar to upsample, but does not try to include
     the original points, and can handle a density that changes
     even within one segment of the input
     """
     density = as_density(density)
-    
+
     if closed_ring:
         points = concatenate( (points, [points[0]]) )
-    
+
     # distance_left[i] is the distance from points[i] to the end of
     # the line, along the input path.
     lengths = sqrt( ((points[1:] - points[:-1])**2).sum(axis=1) )
     distance_left = cumsum( lengths[::-1] )[::-1]
 
-    
     new_points = []
     new_points.append( points[0] )
 
@@ -121,7 +116,6 @@ def resample_linearring(points,density,closed_ring=1,return_sources=False):
     # print "points.shape ",points.shape
     while 1:
         # print "Top of loop, i=",i
-        
         last_point = new_points[-1]
         last_source = sources[-1]
 
@@ -130,13 +124,12 @@ def resample_linearring(points,density,closed_ring=1,return_sources=False):
         else:
             total_distance_left = norm(points[i] - last_point)
 
-            
         scale = density( last_point )
         npoints_at_scale = round( total_distance_left/scale )
 
         if npoints_at_scale <= 1:
             break
-        
+
         this_step_length = total_distance_left / npoints_at_scale
         # print "scale = %g   this_step_length = %g "%(scale,this_step_length)
 
@@ -164,14 +157,11 @@ def resample_linearring(points,density,closed_ring=1,return_sources=False):
         alpha = alpha + last_alpha
 
         new_points.append( (1-alpha)*points[i-1] + alpha * points[i] )
-        
         frac = norm(new_points[-1] - points[i-1])/ norm(points[i] - points[i-1])
 
         # print "frac=%g   alpha = %g"%(frac,alpha)
-        
         sources.append( (i-1) + frac )
-        
-            
+
     new_points = array( new_points )
 
     if return_sources:
@@ -184,6 +174,24 @@ def resample_linearring(points,density,closed_ring=1,return_sources=False):
 def distance_along(linestring):
     # linestring: [N,2]
     diffs=np.sqrt( np.sum( np.diff(linestring,axis=0)**2, axis=1) )
-    
+
     return np.concatenate( ( [0],
                              np.cumsum(diffs) ) )
+
+def left_normals(linestring):
+    """
+    For each point in the [N,2] linestring find the left-pointing
+    unit normal vector, returned in a [N,2] array.
+    """
+    # central differences:
+    ctr_diffs=linestring[2:,:] - linestring[:-2,:]
+    # one-sided at ends
+    a_diffs=linestring[1:2,:] - linestring[:1,:]
+    z_diffs=linestring[-1:,:] - linestring[-2:-1,:]
+
+    vecs=np.r_[a_diffs,ctr_diffs,z_diffs]
+    left_vecs=np.c_[ -vecs[:,1], vecs[:,0] ]
+    mags=np.sqrt( (left_vecs**2).sum(axis=1) )
+    return left_vecs/mags[:,None]
+
+

@@ -233,7 +233,7 @@ def scalebar(xy,L=None,aspect=0.05,unit_factor=1,fmt="%.0f",label_txt=None,fract
              ax=None,xy_transform=None,dy=None,lw=0.5,
              style='altboxes'):
     """ Draw a simple scale bar with labels - bottom left
-    is given by xy.  
+    is given by xy.
     xy_transform: units for interpreting xy.  If not given
 
     The divisions are either inferred from the max length L and fractions of it, or
@@ -257,7 +257,7 @@ def scalebar(xy,L=None,aspect=0.05,unit_factor=1,fmt="%.0f",label_txt=None,fract
             xmin,xmax,ymin,ymax = ax.axis()
             L = 0.2 * (xmax - xmin)
         divisions=[f*L for f in fractions]
-        
+
     xmin,ymin = xy
     dx = L
     # This is dangerous, as L is in data coordinates, but y may be in data or
@@ -561,17 +561,21 @@ def period_scale(xaxis,base_unit='h'):
     xaxis.set_major_formatter(fmter)
 
 
-def pad_pcolormesh(X,Y,Z,ax=None,dx_single=None,dy_single=None,**kwargs):
+def pad_pcolormesh(X,Y,Z,ax=None,dx_single=None,dy_single=None,
+                   fallback=True,**kwargs):
     """ Rough expansion of X and Y to be the bounds of
     cells, rather than the middles. Reduces the shift error
     in the plot.
     dx_single: if there is only one sample in x, use this for width
     dy_single: if there is only one sample in y, use this for height
+    fallback: if there are nan's in the coordinate data use pcolor instead.
     """
     Xpad,Ypad=utils.center_to_edge_2d(X,Y,dx_single=dx_single,dy_single=dy_single)
     ax=ax or plt.gca()
-    return ax.pcolormesh(Xpad,Ypad,Z,**kwargs)
-
+    if fallback and (np.any(np.isnan(Xpad)) or np.any(np.isnan(Ypad))):
+        return ax.pcolor(Xpad,Ypad,Z,**kwargs)
+    else:
+        return ax.pcolormesh(Xpad,Ypad,Z,**kwargs)
 
 def show_slopes(ax=None,slopes=[-5./3,-1],xfac=5,yfac=3):
     ax = ax or plt.gca()

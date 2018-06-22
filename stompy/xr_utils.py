@@ -14,7 +14,7 @@ def gradient(ds,varname,coord):
     z=daz.values
     C=daC.values
     assert z.shape==C.shape
-    
+
     newdims=[dim for dim in daC.dims if dim!=coord]
     newshape=[len(daC[dim]) for dim in newdims]
     newdims,newshape
@@ -45,13 +45,13 @@ def redimension(ds,new_dims,
                 intragroup_dim=None,
                 inplace=False,
                 save_mapping=False):
-    """ 
-    copy ds, making new_dims into the defining 
+    """
+    copy ds, making new_dims into the defining
     dimensions for variables which share shape with new_dims.
-    
+
     each entry in new_dims must have the same dimension, and
     must be unidimensional
-    
+
     Example:
     Dataset:
       coordinates
@@ -61,8 +61,8 @@ def redimension(ds,new_dims,
         station(sample)   [...]
         depth(sample)     [...]
         salinity(sample)  [...]
-    
-    We'd like to end up with 
+
+    We'd like to end up with
       salinity(date,station,profile_sample)
       depth(date,station,profile_sample)
 
@@ -266,3 +266,111 @@ def first_finite(da,dim):
     da_reduced=da.isel(**{dim:0,'drop':True})
     da_reduced.values=da.values[tuple(indexers)]
     return da_reduced
+
+
+# Helper for z_from_sigma
+def decode_sigma(ds,sigma_v):
+    """
+    ds: Dataset
+    sigma_v: sigma coordinate variable.
+    return DataArray of z coordinate implied by sigma_v
+    """
+    import re
+    formula_terms=sigma_v.attrs['formula_terms']
+    terms={}
+    for hit in re.findall(r'\s*(\w+)\s*:\s*(\w+)', formula_terms):
+        terms[hit[0]]=ds[hit[1]]
+
+    # this is where xarray really shines -- it will promote z to the
+    # correct dimensions automatically, by name
+    return terms['sigma']*(terms['eta'] - terms['bedlevel']) + terms['bedlevel']
+
+
+def z_from_sigma(dataset,variable,interfaces=False,dz=False):
+    """
+    Create a z coordinate for variable as a Dataset from the given dataset
+
+    interfaces: False => do nothing related to layer boundaries
+            variable name => use the given variable to define interfaces between layers.
+            True => try to infer the variable, fallback to even spacing otherwise.
+     if interfaces is anything other than False, then the return value will be a Dataset
+     with the centers in a 'z_ctr' variable and the interfaces in a 'z_int'
+
+    dz: implies interfaces, and includes a z_dz variable giving thickness of each layer.
+    """
+    da=dataset[variable]
+    da_dims=da.dims
+
+    if dz:
+        assert interfaces is not False,"Currently must enable interfaces to get thickness dz"
+
+    # Variables which are definitely sigma, and might be the one we're looking for
+    sigma_vars=[v for v in dataset.variables
+                if dataset[v].attrs.get('standard_name',None) == 'ocean_sigma_coordinate']
+
+    # xr data arrays
+    sigma_ctr_v=None # sigma coordinate for centers
+    sigma_int_v=None # sigma coordinate for interfaces
+
+    for v in sigma_vars:
+        if set(dataset[v].dims)<=set(da_dims):
+            assert sigma_ctr_v is None,"Multiple matches for layer center sigma coordinate"
+            sigma_ctr_v=dataset[v]
+    assert sigma_ctr_v is not None,"Failed to find a layer-center sigma coordinate"
+
+    # With the layer center variable known, can search for layer interfaces
+    if interfaces is False:
+        pass
+    else:
+        if interfaces is True:
+            maybe_int_vars=sigma_vars
+        else:
+            # Even when its specified, check to see that it has the expected form
+            maybe_int_vars=[interfaces]
+
+        for v in maybe_int_vars:
+            ctr_dims=set(sigma_ctr_v.dims)
+            int_dims=set(dataset[v].dims)
+
+            ctr_only = list(ctr_dims - int_dims)
+            int_only = list(int_dims - ctr_dims)
+
+            if (len(ctr_only)!=1) or (len(int_only)!=1):
+                continue
+            if len(dataset[ctr_only[0]])+1==len(dataset[int_only[0]]):
+                assert sigma_int_v is None,"Multiple matches for layer interface sigma coordinate"
+                sigma_int_v=dataset[v]
+
+    z_ctr=decode_sigma(dataset,sigma_ctr_v)
+    if sigma_int_v is not None:
+        z_int=decode_sigma(dataset,sigma_int_v)
+
+    result=xr.Dataset()
+    result['z_ctr']=z_ctr
+
+    if interfaces is not False:
+        result['z_int']=z_int
+    if dz is not False:
+        dz=xr.ones_like( z_ctr )
+        dz.values[...]=np.diff( z_int, axis=z_int.get_axis_num(int_only[0]))
+        result['z_dz']=dz
+
+    return result
+
+
+def bundle_components(ds,new_var,comp_vars,frame,comp_names=None):
+    """
+    ds: Dataset
+    new_var: name of the vector-valued variable to create
+    comp_vars: list of variables, one-per component
+    frame: name to give the component dimension, i.e. the name of the
+     reference frame
+    comp_names: list same length as comp_vars, used to name the components.
+    """
+    vector=xr.concat([ds[v] for v in comp_vars],dim=frame)
+    # That puts xy as the first dimension, but I'd rather it last
+    dims=vector.dims
+    roll_dims=dims[1:] + dims[:1]
+    ds[new_var]=vector.transpose( *roll_dims )
+    if comp_names is not None:
+        ds[frame]=(frame,),comp_names

@@ -6,11 +6,12 @@ import numpy as np
 import xarray as xr
 
 import stompy.model.delft.io as dio
+from stompy import xr_utils
 
 import logging as log
 
 from stompy.io.local import noaa_coops
-from stompy import utils, filters
+from stompy import utils, filters, memoize
 from stompy.spatial import wkb2shp
 from stompy.model.delft import dfm_grid
 
@@ -308,6 +309,16 @@ class FlowBC(BC):
 #        data=np.c_[tuple(items)]
 #        np.savetxt(tim_fn,data)
 
+class VerticalCoord(object):
+    """
+    A placeholder for now, but potentially a place to describe the
+    vertical coordinate structure
+    """
+    pass
+
+class SigmaCoord(VerticalCoord):
+    sigma_growth_factor=1
+
 
 class DFlowModel(object):
     dfm_bin_dir=None # .../bin  giving directory containing dflowfm
@@ -349,10 +360,35 @@ class DFlowModel(object):
     def set_run_dir(self,path,mode='create'):
         """
         Set the working directory for the simulation.
-        See create_with_mode for details on 'mode' parameter
+        See create_with_mode for details on 'mode' parameter.
+        set_run_dir() supports an additional mode "clean",
+        which removes files known to be created during the
+        script process, as opposed to 'pristine' which deletes
+        everything.
         """
         self.run_dir=path
-        self.create_with_mode(path,mode)
+        if mode=="clean":
+            self.create_with_mode(path,"create")
+            self.clean_run_dir()
+        else:
+            self.create_with_mode(path,mode)
+
+    def clean_run_dir(self):
+        """
+        Clean out most of the run dir, deleting files known to be
+        created by DFlowModel
+        """
+        patts=['*.pli','*.tim','*.t3d','*.mdu','FlowFM.ext','*_net.nc','DFM_*', '*.dia',
+               '*.xy*','initial_conditions*','dflowfm-*.log']
+        for patt in patts:
+            matches=glob.glob(os.path.join(run_base_dir,patt))
+            for m in matches:
+                if os.path.isfile(m):
+                    os.unlink(m)
+                elif os.path.isdir(m):
+                    shutil.rmtree(m)
+                else:
+                    raise Exception("What is %s ?"%m)
 
     def set_cache_dir(self,path,mode='create'):
         """
@@ -489,46 +525,98 @@ class DFlowModel(object):
         else:
             self.bcs.extend(bcs)
 
-# class Scalar(gen_bc.Scalar):
-#     def write_(self,model,feature,grid):
-#         print("Writing feature: %s"%(feature['name']))
-# 
-#         name=feature['name']
-#         old_bc_fn=mdu.filepath( ['external forcing','ExtForceFile'] )
-# 
-#         assert feature['geom'].type=='LineString'
-#         pli_data=[ (name, np.array(feature['geom'].coords)) ]
-#         base_fn=os.path.join(mdu.base_path,"%s_%s"%(name,self.var_name))
-#         pli_fn=base_fn+'.pli'
-#         dio.write_pli(pli_fn,pli_data)
-# 
-#         if self.var_name=='salinity':
-#             quant='salinitybnd'
-#         elif self.var_name=='temperature':
-#             quant='temperaturebnd'
-#         else:
-#             assert False
-# 
-#         with open(old_bc_fn,'at') as fp:
-#             lines=["QUANTITY=%s"%quant,
-#                    "FILENAME=%s_%s.pli"%(name,self.var_name),
-#                    "FILETYPE=9",
-#                    "METHOD=3",
-#                    "OPERAND=O",
-#                    ""]
-#             fp.write("\n".join(lines))
-# 
-#         self.write_data(mdu,feature,self.var_name,base_fn)
-# 
-#     def write_data(self,mdu,feature,var_name,base_fn):
-#         ref_date,start_date,end_date = mdu.time_range()
-#         period=np.array([start_date,end_date])
-#         elapsed_minutes=(period - ref_date)/np.timedelta64(60,'s')
+    @property
+    @memoize.member_thunk
+    def ll_to_native(self):
+        """
+        Project array of longitude/latitude [...,2] to
+        model-native (e.g. UTM meters)
+        """
+        return proj_utils.mapper('WGS84',self.projection)
 
-#
-#         # just write a single node
-#         tim_fn=base_fn + "_0001.tim"
-#         with open(tim_fn,'wt') as fp:
-#             for t in elapsed_minutes:
-#                 fp.write("%g %g\n"%(t,self.value))
-#     
+    @property
+    @memoize.member_thunk
+    def native_to_ll(self):
+        """
+        Project array of x/y [...,2] coordinates in model-native
+        project (e.g. UTM meters) to longitude/latitude
+        """
+        return proj_utils.mapper(self.native_projetion,'WGS84')
+
+# Functions for manipulating DFM input/output
+
+def extract_transect(ds,line,grid=None,dx=None,cell_dim='nFlowElem',
+                     include=None,rename=True,add_z=True,name=None):
+    """
+    Extract a transect from map output.
+
+    ds: xarray Dataset
+    line: [N,2] polyline
+    grid: UnstructuredGrid instance, defaults to loading from ds, although this
+      is typically much slower as the spatial index cannot be reused
+    dx: sample spacing along line
+    cell_dim: name of the dimension
+    include: limit output to these data variables
+    rename: if True, follow naming conventions in xr_transect
+    """
+    missing=np.nan
+    assert dx is not None,"Not ready for adaptively choosing dx"
+    if grid is None:
+        grid=dfm_grid.DFMGrid(ds)
+
+    from stompy.spatial import linestring_utils
+    line_sampled=linestring_utils.resample_linearring(line,dx,closed_ring=False)
+    N_sample=len(line_sampled)
+
+    # Get the mapping from sample index to cell, or None if
+    # the point misses the grid.
+    cell_map=[ grid.select_cells_nearest( line_sampled[samp_i], inside=True)
+               for samp_i in range(N_sample)]
+    # to make indexing more streamlined, replace missing cells with 0, but record
+    # who is missing and nan out later.  Note that this need to be None=>0, to avoid
+    # changing index of 0 to something else.
+    cell_mask=[ c is None for c in cell_map]
+    cell_map_safe=[ c or 0 for c in cell_map]
+
+    if include is not None:
+        exclude=[ v for v in ds.data_vars if v not in include]
+        ds_orig=ds
+        ds=ds_orig.drop(exclude)
+
+    new_ds=ds.isel(**{cell_dim:cell_map_safe})
+
+    # Record the intended sampling location:
+    new_ds['x_sample']=(cell_dim,),line_sampled[:,0]
+    new_ds['y_sample']=(cell_dim,),line_sampled[:,1]
+    distance=utils.dist_along(line_sampled)
+    new_ds['d_sample']=(cell_dim,),distance
+    # And some additional spatial data:
+    dx_sample=utils.center_to_interval(distance)
+
+    new_ds['dx_sample']=(cell_dim,),dx_sample
+    new_ds['d_sample_bnd']=(cell_dim,'two'), np.array( [distance-dx_sample/2,
+                                                        distance+dx_sample/2]).T
+    new_ds=new_ds.rename({cell_dim:'sample'})
+
+    if add_z:
+        new_ds.update( xr_utils.z_from_sigma(new_ds,'ucx',interfaces=True,dz=True) )
+
+    if rename:
+        new_ds=new_ds.rename( {'ucx':'Ve',
+                               'ucy':'Vn',
+                               'ucz':'Vu',
+                               'ucxa':'Ve_avg',
+                               'ucya':'Vn_avg'} )
+
+    # Add metadata if missing:
+    if (name is None) and ('name' not in new_ds.attrs):
+        new_ds.attrs['name']='DFM Transect'
+    elif name is not None:
+        new_ds.attrs['name']=name
+    if 'filename' not in new_ds.attrs:
+        new_ds.attrs['filename']=new_ds.attrs['name']
+    if 'source' not in new_ds.attrs:
+        new_ds.attrs['source']=new_ds.attrs['source']
+
+    return new_ds
+

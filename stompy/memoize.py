@@ -152,3 +152,19 @@ def nomemo():
         yield
     finally:
         memoize.disabled=saved
+
+
+def member_thunk(obj):
+    """
+    memoize for instance methods with no arguments.
+    """
+    @functools.wraps(obj)
+    def memoizer(self):
+        attr_name='_' + obj.__name__
+        if hasattr(self,attr_name):
+            return getattr(self,attr_name)
+        else:
+            value=obj(self)
+            setattr(self,attr_name,value)
+            return value
+    return memoizer
