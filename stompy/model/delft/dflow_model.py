@@ -12,7 +12,7 @@ import logging as log
 
 from stompy.io.local import noaa_coops
 from stompy import utils, filters, memoize
-from stompy.spatial import wkb2shp
+from stompy.spatial import wkb2shp, proj_utils
 from stompy.model.delft import dfm_grid
 
 from . import io as dio
@@ -541,7 +541,7 @@ class DFlowModel(object):
         Project array of x/y [...,2] coordinates in model-native
         project (e.g. UTM meters) to longitude/latitude
         """
-        return proj_utils.mapper(self.native_projetion,'WGS84')
+        return proj_utils.mapper(self.projection,'WGS84')
 
 # Functions for manipulating DFM input/output
 

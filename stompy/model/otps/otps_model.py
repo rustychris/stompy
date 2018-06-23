@@ -17,18 +17,22 @@ class OTPS(object):
     The phases returned are in degrees, and follow the same convention
     as NOAA.
     """
-    def __init__(self,bin_path,data_path):
+    model_file="DATA/Model_atlas_v1"
+
+    def __init__(self,bin_path,data_path,model_file=None):
         self.bin_path=bin_path
         self.data_path=data_path
-        
+        if model_file is not None:
+            self.model_file=model_file
+
     @property
     def extract_HC_path(self):
         return os.path.join(self.bin_path,'extract_HC')
-    
+
     @property
     def predict_tide(self):
         return os.path.join(self.bin_path,'predict_tide')
-        
+
     def extract_HC(self,
                    lonlats,
                    constituents=['m2','s2','n2','k2','k1','o1','p1','q1'],
@@ -50,14 +54,14 @@ class OTPS(object):
                 # we are called with lonlat, but otps wants lat,lon
                 fp.write("%.6f %.6f\n"%(ll[1],ll[0]))
 
-        inp_data="\n".join( ["DATA/Model_atlas_v1           ! 1. tidal model control file",
-                             "%s              ! 2. latitude/longitude/<time> file"%lltime_fn,
-                             "%s                          ! 3. z/U/V/u/v"%quant,
-                             "%s                      ! 4. tidal constituents to include"%( ",".join(constituents) ),
-                             "AP                         ! 5. AP/RI",
-                             "oce                        ! 6. oce/geo",
-                             "1                          ! 7. 1/0 correct for minor constituents",
-                             "%s                 ! 8. output file (ASCII)"%output_fn,
+        inp_data="\n".join( ["%s      ! 1. tidal model control file"%self.model_file,
+                             "%s      ! 2. latitude/longitude/<time> file"%lltime_fn,
+                             "%s      ! 3. z/U/V/u/v"%quant,
+                             "%s      ! 4. tidal constituents to include"%( ",".join(constituents) ),
+                             "AP      ! 5. AP/RI",
+                             "oce     ! 6. oce/geo",
+                             "1       ! 7. 1/0 correct for minor constituents",
+                             "%s      ! 8. output file (ASCII)"%output_fn,
                              "","",""] )
 
         with open(inp_fn,'wt') as fp:

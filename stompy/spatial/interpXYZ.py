@@ -5,7 +5,7 @@ suntanspy.
 
 Original comment:
     Tools for interpolating irregularly spaced data onto irregularly spaced points
-    
+
     Largely a wrapper for other interpolation methods such as scipy.griddata and
     scipy.Rbf (radial basis functions).
 """
@@ -24,16 +24,15 @@ import matplotlib.pyplot as plt
 
 class interpXYZ(object):
     "Class for interpolating xyz data"""
-    
+
     ## Properties ##
-   
-    
+
     # Interpolation options
     method = 'nn' # One of 'nn', 'idw', 'kriging', 'linear' 
     maxdist=np.inf
     NNear = 3 # Number of points to include in interpolation (only applicable to idw and kriging)
     p = 1.0 # power for inverse distance weighting
-    
+
     # kriging options
     varmodel = 'spherical'
     nugget = 0.1
@@ -44,7 +43,7 @@ class interpXYZ(object):
 
     clip=False
 
-    
+
     def __init__(self,XY,XYout,**kwargs):
         
         self.__dict__.update(kwargs)
@@ -52,7 +51,7 @@ class interpXYZ(object):
         self.bbox = [XYout[:,0].min(),XYout[:,0].max(),XYout[:,1].min(),XYout[:,1].max()]
 
         if self.clip:
-            print 'Clipping points outside of range'
+            print('Clipping points outside of range')
             self.XY = self.clipPoints(XY)
         else:
             self.XY = XY
@@ -60,23 +59,23 @@ class interpXYZ(object):
         self.XYout = XYout
 
         if self.method=='nn':
-            #print 'Building DEM with Nearest Neighbour interpolation...'
+            #print('Building DEM with Nearest Neighbour interpolation...')
             self._nearestNeighbour()
         
         elif self.method=='idw':
-            #print 'Building DEM with Inverse Distance Weighted Interpolation...'
+            #print('Building DEM with Inverse Distance Weighted Interpolation...')
             self._invdistweight()
             
         elif self.method=='kriging':
-            #print 'Building DEM with Kriging Interpolation...'
+            #print('Building DEM with Kriging Interpolation...')
             self._krig()
 
         elif self.method=='linear':
-            #print 'Building using scipy linear interpolator ..'
+            #print('Building using scipy linear interpolator ..')
             self._linear()
             
         else:
-            print 'Error - Unknown interpolation type: %s.'%self.method
+            print('Error - Unknown interpolation type: %s.'%self.method)
         
     def __call__(self,Zin):
         """
@@ -89,7 +88,7 @@ class interpXYZ(object):
             self.Zin = Zin  
         
         if self.method in ['nn','idw','kriging']:
-            #print 'Building DEM with Nearest Neighbour interpolation...'
+            #print('Building DEM with Nearest Neighbour interpolation...')
             self.Z = self.Finterp(Zin)
 
         elif self.method=='linear':
@@ -98,7 +97,7 @@ class interpXYZ(object):
             
 
         else:
-            print 'Error - Unknown interpolation type: %s.'%self.method
+            print('Error - Unknown interpolation type: %s.'%self.method)
         
         
         return self.Z
@@ -113,7 +112,7 @@ class interpXYZ(object):
 
     #def _griddata(self):
     #    """Wrapper for griddata"""
-    #    print 'Interpolating %d data points'%self.npt
+    #    print('Interpolating %d data points'%self.npt)
     #    self.Z = griddata((self.XY[:,0],self.XY[:,1]), self.Zin, (self.grd.X, self.grd.Y), method='linear')
     
     def _invdistweight(self):
@@ -140,7 +139,7 @@ class interpXYZ(object):
 
         return LL[self.clipindex,:]
         
-        #print 'Clipped %d points.'%(self.npt-sum(ind))
+        #print('Clipped %d points.'%(self.npt-sum(ind)))
         #self.Zin = self.Zin[ind]
         #self.npt = len(self.Zin)
         #return np.concatenate((np.reshape(X[ind],(self.npt,1)),np.reshape(Y[ind],(self.npt,1))),axis=1)
@@ -202,7 +201,7 @@ class interpXYZ(object):
         
         nc.close()
         
-        print 'DEM save to %s.'%outfile
+        print('DEM save to %s.'%outfile)
         
         
         
@@ -334,7 +333,7 @@ class Inputs(object):
         
         
         # Read in the array
-        print 'Reading data from: %s...'%self.infile
+        print('Reading data from: %s...'%self.infile)
         if self.infile[-3:]=='.gz':
             LL,self.Zin = read_xyz_gz(self.infile)
         elif self.infile[-3:] in ['txt','dat']:
@@ -355,7 +354,7 @@ class Inputs(object):
         
         if self.convert2utm:                     
             # Convert the coordinates
-            print 'Transforming the coordinates to UTM...'
+            print('Transforming the coordinates to UTM...')
             self.XY=ll2utm(LL,self.utmzone,self.CS,self.isnorth)
         else:
             self.XY=LL
@@ -515,7 +514,7 @@ def read_xyz(fname):
 #                xyz = line.split(' ')
 #                XY[ii-1,0] = float(xyz[0]) 
 #                XY[ii-1,1] = float(xyz[1])
-#                print xyz[2]
+#                print(xyz[2])
 #                Z[ii-1,0] = float(xyz[2])
                 
             
@@ -558,7 +557,7 @@ def tile_vector(count,chunks):
 #indata = Inputs(infile,convert2utm=False)
 #
 ## Initialise the Interpolation class
-#print 'Building interpolant class...'
+#print('Building interpolant class...')
 #F = interpXYZ(indata.XY,indata.Zin,method='idw',NNear=3)
 #
 ## Initialise the interpolation points
@@ -577,7 +576,7 @@ def tile_vector(count,chunks):
 #grd.plot(cmap=plt.cm.gist_earth)
 #plt.show()
 #
-#print 'Smoothing the data...'
+#print('Smoothing the data...')
 #Fsmooth = interpXYZ(xy,grd.dv,method='kriging',NNear=5)
 #grd.dv = Fsmooth(xy)
 #

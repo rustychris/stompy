@@ -1,43 +1,81 @@
-from stompy.model.otps import read_otps
+from __future__ import print_function
+
+from stompy.model.otps import read_otps, otps_model
+from stompy import utils
+import numpy as np
 
 import six
+six.moves.reload_module(utils)
 six.moves.reload_module(read_otps)
+six.moves.reload_module(otps_model)
 
-modfile="data/DATA/Model_OR1km"
+read_otps.OTPS_DATA="data"
+local_bin_path="/home/rusty/src/OTPS2"
+
+def test_download():
+    model_file=read_otps.model_path('OR1km')
+    print("Downloaded model to %s"%model)
+    assert os.path.exists(model_file)
 
 def test_read_otps():
     times=np.arange( np.datetime64('2010-01-01 00:00'),
                      np.datetime64('2010-01-10 00:00'),
                      np.timedelta64(15,'m') )
 
+    modfile=read_otps.model_path('OR1km')
+
     pred_h,pred_u,pred_v=read_otps.tide_pred(modfile,lon=[235.25], lat=[44.5],
                                              time=times)
 
 
+def test_otps_model():
+    # modfile=read_otps.model_path('OR1km')
+    modfile=read_otps.model_path('OhS')
+
+    otps=otps_model.OTPS(bin_path=local_bin_path,
+                         data_path="data",
+                         model_file="DATA/" + os.path.basename(modfile))
+    # lonlats=np.array( [[235.25, 44.5]] )
+    lonlats=np.array( [ [145,35] ])
+
+    consts=otps.extract_HC(lonlats,
+                           constituents=['m2','s2','n2','k2','k1','o1','p1','q1'],
+                           quant='z')
+
+def test_compare():
+    lonlats=np.array( [ [145,35] ])
+    times=np.arange( np.datetime64('2010-01-01 00:00'),
+                     np.datetime64('2010-01-10 00:00'),
+                     np.timedelta64(15,'m') )
+
+    modfile=read_otps.model_path('OhS')
+    pred_h,pred_u,pred_v=read_otps.tide_pred(modfile,lon=lonlats[:,0],lat=lonlats[:,1],
+                                             time=times)
+
+
+    otps=otps_model.OTPS(bin_path=local_bin_path,
+                         data_path="data",
+                         model_file="DATA/" + os.path.basename(modfile))
+    consts=otps.extract_HC(lonlats,
+                           constituents=['m2','s2','n2','k2','k1','o1','p1','q1'],
+                           quant='z')
+
+    pred2_h=otps_model.reconstruct(consts,times)
+
+    diffs=pred2_h.result.isel(site=0).values - pred_h[:,0]
+    rms_err=np.sqrt(np.mean(diffs**2))
+    print("RMS difference %.4f"%rms_err)
+    assert rms_err<0.01
+
 
     if 0:
-        # Compare to NOAA:
-        # The comparison is not great - probably because this database has very few constituents, just
-        #  M2, S2, N2, K2
-        from stompy.io.local import noaa_coops
+        import matplotlib.pyplot as plt
+        plt.ion()
 
-        cache_dir='cache'
-        os.path.exists(cache_dir) or os.mkdir(cache)
+        plt.figure(1).clf()
+        fig,ax=plt.subplots(num=1)
 
-        sb_tides=noaa_coops.coops_dataset_product(9435380,'water_level',
-                                                  start_date=times[0],
-                                                  end_date=times[-1],
-                                                  days_per_request='M',
-                                                  cache_dir=cache_dir)
+        ax.plot(times,pred_h,label='read_otps')
+        ax.plot(pred2_h.time.values,pred2_h.result.isel(site=0),
+                label='otps_model')
 
-        from stompy import utils
-        plt.clf()
-        plt.plot(utils.to_datetime(times),pred_h,label='h')
-
-        water_level=sb_tides.water_level.isel(station=0)
-        water_level = water_level - water_level.mean()
-
-        plt.plot( utils.to_datetime(sb_tides.time),water_level, label='NOAA')
-
-        plt.gcf().autofmt_xdate()
-        plt.legend()

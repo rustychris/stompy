@@ -1930,3 +1930,33 @@ def remove_repeated(A):
     """
     return np.concatenate( ( A[:1], A[1:][ np.diff(A)!=0 ] ) )
     
+
+
+def download_url(url,local_file):
+    parsed=six.moves.urllib_parse.urlparse(url)
+
+    if parsed.scheme in ['http','https']:
+        import requests
+        r=requests.get(url,stream=True)
+        byte_sum=0
+        thresh=102400
+        bucket=0
+
+        with open(local_file,'wb') as fp:
+            for chunk in r.iter_content(chunk_size=1024):
+                if chunk:
+                    fp.write(chunk)
+                    byte_sum+=len(chunk)
+                    bucket+=len(chunk)
+                    if bucket>thresh:
+                        print("%6.3f Mbytes"%(byte_sum/1.e6))
+                        bucket=0
+    elif parsed.scheme=='ftp':
+        import ftplib
+        ftp = ftplib.FTP(parsed.netloc)
+        ftp.login("anonymous", "anonymous")
+        ftp.cwd(os.path.dirname(parsed.path))
+        ftp_file=os.path.basename(parsed.path)
+
+        with open(local_file,'wb') as fp:
+            ftp.retrbinary("RETR " + ftp_file ,fp.write)

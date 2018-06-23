@@ -13,6 +13,7 @@ Matt Rayson
 Stanford University
 March 2013
 """
+from __future__ import print_function
 
 import os
 import numpy as np
@@ -22,10 +23,35 @@ from ... import utils
 from ...spatial.interpXYZ import interpXYZ # implemented in this file, just for IDW method.
 # import othertime # can replace with numpy ops
 from datetime import datetime
+import subprocess
+import requests
 
-import pdb
+OTPS_DATA=os.environ.get('OTPS_DATA',"otps_data")
 
+def model_path(model_name):
+    """
+    model_name is, e.g.., "OR1km"
+    """
+    url="ftp://ftp.oce.orst.edu/dist/tides/regional/%s.tar.Z"%model_name
+    local_name="%s.tar.Z"%model_name
+    local_path=os.path.join(OTPS_DATA,local_name)
 
+    if not os.path.exists(local_path):
+        if not os.path.exists(OTPS_DATA):
+            os.makedirs(OTPS_DATA)
+        utils.download_url(url,local_path)
+
+    # And check to see if it needs to be decompress'd
+    model_file=os.path.join(OTPS_DATA,"DATA","Model_%s"%model_name)
+    if not os.path.exists(model_file):
+        pwd=os.getcwd()
+        try:
+            os.chdir(OTPS_DATA)
+            subprocess.call(["tar","xzf",local_name])
+        finally:
+            os.chdir(pwd)
+
+    return model_file
 
 otis_constits = { 'M2':{'index':1,'omega':1.405189e-04,'v0u':1.731557546},\
      'S2':{'index':2,'omega':1.454441e-04,'v0u':0.000000000},\
@@ -34,8 +60,8 @@ otis_constits = { 'M2':{'index':1,'omega':1.405189e-04,'v0u':1.731557546},\
      'K1':{'index':5,'omega':7.292117e-05,'v0u':0.173003674},\
      'O1':{'index':6,'omega':6.759774e-05,'v0u':1.558553872},\
      'P1':{'index':7,'omega':7.252295e-05,'v0u':6.110181633},\
-     'Q1':{'index':8,'omega':6.495854e-05,'v0u':5.877717569}}    
-    
+     'Q1':{'index':8,'omega':6.495854e-05,'v0u':5.877717569}}
+
 def tide_pred(modfile,lon,lat,time,z=None,conlist=None):
     """
     Performs a tidal prediction at all points in [lon,lat] at times in vector [time]
@@ -43,26 +69,26 @@ def tide_pred(modfile,lon,lat,time,z=None,conlist=None):
     lon=np.asarray(lon)
     lat=np.asarray(lat)
     time=np.asarray(time)
-    
+
     # normalize time format to numpy datetime64
     time=utils.to_dt64(time)
-    
+
     # Read and interpolate the constituents
     u_re, u_im, v_re, v_im, h_re, h_im, omega, conlist = extract_HC(modfile,lon,lat,z=z,conlist=conlist)
-    
+
     # Initialise the output arrays
     sz = lon.shape
     nx = np.prod(sz)
     nt = time.shape[0]
     ncon = omega.shape[0]
-    
+
     h_re = h_re.reshape((ncon,nx))
     h_im = h_im.reshape((ncon,nx))
     u_re = u_re.reshape((ncon,nx))
     u_im = u_im.reshape((ncon,nx))
     v_re = v_re.reshape((ncon,nx))
     v_im = v_im.reshape((ncon,nx))
-        
+
     # Calculate nodal correction to amps and phases
     #othertime.SecondsSince(time[0],basetime=datetime(1992,1,1))/86400.0
     base_time=np.datetime64("1992-01-01 00:00")
@@ -100,44 +126,44 @@ def tide_pred_correc(modfile,lon,lat,time,dbfile,ID,z=None,conlist=None):
     raise Exception("RH: Not translated!")
 
     from timeseries import timeseries, loadDBstation
-    
-    print 'Calculating tidal correction factors from time series...'
+
+    print('Calculating tidal correction factors from time series...')
     # Load using the timeseries module
     t0 = datetime.strftime(time[0],'%Y%m%d.%H%M%S')
     t1 = datetime.strftime(time[-1],'%Y%m%d.%H%M%S')
     dt = time[1]-time[0]
-    
-    print t0, t1, dt.total_seconds()
+
+    print(t0, t1, dt.total_seconds())
     timeinfo = (t0,t1,dt.total_seconds())
     TS,meta = loadDBstation(dbfile,ID,'waterlevel',timeinfo=timeinfo,filttype='low',cutoff=2*3600,output_meta=True)
     lonpt=meta['longitude']
     latpt=meta['latitude']
-    print lonpt,latpt
-    
+    print(lonpt,latpt)
+
     # Extract the OTIS tide prediction
     u_re, u_im, v_re, v_im, h_re, h_im, omega, conlist = extract_HC(modfile,lonpt,latpt)
     h_amp = np.abs(h_re+1j*h_im)[:,0]
     h_phs = np.angle(h_re+1j*h_im)[:,0]
-    
+
     # Harmonic analysis of observation time series
     amp, phs, frq, frqnames, htide = TS.tidefit(frqnames=conlist)
     TS_harm = timeseries(time,htide)
     residual = TS.y - htide
-    
+
     # Calculate the amp and phase corrections
     dphs = phs - h_phs + np.pi
     damp = amp/h_amp
 
     # Extract the data along the specified points
     u_re, u_im, v_re, v_im, h_re, h_im, omega, conlist = extract_HC(modfile,lon,lat,z=z,conlist=conlist)
-    
+
     h_amp = np.abs(h_re+1j*h_im)
     h_phs = np.angle(h_re+1j*h_im)
     u_amp = np.abs(u_re+1j*u_im)
     u_phs = np.angle(u_re+1j*u_im)
     v_amp = np.abs(v_re+1j*v_im)
     v_phs = np.angle(v_re+1j*v_im)
-        
+
     # Initialise the output arrays
     sz = lon.shape
     nx = np.prod(sz)
@@ -150,7 +176,7 @@ def tide_pred_correc(modfile,lon,lat,time,dbfile,ID,z=None,conlist=None):
     # Rebuild the time series
     #tsec=TS_harm.tsec - TS_harm.tsec[0]
     tsec = othertime.SecondsSince(time,basetime=time[0])
-    print tsec[0]
+    print(tsec[0])
     for nn,om in enumerate(omega):
         for ii in range(0,nx):
             h[:,ii] += damp[nn]*h_amp[nn,ii] * np.cos(om*tsec - (h_phs[nn,ii] + dphs[nn]))
@@ -276,18 +302,18 @@ def extract_HC(modfile,lon,lat,z=None,conlist=None):
     ###
     # Check that the constituents are in the file
     conOTIS = get_OTPS_constits(hfile)
-    
+
     if conlist == None:
         conlist = conOTIS
-        
+
     for vv in conlist:
         if not vv in conOTIS:
-            print 'Warning: constituent name: %s not present in OTIS file.'%vv
+            print('Warning: constituent name: %s not present in OTIS file.'%vv)
             conlist.remove(vv)
-            
+
     ###
-    # Now go through and read the data for each 
-    
+    # Now go through and read the data for each
+
     # Initialse the arrays
     ncon = len(conlist)
     u_re = np.zeros((ncon,nx))
@@ -297,25 +323,24 @@ def extract_HC(modfile,lon,lat,z=None,conlist=None):
     h_re = np.zeros((ncon,nx))
     h_im = np.zeros((ncon,nx))
     omega = np.zeros((ncon,))
-    
+
     for ii, vv in enumerate(conlist):
         idx = otis_constits[vv]['index']
         omega[ii] = otis_constits[vv]['omega']
-        print 'Interpolating consituent: %s...'%vv
-        
+        print('Interpolating consituent: %s...'%vv)
+
         # Read and interpolate h
         X ,Y, tmp_h_re, tmp_h_im = read_OTPS_h(hfile,idx)
         h_re[ii,:] = F(tmp_h_re[mask])
         h_im[ii,:] = F(tmp_h_im[mask])
-                
+
         # Read and interpolate u and v - Note the conversion from transport to velocity
         X ,Y, tmp_u_re, tmp_u_im, tmp_v_re, tmp_v_im = read_OTPS_UV(uvfile,idx)
         u_re[ii,:] = F(tmp_u_re[mask]) / z
         u_im[ii,:] = F(tmp_u_im[mask]) / z
         v_re[ii,:] = F(tmp_v_re[mask]) / z
         v_im[ii,:] = F(tmp_v_im[mask]) / z
-        
-        
+
     # Return the arrays in their original shape
     szout = (ncon,) + sz
     return u_re.reshape(szout), u_im.reshape(szout), v_re.reshape(szout), \
@@ -325,8 +350,8 @@ def extract_HC(modfile,lon,lat,z=None,conlist=None):
 def nodal_correction(year,conlist,amp, phase):
         """
 		### UNUSED ###
-        Applies a lunar nodal correction to the amplitude and phase        
-        
+        Applies a lunar nodal correction to the amplitude and phase
+
         Code modified from Rusty Holleman's GET_COMPONENTS code below...
         #
         # GET_COMPONENTS
@@ -339,50 +364,44 @@ def nodal_correction(year,conlist,amp, phase):
         #
         #function [uamp,uphase,vamp,vphase,hamp,hphase]=get_components(YEAR,omegat,lun_node,v0u,AG)
         """
-        
+
         import tide_consts as tc
 
         #oneday=np.array( [335.62,  0,  322.55,  1.97,   334.63,  0.99,  -0.99,  321.57])
         oneday = {'M2':335.62, 'S2':0, 'N2':322.55, 'K2':1.97, 'O1':334.63, 'K1':0.99, 'P1':-0.99, 'Q1':321.57}
         #if year < 1970 or year > 2037:
-        #    print 'Constants for prediction year are not available'
+        #    print('Constants for prediction year are not available')
             #return None
-        
+
         # Find the index
         JJ=[]
         od=np.zeros((len(conlist),1))
         for ii,vv in enumerate(conlist):
-            
             jj=[item for item in range(len(tc.const_names)) if tc.const_names[item] == vv]
             if len(jj) > 0:
                 JJ.append(jj)
-                
-            if oneday.has_key(vv):
+            if vv in oneday:
                 od[ii]=(np.pi/180)*oneday[vv]
-                  
         I = int( np.where(year==tc.years)[0] )
         vou=tc.v0u[JJ,I]
         lunnod=tc.lun_nodes[JJ,I]
-                
         vou=(np.pi/180)*vou
-        
-        
+
         #oneday=(np.pi/180)*oneday
-        
         hamp = amp*lunnod
         #hphase = - oneday[JJ] + vou[JJ] - G
         hphase =  -od + vou - phase
 
         return hamp, hphase
-    
+
 def read_OTPS_UV(uvfile,ic):
     """
     Reads the tidal transport constituent data from an otis binary file
-    
+
     ic = constituent number
-    
+
     Returns: X, Y, h_re and h_im (Real and imaginary components)
-    
+
     See this post on byte ordering
          http://stackoverflow.com/questions/1632673/python-file-slurp-w-endian-conversion
     """
@@ -405,7 +424,7 @@ def read_OTPS_UV(uvfile,ic):
     nc = nm[2]
     
     if ic < 1 or ic > nc:
-        raise Exception,'ic must be > 1 and < %d'%ic
+        raise Exception('ic must be > 1 and < %d'%ic)
     
     # Read the actual data
     nskip = (ic-1)*(nm[0]*nm[1]*16+8) + 8 + ll[0] - 28
@@ -509,7 +528,7 @@ def read_OTPS_h(hfile,ic):
     nc = nm[2]
     
     if ic < 1 or ic > nc:
-        raise Exception,'ic must be > 1 and < %d'%ic
+        raise Exception('ic must be > 1 and < %d'%ic)
         #return -1
     
     # Read the actual data
@@ -660,24 +679,22 @@ def nodal(time,con):
             'u':np.arctan(-(.3108*sinn+.0324*sin2n) /(1.+.2852*cosn+.0324*cos2n))/rad},\
         'Q1':{'f':np.sqrt((1.+.188*cosn)**2+(.188*sinn)**2),\
             'u':np.arctan(.189*sinn / (1.+.189*cosn))/rad} }
-            
+
     # Prepare the output data
     ncon = len(con)
     pu = np.zeros((ncon,1))
     pf = np.ones((ncon,1))
     v0u = np.zeros((ncon,1))
     for ii,vv in enumerate(con):
-        if ndict.has_key(vv):
+        if vv in ndict:
             pu[ii,:] = ndict[vv]['u']*rad
             pf[ii,:] = ndict[vv]['f']
-            
-        if otis_constits.has_key(vv):
+
+        if vv in otis_constits:
             v0u[ii,:] = otis_constits[vv]['v0u']
-     
+
     return pu, pf, v0u
-            
-            
-    
+
 #%%
 #f=zeros(nT,53);
 #f(:,1) = 1;                                     % Sa
