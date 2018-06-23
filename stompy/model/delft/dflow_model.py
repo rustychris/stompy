@@ -601,12 +601,24 @@ def extract_transect(ds,line,grid=None,dx=None,cell_dim='nFlowElem',
     if add_z:
         new_ds.update( xr_utils.z_from_sigma(new_ds,'ucx',interfaces=True,dz=True) )
 
+    # need to drop variables with dimensions like nFlowLink
+    to_keep_dims=set(['wdim','laydim','two','three','time','sample'])
+    to_drop=[]
+    for v in new_ds.variables:
+        if (set(new_ds[v].dims) - to_keep_dims):
+            to_drop.append(v)
+
+    new_ds=new_ds.drop(to_drop)
+
     if rename:
         new_ds=new_ds.rename( {'ucx':'Ve',
                                'ucy':'Vn',
                                'ucz':'Vu',
                                'ucxa':'Ve_avg',
-                               'ucya':'Vn_avg'} )
+                               'ucya':'Vn_avg',
+                               's1':'z_surf',
+                               'FlowElem_bl':'z_bed',
+                               'laydim':'layer'} )
 
     # Add metadata if missing:
     if (name is None) and ('name' not in new_ds.attrs):

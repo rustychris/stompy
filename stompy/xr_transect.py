@@ -295,8 +295,6 @@ def resample_z(tran,new_z):
         dims=var.dims # dimension names don't change
         shape=[ len(ds[d]) for d in dims]
 
-        print("Resample %s to shape %s"%(v,shape)) # These are the ones we have to resample
-
         # For the moment, can assume that there are two dimensions,
         # and the first is sample.
         new_val=np.nan*np.ones( shape, np.float64 )
@@ -307,9 +305,8 @@ def resample_z(tran,new_z):
         z_num=list(dims).index(z_dim)
 
         if len(dims)==1:
-            print("Not sure how to resample %s"%v)
+            # print("Not sure how to resample %s"%v)
             continue
-
         # Not quite there -- this isn't smart enough to get the interfaces
         _,src_z,src_dz = xr.broadcast(var,tran['z_ctr'],tran['z_dz'])
         for index in np.ndindex( *iter_shape ):

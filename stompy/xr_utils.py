@@ -283,7 +283,12 @@ def decode_sigma(ds,sigma_v):
 
     # this is where xarray really shines -- it will promote z to the
     # correct dimensions automatically, by name
-    return terms['sigma']*(terms['eta'] - terms['bedlevel']) + terms['bedlevel']
+    # This ordering of the multiplication puts laydim last, which is
+    # assumed in some other [fragile] code.
+    # a little shady, but its helpful to make the ordering here intentional
+    z=(terms['eta'] - terms['bedlevel'])*terms['sigma'] + terms['bedlevel']
+
+    return z
 
 
 def z_from_sigma(dataset,variable,interfaces=False,dz=False):
