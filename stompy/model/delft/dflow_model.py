@@ -321,7 +321,10 @@ class SigmaCoord(VerticalCoord):
 
 
 class DFlowModel(object):
-    dfm_bin_dir=None # .../bin  giving directory containing dflowfm
+    # If these are the empty string, then assumes that the executables are
+    # found in existing $PATH
+    dfm_bin_dir="" # .../bin  giving directory containing dflowfm
+    mpi_bin_dir=None # same, but for mpiexec.  None means use dfm_bin_dir
     num_procs=1
     run_dir="." # working directory when running dflowfm
     cache_dir=None
@@ -338,6 +341,7 @@ class DFlowModel(object):
     z_datum=None
 
     def __init__(self):
+        self.log=log
         self.bcs=[]
 
     def create_with_mode(self,path,mode='create'):
@@ -462,9 +466,33 @@ class DFlowModel(object):
             bc.write()
 
     def partition(self):
-        if self.nprocs<=1:
+        if self.num_procs<=1:
             return
-        self.mdu.partition(self.nprocs,dfm_bin_dir=self.dfm_bin_dir)
+
+        cmd="--partition:ndomains=%d %s"%(self.num_procs,self['geometry','NetFile'])
+        self.run_dflowfm(cmd)
+
+        # similar, but for the mdu:
+        gen_parallel=os.path.join(self.dfm_bin_dir,"generate_parallel_mdu.sh")
+        cmd="%s %s %d 6"%(gen_parallel,os.path.basename(self.mdu.filename),self.num_procs)
+        utils.call_with_path(cmd,self.run_dir)
+
+    def run_dflowfm(self,cmd):
+        # Names of the executables
+        dflowfm=os.path.join(self.dfm_bin_dir,"dflowfm")
+
+        if self.num_procs>1:
+            mpi_bin_dir=self.mpi_bin_dir or self.dfm_bin_dir
+            mpiexec=os.path.join(mpi_bin_dir,"mpiexec")
+            real_cmd="%s -n %d %s %s"%(mpiexec,self.num_procs,dflowfm,cmd)
+        else:
+            real_cmd="%s %s"%(dflowfm,cmd)
+
+        self.log.info("Running command: %s"%real_cmd)
+        utils.call_with_path(real_cmd,self.run_dir)
+
+    def run_model(self):
+        self.run_dflowfm(cmd="--autostartstop %s"%os.path.basename(self.mdu.filename))
 
     def add_bcs_from_shp(self,forcing_shp):
         shp_data=wkb2shp.shp2geom(forcing_shp)
