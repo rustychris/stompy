@@ -25,28 +25,32 @@ from ...spatial.interpXYZ import interpXYZ # implemented in this file, just for 
 from datetime import datetime
 import subprocess
 import requests
+import logging
 
 OTPS_DATA=os.environ.get('OTPS_DATA',"otps_data")
 
-def model_path(model_name):
+def model_path(model_name,data_path=None):
     """
     model_name is, e.g.., "OR1km"
     """
+    data_path=data_path or OTPS_DATA
+
     url="ftp://ftp.oce.orst.edu/dist/tides/regional/%s.tar.Z"%model_name
     local_name="%s.tar.Z"%model_name
-    local_path=os.path.join(OTPS_DATA,local_name)
+    local_path=os.path.join(data_path,local_name)
 
     if not os.path.exists(local_path):
-        if not os.path.exists(OTPS_DATA):
-            os.makedirs(OTPS_DATA)
-        utils.download_url(url,local_path)
+        logging.info("OTPS Model will be downloaded to %s"%local_path)
+        if not os.path.exists(data_path):
+            os.makedirs(data_path)
+        utils.download_url(url,local_path,log=logging,on_abort='remove')
 
     # And check to see if it needs to be decompress'd
-    model_file=os.path.join(OTPS_DATA,"DATA","Model_%s"%model_name)
+    model_file=os.path.join(data_path,"DATA","Model_%s"%model_name)
     if not os.path.exists(model_file):
         pwd=os.getcwd()
         try:
-            os.chdir(OTPS_DATA)
+            os.chdir(data_path)
             subprocess.call(["tar","xzf",local_name])
         finally:
             os.chdir(pwd)
@@ -107,16 +111,14 @@ def tide_pred(modfile,lon,lat,time,z=None,conlist=None):
         for ii in range(0,nx):
             h[:,ii] += pf[nn]*h_re[nn,ii] * np.cos(om*tsec + v0u[nn] + pu[nn]) - \
                 pf[nn]*h_im[nn,ii] * np.sin(om*tsec + v0u[nn] + pu[nn])
-                
             u[:,ii] += pf[nn]*u_re[nn,ii] * np.cos(om*tsec + v0u[nn] + pu[nn]) - \
                 pf[nn]*u_im[nn,ii] * np.sin(om*tsec + v0u[nn] + pu[nn])
-                
             v[:,ii] += pf[nn]*v_re[nn,ii] * np.cos(om*tsec + v0u[nn] + pu[nn]) - \
                 pf[nn]*v_im[nn,ii] * np.sin(om*tsec + v0u[nn] + pu[nn])
-    
+
     szo = (nt,)+sz
     return h.reshape(szo), u.reshape(szo), v.reshape(szo)
-    
+
 def tide_pred_correc(modfile,lon,lat,time,dbfile,ID,z=None,conlist=None):
     """
     Performs a tidal prediction at all points in [lon,lat] at times in vector [time]
@@ -646,25 +648,24 @@ def astrol(time):
     
 def nodal(time,con):
     """
-    Nodal correction 
-    
+    Nodal correction
+
     Derived from the tide model driver matlab scipt: nodal.m
     """
-    
+
     rad = np.pi/180.0
-    
     s,h,p,omega=astrol(time)
-    #    
-    #    omega = 
     #
-    #     determine nodal corrections f and u 
+    #    omega =
+    #
+    #     determine nodal corrections f and u
     #     -----------------------------------
     sinn = np.sin(omega*rad);
     cosn = np.cos(omega*rad);
     sin2n = np.sin(2*omega*rad);
     cos2n = np.cos(2*omega*rad);
     sin3n = np.sin(3*omega*rad);
-    
+
     ndict={'M2':{'f':np.sqrt((1.-.03731*cosn+.00052*cos2n)**2 + (.03731*sinn-.00052*sin2n)**2),\
         'u':np.arctan((-.03731*sinn+.00052*sin2n)/(1.-.03731*cosn+.00052*cos2n))/rad},\
         'S2':{'f':1.0, 'u':0.0},\
@@ -694,6 +695,7 @@ def nodal(time,con):
             v0u[ii,:] = otis_constits[vv]['v0u']
 
     return pu, pf, v0u
+
 
 #%%
 #f=zeros(nT,53);
@@ -823,7 +825,7 @@ def nodal(time,con):
 #u(:,51) = 0;                                       % S6
 #u(:,52) = 0;                                       % S7
 #u(:,53) = 0;                                       % S8 
-### 
+#
 # Testing
 ###
 
