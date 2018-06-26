@@ -44,7 +44,7 @@ class LRUDict(object):
         return repr(self.data)
     def __contains__(self,k):
         return k in self.data
-    
+
     def check_size_limit(self):
         if self.size_limit is not None:
             while len(self) > self.size_limit:
@@ -58,7 +58,6 @@ def memoize_key(*args,**kwargs):
 def memoize_key_str(*args,**kwargs):
     return str(args) + str(kwargs)
 
-
 def memoize(lru=None,cache_dir=None,key_method='pickle'):
     """
     add as a decorator to classes, instance methods, regular methods
@@ -67,6 +66,11 @@ def memoize(lru=None,cache_dir=None,key_method='pickle'):
     results will still be stored in cache
     passing lru as a positive integer will keep only the most recent
     values
+
+    key_method: 'pickle' use the hash of the pickle of the inputs.  overkill,
+      but highly unlikely to get false hits.
+      'str': use the hash of the str-ified parameters
+      callable: pass key_method(*args,**kwargs) will be the key
     """
     if cache_dir is not None:
         cache_dir=os.path.abspath( cache_dir )
@@ -80,7 +84,7 @@ def memoize(lru=None,cache_dir=None,key_method='pickle'):
         if cache_dir is not None:
             if not os.path.exists(cache_dir):
                 os.makedirs(cache_dir)
-                
+
         @functools.wraps(obj)
         def memoizer(*args, **kwargs):
             recalc= memoizer.recalculate or memoize.recalculate
@@ -89,7 +93,8 @@ def memoize(lru=None,cache_dir=None,key_method='pickle'):
             elif key_method=='str':
                 key = memoize_key_str(args,**kwargs)
             else:
-                raise Exception("Bad key_method %s"%key_method)
+                key=key_method(args,**kwargs)
+                # raise Exception("Bad key_method %s"%key_method)
             value_src=None
 
             if cache_dir is not None:
@@ -132,7 +137,7 @@ memoize.disabled = False  # ignore the cache entirely, don't save new result
 
 # returns a memoize which bases all relative path cache_dirs from
 # a given location.  If the given location is a file, then use the dirname
-# i.e. 
+# i.e.
 #  from memoize import memoize_in
 #  memoize=memoize_in(__file__)
 def memoizer_in(base):
