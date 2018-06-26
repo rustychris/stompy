@@ -312,7 +312,7 @@ def parse_boundary_conditions(inp_file):
             pass
         else:
             assert False,"Parsing Thatcher-Harleman lags not yet implemented"
-            
+
         # The actual items are not yet implemented -- this is where
         # the inp file would assign concentrations or fluxes to
         # specific boundary exchanges are groups defined above
@@ -364,7 +364,7 @@ def parse_boundary_conditions(inp_file):
                 bc_items.append(defs)
             else:
                 assert False,"Incomplete BC block"
-        
+
     return bcs,bc_items
 
 def read_pli(fn,one_per_line=True):
@@ -385,7 +385,7 @@ def read_pli(fn,one_per_line=True):
       of the text file has exactly one node, and any extra text becomes the label.
     """
     features=[]
-    
+
     with open(fn,'rt') as fp:
         if not one_per_line:
             toker=inp_tok(fp)
@@ -421,16 +421,15 @@ def read_pli(fn,one_per_line=True):
                     else:
                         node_labels.append("")
                 features.append( (label, np.array(geometry), node_labels) )
-                
     return features
 
 def write_pli(file_like,pli_data):
     """
-    Reverse of read_pli.  
+    Reverse of read_pli.
     file_like: a string giving the name of a file to be opened (clobbering
     an existing file), or a file-like object.
     pli_data: [ (label, N*M values, [optional N labels]), ... ]
-    typically first two values of each row are x and y, and the rest depend on intended 
+    typically first two values of each row are x and y, and the rest depend on intended
     usage of the file
     """
     if hasattr(file_like,'write'):
@@ -439,7 +438,7 @@ def write_pli(file_like,pli_data):
     else:
         fp=open(file_like,'wt')
         do_close=True
-        
+
     try:
         for feature in pli_data:
             label,data = feature[:2]
@@ -448,7 +447,7 @@ def write_pli(file_like,pli_data):
                 node_labels=feature[2]
             else:
                 node_labels=[""]*len(data)
-                
+
             fp.write("%s\n"%label)
             fp.write("     %d     %d\n"%data.shape)
             if len(data) != len(node_labels):
@@ -497,8 +496,8 @@ def add_suffix_to_feature(feat,suffix):
      [ [x0,y0],[x1,y1],...],
      { [node_label0,node_label1,...] }  # optional
     )
-    
-    and adds a suffix to the name of the feature and the 
+
+    and adds a suffix to the name of the feature and the
     names of nodes if they exist
     """
     name=feat[0]
@@ -568,7 +567,7 @@ def read_map(fn,hyd=None,use_memmap=True,include_grid=True,return_grid=False):
         # looks that way.
         data_start=fp.tell()
 
-    bytes_left=nbytes-data_start 
+    bytes_left=nbytes-data_start
     framesize=(4+4*n_subs*n_segs)
     nframes,extra=divmod(bytes_left,framesize)
     if extra!=0:
@@ -595,7 +594,7 @@ def read_map(fn,hyd=None,use_memmap=True,include_grid=True,return_grid=False):
         substance_names=[s.decode() for s in substance_names]
     except AttributeError:
         pass
-    
+
     ds['sub']= ( ('sub',), [s.strip() for s in substance_names] )
 
     times=utils.to_dt64(hyd.time0) + np.timedelta64(1,'s') * mapped['tsecs']
@@ -666,7 +665,7 @@ def map_add_z_coordinate(map_ds,total_depth='TotalDepth',coord_type='sigma',
     map_ds.sigma.attrs['positive']='up'
     map_ds.sigma.attrs['units']=""
     map_ds.sigma.attrs['formula_terms']="sigma: sigma eta: eta  bedlevel: bedlevel"
-    
+
     return map_ds
 
 def dfm_wind_to_nc(wind_u_fn,wind_v_fn,nc_fn):
@@ -679,7 +678,7 @@ def dfm_wind_to_nc(wind_u_fn,wind_v_fn,nc_fn):
     specified positive, the rows of data are written from north to
     south.  The DFM text file specifies coordinates for a llcorner
     and a dy, but that llcorner corresponds to the first column of
-    the *last* row of data written out.  
+    the *last* row of data written out.
 
     wind_u_fn:
       path to the amu file for eastward wind
@@ -887,21 +886,20 @@ def dataset_to_dfm_wind(ds,period_start,period_stop,target_filename_base,
     returns the number of available records overlapping the requested period.
     If that number is less than min_records, no output is written.
     """
-    
     time_idx_start = np.searchsorted(ds.time,period_start,side='left')
     # make stop inclusive by using side='right'
     time_idx_stop  = np.searchsorted(ds.time,period_stop,side='right')
-    
+
     record_count=time_idx_stop-time_idx_start
     if record_count<min_records:
         return record_count
-    
+
     # Sanity checks that there was actually some overlapping data.
     # maybe with min_records, this can be relaxed?  Unsure of use case there.
     assert time_idx_start+1<len(ds.time)
     assert time_idx_stop>0
     assert time_idx_start<time_idx_stop
-        
+
     nodata=-999
 
     if extra_header is None:

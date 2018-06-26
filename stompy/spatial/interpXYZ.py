@@ -22,6 +22,8 @@ from scipy.interpolate import LinearNDInterpolator,interp1d
 import time
 import matplotlib.pyplot as plt
 
+from .. import memoize
+
 class interpXYZ(object):
     "Class for interpolating xyz data"""
 
@@ -45,7 +47,6 @@ class interpXYZ(object):
 
 
     def __init__(self,XY,XYout,**kwargs):
-        
         self.__dict__.update(kwargs)
 
         self.bbox = [XYout[:,0].min(),XYout[:,0].max(),XYout[:,1].min(),XYout[:,1].max()]
@@ -61,32 +62,24 @@ class interpXYZ(object):
         if self.method=='nn':
             #print('Building DEM with Nearest Neighbour interpolation...')
             self._nearestNeighbour()
-        
         elif self.method=='idw':
             #print('Building DEM with Inverse Distance Weighted Interpolation...')
             self._invdistweight()
-            
         elif self.method=='kriging':
             #print('Building DEM with Kriging Interpolation...')
             self._krig()
-
         elif self.method=='linear':
             #print('Building using scipy linear interpolator ..')
             self._linear()
-            
         else:
             print('Error - Unknown interpolation type: %s.'%self.method)
-        
+
     def __call__(self,Zin):
-        """
-        
-        """
-        
         if self.clip:
             self.Zin = Zin[self.clipindex]
         else:
             self.Zin = Zin  
-        
+
         if self.method in ['nn','idw','kriging']:
             #print('Building DEM with Nearest Neighbour interpolation...')
             self.Z = self.Finterp(Zin)
@@ -94,43 +87,34 @@ class interpXYZ(object):
         elif self.method=='linear':
             self.Finterp.values[:]=Zin[:,np.newaxis]
             self.Z=self.Finterp(self.XYout)
-            
-
         else:
             print('Error - Unknown interpolation type: %s.'%self.method)
-        
-        
+
         return self.Z
-        
+
     def _nearestNeighbour(self):
         """ Nearest neighbour interpolation algorithm
             Sets any points outside of maxdist to NaN
-        """ 
+        """
 
         self.Finterp = nn(self.XY,self.XYout,maxdist=self.maxdist)
-      
 
     #def _griddata(self):
     #    """Wrapper for griddata"""
     #    print('Interpolating %d data points'%self.npt)
     #    self.Z = griddata((self.XY[:,0],self.XY[:,1]), self.Zin, (self.grd.X, self.grd.Y), method='linear')
-    
     def _invdistweight(self):
         """ Inverse distance weighted interpolation """
-        
         self.Finterp=idw(self.XY,self.XYout,maxdist=self.maxdist,NNear=self.NNear,p=self.p)
-        
-    
-    def _krig(self):    
+
+    def _krig(self):
         """ Kriging interpolation"""
-       
         self.Finterp = kriging(self.XY,self.XYout,maxdist=self.maxdist,NNear=self.NNear)
 
     def _linear(self):
         self.Finterp =\
             LinearNDInterpolator(self.XY,np.zeros((self.XY.shape[0]),),fill_value=self.fill_value)
-                
-    
+
     def clipPoints(self,LL):
         """ Clips points outside of the bounding box"""
         X = LL[:,0]
@@ -407,44 +391,48 @@ class Inputs(object):
                 
         nc.close()
 
+# streamline building of the kdtree
+# this is still a bit expensive, since its is hashing quite a bit
+@memoize.memoize(lru=5)
+def memo_kdtree(XYin):
+    return spatial.cKDTree(XYin)
+
 class idw(object):
     """Inverse distance weighted interpolation function"""
-    
     maxdist=300
     NNear=3
     p=1
-    
+
     def __init__(self,XYin,XYout,**kwargs):
         self.__dict__.update(kwargs)
 
-        
         # Compute the spatial tree
-        kd = spatial.cKDTree(XYin)
-        
+        kd = memo_kdtree(XYin)
+
         # Perform query on all of the points in the grid
         dist,self.ind=kd.query(XYout,distance_upper_bound=self.maxdist,k=self.NNear)
-        
+
         # Calculate the weights
         self.W = 1/dist**self.p
         Wsum = np.sum(self.W,axis=1)
-        
+
         for ii in range(self.NNear):
             self.W[:,ii] = self.W[:,ii]/Wsum
-            
+
         # create the mask
         mask = (dist==np.inf)
         self.ind[mask]=1
-    
+
     def __call__(self,Zin):
         # Fill the array and resize it
         Zin = np.squeeze(Zin[self.ind])
-        
+
         # Compute the weighted sums and mask the blank points
         return np.sum(Zin*self.W,axis=1)
         #Z[mask]=np.nan
-        
+
 class nn(object):
-    """ 
+    """
     Nearest neighbour interpolation algorithm
     Sets any points outside of maxdist to NaN
     """

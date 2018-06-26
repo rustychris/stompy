@@ -5,6 +5,8 @@ import six
 import numpy as np
 import xarray as xr
 
+from shapely import geometry
+
 import stompy.model.delft.io as dio
 from stompy import xr_utils
 
@@ -496,7 +498,8 @@ class DFlowModel(object):
 
     def add_bcs_from_shp(self,forcing_shp):
         shp_data=wkb2shp.shp2geom(forcing_shp)
-
+        self.add_bcs_from_features(shp_data)
+    def add_bcs_from_features(self,shp_data):
         for feat in shp_data:
             params=dict( [ (k,feat[k]) for k in feat.dtype.names])
             bcs=self.bc_factory(params)
@@ -638,6 +641,9 @@ def extract_transect(ds,line,grid=None,dx=None,cell_dim='nFlowElem',
 
     new_ds=new_ds.drop(to_drop)
 
+    xr_utils.bundle_components(new_ds,'U',['ucx','ucy'],'xy',['N','E'])
+    xr_utils.bundle_components(new_ds,'U_avg',['ucxa','ucya'],'xy',['N','E'])
+
     if rename:
         new_ds=new_ds.rename( {'ucx':'Ve',
                                'ucy':'Vn',
@@ -659,4 +665,91 @@ def extract_transect(ds,line,grid=None,dx=None,cell_dim='nFlowElem',
         new_ds.attrs['source']=new_ds.attrs['source']
 
     return new_ds
+
+
+
+class OTPSStageBC(StageBC):
+    def __init__(self,model,otps_model,**kw):
+        super(OTPSStageBC,self).__init__(model,z=None,**kw)
+        self.otps_model=otps_model # something like OhS
+
+    # write_config same as superclass
+    # filename_base same as superclass
+
+    def write_data(self):
+        from stompy.model.otps import read_otps
+        ref_date,start,stop=self.model.mdu.time_range()
+
+        pad=2*np.timedelta64(24,'h')
+
+        ds=xr.Dataset()
+
+        times=np.arange( start-pad,stop+pad, 15*np.timedelta64(60,'s') )
+        log.debug("Will generate tidal prediction for %d time steps"%len(times))
+
+        ds['time']=('time',),times
+
+        modfile=read_otps.model_path(self.otps_model,"derived")
+
+        xy=np.array(self.geom.coords)
+        ll=self.model.native_to_ll(xy)
+
+        pred_h,pred_u,pred_v=read_otps.tide_pred(modfile,lon=ll[:,0],lat=ll[:,1],
+                                                 time=times)
+
+        # Here - we'll query OTPS for this
+        ds['water_level']=('time',),pred_h[:,0] # Is that the right index order?a
+
+        # TODO - will need to write many nodes
+        self.write_tim(ds['water_level'])
+
+class MultiBC(BC):
+    """
+    Break up a boundary condition spec into per-edge boundary conditions.
+    Hoping that this can be done in a mostly opaque way, without exposing to
+    the caller that one BC is being broken up into many.
+    """
+    def __init__(self,model,cls,**kw):
+        self.saved_kw=kw
+        super(MultiBC,self).__init__(model,**kw)
+        self.cls=cls
+        self.sub_bcs="not yet!" # not populated until self.write()
+
+    def filename_base(self):
+        assert False,'This should never be called, right?'
+
+    def write(self):
+        # delay enumeration until now, so we have the most up-to-date
+        # information about the model, grid, etc.
+        self.enumerate_sub_bcs()
+
+        for sub_bc in self.sub_bcs:
+            sub_bc.write()
+
+    def enumerate_sub_bcs(self):
+        # dredge_grid already has some of the machinery
+        grid=self.model.grid
+
+        edges=dfm_grid.polyline_to_boundary_edges(grid,np.array(self.geom.coords))
+
+        self.model.log.info("MultiBC will be applied over %d edges"%len(edges))
+
+        self.sub_bcs=[]
+
+        for j in edges:
+            seg=grid.nodes['x'][ grid.edges['nodes'][j] ]
+            sub_geom=geometry.LineString(seg)
+            # This slightly breaks the abstraction -- in theory, the caller
+            # can edit all of self's values up until write() is called, yet
+            # here we are grabbing the values at time of instantiation of self.
+            # hopefully it doesn't matter, especially since geom and model
+            # are handled explicitly.
+            sub_kw=dict(geom=sub_geom)
+            sub_kw.update(self.saved_kw)
+            sub_kw['name']="%s%04d"%(self.name,j)
+
+            sub_bc=self.cls(model=self.model,**sub_kw)
+            self.sub_bcs.append(sub_bc)
+
+
 

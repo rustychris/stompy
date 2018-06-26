@@ -19,12 +19,10 @@ import os
 import numpy as np
 
 from ... import utils
+from ... import memoize
 
-from ...spatial.interpXYZ import interpXYZ # implemented in this file, just for IDW method.
 # import othertime # can replace with numpy ops
 from datetime import datetime
-import subprocess
-import requests
 import logging
 
 OTPS_DATA=os.environ.get('OTPS_DATA',"otps_data")
@@ -48,6 +46,7 @@ def model_path(model_name,data_path=None):
     # And check to see if it needs to be decompress'd
     model_file=os.path.join(data_path,"DATA","Model_%s"%model_name)
     if not os.path.exists(model_file):
+        import subprocess
         pwd=os.getcwd()
         try:
             os.chdir(data_path)
@@ -100,7 +99,7 @@ def tide_pred(modfile,lon,lat,time,z=None,conlist=None):
 
     # RH: where does 48622 come from?
     pu,pf,v0u = nodal(t1992+48622.0,conlist)
-       
+
     # Calculate the time series
     # othertime.SecondsSince(time,basetime=datetime(1992,1,1)) # Needs to be referenced to 1992
     tsec = (time-base_time)/np.timedelta64(1,'s')
@@ -237,37 +236,34 @@ def tide_pred_old(modfile,lon,lat,time,z=None,conlist=None):
             h[:,ii] += h_re[nn,ii] * np.cos(om*tsec) + h_im[nn,ii] * np.sin(om*tsec)
             u[:,ii] += u_re[nn,ii] * np.cos(om*tsec) + u_im[nn,ii] * np.sin(om*tsec)
             v[:,ii] += v_re[nn,ii] * np.cos(om*tsec) + v_im[nn,ii] * np.sin(om*tsec)
-    
+
     szo = (nt,)+sz
     return h.reshape(szo), u.reshape(szo), v.reshape(szo)
-    
-    
+
 def extract_HC(modfile,lon,lat,z=None,conlist=None):
     """
     Extract harmonic constituents from OTIS binary output and interpolate onto points in lon,lat
-    
+
     set "z" to specifiy depth for transport to velocity conversion
-    
     set "constituents" in conlist
-    
+
     Returns:
         u_re, u_im, v_re, v_im, h_re, h_im, omega, conlist
-    
     """
 
     lon=np.asarray(lon)
     lat=np.asarray(lat)
     z=np.asarray(z)
-    
+
     ###
     # Make sure the longitude is between 0 and 360
     lon = np.mod(lon,360.0)
-    
+
     ###
     # Read the filenames from the model file
     pathfile = os.path.split(modfile)
     path = pathfile[0]
-    
+
     with open(modfile,'r') as f:
         hfile = path+'/' + f.readline().strip()
         uvfile = path+'/' + f.readline().strip()
@@ -279,13 +275,13 @@ def extract_HC(modfile,lon,lat,z=None,conlist=None):
         hfile=fix(hfile)
         uvfile=fix(uvfile)
         grdfile=fix(grdfile)
-    
+
     ###
-    # Read the grid file 
+    # Read the grid file
     X,Y,depth, mask = read_OTPS_grd(grdfile)
     #X[X>180.0] = 180.0 - X[X>180.0]
     mask = mask == 1
-    
+
     # Create an interpolation object
     sz = lon.shape
     lon = lon.ravel()
@@ -293,15 +289,16 @@ def extract_HC(modfile,lon,lat,z=None,conlist=None):
     nx = lon.size
 
     # X,Y are the source data, valid at mask
+    from ...spatial.interpXYZ import interpXYZ # implemented in this file, just for IDW method.
+
     F= interpXYZ(np.vstack((X[mask],Y[mask])).T,np.vstack((lon,lat)).T,method='idw',NNear=3,p=1.0)
-    
+
     # Interpolate the model depths onto the points if z is none
     if z == None:
         z = F(depth[mask])
     else:
         z = np.abs(z) # make sure they are positive
-        
-    ###
+
     # Check that the constituents are in the file
     conOTIS = get_OTPS_constits(hfile)
 
@@ -329,7 +326,7 @@ def extract_HC(modfile,lon,lat,z=None,conlist=None):
     for ii, vv in enumerate(conlist):
         idx = otis_constits[vv]['index']
         omega[ii] = otis_constits[vv]['omega']
-        print('Interpolating consituent: %s...'%vv)
+        logging.debug('Interpolating consituent: %s...'%vv)
 
         # Read and interpolate h
         X ,Y, tmp_h_re, tmp_h_im = read_OTPS_h(hfile,idx)
@@ -396,6 +393,7 @@ def nodal_correction(year,conlist,amp, phase):
 
         return hamp, hphase
 
+@memoize.memoize(lru=20)
 def read_OTPS_UV(uvfile,ic):
     """
     Reads the tidal transport constituent data from an otis binary file
@@ -442,17 +440,18 @@ def read_OTPS_UV(uvfile,ic):
     U_im = htemp[:,1:4*n-2:4]
     V_re = htemp[:,2:4*n-1:4]
     V_im = htemp[:,3:4*n:4]
-        
+
     X,Y = np.meshgrid(np.linspace(th_lim[0],th_lim[1],n),np.linspace(ph_lim[0],ph_lim[1],m))
-    
+
     return X, Y, U_re, U_im, V_re, V_im
 
+@memoize.memoize(lru=10)
 def read_OTPS_grd(grdfile):
     """
     Reads the grid data from an otis binary file
 
     Returns: X, Y, hz, mask
-    
+
     See this post on byte ordering
          http://stackoverflow.com/questions/1632673/python-file-slurp-w-endian-conversion
     """
@@ -465,16 +464,16 @@ def read_OTPS_grd(grdfile):
     lats = np.fromfile(f,dtype=np.float32,count=2)
     lons = np.fromfile(f,dtype=np.float32,count=2)
     dt = np.fromfile(f,dtype=np.float32,count=1)
-    
+
     n.byteswap(True)
     m.byteswap(True)
     lats.byteswap(True)
     lons.byteswap(True)
     dt.byteswap(True)
-    
+
     nob = np.fromfile(f,dtype=np.int32,count=1)
     nob.byteswap(True)
-    if nob == 0: 
+    if nob == 0:
        f.seek(20,1)
        iob = []
     else:
@@ -483,31 +482,31 @@ def read_OTPS_grd(grdfile):
        iob.byteswap(True)
        iob = np.reshape(iob,(2,nob[0]))
        f.seek(8,1)
-    
+
     hz = np.fromfile(f,dtype=np.float32,count=n[0]*m[0])
     f.seek(8,1)
     mask = np.fromfile(f,dtype=np.int32,count=n[0]*m[0])
-    
+
     hz.byteswap(True)
     mask.byteswap(True)
-    
+
     hz = np.reshape(hz,(m[0],n[0]))
     mask = np.reshape(mask,(m[0],n[0]))
-    
+
     f.close()
-    
+
     X,Y = np.meshgrid(np.linspace(lons[0],lons[1],n[0]),np.linspace(lats[0],lats[1],m[0]))
-    
     return X, Y ,hz, mask
 
+@memoize.memoize(lru=20)
 def read_OTPS_h(hfile,ic):
     """
     Reads the elevation constituent data from an otis binary file
-    
+
     ic = constituent number
-    
+
     Returns: X, Y, h_re and h_im (Real and imaginary components)
-    
+
     See this post on byte ordering
          http://stackoverflow.com/questions/1632673/python-file-slurp-w-endian-conversion
     """
@@ -518,76 +517,66 @@ def read_OTPS_h(hfile,ic):
     nm = np.fromfile(f,dtype=np.int32,count=3)
     th_lim = np.fromfile(f,dtype=np.float32,count=2)
     ph_lim = np.fromfile(f,dtype=np.float32,count=2)
-    
+
     # Need to go from little endian to big endian
     ll.byteswap(True)
     nm.byteswap(True)
     th_lim.byteswap(True)
     ph_lim.byteswap(True)
-    
+
     n = nm[0]
     m = nm[1]
     nc = nm[2]
-    
+
     if ic < 1 or ic > nc:
         raise Exception('ic must be > 1 and < %d'%ic)
         #return -1
-    
     # Read the actual data
     nskip = (ic-1)*(nm[0]*nm[1]*8+8) + 8 + ll[0] - 28
     f.seek(nskip,1)
-    
+
     htemp = np.fromfile(f,dtype=np.float32,count=2*n*m)
     htemp.byteswap(True)
-    
-    #
     f.close()
-    
+
     htemp = np.reshape(htemp,(m,2*n))
     h_re = htemp[:,0:2*n-1:2]
     h_im = htemp[:,1:2*n:2]
-    
     X,Y = np.meshgrid(np.linspace(th_lim[0],th_lim[1],n),np.linspace(ph_lim[0],ph_lim[1],m))
-    
     return X ,Y, h_re, h_im
 
-
+@memoize.memoize(lru=10)
 def get_OTPS_constits(hfile):
     """
     Returns the list of constituents in the file
     """
     f = open(hfile,'rb')
     ll = np.fromfile(f,dtype=np.int32,count=1)
-    nm = np.fromfile(f,dtype=np.int32,count=3)  
-    
+    nm = np.fromfile(f,dtype=np.int32,count=3)
+
     ll.byteswap(True)
     nm.byteswap(True)
-    
     f.close()
-    
+
     ncon = nm[2]
-    conList = []    
+    conList = []
     for ii in range(1,ncon+1):
         for vv in otis_constits:
             if otis_constits[vv]['index']==ii:
                 conList.append(vv)
-                
+
     return conList
-  
+
 def cart2pol(re,im):
-    
     amp = np.abs(re + 1j*im)
     phs = np.angle(re + 1j*im)
-    
     return amp, phs
-    
+
 def pol2cart(amp,phs):
-    
     re = amp * np.cos(phs)
     im = amp * np.sin(phs)
-    
     return re, im
- 
+
 def astrol(time):
     """
     %function  [s,h,p,N]=astrol(time);
@@ -620,32 +609,29 @@ def astrol(time):
     h = mod(h,circle);
     p = mod(p,circle);
     N = mod(N,circle);
-    
     """
-    
-    circle=360;
-    T = time - 51544.4993;
+    circle=360
+    T = time - 51544.4993
     # mean longitude of moon
     # ----------------------
-    s = 218.3164 + 13.17639648 * T;
+    s = 218.3164 + 13.17639648 * T
     # mean longitude of sun
     # ---------------------
-    h = 280.4661 +  0.98564736 * T;
+    h = 280.4661 +  0.98564736 * T
     # mean longitude of lunar perigee
     # -------------------------------
-    p =  83.3535 +  0.11140353 * T;
+    p =  83.3535 +  0.11140353 * T
     # mean longitude of ascending lunar node
     # --------------------------------------
-    N = 125.0445 -  0.05295377 * T;
+    N = 125.0445 -  0.05295377 * T
     #
-    s = np.mod(s,circle);
-    h = np.mod(h,circle);
-    p = np.mod(p,circle);
-    N = np.mod(N,circle);
-    
+    s = np.mod(s,circle)
+    h = np.mod(h,circle)
+    p = np.mod(p,circle)
+    N = np.mod(N,circle)
+
     return s,h,p,N
-    
-    
+
 def nodal(time,con):
     """
     Nodal correction

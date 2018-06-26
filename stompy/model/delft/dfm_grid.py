@@ -339,7 +339,6 @@ def cleanup_multidomains(grid):
     log.info("Extracting grid boundary")
     return grid
 
-
 def polyline_to_boundary_edges(g,linestring,rrtol=3.0):
     """
     Mimic FlowFM boundary edge selection from polyline to edges.
@@ -351,6 +350,8 @@ def polyline_to_boundary_edges(g,linestring,rrtol=3.0):
     linestring: [N,2] polyline data
     rrtol: controls search distance away from boundary. Defaults to
     roughly 3 cell length scales out from the boundary.
+
+    returns ndarray of edge indices into g.
     """
     linestring=np.asanyarray(linestring)
 
