@@ -1,17 +1,29 @@
-# Methods for representing and manipulating transects
-# in xarray datasets.
+"""
+Methods for representing and manipulating transects
+in xarray datasets.
 
-# Transects being a dataset with the form
-#  x(s), y(s), z(s,k) or z(k)
-#  u(s,k), v(s,k), etc.
-# where x(s),y(s) describes a polyline.
+Transects being a dataset with the form
+ x(s), y(s), z(s,k) or z(k)
+ u(s,k), v(s,k), etc.
+where x(s),y(s) describes a polyline.
 
-# names are somewhat standardized, but can generally be provided
-# U: vector valued velocity in geographic coordinate frame
-#  the component dimension is last by convention, and its name
-#  describes the coordinate system (xy, roz, tran)
-# V<n>: component of a velocity (typ e, n, u)
-# <N>_avg: depth averaged value
+names are somewhat standardized, but can generally be provided
+U: vector valued velocity in geographic coordinate frame
+ the component dimension is last by convention, and its name
+ describes the coordinate system (xy, roz, tran)
+V<n>: component of a velocity (typ e, n, u)
+<N>_avg: depth averaged value
+
+Remaining design decisions:
+1. Make it more standardized between one variable per component, or
+   vector-valued variables.  Vector-valued variables are cleaner
+   mathematically, though it seems CF tends towards one variable
+   per-component.
+2. Standardize how intervals and bounds are represented.  Having bounds
+   makes indexing more annoying, but keeps the dimension names
+   consistent.
+
+"""
 import six
 import numpy as np
 import xarray as xr
@@ -21,19 +33,22 @@ from . import utils
 def vert_dim(tran):
     # placeholder - need a more robust way of inferring which dimension
     # is vertical
-    return 'laydim'
+    return 'layer'
 
 def infer_z_dz(tran,z_ctr='z_ctr',z_dz='z_dz',update=True):
     if z_dz in tran:
         return tran[z_dz]
+
+    v_dim=vert_dim(tran_z)
+
     # center to center spacing:
-    dctr=tran[z_ctr].diff(dim='laydim')
-    dz_middle=0.5*(dctr.isel(laydim=slice(None,-1)) +
-                   dctr.isel(laydim=slice(1,None)))
-    dz=xr.concat( [ dz_middle.isel(laydim=slice(None,1)),
+    dctr=tran[z_ctr].diff(dim=v_dim)
+    dz_middle=0.5*(dctr.isel( **{v_dim:slice(None,-1)} ) +
+                   dctr.isel( **{v_dim:slice(1,None)}))
+    dz=xr.concat( [ dz_middle.isel( **{v_dim:slice(None,1)} ),
                     dz_middle,
-                    dz_middle.isel(laydim=slice(-1,None)) ],
-                  dim='laydim')
+                    dz_middle.isel( **{v_dim:slice(-1,None)}) ],
+                  dim=v_dim)
     dz.name=z_dz
     if update:
         tran[z_dz]=dz
@@ -53,6 +68,10 @@ def depth_avg(tran,v):
     return integrated/depth
 
 def Qleft(tran):
+    """
+    Calculate flow with positive meaning towards the 'left', i.e.
+    if looking from the start to the end of the transect.
+    """
     quv=depth_int(tran,'U')
 
     # unit normals left of transect:
@@ -292,7 +311,14 @@ def resample_z(tran,new_z):
             continue
         elif v in ['z_ctr','z_dz']:
             continue # gets overwritten
+
         dims=var.dims # dimension names don't change
+        # any new dimensions we need to copy?
+        for d in dims:
+            if (d not in ds) and (d not in [z_dim]):
+                # unclear how to deal with things like wdim.  For now
+                # it will get copied, but then it will not be valid.
+                ds[d]=tran[d]
         shape=[ len(ds[d]) for d in dims]
 
         # For the moment, can assume that there are two dimensions,
