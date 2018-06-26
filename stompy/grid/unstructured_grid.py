@@ -1043,18 +1043,17 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         for pc in potential_cells:
             segs=self.nodes['x'][pc]
             A=signed_area(segs)
-            
             # Looking for the most negative area
             if A<best[0]:
                 best=(A,pc)
         return np.array(best[1][::-1]) # reverse, to return a CCW, positive area string.
-        
+
     def find_cycles(self,max_cycle_len=4,starting_edges=None,check_area=True):
         """ traverse edges, returning a list of lists, each list giving the
         CCW-ordered node indices which make up a 'facet' or cycle in the graph
         (i.e. potentially a cell).
         starting_edges: iterable of edge indices from which to start the cycle
-          traversal.  
+          traversal.
         check_area: if True, make sure that any returned cycles form a polygon
          with positive area.   This can be an issue if the outer ring of the grid is
          short enough to be a cycle itself.
@@ -1131,7 +1130,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             if j in j2:
                 return j
         return None
-    
+
     def edge_to_cells(self,e=slice(None),recalc=False):
         """
         recalc: if True, forces recalculation of all edges.
@@ -1139,9 +1138,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         e: limit output to a single edge, a slice or a bitmask
           may also limit updates to the requested edges
         """
-        # try to be a little clever about recalculating - 
+        # try to be a little clever about recalculating -
         # it can be very slow to check all edges for UNKNOWN
-        
+
         if recalc:
             self.edges['cells'][:,:]=self.UNMESHED
             self.log.info("Recalculating edge to cells" )
@@ -1395,21 +1394,35 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         else:
             return [b[0],b[2],b[1],b[3]]
 
-    def edges_normals(self,edges=slice(None)):
+    def edges_normals(self,edges=slice(None),force_inward=False):
+        """
+        Calculate unit normal vectors for all edges, or a subset if edges
+        is specified.
+        force_inward: for edges with only one adjacent cell, modify the
+           sign of the normal such that it is positive towards the adjacent
+           cell, i.e. positive into the domain.  Otherwise, all normals
+           are positive left-to-right (i.e. from cell 0 to cell 1)
+        """
         # does not assume the grid is orthogonal - normals are found by rotating
         # the tangent vector
-        # I think this is positive towards c2, i.e. from left to right looking
-        # from n1 to n2
+        # I think this is positive towards c1, i.e. from left to right looking
+        # from n0 to n1
 
         # starts as the vector from node1 to node2
-        # say c1 was on the left, c2 on the right.  so n1 -> n2 is (0,1)
+        # say c0 was on the left, c1 on the right.  so n0 -> n1 is (0,1)
         # then that is changed to (1,0), then (1,-0)
-        # so this pointing left to right, and is in fact pointing towards c2.
+        # so this pointing left to right, and is in fact pointing towards c1.
         # had been axis=1, and [:,0,::-1]
         # but with edges possibly a single index, make it more general
         normals = np.diff(self.nodes['x'][self.edges['nodes'][edges]],axis=-2)[...,0,::-1]
         normals[...,1] *= -1
         normals /= mag(normals)[...,None]
+        if force_inward:
+            e2c=self.edge_to_cells(e=edges)
+            to_flip=(e2c[...,1]<0)&(e2c[...,0]>=0) # c1 is 'outside', c0 is 'inside'
+            # This feels a bit sketch when edges is a single index.  Tested with
+            # numpy 1.14.0 and it does the right thing
+            normals[to_flip] *= -1
         return normals
 
     # Variations on access to topology
