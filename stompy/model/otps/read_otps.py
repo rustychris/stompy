@@ -68,6 +68,9 @@ otis_constits = { 'M2':{'index':1,'omega':1.405189e-04,'v0u':1.731557546},\
 def tide_pred(modfile,lon,lat,time,z=None,conlist=None):
     """
     Performs a tidal prediction at all points in [lon,lat] at times in vector [time]
+    z: provide depths for the transport to velocity conversion. If None, the OTPS
+      model depths will be used.  If 1, it will effectively return transport values
+      rather than velocity.
     """
     lon=np.asarray(lon)
     lat=np.asarray(lat)
