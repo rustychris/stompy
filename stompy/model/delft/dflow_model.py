@@ -744,8 +744,8 @@ class MultiBC(BC):
             # here we are grabbing the values at time of instantiation of self.
             # hopefully it doesn't matter, especially since geom and model
             # are handled explicitly.
-            sub_kw=dict(geom=sub_geom)
-            sub_kw.update(self.saved_kw)
+            sub_kw=dict(self.saved_kw) # copy original
+            sub_kw['geom']=sub_geom
             sub_kw['name']="%s%04d"%(self.name,j)
 
             sub_bc=self.cls(model=self.model,**sub_kw)
