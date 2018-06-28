@@ -1157,7 +1157,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 try:
                     L=len(e)
                     if L==self.Nedges() and np.issubdtype(np.bool,e.dtype):
-                        js=np.nonzero(e)
+                        js=np.nonzero(e)[0]
                     else:
                         js=e
                 except TypeError:
@@ -2724,7 +2724,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         request_square(ax)
         return coll
-    
+
     def edges_length(self):
         p1 = self.nodes['x'][self.edges['nodes'][:,0]]
         p2 = self.nodes['x'][self.edges['nodes'][:,1]]
@@ -2736,7 +2736,6 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         if sum(sel)>0:
             for c in np.nonzero(sel)[0]:
                 self.cells['_area'][c] = signed_area(self.nodes['x'][self.cell_to_nodes(c)])
-                
         return self.cells['_area']
 
     #-# Selection methods:
