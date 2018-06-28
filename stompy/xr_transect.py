@@ -233,6 +233,8 @@ def section_hydro_parsed_to_transect(section,filename):
     ds['Ve']=('sample','layer'), Ve
     ds['Vn']=('sample','layer'), Vn
     ds['Vu']=('sample','layer'), Vu
+    ds['U']=('sample','layer','xy'), np.concatenate( (Ve[:,:,None], Vn[:,:,None]), axis=2)
+
     ds['z_dz']=('sample','layer'), dz
     ds['z_int']=('sample','interface'),z_int
     ds['z_ctr']=('sample','layer'),z_ctr
@@ -242,11 +244,8 @@ def section_hydro_parsed_to_transect(section,filename):
     ds['y_sample']=('sample',),xy[:,1]
 
     ds['d_sample']=('sample',),utils.dist_along(xy)
+    ds['dx_sample']=('sample',),utils.center_to_interval(ds.d_sample.values)
 
-    # Out of place -- should be refactored
-    # ll=proj_utils.mapper('EPSG:26910','WGS84')(xy)
-    # ds['lon']=('sample',),ll[:,0]
-    # ds['lat']=('sample',),ll[:,1]
     return ds
 
 def section_hydro_to_transects(filename):
