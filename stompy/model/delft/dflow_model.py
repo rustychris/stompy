@@ -1,17 +1,22 @@
-import os
-import inspect
+"""
+Automate parts of setting up a DFlow hydro model.
+
+TODO:
+  allow for setting grid bathy from the model instance
+  consider a procedural approach to BCs:
+    add_bc_shp(...)
+    add_bc_match(FlowBC(...), name="SJ_upstream")
+"""
+import os,shutil,glob,inspect
 import six
+import logging as log
 
 import numpy as np
 import xarray as xr
-
 from shapely import geometry
 
 import stompy.model.delft.io as dio
 from stompy import xr_utils
-
-import logging as log
-
 from stompy.io.local import noaa_coops
 from stompy import utils, filters, memoize
 from stompy.spatial import wkb2shp, proj_utils
@@ -387,7 +392,7 @@ class DFlowModel(object):
         patts=['*.pli','*.tim','*.t3d','*.mdu','FlowFM.ext','*_net.nc','DFM_*', '*.dia',
                '*.xy*','initial_conditions*','dflowfm-*.log']
         for patt in patts:
-            matches=glob.glob(os.path.join(run_base_dir,patt))
+            matches=glob.glob(os.path.join(self.run_dir,patt))
             for m in matches:
                 if os.path.isfile(m):
                     os.unlink(m)
@@ -789,8 +794,10 @@ class OTPSVelocityBC(VelocityBC):
 
         norm=self.get_inward_normal()
         h=self.get_depth()
+        L=self.model.grid.edges_length()[self.grid_edge]
+
         # clip h here to avoid anything too crazy
-        unorm=(UV*norm).sum(axis=1) / max(h,self.min_h)
+        unorm=(UV*norm).sum(axis=1) / (L*max(h,self.min_h))
         ds['unorm']=('time',),unorm
         self.write_tim(ds['unorm'])
 
