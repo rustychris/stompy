@@ -42,10 +42,23 @@ def lowpass_gotin(data,in_t_days,*args,**kwargs):
     print("Use lowpass_godin() instead of lowpass_gotin()")
     return lowpass_godin(data,in_t_days,*args,**kwargs)
 
-def lowpass_godin(data,in_t_days,*args,**kwargs):
+def lowpass_godin(data,in_t_days,ends='pass',*args,**kwargs):
     """ Approximate Gotin's tidal filter
     Note that in preserving the length of the dataset, the ends aren't really
     valid
+
+    data: array suitable to pass to np.convolve
+    in_t_days: timestamps in decimal days.  This is only used to establish
+    the time step, which is assumed to be constant.
+
+    ends:
+    'pass' no special treatment at the ends.  The first and last ~37
+      hours will be contaminated by end-effects.
+    'nan' will replace potentially contaminated end samples with nan
+
+    *args,**kwargs are allowed but ignored.  They are present to make it
+    easier to slip this method in to replace others without having to change
+    the call signature
     """
     mean_dt_h = 24*np.mean(np.diff(in_t_days))
 
@@ -57,12 +70,19 @@ def lowpass_godin(data,in_t_days,*args,**kwargs):
     A24 = np.ones(N24) / float(N24)
     A25 = np.ones(N25) / float(N25)
 
+    if ends=='nan':
+        # Add nan at start/end, which will carry through
+        # the convolution to mark any samples affected
+        # by the ends
+        data=np.concatenate( ( [np.nan],data,[np.nan] ) )
     data = np.convolve(data,A24,'same')
     data = np.convolve(data,A24,'same')
     data = np.convolve(data,A25,'same')
 
+    if ends=='nan':
+        data=data[1:-1]
+
     return data
-    
 
 def lowpass_fir(x,winsize,ignore_nan=True,axis=-1,mode='same',use_fft=False,
                 nan_weight_threshold=0.49):
