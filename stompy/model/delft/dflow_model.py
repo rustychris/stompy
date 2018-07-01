@@ -98,8 +98,7 @@ class BC(object):
 
         np.savetxt(fn,data)
 
-
-    def write_t3d(self,da,z_bed,fn=None,suffix,feat_suffix,quantity):
+    def write_t3d(self,da,z_bed,fn=None):
         """
         Write a 3D boundary condition for a feature from a vertical profile (likely
            ROMS or HYCOM data)
@@ -162,12 +161,13 @@ class BC(object):
 
         ref_date_str=utils.to_datetime(ref_date).strftime('%Y-%m-%d %H:%M:%S')
 
-        t3d_fn=self.default_t3d_fn()
+        if fn is None:
+            fn=self.default_t3d_fn()
 
         assert da.dims[0]=='time' # for speed-up of direct indexing
 
         # Can copy this to other node filenames if necessary
-        with open(t3d_fn,'wt') as fp:
+        with open(fn,'wt') as fp:
             fp.write("\n".join([
                 "LAYER_TYPE=sigma",
                 layer_line,
