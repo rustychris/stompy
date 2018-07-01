@@ -63,6 +63,7 @@ def jodc_mooring_to_ds(filename):
         sea_area=hdr1[42:58].strip()
         ds['sea_area']=(),sea_area
 
+        # This seems to be the total depth, not height of instrument
         station_depth=hdr2[22:27].strip()
         if station_depth!="":
             ds['station_depth']=(),station_depth
@@ -81,9 +82,11 @@ def jodc_mooring_to_ds(filename):
         equipment_code_large = hdr2[28:30] # MS
         equipment_code_small = hdr2[30:33] # MTC
 
+        depth_ref=None
         times=[]
         direcs=[]
         speeds=[]
+        depths=[]
 
         line=nextline()
         while line:
@@ -113,6 +116,18 @@ def jodc_mooring_to_ds(filename):
             else:
                 s=float(meas_speed) * (0.1**speed_decimal)
             speeds.append(s)
+
+            if depth_ref is None:
+                depth_ref=line[33]
+            else:
+                if depth_ref!=line[33]:
+                    print("Depth reference changed?! %s to %s"%(depth_ref,line[33]))
+            depth=line[34:39]
+            if depth.strip()=="":
+                depth=np.nan
+            else:
+                depth=float(depth) * 0.1 # report in units of 0.1m
+            depths.append(depth)
             line=nextline()
 
         # package up this mooring:
@@ -131,6 +146,12 @@ def jodc_mooring_to_ds(filename):
         ds['time']=('time',),times
         ds['speed']=('time',),speed_ms
         ds.speed.attrs['units']='m s-1'
+        ds['depth']=('time',),np.array(depths)
+        if depth_ref=='B':
+            depth_ref='above bed'
+        elif depth_ref=='S':
+            depth_ref='below surface'
+        ds.depth.attrs['reference']=depth_ref
 
         ds['Ve']=('time',),Ve
         ds['Vn']=('time',),Vn
