@@ -49,33 +49,51 @@ def test_compare():
                      np.timedelta64(15,'m') )
 
     modfile=read_otps.model_path('OhS')
-    pred_h,pred_u,pred_v=read_otps.tide_pred(modfile,lon=lonlats[:,0],lat=lonlats[:,1],
-                                             time=times)
-
-
     otps=otps_model.OTPS(bin_path=local_bin_path,
                          data_path="data",
                          model_file="DATA/" + os.path.basename(modfile))
-    consts=otps.extract_HC(lonlats,
-                           constituents=['m2','s2','n2','k2','k1','o1','p1','q1'],
-                           quant='z')
 
-    pred2_h=otps_model.reconstruct(consts,times)
+    for quant in ['z','u','U']:
+        # Get the read_otps prediction:
+        if quant in ['z','u','v']:
+            pred_h,pred_u,pred_v=read_otps.tide_pred(modfile,lon=lonlats[:,0],lat=lonlats[:,1],
+                                                     time=times)
+            if quant=='z':
+                pred=pred_h[:,0]
+            elif quant=='u':
+                pred=pred_u[:,0]
+            elif quant=='v':
+                pred=pred_v[:,0]
+            else:
+                assert False
+        elif quant in ['U','V']:
+            _h,pred_U,pred_V=read_otps.tide_pred(modfile,lon=lonlats[:,0],lat=lonlats[:,1],
+                                                 time=times,z=1.0)
+            if quant=='U':
+                pred=pred_U[:,0]
+            elif quant=='V':
+                pred=pred_V[:,0]
+            else:
+                assert False
+        else:
+            assert False
 
-    diffs=pred2_h.result.isel(site=0).values - pred_h[:,0]
-    rms_err=np.sqrt(np.mean(diffs**2))
-    print("RMS difference %.4f"%rms_err)
-    assert rms_err<0.01
+        consts=otps.extract_HC(lonlats,
+                               constituents=['m2','s2','n2','k2','k1','o1','p1','q1'],
+                               quant=quant)
+        pred2=otps_model.reconstruct(consts,times).result.isel(site=0).values
+        if quant in ['u','v']:
+            # convert cm/s to m/s
+            pred2 = pred2/100.0
 
+        diffs=pred2 - pred
+        R=np.corrcoef(pred2, pred)[0,1]
+        scale=min(np.std(pred2),np.std(pred))
 
-    if 0:
-        import matplotlib.pyplot as plt
-        plt.ion()
-
-        plt.figure(1).clf()
-        fig,ax=plt.subplots(num=1)
-
-        ax.plot(times,pred_h,label='read_otps')
-        ax.plot(pred2_h.time.values,pred2_h.result.isel(site=0),
-                label='otps_model')
+        rms_err=np.sqrt(np.mean(diffs**2))
+        print("Comparison for quantity %s"%quant)
+        print("RMS difference %.4f  relative %.4f%%"%(rms_err,100*rms_err/scale))
+        print("R=%.4f"%R)
+        assert rms_err/scale<0.02
+        assert R>0.99
 

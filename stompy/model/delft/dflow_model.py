@@ -77,6 +77,12 @@ class BC(object):
         """
         return os.path.join(self.model.run_dir,self.filename_base() + "_0001.tim")
 
+    def default_t3d_fn(self):
+        """
+        same as above, but for t3d
+        """
+        return os.path.join(self.model.run_dir,self.filename_base() + "_0001.t3d")
+
     def write_tim(self,da,fn=None):
         """
         Write a DFM tim file based on the timeseries in the DataArray.
@@ -91,6 +97,93 @@ class BC(object):
             fn=self.default_tim_fn()
 
         np.savetxt(fn,data)
+
+
+    def write_t3d(self,da,z_bed,fn=None,suffix,feat_suffix,quantity):
+        """
+        Write a 3D boundary condition for a feature from a vertical profile (likely
+           ROMS or HYCOM data)
+         - most of the time writing boundaries is here
+         - DFM details for rev52184:
+             the LAYERS line is silently truncated to 100 characters.
+             LAYER_TYPE=z assumes a coordinate of 0 at the bed, positive up
+
+        we assume that the incoming data has no nan, has a positive-up
+        z coordinate with 0 being model datum (i.e. NAVD88)
+        """
+        ref_date,t_start,t_stop = self.model.mdu.time_range()
+
+        # not going to worry about 3D yet.  see ocean_dfm.py
+        # for some hints.
+        assert da.ndim==2
+
+        # new code gets an xr dataset coming in with z coordinate.
+        # old code did some cleaning on ROMS data.  no more.
+
+        # Do sort the vertical
+        dz=np.diff(da.z.values)
+        if np.all(dz>0):
+            log.debug("Vertical order ok")
+        elif np.all(dz<0):
+            log.debug("3D velo flip ertical order")
+            da=da.isel(z=slice(None,None,-1))
+
+        if np.median(da.z.values) > 0:
+            log.warning("Weak sign check suggests t3d input data has wrong sign on z")
+
+        max_line_length=100 # limitation in DFM on the whole LAYERS line
+        # 7 is '_2.4567'
+        # -1 for minor bit of safety
+        max_layers=(max_line_length-len("LAYERS=")) // 7 - 1
+
+        # This should be the right numbers, but reverse order
+        # that's probably not right now...
+        sigma = (z_bed - da.z.values) / z_bed
+
+        # Force it to span the full water column
+        sigma[0]=min(0.0,sigma[0])
+        sigma[-1]=max(1.0,sigma[-1])
+
+        assert len(sigma)<=max_layers
+
+        #     remapper=lambda y: np.interp(np.linspace(0,1,max_layers),
+        #                                  np.linspace(0,1,len(sigma)),y)
+        #     # Just because the use of remapper below is not compatible
+        #     # with vector quantities at this time.
+        #     assert da_sub.ndim-1 == 1
+
+        sigma_str=" ".join(["%.4f"%s for s in sigma])
+
+        # This line is truncated at 100 characters in DFM r52184.
+        layer_line="LAYERS=%s"%sigma_str
+        assert len(layer_line)<max_line_length
+
+        elapsed_minutes=(da_sub.time.values - ref_date)/np.timedelta64(60,'s')
+
+        ref_date_str=utils.to_datetime(ref_date).strftime('%Y-%m-%d %H:%M:%S')
+
+        t3d_fn=self.default_t3d_fn()
+
+        assert da.dims[0]=='time' # for speed-up of direct indexing
+
+        # Can copy this to other node filenames if necessary
+        with open(t3d_fn,'wt') as fp:
+            fp.write("\n".join([
+                "LAYER_TYPE=sigma",
+                layer_line,
+                "VECTORMAX=%d"%(da.ndim-1), # default, but be explicit
+                "quant=velocity",
+                "quantity1=velocity", # why is this here?
+                "# start of data",
+                ""]))
+            for ti,t in enumerate(elapsed_minutes):
+                fp.write("TIME=%g minutes since %s\n"%(t,ref_date_str))
+                # Faster direct indexing:
+                # The ravel will interleave components - unclear if that's correct.
+                data=" ".join( ["%.3f"%v for v in da.values[ti,:].ravel()] )
+                fp.write(data)
+                fp.write("\n")
+
 
 class StageBC(BC):
     # If other than None, can compare to make sure it's the same as the model
@@ -721,6 +814,10 @@ class OTPSStageBC(StageBC):
         self.write_tim(ds['water_level'])
 
 class VelocityBC(BC):
+    """
+    BC setting edge-normal velocity (velocitybnd), uniform in the vertical.
+    positive is into the domain.
+    """
     # write a velocitybnd BC
     def write_config(self):
         old_bc_fn=self.model.ext_force_file()
@@ -753,11 +850,15 @@ class VelocityBC(BC):
         """
         Estimate the water column depth associated with this BC.
         This is currently limited to a constant value, calculated for
-        self.grid_edge
+        self.grid_edge.
+        For the purposes here, this is a strictly positive quantity.
         """
         assert self.grid_edge is not None
         # This feels like it should be somewhere else, maybe in DFlowModel?
-        return self.model.edge_depth(self.grid_edge,datum='eta0')
+        h=-self.model.edge_depth(self.grid_edge,datum='eta0')
+        if h<=0:
+            log.warning("Depth for velocity BC is %f, should be >0"%h)
+        return h
 
 class OTPSVelocityBC(VelocityBC):
     """
@@ -770,12 +871,10 @@ class OTPSVelocityBC(VelocityBC):
         super(OTPSVelocityBC,self).__init__(model,**kw)
         self.otps_model=otps_model # something like OhS or wc
 
-    def write_data(self):
+    def transport_ds(self):
         from stompy.model.otps import read_otps
         ref_date,start,stop=self.model.mdu.time_range()
-
         pad=2*np.timedelta64(24,'h')
-
         ds=xr.Dataset()
 
         times=np.arange( start-pad,stop+pad, 15*np.timedelta64(60,'s') )
@@ -785,21 +884,65 @@ class OTPSVelocityBC(VelocityBC):
         modfile=read_otps.model_path(self.otps_model)
         xy=np.array(self.geom.coords)
         ll=self.model.native_to_ll(xy)
-        # note z=1.0 to get transport
+        # read_otps returns velocities in m/s
         pred_h,pred_U,pred_V=read_otps.tide_pred(modfile,lon=ll[:,0],lat=ll[:,1],
-                                                 time=times,z=1.0)
-        # Here - we'll query OTPS for this
-        UV=np.c_[ pred_U[:,0], pred_V[:,0] ]
+                                                 time=times,z=1)
+        # mean() is goofy - it's because xy is actually an array of points,
+        ds['h']=('time',),pred_h.mean(axis=1)
+        ds['U']=('time',),pred_U.mean(axis=1)
+        ds['V']=('time',),pred_V.mean(axis=1)
+        return ds
+
+    def velocity_ds(self):
+        """
+        Return time series of normal velocity in 'unorm'
+        variable in a xr.dataset.
+        """
+        ds=self.transport_ds()
+        UV=np.c_[ ds.U.values, ds.V.values ]
         assert self.grid_edge is not None,"Normal velocity BC from OTPS requires grid_edge"
 
         norm=self.get_inward_normal()
-        h=self.get_depth()
-        L=self.model.grid.edges_length()[self.grid_edge]
+        h=self.get_depth() # not the water surface elevation ds.h, but surf-bed depth
 
         # clip h here to avoid anything too crazy
-        unorm=(UV*norm).sum(axis=1) / (L*max(h,self.min_h))
+        unorm=(UV*norm).sum(axis=1) / max(h,self.min_h)
         ds['unorm']=('time',),unorm
-        self.write_tim(ds['unorm'])
+        return ds
+
+    def write_data(self):
+        ds=self.velocity_ds()
+        da=ds['unorm']
+        if 'z' in da.dims:
+            self.write_t3d(da,z_bed=self.model.edge_depth(self.grid_edge))
+        else:
+            self.write_tim(da)
+
+class OTPSVelocity3DBC(OTPSVelocityBC):
+    """
+    Force 3D transport based on depth-integrated transport from OTPS.
+    This is a temporary shim to test setting a 3D velocity BC.
+    """
+    def velocity_ds(self):
+        ds=super(OTPSVelocity3DBC,self).velocity_ds()
+
+        # so there is a 'unorm'
+        z_bed=self.model.edge_depth(self.grid_edge)
+        z_surf=1.0
+
+        assert z_bed<0
+
+        # pad out a bit above/below
+        ds['z']=('z',), np.array([z_bed-10,z_surf+10])
+
+        new_unorm,_=xr.broadcast(ds.unorm,ds.z)
+        ds['unorm']=new_unorm
+
+        import pdb
+        pdb.set_trace()
+
+        return ds
+
 
 class MultiBC(BC):
     """

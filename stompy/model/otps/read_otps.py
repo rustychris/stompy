@@ -69,8 +69,14 @@ def tide_pred(modfile,lon,lat,time,z=None,conlist=None):
     """
     Performs a tidal prediction at all points in [lon,lat] at times in vector [time]
     z: provide depths for the transport to velocity conversion. If None, the OTPS
-      model depths will be used.  If 1, it will effectively return transport values
-      rather than velocity.
+      model depths will be used.  If 1.0, it will effectively return transport values
+      in m2/s.
+
+    returns tuple of arrays h,u,v.
+     h in m relative to MSL
+     u,v in m/s
+
+    Note that this differs from the command line units, which return velocities in cm/s
     """
     lon=np.asarray(lon)
     lat=np.asarray(lat)
@@ -124,7 +130,7 @@ def tide_pred(modfile,lon,lat,time,z=None,conlist=None):
 def tide_pred_correc(modfile,lon,lat,time,dbfile,ID,z=None,conlist=None):
     """
     Performs a tidal prediction at all points in [lon,lat] at times in vector [time]
-    
+
     Applies an amplitude and phase correction based on a time series
     """
     raise Exception("RH: Not translated!")
@@ -176,7 +182,7 @@ def tide_pred_correc(modfile,lon,lat,time,dbfile,ID,z=None,conlist=None):
     h=np.zeros((nt,nx))
     u=np.zeros((nt,nx))
     v=np.zeros((nt,nx))
-    
+
     # Rebuild the time series
     #tsec=TS_harm.tsec - TS_harm.tsec[0]
     tsec = othertime.SecondsSince(time,basetime=time[0])
@@ -186,49 +192,48 @@ def tide_pred_correc(modfile,lon,lat,time,dbfile,ID,z=None,conlist=None):
             h[:,ii] += damp[nn]*h_amp[nn,ii] * np.cos(om*tsec - (h_phs[nn,ii] + dphs[nn]))
             u[:,ii] += damp[nn]*u_amp[nn,ii] * np.cos(om*tsec - (u_phs[nn,ii] + dphs[nn]))
             v[:,ii] += damp[nn]*v_amp[nn,ii] * np.cos(om*tsec - (v_phs[nn,ii] + dphs[nn]))
-            
+
     szo = (nt,)+sz
     return h.reshape(szo), u.reshape(szo), v.reshape(szo), residual
 
 def tide_pred_old(modfile,lon,lat,time,z=None,conlist=None):
     """
-	
+
 	### UNUSED ###
     Performs a tidal prediction at all points in [lon,lat] at times in vector [time]
-    
+
     """
-    
+
     # Read and interpolate the constituents
     u_re, u_im, v_re, v_im, h_re, h_im, omega, conlist = extract_HC(modfile,lon,lat,z=z,conlist=conlist)
-    
+
     # Initialise the output arrays
     sz = lon.shape
     nx = np.prod(sz)
     nt = time.shape[0]
     ncon = omega.shape[0]
-    
+
     h_re = h_re.reshape((ncon,nx))
     h_im = h_im.reshape((ncon,nx))
     u_re = u_re.reshape((ncon,nx))
     u_im = u_im.reshape((ncon,nx))
     v_re = v_re.reshape((ncon,nx))
     v_im = v_im.reshape((ncon,nx))
-    
+
     # Nodal correction to amps and phases here...
     baseyear = time[0].year
     amp, phase = cart2pol(h_re, h_im)
     amp,phase = nodal_correction(baseyear,conlist, amp, phase)
     h_re, h_im = pol2cart(amp, phase)
-    
+
     amp, phase = cart2pol(u_re, u_im)
     amp, phase = nodal_correction(baseyear,conlist, amp, phase)
     u_re, u_im = pol2cart(amp, phase)
-        
+
     amp, phase = cart2pol(v_re, v_im)
     amp, phase = nodal_correction(baseyear,conlist, amp, phase)
     v_re, v_im = pol2cart(amp, phase)
-    
-    
+
     # Calculate the time series
     tsec = othertime.SecondsSince(time,basetime=datetime(baseyear,1,1))
     h=np.zeros((nt,nx))
