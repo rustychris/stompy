@@ -976,7 +976,7 @@ def find_lag(t,x,t_ref,x_ref):
     elif isinstance(t_orig[0],np.datetime64):
         # goofy, but assume that lags are adequately represented 
         # by 64 bits of microseconds.  That means the range of
-        # lags is +-1us to 2.9e5 years.  Good enough, unless you're a 
+        # lags is +-1us to 2.9e5 years.  Good enough, unless you're a
         # a physicist or geologist.
         lag_opt = np.timedelta64( int(lag_opt*86400*1e6), 'us')
     return lag_opt
@@ -984,7 +984,7 @@ def find_lag(t,x,t_ref,x_ref):
 
 
 def break_track(xy,waypoints,radius_min=400,radius_max=800,min_samples=10):
-    """ 
+    """
     xy: coordinate sequence of trackline
     waypoints: collection of waypoints
 
@@ -1254,7 +1254,7 @@ def to_datetime(x):
             # at the moment we're trying to avoid a pandas dependency
             # here.
             x=np.datetime64(x)
-    
+
     # isscalar is not so general - it does *not* mean not array, it means
     # the value *is* a numpy scalar.
     if np.isscalar(x):
@@ -1271,6 +1271,13 @@ def to_datetime(x):
                     for x in ts] 
         if len(x) and isinstance(x.flatten[0],datetime.datetime):
             return x
+
+def strftime(d,fmt="%Y-%m-%d %H:%M"):
+    """
+    convenience method to convert to python datetime
+    and format to string
+    """
+    return to_datetime(d).strftime(fmt)
 
 # some conversion help for datetime64 and python datenums
 # pandas includes some of this functionality, but trying to 
