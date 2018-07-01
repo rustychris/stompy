@@ -514,29 +514,37 @@ def read_map(fn,hyd=None,use_memmap=True,include_grid=True,return_grid=False):
     Read binary D-Water Quality map output, returning an xarray dataset.
 
     fn: path to .map file
-    hyd: path to .hyd file describing the hydrodynamics. if None, search for .hyd 
-     in the same folders as the map file.
+    hyd: waq_scenario.Hydro() object.  In the past this could be a path,
+       but to avoid an apparent circular import, this must now be a
+       Hydro object.
     use_memmap: use memory mapping for file access.  Currently
       this must be enabled.
 
     include_grid: the returned dataset also includes grid geometry, suitable
-       for unstructured_grid.from_ugrid(ds).  
+       for unstructured_grid.from_ugrid(ds).
        WARNING: there is currently a bug which causes this grid to have errors.
        probably a one-off error of some sort.
 
     note that missing values at this time are not handled - they'll remain as
     the delwaq standard -999.0.
     """
-    from . import waq_scenario as waq
 
-    if not isinstance(hyd,waq.Hydro):
-        if hyd==None:
-            hyds=glob.glob( os.path.join(os.path.dirname(fn),"*.hyd"))
-            assert len(hyds)==1,"hyd=auto only works when there is exactly 1 (not %d) hyd files"%(len(hyds))
-            hyd=hyds[0]
-        hyd=waq.HydroFiles(hyd)
+    # pycharm does not like the circular import, even when it's inside
+    # a function like this, so until this all gets refactored, disallow
+    # this feature
+    assert hyd is not None,"Inferring hyd is disabled because of circular imports"
+    assert not isinstance(hyd,six.string_types),"Must pass in Hydro() object, not path"
 
-    nbytes=os.stat(fn).st_size # 420106552 
+    # from . import waq_scenario as waq
+    #
+    # if not isinstance(hyd,waq.Hydro):
+    #     if hyd==None:
+    #         hyds=glob.glob( os.path.join(os.path.dirname(fn),"*.hyd"))
+    #         assert len(hyds)==1,"hyd=auto only works when there is exactly 1 (not %d) hyd files"%(len(hyds))
+    #         hyd=hyds[0]
+    #     hyd=waq.HydroFiles(hyd)
+
+    nbytes=os.stat(fn).st_size # 420106552
 
     with open(fn,'rb') as fp:
 

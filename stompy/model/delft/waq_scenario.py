@@ -8009,7 +8009,7 @@ END_MULTIGRID"""%num_layers
 
         import stompy.model.delft.io as dio
         map_fn=os.path.join(self.base_path,self.name+".map")
-        map_ds=dio.read_map(map_fn,self.hydro.hyd_path)
+        map_ds=dio.read_map(map_fn,self.hydro)
 
         dio.map_add_z_coordinate(map_ds,total_depth='TotalDepth',coord_type='sigma',
                                  layer_dim='layer')
