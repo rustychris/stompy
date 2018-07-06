@@ -41,18 +41,18 @@ def nwis_dataset_collection(stations,*a,**k):
     collection=xr.concat( ds_per_site, dim='site')
     for ds in ds_per_site:
         ds.close() # free up FDs
-    return collection 
-        
+    return collection
+
 def nwis_dataset(station,start_date,end_date,products,
-                 days_per_request=None,frequency='realtime',
+                 days_per_request='M',frequency='realtime',
                  cache_dir=None,clip=True):
     """
     Retrieval script for USGS waterdata.usgs.gov
-    
+
     Retrieve one or more data products from a single station.
     station: string or numeric identifier for COOPS station.
 
-    products: list of integers identifying the variable to retrieve.  See all_products at 
+    products: list of integers identifying the variable to retrieve.  See all_products at
     the top of this file.
 
     start_date,end_date: period to retrieve, as python datetime, matplotlib datenum,
@@ -64,7 +64,7 @@ def nwis_dataset(station,start_date,end_date,products,
       if this is a string, it is interpreted as the frequency argument to pandas.PeriodIndex.
     so 'M' will request month-aligned chunks.  this has the advantage that requests for different
     start dates will still be aligned to integer periods, and can reuse cached data.
-   
+
     cache_dir: if specified, save each chunk as a netcdf file in this directory,
       with filenames that include the gage, period and products.  The directory must already
       exist.

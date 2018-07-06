@@ -1963,9 +1963,6 @@ def download_url(url,local_file,log=None,on_abort='pass'):
         if parsed.scheme in ['http','https']:
             import requests
             r=requests.get(url,stream=True)
-            byte_sum=0
-            thresh=102400
-            bucket=0
 
             with open(local_file,'wb') as fp:
                 for chunk in r.iter_content(chunk_size=1024):
