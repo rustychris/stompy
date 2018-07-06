@@ -26,8 +26,9 @@ from . import io as dio
 
 class BC(object):
     name=None
-    geom=None # will get populated if this came from a shapefile
-    def __init__(self,model,**kw):
+    _geom=None
+
+    def __init__(self,model,name,**kw):
         """
         Create boundary condition object.  Note that no work should be done
         here, as the rest of the model data is not yet in place, and this
@@ -35,10 +36,20 @@ class BC(object):
         shapefile attributes.
         """
         self.model=model # make sure we got a model instance
+        self.name=name
         self.__dict__.update(kw)
+
+    @property
+    def geom(self):
+        if (self._geom is None):
+            self._geom=self.model.get_geometry(name=self.name)
+        return self._geom
 
     def write(self):
         log.info("Writing feature: %s"%self.name)
+
+        if self.geom is None:
+            self.set_geom()
 
         self.write_pli()
         self.write_config()
@@ -140,9 +151,20 @@ class BC(object):
         sigma = (z_bed - da.z.values) / z_bed
 
         # Force it to span the full water column
-        sigma[0]=min(0.0,sigma[0])
-        sigma[-1]=max(1.0,sigma[-1])
+        # used to allow it to go slightly beyond, but
+        # in trying to diagnose a 3D profile run in 52184, limit
+        # to exactly 0,1
+        # well, maybe that's not necessary -- before trying to do any resampling
+        # here, maybe go ahead and let it span too far
+        bed_samples=np.nonzero(sigma<=0)[0]
+        surf_samples=np.nonzero(sigma>=1.0)[0]
+        slc=slice(bed_samples[-1],surf_samples[0]+1)
+        da=da.isel(z=slc)
+        sigma=sigma[slc]
+        sigma[0]=0.0 # min(0.0,sigma[0])
+        sigma[-1]=1.0 # max(1.0,sigma[-1])
 
+        assert np.all(np.diff(sigma)>0),"Need more sophisticated treatment of sigma in t3d file"
         assert len(sigma)<=max_layers
 
         #     remapper=lambda y: np.interp(np.linspace(0,1,max_layers),
@@ -157,7 +179,7 @@ class BC(object):
         layer_line="LAYERS=%s"%sigma_str
         assert len(layer_line)<max_line_length
 
-        elapsed_minutes=(da_sub.time.values - ref_date)/np.timedelta64(60,'s')
+        elapsed_minutes=(da.time.values - ref_date)/np.timedelta64(60,'s')
 
         ref_date_str=utils.to_datetime(ref_date).strftime('%Y-%m-%d %H:%M:%S')
 
@@ -594,52 +616,101 @@ class DFlowModel(object):
     def run_model(self):
         self.run_dflowfm(cmd="--autostartstop %s"%os.path.basename(self.mdu.filename))
 
-    def add_bcs_from_shp(self,forcing_shp):
-        shp_data=wkb2shp.shp2geom(forcing_shp)
-        self.add_bcs_from_features(shp_data)
-    def add_bcs_from_features(self,shp_data):
-        for feat in shp_data:
-            params=dict( [ (k,feat[k]) for k in feat.dtype.names])
-            bcs=self.bc_factory(params)
-            self.add_bcs(bcs)
-
-    # Default attribute for code to evaluate to generate BCs from shapefile
-    # or general dictionary.
-    bc_code_field='bcs'
-    def bc_factory(self,params):
+    gazetteers=[]
+    def add_gazetteer(self,shp_fn):
         """
-        Create a list of BC objects based on the contents of the dictionary
-        params.
-        The default implementation here looks for a 'code' field, which
-        will be evaluated with methods of the model available in the local
-        namespace.
-        keys in params will be assigned to each BC object.
+        Register a shapefile for resolving feature locations
         """
-        assert self.bc_code_field in params,"Default implementation requires a %s attribute"%self.bc_code_field
-        namespace=dict(params)
-        namespace['self']=self
+        self.gazetteers.append(wkb2shp.shp2geom(shp_fn))
+    def get_geometry(self,**kws):
+        """
+        The gazetteer interface for BC geometry.  given criteria as keyword arguments,
+        i.e. name='Old_River', return the matching geometry from the gazetteer as
+        a shapely geometry.
+        if no match, return None.  Error if more than one match
+        """
+        hits=self.match_gazetteer(**kws)
+        if hits:
+            assert len(hits)==1
+            return hits[0]['geom']
+        else:
+            return None
+    def match_gazetteer(self,**kws):
+        """
+        search all gazetteers with criteria specified in keyword arguments,
+        returning a list of shapefile records (note that this is a python
+        list of numpy records, not a numpy array, since shapefiles may not
+        have the same fields).
+        return empty list if not hits
+        """
+        hits=[]
+        for gaz in self.gazetteers:
+            for idx in range(len(gaz)):
+                if self.match_feature(kws,gaz[idx]):
+                    hits.append( gaz[idx] )
+        return hits
+    def match_feature(self,kws,feat):
+        """
+        check the critera in dict kws against feat, a numpy record as
+        returned by shp2geom.
+        """
+        for k in kws:
+            try:
+                if feat[k] == kws[k]:
+                    continue
+                else:
+                    return False
+            except KeyError:
+                return False
+        return True
 
-        for name in self.__dir__():
-            obj=getattr(self,name)
-            if inspect.ismethod(obj) or inspect.isfunction(obj) or isinstance(obj,BC):
-                namespace[name]=obj
+    #-- Old interface, too object-oriented
+    # def add_bcs_from_shp(self,forcing_shp):
+    #     shp_data=wkb2shp.shp2geom(forcing_shp)
+    #     self.add_bcs_from_features(shp_data)
+    # def add_bcs_from_features(self,shp_data):
+    #     for feat in shp_data:
+    #         params=dict( [ (k,feat[k]) for k in feat.dtype.names])
+    #         bcs=self.bc_factory(params)
+    #         self.add_bcs(bcs)
 
-        # Get it to always return a list:
-        code='[' + params[self.bc_code_field] + ']'
-        try:
-            bcs=eval(code,namespace)
-        except Exception as exc:
-            print("Error occurred while evaluated BC feature %s"%params)
-            raise
-        for bc in bcs:
-            for k in params:
-                setattr(bc,k,params[k])
-        return bcs
+    # # Default attribute for code to evaluate to generate BCs from shapefile
+    # # or general dictionary.
+    # bc_code_field='bcs'
+    # def bc_factory(self,params):
+    #     """
+    #     Create a list of BC objects based on the contents of the dictionary
+    #     params.
+    #     The default implementation here looks for a 'code' field, which
+    #     will be evaluated with methods of the model available in the local
+    #     namespace.
+    #     keys in params will be assigned to each BC object.
+    #     """
+    #     assert self.bc_code_field in params,"Default implementation requires a %s attribute"%self.bc_code_field
+    #     namespace=dict(params)
+    #     namespace['self']=self
+    #
+    #     for name in self.__dir__():
+    #         obj=getattr(self,name)
+    #         if inspect.ismethod(obj) or inspect.isfunction(obj) or isinstance(obj,BC):
+    #             namespace[name]=obj
+    #
+    #     # Get it to always return a list:
+    #     code='[' + params[self.bc_code_field] + ']'
+    #     try:
+    #         bcs=eval(code,namespace)
+    #     except Exception as exc:
+    #         print("Error occurred while evaluated BC feature %s"%params)
+    #         raise
+    #     for bc in bcs:
+    #         for k in params:
+    #             setattr(bc,k,params[k])
+    #     return bcs
 
-    def flow_bc(self,Q,**kw):
-        return FlowBC(model=self,Q=Q,**kw)
-    def stage_bc(self,z,**kw):
-        return StageBC(model=self,z=z,**kw)
+    def add_flow_bc(self,Q,**kw):
+        self.add_bcs(FlowBC(model=self,Q=Q,**kw))
+    def add_stage_bc(self,z,**kw):
+        self.add_bcs(StageBC(model=self,z=z,**kw))
 
     def add_bcs(self,bcs):
         """
@@ -933,13 +1004,18 @@ class OTPSVelocity3DBC(OTPSVelocityBC):
         assert z_bed<0
 
         # pad out a bit above/below
-        ds['z']=('z',), np.array([z_bed-10,z_surf+10])
+        # and try populating more levels, in case things are getting chopped off
+        N=10
+        z_pad=10.0
+        ds['z']=('z',), np.linspace(z_bed-z_pad,z_surf+z_pad,N)
+        sig=np.linspace(-1,1,N)
 
         new_unorm,_=xr.broadcast(ds.unorm,ds.z)
         ds['unorm']=new_unorm
 
-        import pdb
-        pdb.set_trace()
+        # Add some vertical structure to test 3D nature of the BC
+        delta=xr.DataArray(0.02*sig,dims=['z'])
+        ds['unorm'] = ds.unorm + delta
 
         return ds
 
