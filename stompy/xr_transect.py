@@ -35,31 +35,60 @@ def vert_dim(tran):
     # is vertical
     return 'layer'
 
-def infer_z_dz(tran,z_ctr='z_ctr',z_dz='z_dz',update=True):
-    if z_dz in tran:
-        return tran[z_dz]
+def get_z_dz(tran):
+    if 'z_dz' in tran:
+        return tran.z_dz
 
-    v_dim=vert_dim(tran_z)
+    v_dim=vert_dim(tran)
 
     # center to center spacing:
-    dctr=tran[z_ctr].diff(dim=v_dim)
-    dz_middle=0.5*(dctr.isel( **{v_dim:slice(None,-1)} ) +
-                   dctr.isel( **{v_dim:slice(1,None)}))
-    dz=xr.concat( [ dz_middle.isel( **{v_dim:slice(None,1)} ),
-                    dz_middle,
-                    dz_middle.isel( **{v_dim:slice(-1,None)}) ],
-                  dim=v_dim)
-    dz.name=z_dz
-    if update:
-        tran[z_dz]=dz
-    return dz
+    axis=tran.z_ctr.get_axis_num(v_dim)
+
+    #dctr=tran[z_ctr].diff(dim=v_dim)
+    dctr=np.diff(tran.z_ctr.values,axis=axis)
+
+    def b(i):
+        dims=[]
+        for dim in range(tran.z_ctr.ndim):
+            if dim==axis:
+                dims.append(i)
+            else:
+                dims.append(slice(None))
+        return tuple(dims)
+
+    # hmm - have to use .values to keep it from trying to line up
+    # indices.
+    #dz_middle=0.5*(dctr.isel( **{v_dim:slice(None,-1)} ).values +
+    #               dctr.isel( **{v_dim:slice(1,None)}).values )
+    dz_middle=0.5*(dctr[b(slice(None,-1))]
+                   +
+                   dctr[b(slice(1,None))] )
+
+    dz=np.concatenate( [ dz_middle[b(slice(None,1))],
+                         dz_middle,
+                         dz_middle[b(slice(-1,None))] ],
+                       axis=axis)
+    tran['z_dz']=tran.z_ctr.dims,dz
+
+    return tran['z_dz']
+
+def get_d_sample(tran):
+    if 'd_sample' not in tran:
+        xy=np.c_[ tran.x_sample.values,
+                  tran.y_sample.values ]
+        tran['d_sample']=('sample',),utils.dist_along(xy)
+
+    return tran['d_sample']
+
+def get_dx_sample(tran):
+    if 'dx_sample' not in tran:
+        tran['dx_sample']=('sample',),utils.center_to_interval( get_d_sample(tran).values )
 
 def depth_int(tran,v):
     # integrate the variable named by v in the vertical
     if isinstance(v,six.string_types):
         v=tran[v]
-    z_dz=infer_z_dz(tran)
-    return (v*z_dz).sum(dim=vert_dim(tran))
+    return (v*get_z_dz(tran)).sum(dim=vert_dim(tran))
 
 def depth_avg(tran,v):
     # average the variable named by v in the vertical
@@ -79,7 +108,7 @@ def Qleft(tran):
     # flow per-width normal to transect:
     qnorm=np.sum( (quv.values * left_normal),axis=1 )
 
-    Q=np.sum( tran.dx_sample.values * qnorm )
+    Q=np.sum( get_dx_sample(tran).values * qnorm )
     return Q
 
 def add_rozovski_angles(tran,src,name='roz_angle'):
@@ -243,8 +272,9 @@ def section_hydro_parsed_to_transect(section,filename):
     ds['x_sample']=('sample',),xy[:,0]
     ds['y_sample']=('sample',),xy[:,1]
 
-    ds['d_sample']=('sample',),utils.dist_along(xy)
-    ds['dx_sample']=('sample',),utils.center_to_interval(ds.d_sample.values)
+    # pre-calculate derived fields
+    get_d_sample(ds) # ['d_sample']=('sample',),utils.dist_along(xy)
+    get_dx_sample(ds)
 
     return ds
 
@@ -368,7 +398,14 @@ def lplt():
     import matplotlib.pyplot as plt
     return plt
 
-def plot_scalar(tran,v,ax=None,**kw):
+def plot_scalar_pcolormesh(tran,v,ax=None,**kw):
+    """
+    This approximates a sigma coordinate grid in the slice.
+    Since that's not the natural staggering for a transect,
+    it requires some extrapolation which will probably look
+    bad for grids where a specific layer index can jump around
+    in the vertical (e.g. variable resolution ADCP).
+    """
     plt=lplt()
     from stompy.plot import plot_utils
 
@@ -377,7 +414,7 @@ def plot_scalar(tran,v,ax=None,**kw):
     if isinstance(v,six.string_types):
         v=tran[v]
 
-    x,y,scal,dz=xr.broadcast(tran.d_sample,tran.z_ctr,v,tran.z_dz)
+    x,y,scal,dz=xr.broadcast(get_d_sample(tran),tran.z_ctr,v,get_z_dz(tran))
 
     # important to use .values, as xarray will otherwise muck with
     # the indexing
@@ -419,3 +456,71 @@ def plot_scalar(tran,v,ax=None,**kw):
 
     return coll
 
+def plot_scalar_polys(tran,v,ax=None,**kw):
+    """
+    A more literal interpretation of how to plot a transect, with no
+    interpolation of vertical coordinates
+    """
+    plt=lplt()
+
+    from matplotlib import collections
+    from stompy.plot import plot_utils
+
+    ax=ax or plt.gca()
+
+    if isinstance(v,six.string_types):
+        v=tran[v]
+
+    x,y,scal,dz=xr.broadcast(get_d_sample(tran),tran.z_ctr,v,get_z_dz(tran))
+
+    # important to use .values, as xarray will otherwise muck with
+    # the indexing
+
+    # Move to numpy land
+    X=x.values
+    Y=y.values
+    Dz=dz.values
+
+    if ('positive' in y.attrs) and (y.attrs['positive']=='down'):
+        Y=-Y
+
+    # Expands the vertical coordinate in the vertical
+    Ybot=Y-0.5*Dz
+    Yexpand=np.concatenate( (Ybot,Ybot[:,-1:]), axis=1)
+    Yexpand[:,-1]=np.nan
+    Yexpand[:,1:]=np.where( np.isfinite(Yexpand[:,1:]),
+                            Yexpand[:,1:],
+                            Y+0.5*Dz)
+    # Expands the horizontal coordinate in the vertical
+    Xexpand=np.concatenate( (X,X[:,-1:]), axis=1)
+
+    # And expand in the horizontal
+
+    dx=utils.center_to_interval(X[:,0])
+    Xexpand2=np.concatenate( (Xexpand-0.5*dx[:,None], Xexpand[-1:,:]+0.5*dx[-1:,None]), axis=0)
+
+    polys=[]
+    values=[]
+
+    V=v.values
+    for samp,zi in np.ndindex( v.shape ):
+        if np.isnan(V[samp,zi]):
+            continue
+
+        poly=[ [Xexpand2[samp,  zi],Yexpand[samp,zi]  ],
+               [Xexpand2[samp+1,zi],Yexpand[samp,zi]  ],
+               [Xexpand2[samp+1,zi],Yexpand[samp,zi+1]],
+               [Xexpand2[samp,  zi],Yexpand[samp,zi+1]] ]
+        polys.append(poly)
+        values.append(V[samp,zi])
+
+    values=np.array(values)
+
+    coll=collections.PolyCollection(polys,array=values,**kw)
+    ax.add_collection(coll)
+    ax.axis('auto')
+
+    return coll
+
+
+plot_scalar=plot_scalar_polys
