@@ -36,6 +36,11 @@ def vert_dim(tran):
     return 'layer'
 
 def get_z_dz(tran):
+    """
+    Populate tran.z_dz with the thickness of each layer.
+    This is a signed quantity, dependent on the ordering
+    z_ctr, i.e. same sign as np.diff(z_ctr)
+    """
     if 'z_dz' in tran:
         return tran.z_dz
 
@@ -70,6 +75,9 @@ def get_z_dz(tran):
                        axis=axis)
     tran['z_dz']=tran.z_ctr.dims,dz
 
+    signs=np.sign(dz)
+    assert np.all(signs[0]==signs),"Problem with mixed signs of dz"
+
     return tran['z_dz']
 
 def get_d_sample(tran):
@@ -83,6 +91,7 @@ def get_d_sample(tran):
 def get_dx_sample(tran):
     if 'dx_sample' not in tran:
         tran['dx_sample']=('sample',),utils.center_to_interval( get_d_sample(tran).values )
+    return tran['dx_sample']
 
 def depth_int(tran,v):
     # integrate the variable named by v in the vertical
@@ -363,7 +372,10 @@ def resample_z(tran,new_z):
             # print("Not sure how to resample %s"%v)
             continue
         # Not quite there -- this isn't smart enough to get the interfaces
-        _,src_z,src_dz = xr.broadcast(var,tran['z_ctr'],tran['z_dz'])
+        _,src_z,src_dz = xr.broadcast(var,tran['z_ctr'],get_z_dz(tran))
+
+        sgn = np.sign(src_dz).values.ravel()[0] # should all be the same
+
         for index in np.ndindex( *iter_shape ):
             if index[z_num]>0:
                 continue
@@ -375,13 +387,20 @@ def resample_z(tran,new_z):
             my_src_bottom=my_src_z-0.5*my_src_dz
             my_src_top=my_src_z+0.5*my_src_dz
 
+            # all-nan columns are not valid below because 'bad' bins are still
+            # accessed.  Could rewrite to avoid the partial indexing by src_valid
+            # early on.
+            if np.all(np.isnan(my_src)):
+                new_val[index]=np.nan
+                continue
             src_valid=np.isfinite(my_src_z+my_src)
             Nsrc_valid=src_valid.sum()
 
             my_src_ints=np.concatenate( (my_src_bottom[src_valid],
                                          my_src_top[src_valid][-1:]) )
 
-            bins=np.searchsorted(my_src_ints,new_z)
+            # use sgn to make sure this is increasing
+            bins=np.searchsorted(sgn*my_src_ints,sgn*new_z)
             bad=(bins<1)|(bins>Nsrc_valid) # not sure about that top clip
             # Make these safe, and 0-referenced
             bins=bins.clip(1,Nsrc_valid)-1
