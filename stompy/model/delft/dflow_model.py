@@ -9,7 +9,10 @@ TODO:
 """
 import os,shutil,glob,inspect
 import six
-import logging as log
+import logging
+log=logging.getLogger('DFlowModel')
+
+import copy
 
 import numpy as np
 import xarray as xr
@@ -465,6 +468,25 @@ class DFlowModel(object):
     def __init__(self):
         self.log=log
         self.bcs=[]
+
+    def copy(self,deep=True):
+        """
+        Make a copy of this model instance.
+        """
+        # Starting point is just python deepcopy, but can customize
+        # as needed.
+        return copy.deepcopy(self)
+
+    def __deepcopy__(self, memo):
+        cls = self.__class__
+        result = cls.__new__(cls)
+        memo[id(self)] = result
+        for k, v in self.__dict__.items():
+            if k in ['log']: # shallow for some object
+                setattr(result, k, v)
+            else:
+                setattr(result, k, copy.deepcopy(v, memo))
+        return result
 
     def create_with_mode(self,path,mode='create'):
         """
