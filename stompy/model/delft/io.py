@@ -283,7 +283,6 @@ def parse_boundary_conditions(inp_file):
     bcs: BC links
     items: match data and bc links.
      - strings are folded to lowercase
-    
     """
     def dequote(s):
         s=s.strip()
@@ -1207,15 +1206,27 @@ class MDUFile(SectionedConfig):
         as np.datetime64
         """
         t_ref=utils.to_dt64( datetime.datetime.strptime(self['time','RefDate'],'%Y%m%d') )
-
-        if self['time','Tunit'].lower() == 'm':
-            tunit=np.timedelta64(1,'m')
-        else:
-            raise Exception("TODO: allow other time units")
-
-        t_start = t_ref+int(self['time','tstart'])*tunit
-        t_stop = t_ref+int(self['time','tstop'])*tunit
+        dt=self.t_unit_td64()
+        t_start = t_ref+int(self['time','tstart'])*dt
+        t_stop = t_ref+int(self['time','tstop'])*dt
         return t_ref,t_start,t_stop
+
+    def t_unit_td64(self,default='S'):
+        """ Return Tunit as timedelta64.  If none is set, set to default
+        """
+        t_unit=self['time','Tunit']
+        if t_unit is None:  # or does the above throw an error?
+            self['time','Tunit']=t_unit=default
+
+        if t_unit.lower() == 'm':
+            dt=np.timedelta64(60,'s')
+        elif t_unit.lower() == 's':
+            dt=np.timedelta64(1,'s')
+        else:
+            raise Exception("Bad time unit %s"%t_unit)
+
+        return dt
+
     def set_time_range(self,start,stop,ref_date=None):
         if ref_date is not None:
             # Make sure ref date is integer number of days
@@ -1225,9 +1236,10 @@ class MDUFile(SectionedConfig):
             ref_date = start.astype('M8[D]')
 
         self['time','RefDate'] = utils.to_datetime(ref_date).strftime('%Y%m%d')
-        self['time','Tunit'] = 'M' # minutes.  kind of weird, but stick with what was used already
-        self['time','TStart'] = int( (start - ref_date)/ np.timedelta64(1,'m') )
-        self['time','TStop'] = int( (stop - ref_date) / np.timedelta64(1,'m') )
+
+        dt=self.t_unit_td64()
+        self['time','TStart'] = int( (start - ref_date)/ dt )
+        self['time','TStop'] = int( (stop - ref_date) / dt )
 
     def partition(self,nprocs,dfm_bin_dir=None,mpi_bin_dir=None):
         if nprocs<=1:
@@ -1366,3 +1378,132 @@ def write_bnd(bnd,fn):
                                                             x[0,0],x[0,1],x[1,0],x[1,1]))
 
 
+def read_dfm_tim(fn,ref_time,time_unit,columns=['val1','val2','val3']):
+    """
+    Parse a tim file to xarray Dataset.  Must pass in the reference
+    time (datetime64, or convertable to that via utils.to_dt64())
+    and the time_unit ('s' or 'm')
+
+    time_unit: 'S' for seconds, 'M' for minutes.  Relative to model reference
+    time.
+
+    returns Dataset with 'time' dimension, and data columns labeled according
+    to columns.
+    """
+    if time_unit.lower()=='m':
+        dt=np.timedelta64(60,'s')
+    elif time_unit.lower()=='s':
+        dt=np.timedelta64(1,'s')
+    else:
+        raise Exception("Bad time unit %s"%time_unit)
+
+    if not isinstance(ref_time,np.datetime64):
+        ref_time=utils.to_dt64(ref_time)
+
+    raw_data=np.loadtxt(fn)
+    t=ref_time + dt*raw_data[:,0]
+
+    ds=xr.Dataset()
+    ds['time']=('time',),t
+    for col_i in range(1,raw_data.shape[1]):
+        ds[columns[col_i-1]]=('time',),raw_data[:,col_i]
+
+    ds.attrs['source']=fn
+
+    return ds
+
+def read_dfm_bc(fn):
+    """
+    Parse DFM new-style BC file, returning a hash of
+    Name => xarray dataset.
+    """
+    bcs={} # indexed by Name
+
+    import re
+    #with open(fn,'rt') as fp:w
+    fp=open(fn,'rt') # during DEV
+    if 1:
+        # pre-read a line, and always keep the next line
+        # in this variable for some low-budget lookahead
+        line=fp.readline()
+
+        while 1: # looping over datasets
+            ds=xr.Dataset()
+            ds.attrs['source']=fn
+
+            # Eat blank lines
+            while line and (line.strip()==""):
+                line=fp.readline()
+
+            if not line:
+                break # end of file.  could be empty file.
+
+            assert line.strip().lower()=='[forcing]',"Expected [forcing], got %s in %s"%(line,fn)
+            line=fp.readline()
+
+            quantities=[]
+            curr_quantity={} # hash of quantity, unit
+            def push_quantity():
+                # Sanity check, make sure we have the bare minimum to define
+                # a quantity.
+                assert 'quantity' in curr_quantity
+                quantities.append(dict(curr_quantity))
+                curr_quantity.clear()
+
+            while 1: # reading key-value pairs
+                m=re.match(r'^([^=]+)=([^=]*)$',line)
+                if m is not None: # key-value pair
+                    key=m.group(1).strip().lower()
+                    value=m.group(2).strip()
+                    if key in ['quantity','unit']:
+                        if key in curr_quantity:
+                            # already seen this key, so must be a new quantity.
+                            # push the old onto the list
+                            push_quantity()
+                        # record the new
+                        curr_quantity[key]=value
+                    else:
+                        ds.attrs[key]=value
+                    line=fp.readline()
+                else:
+                    # Not a key-value line.  Must be data
+                    if curr_quantity:
+                        push_quantity()
+                    break # ready for data
+            # Reading data
+            columns=[ list() for q in quantities ]
+            while 1:
+                if line.strip()=="": # eat blank lines
+                    pass
+                elif line.strip().lower()=="[forcing]": # start of next block
+                    break
+                else:
+                    items=line.strip().split()
+                    assert len(items)==len(quantities)
+                    for v,col in zip(items,columns):
+                        col.append(float(v))
+                line=fp.readline()
+                if not line: # end by way of end-of-file
+                    break
+            for q,col in zip(quantities,columns):
+                var_name=q['quantity']
+                ds[var_name]=('time',),np.array(col)
+                for k in q.keys():
+                    if k!='quantity':
+                        # everything else becomes an attribute
+                        ds[var_name].attrs[k] = q[k]
+            if 'time' in ds:
+                if ('unit' in ds['time'].attrs) and ('units' not in ds['time'].attrs):
+                    ds['time'].attrs['units']=ds['time'].attrs['unit']
+
+                # This actually should line up with CF conventions
+                # pretty well.  Give xarray a chance to parse the
+                # dates
+                try:
+                    ds=xr.decode_cf(ds)
+                except TypeError:
+                    # Really no idea what kinds of exceptions may crop up there.
+                    log.debug("While decoding time data",exc_info=True)
+                    # fall through, which will leave original ds intact.
+            bcs[ds.attrs['name']]=ds
+    return bcs
