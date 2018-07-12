@@ -3776,7 +3776,13 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         wkb2shp.wkb2shp(shpname,input_wkbs=edge_geoms,fields=edge_data,
                         overwrite=overwrite)
 
-    def write_node_shp(self,shpname,extra_fields=[],overwrite=False):
+    def write_node_shp(self,*a,**kw):
+        """
+        see write_nodes_shp.  This function here because of inconsistent naming
+        in the past.
+        """
+        return self.write_nodes_shp(*a,**kw)
+    def write_nodes_shp(self,shpname,extra_fields=[],overwrite=False):
         """ Write a shapefile with each node.  Fields will attempt to mirror
         self.nodes.dtype
 
@@ -3794,7 +3800,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         node_data=self.nodes[~self.nodes['deleted']].copy()
 
         # don't need to write all of the original fields out:
-        node_data=utils.recarray_del_fields(node_data,['x','deleted'])
+        node_data=recarray_del_fields(node_data,['x','deleted'])
 
         wkb2shp.wkb2shp(shpname,input_wkbs=node_geoms,fields=node_data,
                         overwrite=overwrite)
