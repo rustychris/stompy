@@ -5,7 +5,7 @@ try:
     from osgeo import ogr,osr
 except ImportError:
     import ogr,osr
-    
+
 import glob,os,re
 
 from shapely import wkb,wkt
@@ -67,7 +67,6 @@ def wkb2shp(shp_name,
     # Case 1: all the data is packed into a numpy struct array
     geoms = input_wkbs
 
-    
     if fields is not None and type(fields) == list: # sub case - fields is a list of dicts
         field_iter = iter(fields)
         field_gen = lambda x: six.next(field_iter)
@@ -82,10 +81,10 @@ def wkb2shp(shp_name,
         for n in range(N):
             row=[fields[fname][n] for fname in field_names] 
             field_values[n]=row
-    
+
     elif fields is not None and isinstance(fields,np.ndarray):
         dt = fields.dtype
-        
+
         # Note that each field may itself have some shape - so we need to enumerate those
         # dimensions, too.
         field_names = []
@@ -94,7 +93,7 @@ def wkb2shp(shp_name,
             for index in np.ndindex( dt[name].shape ):
                 name_idx = name + "_".join([str(i) for i in index])
                 field_names.append(name_idx)
-        
+
         field_values = []
         for i in range(len(fields)):
             fields_onerow = []
@@ -104,7 +103,6 @@ def wkb2shp(shp_name,
                         fields_onerow.append( fields[i][name][index] )
                     else:
                         fields_onerow.append( fields[i][name] )
-                        
             field_values.append( fields_onerow )
     else:
         # Case 2: geometries and a field generator are specified
@@ -120,7 +118,7 @@ def wkb2shp(shp_name,
     for n in field_names:
         if len(n)>10:
             raise Exception("Cannot have field names longer than 10 characters")
-            
+
     if geom_type is None:
         # find it by querying the features - minor bug - this only 
         # works when shapely geometries were passed in.
@@ -131,9 +129,8 @@ def wkb2shp(shp_name,
     new_layer = new_ds.CreateLayer(shp_name,
                                    srs=srs,
                                    geom_type=geom_type)
-                                   
-    # setup the feature definition:              
 
+    # setup the feature definition:
 
     # create fields based on the field key/value pairs
     # return for the first wkb file
@@ -143,7 +140,7 @@ def wkb2shp(shp_name,
         if type(val) == int or isinstance(val,np.integer):
             field_def = ogr.FieldDefn(key,ogr.OFTInteger)
             casters.append( int )
-        elif isinstance(val,np.float): 
+        elif isinstance(val,np.floating):
             # above: use np.float, as it seems to be more compatible with
             # 32-bit and 64-bit floats.
 
@@ -153,6 +150,7 @@ def wkb2shp(shp_name,
             # # a type here of <type 'numpy.float32'>,
             # # which doesn't match isinstance(...,float)
             # # asscalar helps out with that
+            # 2018-07: np.floating is maybe the proper solution.
             print( "float valued key is %s"%key)
             field_def = ogr.FieldDefn(key,ogr.OFTReal)
             field_def.SetWidth(64)
