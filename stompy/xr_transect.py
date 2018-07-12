@@ -374,7 +374,11 @@ def resample_z(tran,new_z):
         # Not quite there -- this isn't smart enough to get the interfaces
         _,src_z,src_dz = xr.broadcast(var,tran['z_ctr'],get_z_dz(tran))
 
-        sgn = np.sign(src_dz).values.ravel()[0] # should all be the same
+        all_sgns=np.sign(src_dz).values.ravel()
+        # some of these may be nan - just look past those
+        all_sgns=all_sgns[ np.isfinite(all_sgns) ]
+        sgn = all_sgns[0] # should all be the same
+        assert np.all( all_sgns==sgn )
 
         for index in np.ndindex( *iter_shape ):
             if index[z_num]>0:
