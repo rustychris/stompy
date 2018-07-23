@@ -41,16 +41,16 @@ except ImportError:
 def greedy_edgemin_to_node(g,orig_node_depth,edge_min_depth):
     """
     A simple approach to moving edge depths to nodes, when the
-    hydro model (i.e. DFM) will use the minimum of the nodes to 
+    hydro model (i.e. DFM) will use the minimum of the nodes to
     set the edge.
-    It sounds roundabout because it is, but there is not a 
+    It sounds roundabout because it is, but there is not a
     supported way to assign edge depth directly.
 
     For each edge, want to enforce a minimum depth in two sense:
     1. one of its nodes is at the minimum depth
     2. neither of the nodes are below the minimum depth
     and..
-    3. the average of the two nodes is close to the average DEM depth 
+    3. the average of the two nodes is close to the average DEM depth
        of the edge
     Not yet sure of how to get all of those.  This method focuses on
     the first point, but in some situations that is still problematic.
@@ -70,7 +70,7 @@ def greedy_edgemin_to_node(g,orig_node_depth,edge_min_depth):
     for j in edge_min_ordering:
         if np.isnan(edge_min_depth[j]):
             break # done with all of the target depths
-        
+
         nodes=g.edges['nodes'][j]
 
         # is this edge is already low enough, based on minimum of
