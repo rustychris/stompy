@@ -42,13 +42,22 @@ class BC(object):
         """
         self.model=model # may be None!
         self.name=name
+        if 'geom' in kw:
+            kw['_geom']=kw['geom']
         self.__dict__.update(kw)
 
+    # A little goofy - the goal is to make geometry lazily
+    # fetched against the model gazetteer, but it makes
+    # get/set operations awkward
     @property
     def geom(self):
         if (self._geom is None):
             self._geom=self.model.get_geometry(name=self.name)
         return self._geom
+    @geom.setter
+    def set_geom(self,g):
+        self._geom=g
+
 
     def write(self):
         log.info("Writing feature: %s"%self.name)
@@ -105,7 +114,9 @@ class BC(object):
         da must have a time dimension.  No support yet for vector-values here.
         """
         ref_date,start,stop = self.model.mdu.time_range()
-        elapsed_time=(da.time.values - ref_date)/self.model.mdu.t_unit_td64()
+        dt=np.timedelta64(60,'s') # always minutes
+        # self.model.mdu.t_unit_td64()
+        elapsed_time=(da.time.values - ref_date)/dt 
 
         data=np.c_[elapsed_time,da.values]
         if fn is None:
@@ -237,13 +248,48 @@ class BC(object):
         else:
             raise Exception("Not sure how to cast %s to be a DataArray"%data)
 
+class RoughnessBC(BC):
+    shapefile=None
+    def __init__(self,shapefile=None,**kw):
+        if 'name' not in kw:
+            kw['name']='roughness'
+
+        super(RoughnessBC,self).__init__(**kw)
+        self.shapefile=shapefile
+    def write_config(self):
+        with open(self.model.ext_force_file(),'at') as fp:
+            lines=["QUANTITY=frictioncoefficient",
+                   "FILENAME=%s"%self.xyz_filename(),
+                   "FILETYPE=7",
+                   "METHOD=4",
+                   "OPERAND=O",
+                   ""
+                   ]
+            fp.write("\n".join(lines))
+
+    def xyz_filename(self):
+        return self.filename_base()+".xyz"
+
+    def data(self):
+        assert self.shapefile is not None,"Currently only support shapefile input for roughness"
+        shp_data=wkb2shp.shp2geom(self.shapefile)
+        coords=np.array( [np.array(pnt) for pnt in shp_data['geom'] ] )
+        n=shp_data['n']
+        xyz=np.c_[coords,n]
+        return xyz
+
+    def write_data(self):
+        data_fn=os.path.join(self.model.run_dir,self.xyz_filename())
+        xyz=self.data()
+        np.savetxt(data_fn,xyz)
+
 class StageBC(BC):
     # If other than None, can compare to make sure it's the same as the model
     # datum.
     datum=None
 
-    def __init__(self,model,z=None,**kw):
-        super(StageBC,self).__init__(model=model,**kw)
+    def __init__(self,z=None,**kw):
+        super(StageBC,self).__init__(**kw)
         self.z=z
 
     def write_config(self):
@@ -309,13 +355,12 @@ class FlowBC(BC):
         else:
             log.info("Dredging disabled")
 
+    def dataarray(self):
+        # probably need some refactoring here...
+        return self.as_data_array(self.Q)
+
     def write_data(self):
-        ref_date,run_start,run_stop=self.model.mdu.time_range()
-
-        pad=np.timedelta64(24,'h')
-
-        da=self.as_data_array(self.Q)
-        self.write_tim(da)
+        self.write_tim(self.dataarray())
 
 
 
@@ -480,7 +525,7 @@ class SigmaCoord(VerticalCoord):
     sigma_growth_factor=1
 
 
-class DFlowModel(object):
+class HydroModel(object):
     # If these are the empty string, then assumes that the executables are
     # found in existing $PATH
     dfm_bin_dir="" # .../bin  giving directory containing dflowfm
@@ -611,53 +656,30 @@ class DFlowModel(object):
         else:
             return os.path.basename(self.grid.filename)
 
-    def load_mdu(self,fn):
-        self.mdu=dio.MDUFile(fn)
-
-    def update_mdu(self):
-        """
-        Update fields in the mdu object with data from self.
-        """
-        if self.mdu is None:
-            self.mdu=dio.MDUFile()
-
-        self.mdu.set_time_range(start=self.run_start,stop=self.run_stop)
-        self.mdu.set_filename(os.path.join(self.run_dir,self.mdu_basename))
-
-        self.mdu['geometry','NetFile'] = self.grid_target_filename()
-
     def write(self):
         # Make sure instance data has been pushed to the MDUFile, this
         # is used by write_forcing() and write_grid()
-        self.update_mdu()
+        self.update_config()
         log.info("Writing MDU to %s"%self.mdu.filename)
-        self.mdu.write()
+        self.write_config()
         self.write_extra_files()
         self.write_forcing()
         # Must come after write_forcing() to allow BCs to modify grid
         self.write_grid()
 
     def write_grid(self):
-        """
-        Write self.grid to the run directory.
-        Must be called after MDU is updated.  Should also be called
-        after write_forcing(), since some types of BCs can update
-        the grid (dredging boundaries)
-        """
-        dest=os.path.join(self.run_dir, self.mdu['geometry','NetFile'])
-        dfm_grid.write_dfm(self.grid,dest,overwrite=True)
-
-    def ext_force_file(self):
-        return os.path.join(self.run_dir,self.mdu['external forcing','ExtForceFile'])
-
-    def write_forcing(self,overwrite=True):
-        bc_fn=self.ext_force_file()
-
-        if overwrite and os.path.exists(bc_fn):
-            os.unlink(bc_fn)
-
+        raise Exception("Implement in subclass")
+    def write_forcing(self):
         for bc in self.bcs:
-            bc.write()
+            self.write_bc(bc)
+
+    def write_bc(self,bc):
+        if isinstance(bc,MultiBC):
+            bc.enumerate_sub_bcs()
+            for sub_bc in bc.sub_bcs:
+                self.write_bc(sub_bc)
+        else:
+            raise Exception("BC type %s not handled by class %s"%(bc.__class__,self.__class__))
 
     def partition(self):
         if self.num_procs<=1:
@@ -758,9 +780,13 @@ class DFlowModel(object):
         to columns.
         """
         if time_unit is None:
-            time_unit=self.mdu['time','Tunit']
+            # time_unit=self.mdu['time','Tunit']
+            # always minutes, unless overridden by caller
+            time_unit='M'
+
         ref_time,_,_ = self.mdu.time_range()
-        return dio.read_dfm_tim(fn,time_unit=time_unit,ref_time=ref_time,
+        return dio.read_dfm_tim(fn,time_unit=time_unit,
+                                ref_time=ref_time,
                                 columns=columns)
 
     def add_FlowBC(self,**kw):
@@ -771,6 +797,8 @@ class DFlowModel(object):
         self.add_bcs(StageBC(model=self,**kw))
     def add_WindBC(self,**kw):
         self.add_bcs(WindBC(model=self,**kw))
+    def add_RoughnessBC(self,**kw):
+        self.add_bcs(RoughnessBC(model=self,**kw))
 
     def add_bcs(self,bcs):
         """
@@ -913,26 +941,22 @@ def extract_transect(ds,line,grid=None,dx=None,cell_dim='nFlowElem',
     return new_ds
 
 class OTPSStageBC(StageBC):
-    def __init__(self,model,otps_model,**kw):
-        super(OTPSStageBC,self).__init__(model,z=None,**kw)
+    def __init__(self,otps_model,**kw):
+        super(OTPSStageBC,self).__init__(**kw)
         self.otps_model=otps_model # something like OhS
 
     # write_config same as superclass
     # filename_base same as superclass
-
-    def write_data(self):
+    def dataset(self):
         from stompy.model.otps import read_otps
-        ref_date,start,stop=self.model.mdu.time_range()
 
         pad=2*np.timedelta64(24,'h')
-
         ds=xr.Dataset()
-
-        times=np.arange( start-pad,stop+pad, 15*np.timedelta64(60,'s') )
+        times=np.arange( self.model.run_start-pad,
+                         self.model.run_stop+pad,
+                         15*np.timedelta64(60,'s') )
         log.debug("Will generate tidal prediction for %d time steps"%len(times))
-
         ds['time']=('time',),times
-
         modfile=read_otps.model_path(self.otps_model)
 
         xy=np.array(self.geom.coords)
@@ -940,11 +964,14 @@ class OTPSStageBC(StageBC):
 
         pred_h,pred_u,pred_v=read_otps.tide_pred(modfile,lon=ll[:,0],lat=ll[:,1],
                                                  time=times)
-
         # Here - we'll query OTPS for this
         ds['water_level']=('time',),pred_h[:,0]
+        return ds
+    def dataarray(self):
+        return self.dataset()['water_level']
 
-        self.write_tim(ds['water_level'])
+    def write_data(self): # DFM IMPLEMENTATION!
+        self.write_tim(self.dataarray())
 
 class VelocityBC(BC):
     """
@@ -1127,9 +1154,53 @@ class MultiBC(BC):
             sub_kw['geom']=sub_geom
             sub_kw['name']="%s%04d"%(self.name,j)
             sub_kw['grid_edge']=j
+            j_cells=grid.edge_to_cells(j)
+            assert j_cells.min()<0
+            assert j_cells.max()>=0
+            sub_kw['grid_cell']=j_cells.max()
+
+            assert self.model is not None,"Why would that be?"
+            assert sub_geom is not None,"Huh?"
 
             sub_bc=self.cls(model=self.model,**sub_kw)
             self.sub_bcs.append(sub_bc)
 
 
+class DFlowModel(HydroModel):
+    def write_forcing(self,overwrite=True):
+        bc_fn=self.ext_force_file()
+        if overwrite and os.path.exists(bc_fn):
+            os.unlink(bc_fn)
+        super(DFlowModel,self).write_forcing()
 
+    def write_grid(self):
+        """
+        Write self.grid to the run directory.
+        Must be called after MDU is updated.  Should also be called
+        after write_forcing(), since some types of BCs can update
+        the grid (dredging boundaries)
+        """
+        dest=os.path.join(self.run_dir, self.mdu['geometry','NetFile'])
+        dfm_grid.write_dfm(self.grid,dest,overwrite=True)
+
+    def ext_force_file(self):
+        return os.path.join(self.run_dir,self.mdu['external forcing','ExtForceFile'])
+
+    def load_mdu(self,fn):
+        self.mdu=dio.MDUFile(fn)
+
+    def update_config(self):
+        """
+        Update fields in the mdu object with data from self.
+        """
+        if self.mdu is None:
+            self.mdu=dio.MDUFile()
+
+        self.mdu.set_time_range(start=self.run_start,stop=self.run_stop)
+        self.mdu.set_filename(os.path.join(self.run_dir,self.mdu_basename))
+
+        self.mdu['geometry','NetFile'] = self.grid_target_filename()
+
+    def write_config(self):
+        # Assumes update_config() already called
+        self.mdu.write()
