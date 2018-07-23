@@ -1378,14 +1378,14 @@ def write_bnd(bnd,fn):
                                                             x[0,0],x[0,1],x[1,0],x[1,1]))
 
 
-def read_dfm_tim(fn,ref_time,time_unit,columns=['val1','val2','val3']):
+def read_dfm_tim(fn, ref_time, time_unit='M', columns=['val1','val2','val3']):
     """
     Parse a tim file to xarray Dataset.  Must pass in the reference
     time (datetime64, or convertable to that via utils.to_dt64())
     and the time_unit ('s' or 'm')
 
     time_unit: 'S' for seconds, 'M' for minutes.  Relative to model reference
-    time.
+    time.  Probably ought to be 'M' always.
 
     returns Dataset with 'time' dimension, and data columns labeled according
     to columns.
