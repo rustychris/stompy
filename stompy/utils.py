@@ -534,7 +534,7 @@ def to_unit(vecs):
 
 def dist(a,b=None):
     if b is not None:
-        a=a-b
+        a=np.asarray(a)-np.asarray(b)
     return mag(a)
 
 def haversine(a,b):
@@ -544,7 +544,7 @@ def haversine(a,b):
 
     a,b: longitude/latitude in degrees.
 
-    Credit to ballsatballs.dotballs, 
+    Credit to ballsatballs.dotballs,
     https://stackoverflow.com/questions/29545704/fast-haversine-approximation-python-pandas
 
     returns distance in km.
@@ -1660,10 +1660,9 @@ def array_concatenate( AB ):
     lenA = len(A)
     A = base[:lenA+len(B)]
     A[lenA:] = B
-        
+
     return A
-    
-    
+
 def concatenate_safe_dtypes( ab ):
     """ 
     Concatenate two arrays, but allow for the dtypes to be different.  The
@@ -1671,7 +1670,7 @@ def concatenate_safe_dtypes( ab ):
     are copied, others discarded.
     """
     a,b = ab # for now, force just two arrays
-    
+
     result = np.zeros( len(a)+len(b), a.dtype)
     result[:len(a)] = a
 
@@ -1686,12 +1685,12 @@ def recarray_del_fields(A,old_fields):
                if fld[0] not in old_fields]
 
     new_A=np.zeros( len(A), dtype=new_dtype)
-    
+
     for name in new_A.dtype.names:
         new_A[name]=A[name]
 
     return new_A
-    
+
 def recarray_add_fields(A,new_fields):
     """ 
     A: a record array
@@ -1708,7 +1707,7 @@ def recarray_add_fields(A,new_fields):
     new_names=[name for name,val in new_fields]
     new_values=[val for name,val in new_fields]
     new_A=np.zeros( len(A), dtype=new_dtype)
-    
+
     for name in new_A.dtype.names:
         try:
             new_A[name]=new_values[new_names.index(name)]
@@ -1719,10 +1718,10 @@ def recarray_add_fields(A,new_fields):
 
 
 def isnat(x):
-    """ 
+    """
     datetime64 analog to isnan.
     doesn't yet exist in numpy - other ways give warnings
-    and are likely to change.  
+    and are likely to change.
     """
     return x.astype('i8') == np.datetime64('NaT').astype('i8')
 
@@ -1797,7 +1796,6 @@ def point_in_polygon( pgeom, randomize=False ):
         if env.area/pgeom.area > 1e4:
             print("Sliver! Going to non-random point_in_polygon code")
             return point_in_polygon(pgeom,False)
-        
         env_pnts = np.array(env.exterior.coords)
         minx,miny = env_pnts.min(axis=0)
         maxx,maxy = env_pnts.max(axis=0)
@@ -1875,7 +1873,7 @@ def isolate_downcasts(ds,
     tr = Transect(xy=xy_m,times=times_m,elevations=z_mn.T,scalar=scalar_mn.T)
 
 def nan_cov(m,rowvar=1,demean=False):
-    """ 
+    """
     covariance of the matrix, follows calling conventions of
     numpy's cov function w.r.t. rows/columns
     """
@@ -1883,7 +1881,6 @@ def nan_cov(m,rowvar=1,demean=False):
     #if ~any(isnan(m)):
     #    return cov(m,rowvar=rowvar)
 
-    
     if rowvar:
         m = np.transpose(m)
 
@@ -1897,23 +1894,20 @@ def nan_cov(m,rowvar=1,demean=False):
         c = np.nan*np.ones( (Nstations,Nstations), np.float64 )
 
     # print("nan_cov: output shape is %s"%( str(c.shape) ))
-        
     # precompute data that is per-station:
     valids = ~np.isnan(m)
-    
+
     if demean:
         anoms = np.nan*np.ones_like( m )
-        
         for station in range(Nstations):
             vals = m[:,station]
             anoms[:,station] = vals - np.mean(vals[valids[:,station]])
     else:
         anoms = m
-        
-    
+
     for row in range(Nstations):
         for col in range(row+1):
-            
+
             v1_anom = anoms[:,row]
             v2_anom = anoms[:,col]
 
@@ -1922,7 +1916,7 @@ def nan_cov(m,rowvar=1,demean=False):
             # results and also agrees with matlabs implementation
             if v1_anom.dtype.kind == 'c':
                 v1_anom = np.conj(v1_anom)
-            
+
             valid = valids[:,row] & valids[:,col]
             n_valid = valid.sum()
 
