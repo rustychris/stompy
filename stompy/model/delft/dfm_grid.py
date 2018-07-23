@@ -51,32 +51,32 @@ def write_dfm(ug,nc_fn,overwrite=False):
     node_x.units='m'
     node_x.standard_name = "projection_x_coordinate"
     node_x.long_name="x-coordinate of net nodes"
-    node_x.grid_mapping = "projected_coordinate_system" 
+    node_x.grid_mapping = "projected_coordinate_system"
 
     node_y=nc.createVariable('NetNode_y','f8',('nNetNode'))
     node_y[:] = ug.nodes['x'][:,1]
-    node_y.units = "m" 
-    node_y.standard_name = "projection_y_coordinate" 
+    node_y.units = "m"
+    node_y.standard_name = "projection_y_coordinate"
     node_y.long_name = "y-coordinate of net nodes"
-    node_y.grid_mapping = "projected_coordinate_system" 
+    node_y.grid_mapping = "projected_coordinate_system"
 
     if 1:
         # apparently this doesn't have to be correct -
         proj=nc.createVariable('projected_coordinate_system',
                           'i4',())
         proj.setncattr('name',"Unknown projected")
-        proj.epsg = 28992 
-        proj.grid_mapping_name = "Unknown projected" 
-        proj.longitude_of_prime_meridian = 0. 
-        proj.semi_major_axis = 6378137. 
-        proj.semi_minor_axis = 6356752.314245 
-        proj.inverse_flattening = 298.257223563 
-        proj.proj4_params = "" 
-        proj.EPSG_code = "EPGS:28992" 
-        proj.projection_name = "" 
-        proj.wkt = "" 
-        proj.comment = "" 
-        proj.value = "value is equal to EPSG code" 
+        proj.epsg = 28992
+        proj.grid_mapping_name = "Unknown projected"
+        proj.longitude_of_prime_meridian = 0.
+        proj.semi_major_axis = 6378137.
+        proj.semi_minor_axis = 6356752.314245
+        proj.inverse_flattening = 298.257223563
+        proj.proj4_params = ""
+        proj.EPSG_code = "EPGS:28992"
+        proj.projection_name = ""
+        proj.wkt = ""
+        proj.comment = ""
+        proj.value = "value is equal to EPSG code"
         proj[...]=28992
 
     if ('lon' in ug.nodes.dtype.names) and ('lat' in ug.nodes.dtype.names):
@@ -92,55 +92,55 @@ def write_dfm(ug,nc_fn,overwrite=False):
         node_lat.units = "degrees_north" 
         node_lat.standard_name = "latitude" 
         node_lat.long_name = "latitude" 
-        node_lat.grid_mapping = "wgs84" 
+        node_lat.grid_mapping = "wgs84"
 
     if 1:
         wgs=nc.createVariable('wgs84','i4',())
         wgs.setncattr('name',"WGS84")
-        wgs.epsg = 4326 
-        wgs.grid_mapping_name = "latitude_longitude" 
-        wgs.longitude_of_prime_meridian = 0. 
-        wgs.semi_major_axis = 6378137. 
-        wgs.semi_minor_axis = 6356752.314245 
-        wgs.inverse_flattening = 298.257223563 
-        wgs.proj4_params = "" 
-        wgs.EPSG_code = "EPGS:4326" 
-        wgs.projection_name = "" 
-        wgs.wkt = "" 
-        wgs.comment = "" 
-        wgs.value = "value is equal to EPSG code" 
+        wgs.epsg = 4326
+        wgs.grid_mapping_name = "latitude_longitude"
+        wgs.longitude_of_prime_meridian = 0.
+        wgs.semi_major_axis = 6378137.
+        wgs.semi_minor_axis = 6356752.314245
+        wgs.inverse_flattening = 298.257223563
+        wgs.proj4_params = ""
+        wgs.EPSG_code = "EPGS:4326"
+        wgs.projection_name = ""
+        wgs.wkt = ""
+        wgs.comment = ""
+        wgs.value = "value is equal to EPSG code"
 
     if 'depth' in ug.nodes.dtype.names:
         node_z = nc.createVariable('NetNode_z','f8',('nNetNode'))
         node_z[:] = ug.nodes['depth'][:]
-        node_z.units = "m" 
-        node_z.positive = "up" 
-        node_z.standard_name = "sea_floor_depth" 
-        node_z.long_name = "Bottom level at net nodes (flow element\'s corners)" 
-        node_z.coordinates = "NetNode_x NetNode_y" 
-        node_z.grid_mapping = "projected_coordinate_system" 
+        node_z.units = "m"
+        node_z.positive = "up"
+        node_z.standard_name = "sea_floor_depth"
+        node_z.long_name = "Bottom level at net nodes (flow element\'s corners)"
+        node_z.coordinates = "NetNode_x NetNode_y"
+        node_z.grid_mapping = "projected_coordinate_system"
 
     links = nc.createVariable('NetLink','i4',('nNetLink','nNetLinkPts'))
     links[:,:]=ug.edges['nodes'] + 1 # to 1-based!
-    links.standard_name = "netlink" 
-    links.long_name = "link between two netnodes" 
+    links.standard_name = "netlink"
+    links.long_name = "link between two netnodes"
 
     link_types=nc.createVariable('NetLinkType','i4',('nNetLink'))
     link_types[:] = 2 # always seems to be 2 for these grids
-    link_types.long_name = "type of netlink" 
-    link_types.valid_range = [0, 2] 
+    link_types.long_name = "type of netlink"
+    link_types.valid_range = [0, 2]
     link_types.flag_values = [0, 1, 2]
-    link_types.flag_meanings = "closed_link_between_2D_nodes link_between_1D_nodes link_between_2D_nodes" 
+    link_types.flag_meanings = "closed_link_between_2D_nodes link_between_1D_nodes link_between_2D_nodes"
 
     # global attributes - probably ought to allow passing in values for these...
-    nc.institution = "SFEI et al" 
-    nc.references = "http://github.com/rustychris/stompy" 
-    nc.history = "stompy unstructured_grid" 
+    nc.institution = "stompy"
+    nc.references = "http://github.com/rustychris/stompy"
+    nc.history = "stompy unstructured_grid"
 
-    nc.source = "Deltares, D-Flow FM Version 1.1.135.38878MS, Feb 26 2015, 17:00:33, model" 
-    nc.Conventions = "CF-1.5:Deltares-0.1" 
+    nc.source = "Deltares, D-Flow FM Version 1.1.135.38878MS, Feb 26 2015, 17:00:33, model"
+    nc.Conventions = "CF-1.5:Deltares-0.1"
 
-    if 1: 
+    if 1:
         # add the complines to encode islands
         lines=ug.boundary_linestrings()
         nc.createDimension('nNetCompLines',len(lines))
@@ -164,7 +164,7 @@ def write_dfm(ug,nc_fn,overwrite=False):
 
             compline_x=nc.createVariable('NetCompLine_x_%d'%i,'f8',(dimname,))
             compline_y=nc.createVariable('NetCompLine_y_%d'%i,'f8',(dimname,))
-            
+
             compline_x[:] = line[:,0]
             compline_y[:] = line[:,1]
 
@@ -184,7 +184,7 @@ class DFMGrid(unstructured_grid.UnstructuredGrid):
           this will remove those duplicates, though there are no guarantees of indices.
         """
         self.filename=None
-        
+
         if nc is None:
             assert fn
             self.filename=fn
@@ -197,7 +197,7 @@ class DFMGrid(unstructured_grid.UnstructuredGrid):
         # Default names for fields
         var_points_x='NetNode_x'
         var_points_y='NetNode_y'
-        
+
         var_edges='NetLink'
         var_cells='NetElemNode' # often have to infer the cells
 
@@ -211,13 +211,13 @@ class DFMGrid(unstructured_grid.UnstructuredGrid):
             except AttributeError:
                 var_cells='not specified'
                 cells_from_edges=True
-        
+
         # probably this ought to attempt to find a mesh variable
         # with attributes that tell the correct names, and lacking
         # that go with these as defaults
         # seems we always get nodes and edges
         edge_start_index=nc[var_edges].attrs.get('start_index',1)
-        
+
         kwargs=dict(points=np.array([nc[var_points_x].values,
                                      nc[var_points_y].values]).T,
                     edges=nc[var_edges].values-edge_start_index)
@@ -236,7 +236,7 @@ class DFMGrid(unstructured_grid.UnstructuredGrid):
                 bad=np.isnan(cells)
                 cells=cells.astype(np.int32)
                 cells[bad]=0
-                
+
             # just to be safe, do this even if it came from Masked.
             cell_start_index=nc[var_cells].attrs.get('start_index',1)
             cells-=cell_start_index # force to 0-based
@@ -247,7 +247,7 @@ class DFMGrid(unstructured_grid.UnstructuredGrid):
                 cells_from_edges=False
 
         var_depth='NetNode_z'
-        
+
         if var_depth in nc.variables: # have depth at nodes
             kwargs['extra_node_fields']=[ ('depth','f4') ]
 
@@ -298,7 +298,7 @@ class DFMGrid(unstructured_grid.UnstructuredGrid):
             #     node_count=nc.partitions_node_count.values[part_i]
             #     cell_start=nc.partitions_face_start.values[part_i]
             #     cell_count=nc.partitions_face_count.values[part_i]
-            # 
+            #
             #     kwargs['edges'][edge_start-1:edge_start-1+edge_count] += node_start-1
             #     kwargs['cells'][cell_start-1:cell_start-1+cell_count] += node_start-1
 
