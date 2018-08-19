@@ -287,7 +287,7 @@ def rdb_to_dataset(filename=None,text=None,to_utc=True):
                 while varname in ds:
                     count+=1
                     varname=base_varname+"_%02d"%count
-                
+
             if m.group(4):
                 statistic=rdb_codes.stat_code_lookup(meta['stat_code'])
                 if statistic is not None:
@@ -295,7 +295,7 @@ def rdb_to_dataset(filename=None,text=None,to_utc=True):
 
             if m.group(5) is not None:
                 # TODO: save QA codes
-                continue 
+                continue
 
         if isinstance( usgs_data[key], np.ndarray ):
             if len(data)==len(ds.time):
@@ -318,7 +318,7 @@ def rdb_to_dataset(filename=None,text=None,to_utc=True):
         #if timezone changes, tz_src is an array of strings
 
         def tz_to_offset(tz_src):
-            if tz_src == 'PST': 
+            if tz_src == 'PST':
                 return -8
             elif tz_src=='PDT':
                 return -7
@@ -340,6 +340,6 @@ def rdb_to_dataset(filename=None,text=None,to_utc=True):
         ds['time'].values -= offset_hours * np.timedelta64(1,'h')
         ds['datenum'].values -= offset_hours/24.
         ds.attrs['tz_cd']='UTC'
-            
+
     return ds
-    
+
