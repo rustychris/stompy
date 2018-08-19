@@ -1,4 +1,6 @@
 import os
+import subprocess
+
 import six
 from collections import defaultdict
 import re
@@ -64,7 +66,6 @@ def dt_round(dt):
 
         return dt + td
 
-
 # certainly there is a better way to do this...
 MultiBC=dfm.MultiBC
 OTPSStageBC=dfm.OTPSStageBC
@@ -73,7 +74,11 @@ FlowBC=dfm.FlowBC
 
 class GenericConfig(object):
     """ Handles reading and writing of suntans.dat formatted files.
+    Older code I think was case-insensitive, but seems that it is
+    now case-sensitive.
     """
+    keys_are_case_sensitive=True
+
     def __init__(self,filename=None,text=None):
         """ filename: path to file to open and parse
             text: a string containing the entire file to parse
@@ -96,7 +101,9 @@ class GenericConfig(object):
 
             m = re.match("^\s*((\S+)\s+(\S+))?\s*.*",line)
             if m and m.group(1):
-                key = m.group(2).lower()
+                key = m.group(2)
+                if not self.keys_are_case_sensitive:
+                    key=key.lower()
                 val = m.group(3)
                 self.entries[key] = [val,i]
         if filename:
@@ -110,7 +117,8 @@ class GenericConfig(object):
             return default
         return x
     def conf_str(self,key,caster=lambda x:x):
-        key = key.lower()
+        if not self.keys_are_case_sensitive:
+            key = key.lower()
 
         if key in self.entries:
             return caster(self.entries[key][0])
@@ -119,7 +127,7 @@ class GenericConfig(object):
 
     def __setitem__(self,key,value):
         self.set_value(key,value)
-    def __getitem__(self,key): 
+    def __getitem__(self,key):
         return self.conf_str(key)
     def __delitem__(self,key):
         # if the line already exists, it will be written out commented, otherwise
@@ -149,7 +157,8 @@ class GenericConfig(object):
         return True
 
     def disable_value(self,key):
-        key = key.lower()
+        if not self.keys_are_case_sensitive:
+            key = key.lower()
         if key not in self.entries:
             return
         old_val,i = self.entries[key]
@@ -174,7 +183,14 @@ class GenericConfig(object):
         comment out the line if it already exists, and omit the line if it does
         not yet exist.
         """
-        key = key.lower()
+        if not self.keys_are_case_sensitive:
+            key = key.lower()
+        else:
+            if (key not in self.entries):
+                for other in self.entries:
+                    if key.lower()==other.lower():
+                        raise Exception("Probably a case-sensitive error: %s vs %s"%(key,other))
+
         if key not in self.entries:
             if value is None:
                 return
@@ -355,13 +371,13 @@ class SunConfig(GenericConfig):
         esp. vertspace.dat
         """
         # keep all lowercase
-        keys = ['nkmax',
+        keys = ['Nkmax',
                 'stairstep',
                 'rstretch',
-                'correctvoronoi',
-                'voronoiratio',
+                'CorrectVoronoi',
+                'VoronoiRatio',
                 'vertgridcorrect',
-                'intdepth',
+                'IntDepth',
                 'pslg',
                 'points',
                 'edges',
@@ -375,7 +391,27 @@ class SunConfig(GenericConfig):
         return self.is_equal(other,limit_to_keys=keys)
 
 class SuntansModel(dfm.HydroModel):
+    # Annoying, but suntans doesn't like signed elevations
+    # this offset will be applied to grid depths and freesurface boundary conditions.
+    z_offset=0.0
+    ic_ds=None
+
+    # for partition, run, etc.
+    sun_bin_dir=None
+    mpi_bin_dir=None
+
+    # 'auto': the grid and projection information will be used to
+    # update the coriolis parameter.
+    # None: leave whatever value is in the template
+    # <float>: use that as the coriolis parameter
+    coriolis_f='auto'
+
     def set_grid(self,grid):
+        """
+        read/load grid, check for depth data and edge marks.
+        This does not apply the z_offset -- that is only
+        applied during writing out the rundata.
+        """
         if isinstance(grid,six.string_types):
             # step in and load as suntans, rather than generic
             grid=unstructured_grid.SuntansGrid(grid)
@@ -429,7 +465,17 @@ class SuntansModel(dfm.HydroModel):
         self.write_forcing()
         # Must come after write_forcing() to allow BCs to modify grid
         self.write_grid()
+        # Must come after write_forcing(), to get proper grid and to
+        # have access to freesurface BCs
         self.write_ic()
+
+    def initialize_initial_condition(self):
+        """
+        Populate self.ic_ds with a baseline initial condition.
+        This should be called after all boundary conditions are in place.
+        """
+        self.ic_ds=self.zero_initial_condition()
+        self.set_initial_h_from_bc()
 
     def write_ic(self):
         """
@@ -438,8 +484,37 @@ class SuntansModel(dfm.HydroModel):
         for the script to modify it, before finally writing it out here.
         """
         # Creating an initial condition netcdf file:
-        self.ic=self.zero_initial_condition()
-        self.ic.to_netcdf( os.path.join(self.run_dir,self.config['initialNCfile']) )
+        if self.ic_ds is None:
+            self.initialize_initial_condition()
+        self.write_ic_ds()
+
+    def write_ic_ds(self):
+        self.ic_ds.to_netcdf( os.path.join(self.run_dir,self.config['initialNCfile']) )
+
+    def set_initial_h_from_bc(self):
+        """
+        prereq: self.bc_ds has been set.
+        """
+        if len(self.bc_ds.Ntype3)==0:
+            log.warning("Cannot set initial h from BC because there are no type 3 edges")
+            return
+
+        time_i=np.searchsorted(self.bc_ds.time.values,self.run_start)
+
+        # both bc_ds and ic_ds should already incorporate the depth offset, so
+        # no further adjustment here.
+        h=self.bc_ds.h.isel(Nt=time_i).mean().values
+
+        # this is positive down, already shifted, clipped.
+        #cell_depths=self.ic_ds['dv'].values
+
+        # This led to drying issues in 3D, and ultimately was not the fix
+        # for issues in 2D
+        #self.ic_ds.eta.values[:]=np.maximum(h,-cell_depths)
+
+        self.ic_ds.eta.values[...]=h
+
+        log.info("Setting initial eta from BCs, value=max(z_bed,%.4f) (including z_offset of %.2f)"%(h,self.z_offset))
 
     def write_forcing(self,overwrite=True):
         # map edge to BC data
@@ -456,16 +531,59 @@ class SuntansModel(dfm.HydroModel):
 
         # Get a time series that's the superset of all given timeseries
         all_times=[]
-        for bc_typ in [self.bc_type2,self.bc_type3]: # edge, cells
-            for bc in bc_typ.values(): # each edge/cell
-                for v in bc.values(): # each variable on that edge/cell
+        # edge, cells, groups of edges
+        for bc_typ in [self.bc_type2,self.bc_type3,self.bc_type2_segments]:
+            for bc in bc_typ.values(): # each edge idx/cell idx/segment name
+                for v in bc.values(): # each variable on that edge/cell/segment
+                    if isinstance(v,six.string_types):
+                        # type2 edges which reference a segment have no
+                        # time series of their own.
+                        continue
                     if 'time' in v.dims:
                         all_times.append( v['time'].values )
         common_time=np.unique(np.concatenate(all_times))
+        # Make sure that brackets the run:
+        pad=np.timedelta64(1,'D')
+        if common_time[0]>=self.run_start:
+            common_time=np.concatenate(( [self.run_start-pad],
+                                         common_time ))
+        # make sure there are *two* times beyond the end for quadratic
+        # interpolation
+        while len(common_time)<3 or common_time[-2]<=self.run_stop:
+            if common_time[-1]<self.run_stop+pad:
+                new_time=self.run_stop+pad
+            else:
+                new_time=common_time[-1]+pad
+            common_time=np.concatenate((common_time,[new_time]))
+        # SUNTANS applies quadratic interpolation in time, so it requires at least
+        # 3 time values - seems that it wants one time before and two times after
+        # the current time.
+        assert len(common_time)>2
+
+        # with the above loop, I don't think is needed anymore
+        # if len(common_time)==2:
+        #     # cast to seconds to be sure it doesn't get rounded to 0 days.
+        #     delta=(common_time[1]-common_time[0]).astype('<m8[s]')/2
+        #     common_time=np.array( [ common_time[0],common_time[0]+delta,
+        #                             common_time[1]] )
+
         self.bc_time=common_time
         self.bc_ds=self.compile_bcs()
 
-        # encode time specifically as suntans expects:
+
+        self.write_bc_ds()
+        self.met_ds=self.zero_met()
+        self.write_met_ds()
+
+    def ds_time_units(self):
+        """
+        setting for how to write time to netcdf
+        specifically as suntans expects.  pass as
+        ...
+        encoding=dict(time={'units':self.ds_time_units()}),
+        ...
+        in xarray dataset to_netcdf(..)
+        """
         basetime=self.config['basetime']
         assert len(basetime)==15 # YYYYMMDD.hhmmss
         time_units="seconds since %s-%s-%s %s:%s:%s"%(basetime[0:4],
@@ -474,31 +592,53 @@ class SuntansModel(dfm.HydroModel):
                                                       basetime[9:11],
                                                       basetime[11:13],
                                                       basetime[13:15])
-
+        return time_units
+    def write_bc_ds(self):
         self.bc_ds.to_netcdf( os.path.join(self.run_dir,
                                            self.config['netcdfBdyFile']),
-                              encoding=dict(time={'units':time_units}))
+                              encoding=dict(time={'units':self.ds_time_units()}))
 
-        self.met_ds=self.zero_met()
+    def write_met_ds(self):
         self.met_ds.to_netcdf( os.path.join(self.run_dir,
                                             self.config['metfile']),
-                               encoding=dict(time={'units':time_units}) )
+                               encoding=dict(time={'units':self.ds_time_units()}) )
+
+    def layer_data(self):
+        """
+        Returns layer data without z_offset applied, and
+        positive up.
+
+        Returns a xr.Dataset
+        with z_min, z_max, Nk, z_interface, z_mid.
+
+        z_interface and z_mid are ordered surface to bed.
+        """
+        Nk=int(self.config['Nkmax'])
+        z_min=self.grid.cells['depth'].min() # bed
+        z_max=self.grid.cells['depth'].max() # surface
+        log.warning("Layers not fully implemented -- assuming evenly spaced Nk=%d"%Nk)
+        z_interface=-np.linspace(-z_max,-z_min,Nk+1) # evenly spaced...
+        z_mid=0.5*(z_interface[:-1]+z_interface[1:])
+
+        ds=xr.Dataset()
+        ds['z_min']=(),z_min
+        ds['z_max']=(),z_max
+        ds['z_interface']=('Nkp1',),z_interface
+        ds['z_mid']=('Nk',),z_mid
+        return ds
 
     def compile_bcs(self):
         """
         Postprocess the information from write_forcing()
         to create the BC netcdf dataset.
+
+        Note that bc_ds includes the z_offset.
         """
         ds=xr.Dataset()
+        layers=self.layer_data()
 
-        # This is duplicated in IC, and should be refactored
-        Nk=int(self.config['nkmax'])
-        z_min=self.grid.cells['depth'].min()
-        z_max=self.grid.cells['depth'].max()
-        log.warning("REFACTOR Layers not fully implemented -- assuming evenly spaced Nk=%d"%Nk)
-        z_interface=np.linspace(z_min,z_max,Nk+1) # evenly spaced...
-        z_mid=0.5*(z_interface[:-1]+z_interface[1:])
-        ds['z']=('Nk',),z_mid
+        Nk=layers.dims['Nk']
+        ds['z']=('Nk',),-(layers.z_mid.values + self.z_offset)
 
         # suntans assumes that this dimension is Nt, not time
         Nt=len(self.bc_time)
@@ -531,29 +671,36 @@ class SuntansModel(dfm.HydroModel):
             bc=self.bc_type3[type3_cell]
             for v in bc.keys(): # each variable on that edge/cell
                 # hmm - how to assign bc[v].values to ds[v] ?
-                ds[v].isel(Ntype3=type3_i).values[:] = interp_time(bc[v])
+                if v=='h':
+                    offset=self.z_offset
+                else:
+                    offset=0
+                ds[v].isel(Ntype3=type3_i).values[:] = interp_time(bc[v]) + offset
 
         Ntype2=len(self.bc_type2)
         Nseg=len(self.bc_type2_segments)
         ds['edgep']=('Ntype2',),np.zeros(Ntype2,np.int32)-1
-        ds['xe']=('Ntype2',),np.zeros(Ntype3,np.float64)
-        ds['ye']=('Ntype2',),np.zeros(Ntype3,np.float64)
-        ds['segedgep']=('Ntype2',),np.zeros(Ntype2,np.int32)-1
-        ds['segp']=('Nseg',),np.arange(Nseg,np.int32)
-        ds['boundary_h']=np.zeros( (Nt, Ntype2), np.float64)
-        ds['boundary_u']=np.zeros( (Nt, Nk, Ntype2), np.float64)
-        ds['boundary_v']=np.zeros( (Nt, Nk, Ntype2), np.float64)
-        ds['boundary_w']=np.zeros( (Nt, Nk, Ntype2), np.float64)
-        ds['boundary_T']=np.zeros( (Nt, Nk, Ntype2), np.float64)
-        ds['boundary_S']=np.zeros( (Nt, Nk, Ntype2), np.float64)
-        ds['boundary_Q']=np.zeros( (Nt, Nseg), np.float64)
+        ds['xe']=('Ntype2',),np.zeros(Ntype2,np.float64)
+        ds['ye']=('Ntype2',),np.zeros(Ntype2,np.float64)
+        ds['boundary_h']=('Nt','Ntype2'),np.zeros( (Nt, Ntype2), np.float64) + self.z_offset
+        ds['boundary_u']=('Nt','Nk','Ntype2'),np.zeros( (Nt, Nk, Ntype2), np.float64)
+        ds['boundary_v']=('Nt','Nk','Ntype2'),np.zeros( (Nt, Nk, Ntype2), np.float64)
+        ds['boundary_w']=('Nt','Nk','Ntype2'),np.zeros( (Nt, Nk, Ntype2), np.float64)
+        ds['boundary_T']=('Nt','Nk','Ntype2'),np.zeros( (Nt, Nk, Ntype2), np.float64)
+        ds['boundary_S']=('Nt','Nk','Ntype2'),np.zeros( (Nt, Nk, Ntype2), np.float64)
+        ds['boundary_Q']=('Nt','Nseg'),np.zeros( (Nt, Nseg), np.float64)
 
         # Iterate over segments first, so that edges below can grab the correct
         # index.
         segment_names=list(self.bc_type2_segments.keys()) # this establishes the order of the segments
+        # make this distinct from 0 or 1 to aid debugging
+        segment_ids=100 + np.arange(len(segment_names))
         ds['seg_name']=('Nseg',),segment_names # not read by suntans, but maybe helps debugging
+        ds['segedgep']=('Ntype2',),np.zeros(Ntype2,np.int32)-1
+        ds['segp']=('Nseg',),segment_ids # np.arange(Nseg,dtype=np.int32)
+
         for seg_i,seg_name in enumerate(segment_names):
-            bc=self.type2_segments[seg_name]
+            bc=self.bc_type2_segments[seg_name]
             for v in bc.keys(): # only Q, but stick to the same pattern
                 ds['boundary_'+v].isel(Nseg=seg_i).values[:] = interp_time(bc[v])
 
@@ -565,8 +712,17 @@ class SuntansModel(dfm.HydroModel):
 
             bc=self.bc_type2[type2_edge]
             for v in bc.keys(): # each variable on that edge/cell
+                if v=='h':
+                    offset=self.z_offset
+                else:
+                    offset=0.0
+
                 if v!='Q':
-                    ds['boundary_'+v].isel(Ntype2=type2_i).values[:] = interp_time(bc[v])
+                    ds['boundary_'+v].isel(Ntype2=type2_i).values[:] = interp_time(bc[v]) + offset
+                else:
+                    seg_name=bc[v]
+                    seg_idx=segment_ids[segment_names.index(seg_name)]
+                    ds['segedgep'].values[type2_i] = seg_idx
 
         # -- Set grid marks --
         for c in ds.cellp.values:
@@ -599,7 +755,7 @@ class SuntansModel(dfm.HydroModel):
             self.bc_type3[cell]['h']=water_level
 
     def write_flow_bc(self,bc):
-        da=self.dataarray()
+        da=bc.dataarray()
         self.bc_type2_segments[bc.name]['Q']=da
 
         assert len(da.dims)<=1,"Flow must have dims either time, or none"
@@ -638,19 +794,42 @@ class SuntansModel(dfm.HydroModel):
         # and this is a newer approach:
         self.config['starttime']=start_dt.strftime('%Y%m%d.%H%M%S')
 
+        if self.coriolis_f=='auto':
+            xy_ctr=self.grid.nodes['x'].mean(axis=0)
+            ll_ctr=self.native_to_ll(xy_ctr)
+            lat=ll_ctr[1]
+            # f=2*Omega*sin(phi)
+            Omega=7.2921e-5 # rad/s
+            f=2*Omega*np.sin(lat*np.pi/180.)
+            self.config['Coriolis_f']="%.5e"%f
+            log.info("Using %.2f as latitude for Coriolis => f=%s"%(lat,self.config['Coriolis_f']))
+        elif self.coriolis_f is not None:
+            self.config['Coriolis_f']=self.coriolis_f
+
     def write_grid(self):
         # Write a grid that suntans will read:
-        self.grid.write_suntans_hybrid(self.run_dir,overwrite=True)
-
+        self.grid.write_suntans_hybrid(self.run_dir,overwrite=True,z_offset=self.z_offset)
+        self.write_grid_bathy()
+    def write_grid_bathy(self):
         # And write cell bathymetry separately
         # This filename is hardcoded into suntans, not part of
         # the settings in suntans.dat (maybe it can be overridden?)
         cell_depth_fn=os.path.join(self.run_dir,"depths.dat-voro")
 
         cell_xy=self.grid.cells_center()
-        z=self.grid.cells['depth']
+
         # make depth positive down
-        cell_xyz=np.c_[cell_xy,-z]
+        z=-(self.grid.cells['depth'] + self.z_offset)
+
+        min_depth=0+float(self.config['minimum_depth'])
+        shallow=z<min_depth
+        if np.any(shallow):
+            log.warning("%d of %d cell depths extend above z=0 even with offset of %.2f"%(np.sum(shallow),
+                                                                                          len(shallow),
+                                                                                          self.z_offset))
+            z=z.clip(min_depth,np.inf)
+
+        cell_xyz=np.c_[cell_xy,z]
         np.savetxt(cell_depth_fn,cell_xyz) # space separated
 
     def grid_as_dataset(self):
@@ -658,28 +837,26 @@ class SuntansModel(dfm.HydroModel):
         Return the grid and vertical geometry in a xr.Dataset
         following the naming of suntans/ugrid.
         Note that this does not yet set all attributes -- TODO!
+        This method does apply z_offset to the grid.
         """
         ds=self.grid.write_to_xarray()
 
         ds=ds.rename({'face':'Nc',
-                            'edge':'Ne',
-                            'node':'Np',
-                            'node_per_edge':'two',
-                            'maxnode_per_face':'numsides'})
-        z_min=self.grid.cells['depth'].min()
-        z_max=self.grid.cells['depth'].max()
-        Nk=int(self.config['nkmax'])
+                      'edge':'Ne',
+                      'node':'Np',
+                      'node_per_edge':'two',
+                      'maxnode_per_face':'numsides'})
+        layers=self.layer_data()
 
-        log.warning("Layers not fully implemented -- assuming evenly spaced Nk=%d"%Nk)
-
-        z_interface=np.linspace(z_min,z_max,Nk+1) # evenly spaced...
-        z_mid=0.5*(z_interface[:-1]+z_interface[1:])
+        z_min=layers.z_min.values
+        z_max=layers.z_max.values
+        Nk=layers.dims['Nk']
 
         cc=self.grid.cells_center()
         ds['xv']=('Nc',),cc[:,0]
         ds['yv']=('Nc',),cc[:,1]
 
-        ds['z_r']=('Nk',),z_mid
+        ds['z_r']=('Nk',),layers.z_mid.values + self.z_offset
 
         # not right for 3D..
         ds['Nk']=('Nc',),Nk*np.ones(self.grid.Ncells(),np.int32)
@@ -688,35 +865,40 @@ class SuntansModel(dfm.HydroModel):
         # the example:
         ds['suntans_mesh']=(),0
         ds.suntans_mesh.attrs.update( dict(cf_role='mesh_topology',
-                                              long_name='Topology data of 2D unstructured mesh',
-                                              topology_dimension=2,
-                                              node_coordinates="xp yp",
-                                              face_node_connectivity="cells",
-                                              edge_node_connectivity="edges",
-                                              face_coordinates="xv yv",
-                                              edge_coordinates="xe ye",
-                                              face_edge_connectivity="face",
-                                              edge_face_connectivity="grad") )
+                                           long_name='Topology data of 2D unstructured mesh',
+                                           topology_dimension=2,
+                                           node_coordinates="xp yp",
+                                           face_node_connectivity="cells",
+                                           edge_node_connectivity="edges",
+                                           face_coordinates="xv yv",
+                                           edge_coordinates="xe ye",
+                                           face_edge_connectivity="face",
+                                           edge_face_connectivity="grad") )
 
         ds['cells']=('Nc','numsides'),self.grid.cells['nodes']
         ds['nfaces']=('Nc',), [self.grid.cell_Nsides(c) for c in range(self.grid.Ncells())]
         ds['edges']=('Ne','two'),self.grid.edges['nodes']
         ds['neigh']=('Nc','numsides'), [self.grid.cell_to_cells(c,pad=True)
-                                           for c in range(self.grid.Ncells())]
+                                        for c in range(self.grid.Ncells())]
 
         ds['grad']=('Ne','two'),self.grid.edge_to_cells()
         ds['xp']=('Np',),self.grid.nodes['x'][:,0]
         ds['yp']=('Np',),self.grid.nodes['x'][:,1]
-        ds['dv']=('Nc',),-self.grid.cells['depth']
+
+
+        depth=-(self.grid.cells['depth'] + self.z_offset)
+        ds['dv']=('Nc',),depth.clip(float(self.config['minimum_depth']),np.inf)
+
         # really ought to set attrs for everybody, but sign of depth is
         # particular, so go ahead and do it here.
         ds.dv.attrs.update( dict( standard_name='sea_floor_depth_below_geoid',
-                                     long_name='seafloor depth',
-                                     units='m',
-                                     mesh='suntans_mesh',
-                                     location='face',
-                                     positive='down') )
-        ds['dz']=('Nk',),np.diff(z_interface)
+                                  long_name='seafloor depth',
+                                  comment='Has offset of %.3f applied'%(-self.z_offset),
+                                  units='m',
+                                  mesh='suntans_mesh',
+                                  location='face',
+                                  positive='down') )
+        ds['dz']=('Nk',),-np.diff(layers.z_interface.values)
         ds['mark']=('Ne',),self.grid.edges['mark']
         return ds
 
@@ -724,6 +906,8 @@ class SuntansModel(dfm.HydroModel):
         """
         Return a xr.Dataset for initial conditions, with all values
         initialized to nominal zero values.
+
+        This dataset has z_offset applied.
         """
         ds_ic=self.grid_as_dataset()
         ds_ic['time']=('time',),[self.run_start]
@@ -740,7 +924,11 @@ class SuntansModel(dfm.HydroModel):
                 dtype=np.timedelta64
             else:
                 dtype=np.float64
-            ds_ic[name]=dims,np.zeros(shape,dtype)
+            vals=np.zeros(shape,dtype)
+            if name=='eta':
+                vals += self.z_offset
+            ds_ic[name]=dims,vals
+
         return ds_ic
 
     def zero_met(self):
@@ -773,4 +961,18 @@ class SuntansModel(dfm.HydroModel):
         ds_met['cloud']=const(('time','Ncloud'), 0.5)
 
         return ds_met
+
+    def partition(self):
+        self.run_mpi(["-g","-vv","--datadir=%s"%self.run_dir])
+    def run_mpi(self,sun_args):
+        sun="sun"
+        if self.sun_bin_dir is not None:
+            sun=os.path.join(self.sun_bin_dir,sun)
+        cmd=[sun] + sun_args
+        if self.num_procs>1:
+            mpiexec="mpiexec"
+            if self.mpi_bin_dir is not None:
+                mpiexec=os.path.join(self.mpi_bin_dir,mpiexec)
+            cmd=[mpiexec,"-n","%d"%self.num_procs] + cmd
+        subprocess.call(cmd)
 
