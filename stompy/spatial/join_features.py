@@ -382,7 +382,7 @@ def arc_to_close_line(points,n_arc_points=40):
 def lines_to_polygons(new_features,close_arc=False,single_feature=True,force_orientation=True):
     """
     single_feature: False is not yet implemented!
-    returns a list of Polygons
+    returns a list of Polygons and a list of features which were not part of a polygon
     force_orientation: ensure that interior rings have negative signed area
     """
     assert single_feature
