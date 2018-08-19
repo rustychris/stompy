@@ -30,6 +30,9 @@ from . import io as dio
 class BC(object):
     name=None
     _geom=None
+    # not sure if I'll keep these -- may be better to query at time of use
+    grid_edge=None
+    grid_cell=None
 
     def __init__(self,name,model=None,**kw):
         """
@@ -44,7 +47,13 @@ class BC(object):
         self.name=name
         if 'geom' in kw:
             kw['_geom']=kw['geom']
-        self.__dict__.update(kw)
+
+        for k in kw:
+            try:
+                getattr(self,k)
+            except AttributeError:
+                raise Exception("Setting attribute %s failed because it doesn't exist on %s"%(k,self))
+            self.__dict__[k]=kw[k]
 
     # A little goofy - the goal is to make geometry lazily
     # fetched against the model gazetteer, but it makes
@@ -62,9 +71,6 @@ class BC(object):
     def write(self):
         log.info("Writing feature: %s"%self.name)
 
-        # I think this is left over from before geom was dynamic.
-        #if self.geom is None:
-        #    self.set_geom()
         self.write_pli()
         self.write_config()
         self.write_data()
@@ -237,12 +243,13 @@ class BC(object):
         elif isinstance(data,xr.Dataset):
             if len(data.data_vars)==1:
                 return data[data.data_vars[0]]
-        elif isinstance(data,np.number_type):
+            else:
+                raise Exception("Dataset has multiple data variables -- not sure which to use: %s"%( str(data.data_vars) ))
+        elif isinstance(data,(np.integer,np.floating,int,float)):
             # handles expanding a constant to the length of the run
             ds=xr.Dataset()
-            ref_date,run_start,run_stop=self.model.mdu.time_range()
             pad=np.timedelta64(24,'h')
-            ds['time']=('time',),np.array( [run_start-pad,run_stop+pad] )
+            ds['time']=('time',),np.array( [self.model.run_start-pad,self.model.run_stop+pad] )
             ds[quantity]=('time',),np.array( [data,data] )
             return ds[quantity]
         else:
@@ -310,14 +317,12 @@ class StageBC(BC):
         """
         return super(StageBC,self).filename_base()+"_ssh"
 
+    def dataarray(self):
+        return self.as_data_array(self.z)
+
     def write_data(self):
-        ref_date,start,stop=self.model.mdu.time_range()
-
-        pad=2*np.timedelta64(24,'h')
-
-        da=self.as_data_array(self.z)
         # just write a single node
-        self.write_tim(da)
+        self.write_tim(self.dataarray())
 
 class FlowBC(BC):
     dredge_depth=-1.0
@@ -412,6 +417,8 @@ class SourceSinkBC(BC):
 
         da=self.as_data_array(self.Q)
         self.write_tim(da)
+    def dataarray(self):
+        return self.as_data_array(self.Q)
 
 class WindBC(BC):
     wind=None
@@ -443,6 +450,8 @@ class WindBC(BC):
         assert self.wind is not None
         da=self.as_data_array(self.wind)
         self.write_tim(da)
+    def dataarray(self):
+        return self.as_data_array(self.wind)
 
 #class ScalarBC(BC):
 #    def __init__(self,name,value):
@@ -1116,7 +1125,18 @@ class MultiBC(BC):
     the caller that one BC is being broken up into many.
     """
     def __init__(self,cls,**kw):
-        self.saved_kw=kw
+        self.saved_kw=dict(kw) # copy
+        # These are all passed on to the subclass, but only the
+        # known parameters are kept for MultiBC.
+        # if at some we need to pass parameters only to MultiBC, but
+        # not to the subclass, this would have to check both ways.
+        keys=list(kw.keys())
+        for k in keys:
+            try:
+                getattr(self,k)
+            except AttributeError:
+                del kw[k]
+
         super(MultiBC,self).__init__(**kw)
         self.cls=cls
         self.sub_bcs="not yet!" # not populated until self.write()
@@ -1167,6 +1187,12 @@ class MultiBC(BC):
 
 
 class DFlowModel(HydroModel):
+    # flow and source/sink BCs will get the adjacent nodes dredged
+    # down to this depth in order to ensure the impose flow doesn't
+    # get blocked by a dry edge. Set to None to disable.
+    dredge_depth=-1.0
+
+
     def write_forcing(self,overwrite=True):
         bc_fn=self.ext_force_file()
         if overwrite and os.path.exists(bc_fn):
@@ -1204,3 +1230,139 @@ class DFlowModel(HydroModel):
     def write_config(self):
         # Assumes update_config() already called
         self.mdu.write()
+
+    def write_bc(self,bc):
+        if isinstance(bc,StageBC):
+            self.write_stage_bc(bc)
+        elif isinstance(bc,FlowBC):
+            self.write_flow_bc(bc)
+        elif isinstance(bc,SourceSinkBC):
+            self.write_source_bc(bc)
+        elif isinstance(bc,WindBC):
+            self.write_wind_bc(bc)
+        elif isinstance(bc,RoughnessBC):
+            self.write_roughness_bc(bc)
+        else:
+            super(DFlowModel,self).write_bc(bc)
+
+    def write_tim(self,da,file_path):
+        """
+        Write a DFM tim file based on the timeseries in the DataArray.
+        da must have a time dimension.  No support yet for vector-values here.
+        file_path is relative to the working directory of the script, not
+        the run_dir.
+        """
+        if len(da.dims)==0:
+            raise Exception("Not implemented for constant waterlevel...")
+        ref_date,start,stop = self.mdu.time_range()
+        dt=np.timedelta64(60,'s') # always minutes
+        elapsed_time=(da.time.values - ref_date)/dt 
+        data=np.c_[elapsed_time,da.values]
+
+        np.savetxt(file_path,data)
+
+    def write_stage_bc(self,bc):
+        self.write_gen_bc(bc,quantity='stage')
+
+    def write_flow_bc(self,bc):
+        self.write_gen_bc(bc,quantity='flow')
+
+        if self.dredge_depth is not None:
+            # Additionally modify the grid to make sure there is a place for inflow to
+            # come in.
+            log.info("Dredging grid for source/sink BC %s"%bc.name)
+            dfm_grid.dredge_boundary(self.grid,
+                                     np.array(bc.geom.coords),
+                                     self.dredge_depth)
+        else:
+            log.info("dredging disabled")
+
+    def write_source_bc(self,bc):
+        self.write_gen_bc(bc,quantity='source')
+
+        if self.dredge_depth is not None:
+            # Additionally modify the grid to make sure there is a place for inflow to
+            # come in.
+            log.info("Dredging grid for source/sink BC %s"%bc.name)
+            dfm_grid.dredge_discharge(self.grid,
+                                      np.array(bc.geom.coords),
+                                      self.dredge_depth)
+        else:
+            log.info("dredging disabled")
+
+    def write_gen_bc(self,bc,quantity):
+        """
+        handle the actual work of writing flow and stage BCs.
+        quantity: 'stage','flow','source'
+        """
+        bc_id=bc.name+"_" + quantity
+
+        #self.write_pli()
+        assert bc.geom.type=='LineString'
+        pli_data=[ (bc_id, np.array(bc.geom.coords)) ]
+        pli_fn=bc_id+'.pli'
+        dio.write_pli(os.path.join(self.run_dir,pli_fn),pli_data)
+
+        #self.write_config()
+        with open(self.ext_force_file(),'at') as fp:
+            lines=[]
+            method=3 # default
+            if quantity=='stage':
+                lines.append("QUANTITY=waterlevelbnd")
+            elif quantity=='flow':
+                lines.append("QUANTITY=dischargebnd")
+            elif quantity=='source':
+                lines.append("QUANTITY=discharge_salinity_temperature_sorsin")
+                method=1 # not sure how this is different
+            else:
+                assert False
+            lines+=["FILENAME=%s"%pli_fn,
+                    "FILETYPE=9",
+                    "METHOD=%d"%method,
+                    "OPERAND=O",
+                    ""]
+            fp.write("\n".join(lines))
+
+        #self.write_data()
+        da=bc.dataarray()
+        assert len(da.dims)<=1,"Only ready for dimensions of time or none"
+        tim_path=os.path.join(self.run_dir,bc_id+"_0001.tim")
+        self.write_tim(da,tim_path)
+
+    def write_wind_bc(self,bc):
+        assert bc.geom is None,"Spatially limited wind not yet supported"
+
+        tim_fn=bc.name+".tim"
+        tim_path=os.path.join(self.run_dir,tim_fn)
+
+        # write_config()
+        with open(self.ext_force_file(),'at') as fp:
+            lines=["QUANTITY=windxy",
+                   "FILENAME=%s"%tim_fn,
+                   "FILETYPE=2",
+                   "METHOD=1",
+                   "OPERAND=O",
+                   ""]
+            fp.write("\n".join(lines))
+
+        # write_data()
+        self.write_tim(bc.dataarray(),tim_path)
+
+    def write_roughness_bc(self,bc):
+        # write_config()
+        xyz_fn=bc.name+".xyz"
+        xyz_path=os.path.join(self.run_dir,xyz_fn)
+
+        with open(self.ext_force_file(),'at') as fp:
+            lines=["QUANTITY=frictioncoefficient",
+                   "FILENAME=%s"%xyz_fn,
+                   "FILETYPE=7",
+                   "METHOD=4",
+                   "OPERAND=O",
+                   ""
+                   ]
+            fp.write("\n".join(lines))
+
+        # write_data()
+        np.savetxt(xyz_path,bc.data())
+
