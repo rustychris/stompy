@@ -44,6 +44,12 @@ class ReadGrid(Op):
         stack.append(g)
         log.info("Reading grid (%d cells, %d edges, %d nodes)"%(g.Ncells(),g.Nedges(),g.Nnodes()))
 
+class Dualify(Op):
+    def run(self,args):
+        g=stack.pop()
+        gd=g.create_dual(center='circumcenter',create_cells=True)
+        stack.append(g)
+
 class WriteGrid(Op):
     clobber=False
     def run(self,args):
@@ -77,6 +83,8 @@ class WriteGrid(Op):
             dfm_grid.write_dfm(g,path,overwrite=self.clobber)
         else:
             log.error("Did not understand format %s"%fmt)
+            log.error("Possible formats are: suntans, suntans_hybrid, ugrid, untrim,")
+            log.error("   cell_shp, edge_shp, boundary_shp, node_shp,fishptm, dfm")
             sys.exit(1)
 
 class SetClobber(Op):
@@ -87,6 +95,8 @@ parser.add_argument("-i", "--input", help="Read a grid",
                     nargs=1,action=ReadGrid)
 parser.add_argument("-o", "--output", help="Write a grid",
                     nargs=1,action=WriteGrid)
+parser.add_argument("-d", "--dual", help="Convert to dual of grid",
+                    nargs=0,action=Dualify)
 parser.add_argument("-c", "--clobber", help="Allow overwriting of existing grids",
                     nargs=0,action=SetClobber)
 
@@ -105,7 +115,7 @@ def parse_and_run(cmd=None):
         args=parser.parse_args(argv)
     else:
         args=parser.parse_args()
-        
+
     for impl,args in ops:
         impl.run(args)
 
