@@ -441,7 +441,6 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     def from_ugrid(nc,mesh_name=None,skip_edges=False,fields='auto'):
         """ extract 2D grid from netcdf/ugrid
         nc: either a filename or an xarray dataset.
-         THIS IS NEW -- old code used a QDataset, but that is being phased out.
         fields: 'auto' [new] populate additional node,edge and cell fields
         based on matching dimensions.
         """
@@ -481,7 +480,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 start_index=ncvar.attrs['start_index']
             except KeyError:
                 start_index=None
-                
+
             if start_index not in [0,1]:
                 max_idx=np.nanmax(idxs)
                 if max_idx==len(node_xy):
@@ -497,10 +496,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     logging.warning("Variable %s has bad start_index, punting with %d"%(varname,start_index))
 
             idxs = idxs - start_index
-            
             # force the move to numpy land
             idxs=np.asanyarray(idxs)
-            
+
             # but might still be masked -- change to unmasked,
             # but our own choice of the invalid value:
             try:
@@ -518,6 +516,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             return idxs
 
         faces = process_as_index(mesh.face_node_connectivity)
+        # suntans has a nonstandard, but not always specified, fill value.
+        faces[faces>=len(node_x)]=UnstructuredGrid.UNDEFINED
         edges = process_as_index(mesh.edge_node_connectivity) # [N,2]
 
         ug = UnstructuredGrid(points=node_xy,cells=faces,edges=edges)
@@ -529,8 +529,13 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                                           ('edge_dimension',ug.edges,ug.add_edge_field),
                                           ('face_dimension',ug.cells,ug.add_cell_field)]:
                 dim_name=mesh.attrs.get(dim_attr,None)
+                if not dim_name and dim_attr=='node_dimension':
+                    # Should be able to make a good guess based on node coordinates
+                    dim_name=nc[node_x_name].dims[0]
                 if dim_name:
                     for vname in nc.data_vars:
+                        if vname in [node_x_name,node_y_name]:
+                            continue # skip things like node_x
                         # At this point, only scalar values
                         if nc[vname].dims==(dim_name,):
                             if vname in struct.dtype.names:
@@ -538,30 +543,57 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                                 struct[vname]=nc[vname].values
                             else:
                                 adder( vname, nc[vname].values )
+
+        if 'face_coordinates' in mesh.attrs:
+            face_x,face_y = mesh.face_coordinates.split()
+            ug.cells['_center'][:,0] = nc[face_x].values
+            ug.cells['_center'][:,1] = nc[face_y].values
         ug.filename=filename
         return ug
-    
+
     @staticmethod
     def read_suntans_hybrid(path='.',points='points.dat',edges='edges.dat',cells='cells.dat'):
         """
         Read text-based suntans format which can accomodate arbitrary numbers of sides.
         This can be read/written by Janet.
         """
-        points=os.path.join(path,points)
-        edges=os.path.join(path,edges)
-        cells=os.path.join(path,cells)
+        points_fn=os.path.join(path,points)
+        edges_fn=os.path.join(path,edges)
+        cells_fn=os.path.join(path,cells)
 
-        xyz=np.loadtxt(points)
+        xyz=np.loadtxt(points_fn)
+        edge_nnmcc=np.loadtxt(edges_fn).astype('i4')
 
-        edge_nnmcc=np.loadtxt(edges).astype('i4')
+        max_sides=3
+        cell_nodes=[]
+        cell_ccs=[]
+        cell_nbrs=[]
+        with open(cells_fn,'rt') as fp:
+            for line in fp:
+                parts=line.strip().split()
+                nsides=int(parts[0])
+                max_sides=max(nsides,max_sides)
+                cc=[float(p) for p in parts[1:3]]
+                nodes=[int(p) for p in parts[3:3+nsides]]
+                nbrs=[int(p) for p in parts[3+nsides:3+2*nsides]]
+                cell_nodes.append(nodes)
+                cell_ccs.append(cc)
+                cell_nbrs.append(nbrs)
 
+        for n,nbr in zip(cell_nodes,cell_nbrs):
+            extra=max_sides-len(n)
+            if extra:
+                n.extend([-1]*extra)
+                nbr.extend([-1]*extra)
+        all_cells=np.array(cell_nodes)
+        all_cc=np.array(cell_ccs)
 
-        e2c=self.edge_to_cells().copy()
-        e2c[e2c<0]=-1
-        markers=np.zeros(len(e2c))
-        markers[e2c[:,1]<0]=2
-
-        assert False, "Not yet completed"
+        g=UnstructuredGrid(max_sides=8)
+        g.from_simple_data(points=xyz[:,:2],
+                           edges=edge_nnmcc,
+                           cells=all_cells)
+        g.cells['_center']=all_cc
+        return g
 
     def write_to_xarray(self,ds=None,mesh_name='mesh',
                         node_coordinates='node_x node_y',
@@ -597,11 +629,22 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     fn,
                     mesh_name='mesh',
                     fields='auto',
-                    overwrite=False):
-        """ 
+                    overwrite=False,
+                    centers=True):
+        """
         rough ugrid writing - doesn't set the full complement of
         attributes (missing_value, edge-face connectivity, others...)
-        really just a starting point.
+
+        mesh_name: the name of the variable in the netcdf file holding the attributes
+         which define the collection of variables describing the grid.
+        fields: 'auto' -- write fields of the UnstructuredGrid.  e.g. if self.cells['depth']
+          exists, it will be written to the netcdf.  clashes between names are resolved by
+          prefixing with 'cells_', 'edges_' or 'nodes_'.
+          currently the only other option is to specify False, which will not write any
+          additional data beyond the grid topology.
+        overwrite: if False and the output exists, fail.
+        centers: write cell centers.  this will trigger a call to cells_center()
+          to make sure that any nan-valued centers are recalculated.
         """
         if os.path.exists(fn):
             if overwrite:
@@ -609,47 +652,54 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             else:
                 raise GridException("File %s exists"%(fn))
 
-        if 1: # xarray-based code
-            ds=xr.Dataset()
-            ds[mesh_name]=1
+        ds=xr.Dataset()
+        ds[mesh_name]=1
 
-            mesh_var=ds[mesh_name]
-            mesh_var.attrs['cf_role']='mesh_topology'
-            mesh_var.attrs['node_coordinates']='node_x node_y'
-            mesh_var.attrs['face_node_connectivity']='face_node'
-            mesh_var.attrs['edge_node_connectivity']='edge_node'
-            mesh_var.attrs['node_dimension']='node'
-            mesh_var.attrs['edge_dimension']='edge'
-            mesh_var.attrs['face_dimension']='face'
-            
-            ds['node_x'] = ('node',),self.nodes['x'][:,0]
-            ds['node_y'] = ('node',),self.nodes['x'][:,1]
+        mesh_var=ds[mesh_name]
+        # required: (this seems more robust than mesh_var.attrs[...] = '...'
+        ds[mesh_name].attrs['cf_role']='mesh_topology'
+        ds[mesh_name].attrs['topology_dimension']=2
+        ds[mesh_name].attrs['face_node_connectivity']='face_node'
+        ds[mesh_name].attrs['node_coordinates']='node_x node_y'
+        # "optionally required"
+        ds[mesh_name].attrs['edge_dimension']='edge'
+        ds[mesh_name].attrs['face_dimension']='face'
+        ds[mesh_name].attrs['edge_node_connectivity']='edge_node'
+        # optional
+        ds[mesh_name].attrs['node_dimension']='node'
 
-            ds['face_node'] = ('face','maxnode_per_face'),self.cells['nodes']
+        ds['node_x'] = ('node',),self.nodes['x'][:,0]
+        ds['node_y'] = ('node',),self.nodes['x'][:,1]
+        ds['face_node'] = ('face','maxnode_per_face'),self.cells['nodes']
+        ds['edge_node']=('edge','node_per_edge'),self.edges['nodes']
 
-            ds['edge_node']=('edge','node_per_edge'),self.edges['nodes']
+        if centers:
+            cc=self.cells_center()
+            ds[mesh_name].attrs['face_coordinates']='face_x face_y'
+            ds['face_x']=('face',),self.cells['_center'][:,0]
+            ds['face_y']=('face',),self.cells['_center'][:,1]
 
-            if fields=='auto':
-                for src_data,dim_name in [ (self.cells,'face'),
-                                           (self.edges,'edge'),
-                                           (self.nodes,'node') ]:
-                    for field in src_data.dtype.names:
-                        if field.startswith('_'):
-                            continue # presumed to be private, probably auto-calculated.
-                        if field in ['cells','nodes','edges','deleted']:
-                            continue # already included
-                        if src_data[field].ndim != 1:
-                            continue # not smart enough for that yet
-                        if np.issubdtype(src_data[field].dtype,np.object_):
-                            logging.warning("write_ugrid: will drop %s"%field)
-                            continue
-                        if field in ds: # avoid duplicate names
-                            out_field = dim_name + "_" + field
-                        else:
-                            out_field=field
-                            
-                        ds[out_field] = (dim_name,),src_data[field]
-            ds.to_netcdf(fn)
+        if fields=='auto':
+            for src_data,dim_name in [ (self.cells,'face'),
+                                       (self.edges,'edge'),
+                                       (self.nodes,'node') ]:
+                for field in src_data.dtype.names:
+                    if field.startswith('_'):
+                        continue # presumed to be private, probably auto-calculated.
+                    if field in ['cells','nodes','edges','deleted']:
+                        continue # already included
+                    if src_data[field].ndim != 1:
+                        continue # not smart enough for that yet
+                    if np.issubdtype(src_data[field].dtype,np.object_):
+                        logging.warning("write_ugrid: will drop %s"%field)
+                        continue
+                    if field in ds: # avoid duplicate names
+                        out_field = dim_name + "_" + field
+                    else:
+                        out_field=field
+
+                    ds[out_field] = (dim_name,),src_data[field]
+        ds.to_netcdf(fn)
 
     @staticmethod
     def from_shp(shp_fn):
@@ -753,7 +803,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     self.edges['cells'] = edges[:,3:5]
                 else:
                     raise GridException("Edges should have 2 or 5 entries per edge")
-                
+
         self.refresh_metadata()
 
     def update_cell_edges(self):
@@ -1208,12 +1258,15 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                              e.step or 1)
             else:
                 try:
+                    # handle e=[1,45,321], e=[True,False,True, True,...]
+                    e=np.asarray(e)
                     L=len(e)
                     if L==self.Nedges() and np.issubdtype(np.bool,e.dtype):
                         js=np.nonzero(e)[0]
                     else:
                         js=e
                 except TypeError:
+                    # handle e is an int, int32, int64, etc scalar.
                     js=[e]
 
             all_c=set()
@@ -1406,8 +1459,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         cxy /= 6*A[:,None]    
         cxy += refs
         return cxy
-    
-    def cells_center(self,refresh=False,mode='first3'):
+
+    default_cells_center_mode='first3'
+    def cells_center(self,refresh=False,mode=None):
         """ calling this method is preferable to direct access to the
         array, since cell centers can possibly be stale if the grid has been
         modified (though no such checking exists yet).
@@ -1416,16 +1470,30 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         a quad.
 
         refresh: must be True, False, or something slice-like (slice, bitmap, integer array)
+
         mode: first3 - estimate circumcenter from the first 3 nodes
+         sequential - estimate center from all consecutive triples of nodes
         """
+        mode=mode or self.default_cells_center_mode
         if refresh is True:
             to_update=slice(None)
+            do_update=True
         elif refresh is not False:
             to_update=refresh
+            if isinstance(to_update,slice):
+                do_update=True
+            elif to_update.dtype==np.bool8:
+                do_update=to_update.sum()
+            else:
+                do_update=len(to_update)
         else:
             to_update = np.isnan(self.cells['_center'][:,0])
+            do_update=to_update.sum()
 
-        if np.sum(to_update) > 0:
+        # yeah, it's sort of awkward to handle the different ways that refresh
+        # can be specified. maybe bitmasks aren't a great approach. doesn't
+        # scale that well.
+        if do_update: # np.sum(to_update) > 0:
             if mode=='first3':
                 p1,p2,p3 = [self.nodes['x'][self.cells['nodes'][to_update,i]] for i in [0,1,2]]
                 self.cells['_center'][to_update] = circumcenter(p1,p2,p3)
@@ -1433,7 +1501,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 for c in np.arange(self.Ncells())[to_update]:
                     points=self.nodes['x'][self.cell_to_nodes(c)]
                     self.cells['_center'][c] = poly_circumcenter(points)
-        
+
         return self.cells['_center']
 
     def bounds(self,order='xxyy'):
@@ -1508,7 +1576,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         diffs=self.nodes['x'][nbrs] - self.nodes['x'][n]
         angles=np.arctan2(diffs[:,1],diffs[:,0])
         nbrs=nbrs[np.argsort(angles)]
-        if ref_nbr is not None: 
+        if ref_nbr is not None:
             i=list(nbrs).index(ref_nbr)
             nbrs=np.roll(nbrs,-i)
         return nbrs
@@ -1521,7 +1589,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             for cn in self.cell_to_nodes(c):
                 n2c[cn].append(c)
         self._node_to_cells = n2c
-        
+
     _node_to_edges = None
     def node_to_edges(self,n):
         if self._node_to_edges is None:
@@ -1542,7 +1610,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             for i in [0,1]:
                 n2e[self.edges['nodes'][e,i]].append(e)
         self._node_to_edges = n2e
-        
+
     def nodes_to_edge(self,n1,n2=None):
         if n2 is None:
             n1,n2=n1
@@ -1607,13 +1675,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 e.append( self.nodes_to_edge( nodes[na],nodes[nb] ) )
             if pad and N<self.max_sides:
                 e.extend([-1]*(self.max_sides-N))
-            return np.array(e)
+            return np.array(e,np.int32)
         else:
             e = self.cells['edges'][c]
             if np.any( e==self.UNKNOWN ):
-                e=self.cell_to_edges(c,ordered=True)
-                self.cells['edges'][c][:len(e)]=e
-                self.cells['edges'][c][len(e):]=-1
+                e=self.cell_to_edges(c,ordered=True,pad=True)
+                self.cells['edges'][c]=e
             if pad:
                 return e
             else:
@@ -2817,7 +2884,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         """
         geom: a shapely geometry
         returns: bitmask overcells, with non-deleted, selected edges set and others False.
-        if invert is True, select edges which do not intersect the the given geometry.  
+        if invert is True, select edges which do not intersect the the given geometry.
         """
         sel = np.zeros(self.Nedges(),np.bool8) # initialized to False
         for j in range(self.Nedges()):
@@ -2828,7 +2895,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             if invert:
                 sel[j] = ~sel[j]
         return sel
-    
+
     def cell_polygon(self,c):
         return geometry.Polygon(self.nodes['x'][self.cell_to_nodes(c)])
 
@@ -2875,9 +2942,11 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         certainly depends on the complexity and size of the grid, though.
         """
         lines=self.boundary_linestrings()
-        polys=join_features.lines_to_polygons(lines,close_arc=False)
+        polys,extras=join_features.lines_to_polygons(lines,close_arc=False)
         if len(polys)>1:
             raise GridException("somehow there are multiple boundary polygons")
+        if len(extras)>1:
+            raise GridException("not all boundary edges were in a boundary polygon?")
         return polys[0]
 
     def boundary_polygon_by_union(self):
@@ -3251,10 +3320,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
     def create_dual(self,center='centroid',create_cells=False):
         """
-        Very basic dual-grid construction.  Does not yet create cells,
-        just being used to simplify connectivity of an aggregation grid.
+        Return a new grid which is the dual of this grid. This
+        is currently only robust for triangle->'hex' grids.  other
+        source grids will require more nuance in coalescing centers.
         """
-        assert not create_cells,"Not yet supported"
         gd=UnstructuredGrid()
 
         if center=='centroid':
@@ -3280,8 +3349,45 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             if dj_exist is None:
                 dj=gd.add_edge(nodes=e2c[j],dual_edge=j)
 
+        if create_cells:
+            # to create cells in the dual -- these map to interior nodes
+            # of self.
+            max_degree=10 # could calculate this.
+            e2c=self.edge_to_cells()
+            gd.modify_max_sides(max_degree)
+
+            gd.add_cell_field('source_node',np.zeros(gd.Ncells(),np.int32)-1,
+                              on_exists='overwrite')
+
+            for n in self.valid_node_iter():
+                if n%1000==0:
+                    print("%d/%d dual cells"%(n,self.Nnodes())) # not exact
+                js=self.node_to_edges(n)
+                if np.any(e2c[js,:]<0): # boundary
+                    continue
+                tri_cells=self.node_to_cells(n) # i.e. same as dual nodes
+                dual_nodes=np.array(tri_cells)
+
+                # but those have to be sorted.  sort the tri cell centers, same
+                # as dual nodes, relative to tri node
+                diffs=gd.nodes['x'][dual_nodes] - self.nodes['x'][n]
+                angles=np.arctan2(diffs[:,1],diffs[:,0])
+                dual_nodes=dual_nodes[np.argsort(angles)]
+                gd.add_cell(nodes=dual_nodes,source_node=n)
+
+            # flip edges to keep invariant that external cells are always
+            # second.
+            e2c=gd.edge_to_cells()
+            to_flip=e2c[:,0]<0
+            for fld in ['nodes','cells']:
+                gd.edges[fld][to_flip] = gd.edges[fld][to_flip][:,::-1]
+
+            # the original node locations are a more accurate orthogonal
+            # center than what we can calculate currently.
+            gd.cells['_center']=self.nodes['x'][gd.cells['source_node']]
+
         return gd
-        
+
     def cells_connected_components(self,edge_mask,cell_mask=None,randomize=True):
         """
         Label the cells of the grid based on connections. 
@@ -3470,7 +3576,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 error = np.std(dists,axis=1) / np.mean(dists,axis=1)
                 rel_errors[sel]=error
         return rel_errors
-        
+
     def report_orthogonality(self):
         # circumcenter errors:
         errs=self.circumcenter_errors(radius_normalized=True)
@@ -3588,13 +3694,15 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 fp.write("%d %d %d\n"%(nbrs[0],nbrs[1],nbrs[2]))
 
     def write_suntans_hybrid(self,path='.',points='points.dat',edges='edges.dat',cells='cells.dat',
-                             overwrite=False):
+                             z_offset=0.0,overwrite=False):
         """
         Write text-based suntans format which can accomodate arbitrary numbers of sides.
         This can be read by Janet.
+        z_offset is added to elevations, which are assumed to come in positive-up.
+        It doesn't really matter, because depth is not even used here.
         """
         xy=self.nodes['x']
-        z=np.zeros(len(xy))
+        z=np.zeros(len(xy)) + z_offset
         xyz=np.c_[ xy, z]
 
         def check(fn):
@@ -3603,7 +3711,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         point_fn=os.path.join(path,points)
         check(point_fn)
-        np.savetxt(point_fn,xyz,fmt="%.8e")
+        np.savetxt(point_fn,xyz,fmt="%.12e")
 
         edge_nodes=self.edges['nodes']
 
@@ -3630,7 +3738,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         with open(cell_fn,'wt') as fp:
             for c in range(self.Ncells()):
                 nsides=self.cell_Nsides(c)
-                txt=["%d %.8e %.8e"%(nsides,cc[c,0],cc[c,1])]
+                txt=["%d %.12e %.12e"%(nsides,cc[c,0],cc[c,1])]
 
                 for n in self.cells['nodes'][c,:nsides]:
                     txt.append(str(n))
@@ -4680,18 +4788,20 @@ class UnTRIM08Grid(UnstructuredGrid):
             Ninternal = sum(self.edges['mark']==0)
             Nbc = sum(self.cells['mark'] == self.BOUNDARY)
 
-
-            fp.write("NV      =%d,\n"%self.Nnodes())
-            fp.write("NE      =%d,\n"%self.Ncells())
-            fp.write("NR      =%d,\n"%self.Nred()) 
-            fp.write("NS      =%d,\n"%self.Nedges())
-            fp.write("NSI     =%d,\n"%Ninternal)
-            fp.write("NSF     =%d,\n"%(Ninternal+Nflow))
-            fp.write("NBC     =%d,\n"%Nbc)
-            fp.write("TNE     =%d,\n"%self.Nsubgrid_cells()) 
-            fp.write("TNS     =%d,\n"%self.Nsubgrid_edges())  
-            fp.write("ANGLE   =%.4f,\n"%self.angle)
-            fp.write("LOCATION=%s\n"%self.location)
+            # 2018-08-10 RH: reorder this to match how things come
+            # out of Janet, in hopes of making this file readable
+            # by Janet.
+            fp.write("NE      =  %d,\n"%self.Ncells())
+            fp.write("NS      =  %d,\n"%self.Nedges())
+            fp.write("NV      =  %d,\n"%self.Nnodes())
+            fp.write("TNE     =  %d,\n"%self.Nsubgrid_cells())
+            fp.write("TNS     =  %d,\n"%self.Nsubgrid_edges())
+            fp.write("NBC     =  %d,\n"%Nbc)
+            fp.write("NR      =  %d,\n"%self.Nred())
+            fp.write("NSI     =  %d,\n"%Ninternal)
+            fp.write("NSF     =  %d,\n"%(Ninternal+Nflow))
+            fp.write("ANGLE   =  %.4f,\n"%self.angle)
+            fp.write("LOCATION  =  %s\n"%self.location)
 
             fp.write("/\n")
 
@@ -4991,7 +5101,7 @@ class PtmGrid(UnstructuredGrid):
         # Side Data: side_number, side_depth, node_indices(2), cell_indices(2), marker(0=internal,1=external,2=flow boundary,3=open boundary)
 
         self.fp.seek(side_data_offset)
-        
+
         # store nodeA,nodeB, cell1,cell2, marker
         for i in range(self.Nedges()):
             line = self.fp.readline().split()
