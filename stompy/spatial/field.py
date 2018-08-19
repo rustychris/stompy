@@ -133,7 +133,7 @@ class Field(object):
         projection: GDAL/OGR parseable string representation
         """
         self.assign_projection(projection)
-        
+
     def assign_projection(self,projection):
         self._projection = projection
 
@@ -145,16 +145,15 @@ class Field(object):
 
         xform = self.make_xform(from_projection,to_projection)
         new_field = self.apply_xform(xform)
-        
         new_field._projection = to_projection
         return new_field
-        
+
     def make_xform(self,from_projection,to_projection):
         if from_projection is None:
             from_projection = self.projection()
             if from_projection is None:
                 raise Exception("No source projection can be determined")
-        
+
         src_srs = osr.SpatialReference()
         src_srs.SetFromUserInput(from_projection)
 
@@ -237,7 +236,7 @@ class Field(object):
 
     def __add__(self,other):
         return BinopField(self,np.add,other)
-    
+
     def __sub__(self,other):
         return BinopField(self,np.subtract,other)
 
@@ -245,7 +244,7 @@ class Field(object):
         """ bounds is a 2x2 [[minx,miny],[maxx,maxy]] array, and is *required* for BlenderFields
         bounds can also be a 4-element sequence, [xmin,xmax,ymin,ymax], for compatibility with
         matplotlib axis(), and Paving.default_clip.
-        
+
         specify *one* of:
           nx,ny: specify number of samples in each dimension
           dx,dy: specify resolution in each dimension
@@ -2146,7 +2145,7 @@ class SimpleGrid(QuadrilateralGrid):
             result = np.nan
 
         # let linear interpolation fall back to nearest at the borders:
-        if interpolation=='linear' and fallback and any(bad):
+        if interpolation=='linear' and fallback and np.any(bad):
             result[bad] = self.interpolate(X[bad],interpolation='nearest',fallback=False)
 
         return result
@@ -2369,6 +2368,9 @@ class SimpleGrid(QuadrilateralGrid):
     def mask_outside(self,poly,value=np.nan,invert=False,straddle=None):
         """ Set the values that fall outside the given polygon to the
         given value.  Existing nan values are untouched.
+
+        Compared to polygon_mask, this is slow but allows more options on
+        exactly how to test each pixel.
 
         straddle: if None, then only test against the center point
           if True: a pixel intersecting the poly, even if the center is not
@@ -2756,7 +2758,7 @@ class GdalGrid(SimpleGrid):
         xmax = max(x0,x1)
         ymin = min(y0,y1)
         ymax = max(y0,y1)
-        
+
         return [xmin,xmax,ymin,ymax],[dx,dy]
 
     def __init__(self,filename,bounds=None,geo_bounds=None):
@@ -2765,7 +2767,7 @@ class GdalGrid(SimpleGrid):
          will load a subset of the raster.
 
         filename: path to a GDAL-recognize file, or an already opened GDAL dataset.
-        geo_bounds: xxyy bounds in geographic coordinates 
+        geo_bounds: xxyy bounds in geographic coordinates
         """
         if isinstance(filename,gdal.Dataset):
             self.gds=filename
@@ -3073,26 +3075,26 @@ if ogr:
             self.sources=sources[valid]
 
 class CompositeField(Field):
-    """ 
+    """
     In the same vein as BlenderField, but following the model of raster
     editors like Photoshop or the Gimp.
 
     Individual sources are treated as an ordered "stack" of layers.
-    
+
     Layers higher on the stack can overwrite the data provided by layers
     lower on the stack.
 
     A layer is typically defined by a raster data source and a polygon over
-    which it is valid.  
+    which it is valid.
 
     Each layer's contribution to the final dataset is both a data value and
     an alpha value.  This allows for blending/feathering between layers.
 
-    The default "data_mode" is simply overlay.  Other data modes like "min" or 
-    "max" are possible.  
+    The default "data_mode" is simply overlay.  Other data modes like "min" or
+    "max" are possible.
 
     The default "alpha_mode" is "valid()" which is essentially opaque where there's
-    valid data, and transparent where there isn't.  A second common option would 
+    valid data, and transparent where there isn't.  A second common option would
     probably be "feather(<distance>)", which would take the valid areas of the layer,
     and feather <distance> in from the edges.
 
@@ -3101,6 +3103,11 @@ class CompositeField(Field):
     Alternatively, if a factory is given, it should be callable and will take a single argument -
     a dict with the attributse for each source.  The factory should then return the corresponding
     Field.
+
+    TODO: there are cases where the alpha is so small that roundoff can cause
+    artifacts.  Should push these cases to nan.
+    TODO: currently holes must be filled manually or after the fact.  Is there a clean
+    way to handle that?  Maybe a fill data mode?
     """
     def __init__(self,shp_fn=None,factory=None,
                  priority_field='priority',
@@ -3147,8 +3154,14 @@ class CompositeField(Field):
             self.delegate_list[i] = self.factory( self.sources[i] )
         return self.delegate_list[i]
 
-    def to_grid(self,nx=None,ny=None,bounds=None,dx=None,dy=None):
+    def to_grid(self,nx=None,ny=None,bounds=None,dx=None,dy=None,
+                mask_poly=None):
         """ render the layers to a SimpleGrid tile.
+        nx,ny: number of pixels in respective dimensions
+        bounds: xxyy bounding rectangle.
+        dx,dy: size of pixels in respective dimensions.
+        mask_poly: a shapely polygon.  only points inside this polygon
+        will be generated.
         """
         # boil the arguments down to dimensions
         if bounds is None:
@@ -3172,9 +3185,11 @@ class CompositeField(Field):
 
         # Which sources to use, and in what order?
         box=geometry.box(bounds[0],bounds[2],bounds[1],bounds[3])
+        if mask_poly is not None:
+            box=box.intersection(mask_poly)
 
         # Which sources are relevant?
-        relevant_srcs=np.nonzero( [ box.intersects(geom)  
+        relevant_srcs=np.nonzero( [ box.intersects(geom)
                                     for geom in self.sources['geom'] ])[0]
         # omit negative priorities
         relevant_srcs=relevant_srcs[ self.src_priority[relevant_srcs]>=0 ]
@@ -3187,7 +3202,7 @@ class CompositeField(Field):
             log.info(self.sources['src_name'][src_i])
             log.info("   data mode: %s  alpha mode: %s"%(self.data_mode[src_i],
                                                          self.alpha_mode[src_i]))
-                  
+
             source=self.load_source(src_i)
             src_data = source.to_grid(bounds=bounds,dx=dx,dy=dy)
             src_alpha= SimpleGrid(extents=src_data.extents,
@@ -3195,8 +3210,11 @@ class CompositeField(Field):
 
             if 0: # slower
                 src_alpha.mask_outside(self.sources['geom'][src_i],value=0.0)
-            else: 
-                mask=src_alpha.polygon_mask(self.sources['geom'][src_i])
+            else:
+                src_geom=self.sources['geom'][src_i]
+                if mask_poly is not None:
+                    src_geom=src_geom.intersection(mask_poly)
+                mask=src_alpha.polygon_mask(src_geom)
                 src_alpha.F[~mask] = 0.0
 
             # create an alpha tile. depending on alpha_mode, this may draw on the lower data,
@@ -3226,9 +3244,9 @@ class CompositeField(Field):
             #     "smooth data channel with gaussian filter - this allows spreading beyond original poly!"
             #     pixels=int(round(float(dist)/dx))
             #     src_data.F=ndimage.gaussian_filter(src_alpha.F,pixels)
-                
+
             def overlay():
-                pass 
+                pass
             # alpha channel operations:
             def valid():
                 # updates alpha channel to be zero where source data is missing.
@@ -3259,13 +3277,11 @@ class CompositeField(Field):
             result_data.F   = result_data.F *(1-src_alpha.F) + cleaned*src_alpha.F
             result_alpha.F  = result_alpha.F*(1-src_alpha.F) + src_alpha.F
 
-        # fudge it a bit, and allow semi-transparent data back out, but 
+        # fudge it a bit, and allow semi-transparent data back out, but
         # at least nan out the totally transparent stuff.
         result_data.F[ result_alpha.F==0 ] = np.nan
         return result_data
 
-
-            
 class MultiRasterField(Field):
     """ Given a collection of raster files at various resolutions and with possibly overlapping
     extents, manage a field which picks from the highest resolution raster for any given point.
@@ -3418,8 +3434,7 @@ class MultiRasterField(Field):
             if v > self.clip_max:
                 v = self.clip_max
             return v
-
-        print("Bad sample at point ",xy)
+        # print("Bad sample at point ",xy)
         return v
 
     def value(self,X):
@@ -3503,22 +3518,37 @@ class MultiRasterField(Field):
         """ Create the requested tile from merging the sources.  Resolution defaults to
         resolution of the highest resolution source that falls inside the requested region
         """
+        return self.to_grid(bounds=xxyy,dx=res,dy=res)
+
+    def to_grid(self,nx=None,ny=None,interp='linear',bounds=None,dx=None,dy=None,valuator='value'):
+        """
+        Extract data in a grid.  currently only nearest, no linear interpolation.
+        """
+        # This used to be extract_tile, but the interface of to_grid is broader, so better
+        # to have extract_tile be a special case of to_grid.
+        xxyy=bounds
         if xxyy is None:
             xxyy=self.bounds()
         xxyy=as_xxyy(xxyy)
 
         hits = self.ordered_hits(xxyy)
-        assert len(hits)
+        if not len(hits):
+            # this can happen esp. when generating tiles for a larger dataset.
+            log.warning("to_grid: no datasets overlap, will return all nan")
+            if dx is None or dy is None:
+                raise Exception("No hits, and dx/dy not specified so resolution is unknown")
 
-        if res is None:
-            res = self.sources['resolution'][hits].min()
+        if dx is None:
+            dx=self.sources['resolution'][hits].min()
+        if dy is None:
+            dy=self.sources['resolution'][hits].min()
 
         # half-pixel alignment-
         # field.SimpleGrid expects extents which go to centers of pixels.
         # x and y are inclusive of the end pixels (so for exactly abutting rects, there will be 1 pixel
         # of overlap)
-        x=np.arange( xxyy[0],xxyy[1]+res,res)
-        y=np.arange( xxyy[2],xxyy[3]+res,res)
+        x=np.arange( xxyy[0],xxyy[1]+dx,dx)
+        y=np.arange( xxyy[2],xxyy[3]+dy,dy)
         targetF = np.nan*np.zeros( (len(y),len(x)), np.float64)
         pix_extents = [x[0],x[-1], y[0],y[-1] ]
         target = SimpleGrid(extents=pix_extents,F=targetF)
@@ -3535,7 +3565,6 @@ class MultiRasterField(Field):
 
         for hit in hits:
             src = self.source(hit)
-            # src.plot(ax=ax1,vmin=0,vmax=5,interpolation='nearest')
 
             src_x,src_y = src.xy()
             src_dx,src_dy = src.delta()
@@ -3544,7 +3573,6 @@ class MultiRasterField(Field):
             # map_coordinates wants decimal array indices
             # x has the utm easting for each column to extract
             # x-src_x:   easting relative to start of src tile
-            # 
             dec_x = (x-src_x[0]) / src_dx
             dec_y = (y-src_y[0]) / src_dy
 
@@ -3563,7 +3591,7 @@ class MultiRasterField(Field):
                 row_range=row_range[ [0,-1]]
             else:
                 continue
-            
+
             col_slice = slice(col_range[0],col_range[1]+1)
             row_slice = slice(row_range[0],row_range[1]+1)
             dec_x = dec_x[ col_slice ]
@@ -3577,8 +3605,7 @@ class MultiRasterField(Field):
             missing = np.isnan(target.F[ row_slice,col_slice ])
             target.F[ row_slice,col_slice ][missing] = newF[missing]
         return target
-        
-    
+
 class FunctionField(Field):
     """ wraps an arbitrary function
     function must take one argument, X, which has
@@ -3589,7 +3616,7 @@ class FunctionField(Field):
     def value(self,X):
         return self.func(X)
 
-# used to be in its own file    
+# used to be in its own file
 class TileMaker(object):
     """ Given a field, create gridded tiles of the field, including some options for blending, filling,
     cropping, etc.
