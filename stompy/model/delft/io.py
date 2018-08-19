@@ -879,14 +879,14 @@ def dataset_to_dfm_wind(ds,period_start,period_stop,target_filename_base,
 
     ds:
       xarray dataset.  Currently fairly brittle assumptions on the format of
-      this dataset, already in the proper coordinates system, coordinates of x and 
+      this dataset, already in the proper coordinates system, coordinates of x and
       y, and the wind variables named wind_u and wind_v.
-    period_start,period_stop: 
-      include data from the dataset on or after period_start, and up to period_stop, 
+    period_start,period_stop:
+      include data from the dataset on or after period_start, and up to period_stop,
     inclusive
     target_filename_base:
       the path and filename for output, without the .amu and .amv extensions.
-    extra_header: 
+    extra_header:
       extra text to place in the header.  This is included as is, with the exception that
       a newline will be added if it's missing
 
@@ -1200,6 +1200,23 @@ class MDUFile(SectionedConfig):
     configparser, but better support for discerning and retaining
     comments
     """
+    @property
+    def name(self):
+        """
+        base name of mdu filename, w/o extension, which is used in various other filenames.
+        """
+        return os.path.basename(self.filename).split('.')[0]
+    def output_dir(self):
+        """
+        path to the folder holding DFM output based on MDU filename
+        and contents.
+        """
+        output_dir=self['Output','OutputDir']
+        if output_dir in (None,""):
+            output_dir="DFM_OUTPUT_%s"%self.name
+
+        return os.path.join(self.base_path,output_dir)
+
     def time_range(self):
         """
         return tuple of t_ref,t_start,t_stop
