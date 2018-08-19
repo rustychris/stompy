@@ -1495,10 +1495,10 @@ def parse_datetime(s):
     parse YYYYMMDDHHMMSS style dates.
     strips single quotes in case it came from a hyd file
     """
-    return datetime.datetime.strptime(s.strip("'"),'%Y%m%d%H%M%S')        
+    return datetime.datetime.strptime(s.strip("'"),'%Y%m%d%H%M%S')
 
 class HydroFiles(Hydro):
-    """ 
+    """
     DWAQ hydro data read from existing files, by parsing
     .hyd file.
     """
@@ -8099,28 +8099,46 @@ END_MULTIGRID"""%num_layers
         if 'DELFT_SRC' not in os.environ:
             raise WaqException("Environment variable DELFT_SRC not defined")
         return os.environ['DELFT_SRC']
+    @delft_path.setter
+    def delft_path(self,p):
+        os.environ['DELFT_SRC']=p
     @property
     def delft_bin(self):
         if 'DELFT_BIN' in os.environ:
             return os.environ['DELFT_BIN']
         return os.path.join(self.delft_path,'bin')
+    @delft_bin.setter
+    def delft_bin(self,p):
+        os.environ['DELFT_BIN']=p
     @property
     def delwaq1_path(self):
         return os.path.join(self.delft_bin,'delwaq1')
     @property
     def delwaq2_path(self):
         return os.path.join(self.delft_bin,'delwaq2')
+
+    _share_path=None
+    @property
+    def share_path(self):
+        if self._share_path is None:
+            # this is where it would live for a freshly compiled, not installed
+            # delft3d:
+            return os.path.join(self.delft_path,'engines_gpl/waq/default')
+        else:
+            return self._share_path
+    @share_path.setter
+    def share_path(self,p):
+        self._share_path=p
     @property
     def bloom_path(self):
-        return os.path.join(self.delft_path,'engines_gpl/waq/default/bloom.spe')
+        return os.path.join(self.share_path,'bloom.spe')
     @property
     def original_bloominp_path(self):
         # this gets copied into the model run directory
-        return os.path.join(self.delft_path,'engines_gpl/waq/default/bloominp.d09')
+        return os.path.join(self.share_path,'bloominp.d09')
     @property
     def proc_path(self):
-        return os.path.join(self.delft_path,'engines_gpl/waq/default/proc_def')
-
+        return os.path.join(self.share_path,'proc_def')
 
     # plot process diagrams
     def cmd_plot_process(self,run_name='dwaq'):
