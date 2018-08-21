@@ -59,10 +59,10 @@ from stompy.model.delft import dfm_grid
 from stompy.grid import unstructured_grid
 import stompy.model.delft.waq_scenario as waq
 
-#mdu_path="/home/rusty/src/csc/dflowfm/runs/20180807_grid97_04_ptm/flowfm.mdu"
-mdu_path=("/home/rusty/mirrors/ucd-X/mwtract/TASK2_Modeling/"
-          "Hydrodynamic_Model_Files/DELFT3D/Model Run Files/"
-          "Feb11_Jun06_2017_08082018-rusty/FlowFM.mdu")
+mdu_path="/home/rusty/src/csc/dflowfm/runs/20180807_grid97_04_ptm/flowfm.mdu"
+#mdu_path=("/home/rusty/mirrors/ucd-X/mwtract/TASK2_Modeling/"
+#          "Hydrodynamic_Model_Files/DELFT3D/Model Run Files/"
+#          "Feb11_Jun06_2017_08082018-rusty/FlowFM.mdu")
 
 
 mdu=dio.MDUFile(mdu_path)
@@ -83,6 +83,15 @@ else:
 map_ds=xr.open_dataset(map_file)
 g=unstructured_grid.UnstructuredGrid.from_ugrid(map_ds)
 
+# flip edges to keep invariant that external cells are always
+# second.
+e2c=g.edge_to_cells()
+to_flip=e2c[:,0]<0
+for fld in ['nodes','cells']:
+    g.edges[fld][to_flip] = g.edges[fld][to_flip][:,::-1]
+
+
+out_encoding={} # var=>dict(encoding options)
 out_ds=g.write_to_xarray(mesh_name="Mesh2",
                          node_coordinates="Mesh2_node_x Mesh2_node_y",
                          face_node_connectivity='Mesh2_face_nodes',
@@ -106,6 +115,33 @@ mod_map_ds=map_ds.rename({'time':'nMesh2_data_time',
                           'mesh2d_edge_x':'Mesh2_edge_x',
                           'mesh2d_edge_y':'Mesh2_edge_y'
 })
+
+
+time_strings=[ utils.to_datetime(t).strftime('%Y-%m-%d %H:%M:%S')
+               for t in mod_map_ds.nMesh2_data_time.values ]
+# fish ptm expects this to be a 2D array, with string length
+# first, followed by time index.
+time_string_array=np.array( [ np.frombuffer( t.encode(),dtype='S1' )
+                              for t in time_strings ] )
+
+time_string_array[1,0]='3'# testing
+
+# both of these have issues
+# this results in fish ptm reading the first character of all the time stamps instead
+# of all the characters of the first timestamp
+# mod_map_ds['Mesh2_data_time_string']=('date_string_length','nMesh2_data_time',), time_string_array.T
+# this complains about sizes, reading beyond the end.
+# mod_map_ds['Mesh2_data_time_string']=('nMesh2_data_time','date_string_length',), time_string_array
+
+# xarray gets in the way here, adding an extra dimension for the 1 in S1.
+#out_ds['Mesh2_data_time_string'] = ('nMesh2_data_time','date_string_length',), time_string_array
+#out_encoding['Mesh2_data_time_string']=dict(dtype='S1')
+
+# untrim output in ncdump:
+# char Mesh2_data_time_string(date_string_length, nMesh2_data_time) ;
+# my output:
+# char Mesh2_data_time_string(nMesh2_data_time, date_string_length, string1) ;
+
 
 # Additional grid information:
 # xarray wants the dimension made explicit here -- don't know why.
@@ -138,11 +174,24 @@ elif bedlevtype==4:
     edge_z=map_ds.mesh2d_node_z.values[g.edges['nodes']].min(axis=1)
 else:
     raise Exception("Only know how to deal with bed level type 3,4 not %d"%bedlevtype)
-out_ds['Mesh2_edge_depth']=('nMesh2_edge',),edge_z
+# mindful of positive-down sign convention needed by PTM
+out_ds['Mesh2_edge_depth']=('nMesh2_edge',),-edge_z
+out_ds['Mesh2_edge_depth'].attrs.update({'positive':'down',
+                                         'unit':'m',
+                                         'standard_name':'sea_floor_depth_below_geoid',
+                                         'mesh':'Mesh2',
+                                         'long_name':'Mean elevation of bed on edge'})
 
 out_ds['Mesh2_data_time']=mod_map_ds.nMesh2_data_time
 
-out_ds['Mesh2_sea_surface_elevation']=('nMesh2_data_time','nMesh2_face'),mod_map_ds.mesh2d_s1
+# PTM seems to require that the bottom layer have some nonzero volume.
+# 1mm is probably enough -- but instead prop it up exactly, and we'll
+# mark it dry later in the time loop.
+# possible that this should instead be handled by setting kt,kb
+s1=np.maximum( mod_map_ds.mesh2d_s1, -out_ds['Mesh2_face_depth'])
+
+# ptm likes time last:
+out_ds['Mesh2_sea_surface_elevation']=('nMesh2_face','nMesh2_data_time'),s1.T
 
 ##
 
@@ -182,6 +231,10 @@ out_ds['nMesh2_layer_3d']=('nMesh2_layer_3d',),np.arange(nkmax)
 
 ##
 
+# not entirely sure what nsp is used for, but I think we can set it to 1.
+out_ds['nsp']=('nsp',),np.arange(1)
+
+##
 # based on sample output, the last of these is not used,
 # so this would be interfaces, starting with the top of the lowest layer.
 # fabricate something in sigma coordinates for now.
@@ -209,8 +262,9 @@ out_ds['Mesh2_layer_3d'].attrs.update(attrs)
 
 out_fn="dfm_ptm_hydro.nc"
 os.path.exists(out_fn) and os.unlink(out_fn)
+out_ds.encoding['unlimited_dims']=['nMesh2_data_time']
 
-out_ds.to_netcdf(out_fn)
+out_ds.to_netcdf(out_fn,encoding=out_encoding)
 
 out_nc=netCDF4.Dataset(out_fn,mode="a")
 
@@ -218,10 +272,21 @@ out_nc=netCDF4.Dataset(out_fn,mode="a")
 
 # Create the variables:
 
-cell_3d_data_dims=('nMesh2_data_time','nMesh2_face','nMesh2_layer_3d')
-edge_3d_data_dims=('nMesh2_data_time','nMesh2_edge','nMesh2_layer_3d')
-cell_2d_data_dims=('nMesh2_data_time','nMesh2_face')
-edge_2d_data_dims=('nMesh2_data_time','nMesh2_edge')
+# special handling for character array which xarray botches
+out_nc.createDimension('date_string_length',time_string_array.shape[1])
+time_string_var=out_nc.createVariable('Mesh2_data_time_string','c',
+                                      ('date_string_length','nMesh2_data_time'))
+time_string_var[:]=time_string_array.T
+
+
+
+# PTM expects time last
+cell_3d_data_dims=('nMesh2_face','nMesh2_layer_3d','nMesh2_data_time')
+edge_3d_data_dims=('nMesh2_edge','nMesh2_layer_3d','nMesh2_data_time')
+cell_2d_data_dims=('nMesh2_face','nMesh2_data_time')
+edge_2d_data_dims=('nMesh2_edge','nMesh2_data_time')
+
+
 
 if 'mesh2d_sa1' in mod_map_ds:
     salt_var=out_nc.createVariable('Mesh2_salinity_3d',
@@ -232,6 +297,7 @@ else:
 nut_var=out_nc.createVariable('Mesh2_vertical_diffusivity_3d',
                               np.float64,cell_3d_data_dims)
 
+# ptm expects these to have time last
 edge_k_bot_var=out_nc.createVariable('Mesh2_edge_bottom_layer',
                                      np.int32,edge_2d_data_dims)
 edge_k_top_var=out_nc.createVariable('Mesh2_edge_top_layer',
@@ -240,7 +306,7 @@ cell_k_bot_var=out_nc.createVariable('Mesh2_face_bottom_layer',
                                      np.int32,cell_2d_data_dims)
 cell_k_top_var=out_nc.createVariable('Mesh2_face_top_layer',
                                      np.int32,cell_2d_data_dims)
-
+##
 if 1: # sigma layers - can assign all of the top/bottom right here
     # have to write this out in the untrim sense - 0 would be the bed
     # cell, Nkmax-1 is the top (for a full watercolumn).
@@ -254,12 +320,16 @@ if 1: # sigma layers - can assign all of the top/bottom right here
     # 10-8=2. untrim k=0 is the bed, Nkmax-1 is the top
     #
     # nc.variables[vname][:,ii]=tmp2d
-    cell_k_bot_var[:]=0
+    # regardless of the logic above, having these as 0 at the bed led
+    # to an error message, and the code seems to actually subtract 1
+    # before using it.
+    cell_k_bot_var[:]=1
     cell_k_top_var[:]=nkmax
     # do these have to be adjusted for boundaries?
-    edge_k_bot_var[:]=0
+    edge_k_bot_var[:]=1
     edge_k_top_var[:]=nkmax
 
+##
 h_flow_var=out_nc.createVariable('h_flow_avg',np.float64,edge_3d_data_dims)
 # what are the expectations for surface/bed vertical velocity?
 v_flow_var=out_nc.createVariable('v_flow_avg',np.float64,cell_3d_data_dims)
@@ -337,15 +407,27 @@ for ti,t in enumerate(times):
     if True: # ti%24==0:
         print("%d/%d t=%s"%(ti,len(times),t))
 
+    # try setting edges to be dry by k_top=0.  this is specific to nk=1
+    cell_water_depth=map_ds.mesh2d_waterdepth.isel(time=ti)
+    cell_k_top_var[:,ti] = np.where(cell_water_depth>0,1,0)
+    # edge eta is taken from the higher freesurface
+    c1=e2c[:,0] ; c2=e2c[:,1]
+    c2[c2<0]=c1[c2<0]
+    c1[c1<0]=c2[c1<0] # unnecessary, but hey..
+    eta_cell=out_nc['Mesh2_sea_surface_elevation'][:,ti]
+    edge_eta=np.maximum( eta_cell[c1], eta_cell[c2] )
+    edge_water_depth=edge_eta + out_nc['Mesh2_edge_depth'][:]
+    edge_k_top_var[:,ti] = np.where(edge_water_depth>0,1,0)
+
     def copy_3d_cell(src,dst):
         # Copies single time step of cell-centered 3D data.
         # src: string name of variable in mod_map_ds
         # dst: netCDF variable to assign to.
         src_data=mod_map_ds[src].isel(nMesh2_data_time=ti).values
         if map_2d:
-            dst[ti,:,0]=src_data
+            dst[:,0,ti]=src_data
         else:
-            dst[ti,:,:]=src_data
+            dst[:,:,ti]=src_data
 
     if salt_var is not None:
         copy_3d_cell('mesh2d_sa1',salt_var)
@@ -353,7 +435,7 @@ for ti,t in enumerate(times):
         copy_3d_cell('mesh2d_viw',nut_var)
     else:
         # punt.
-        nut_var[ti,:,:]=0.0
+        nut_var[:,:,ti]=0.0
 
     # h_flow gets interesting as we have to read dwaq output
     # dwaq uses seconds from reference time
@@ -384,8 +466,8 @@ for ti,t in enumerate(times):
         # but now we assign in the untrim sense, bed to surface.
         h_flow_avg[j,nkmax-k-1]=Q
         h_area_avg[j,nkmax-k-1]=areas[exch]
-    h_flow_var[ti,:,:]=h_flow_avg
-    A_edge_var[ti,:,:]=h_area_avg
+    h_flow_var[:,:,ti]=h_flow_avg
+    A_edge_var[:,:,ti]=h_area_avg
 
     v_flow_avg=np.zeros((g.Ncells(),nkmax), np.float64)
     v_area_avg=np.zeros_like(v_flow_avg)
@@ -407,8 +489,8 @@ for ti,t in enumerate(times):
         v_flow_avg[elt,nkmax-k_lower-1]=Q
         if k_upper==0: # repeat top flux
             v_flow_avg[elt,nkmax-k_upper-1]=Q
-    v_flow_var[ti,:,:]=v_flow_avg
-    A_face_var[ti,:,:]=v_area_avg
+    v_flow_var[:,:,ti]=v_flow_avg
+    A_face_var[:,:,ti]=v_area_avg
 
     #   Mesh2_face_water_volume
     vols=hyd.volumes(hyd_t_sec)
@@ -416,8 +498,13 @@ for ti,t in enumerate(times):
     # they come to us ordered by first all the top layer, then the second
     # layer, on down to the bed.  convert to 3D, and reorder the layers
     vols=vols.reshape( (nkmax,g.Ncells()) )[::-1,:]
-    vol_var[ti,:,:] = vols.T
+    vol_var[:,:,ti] = vols.T
 
+    if ti>6:
+        print("DEBUGGING")
+        break # DBG
+##
+out_nc.close()
 
 # for vertical flows, there are nkmax layers, but nkmax-1
 # internal flux faces, or nkmax+1 total faces.  how is the
