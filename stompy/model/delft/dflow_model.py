@@ -270,7 +270,7 @@ class RoughnessBC(BC):
                    "FILETYPE=7",
                    "METHOD=4",
                    "OPERAND=O",
-                   ""
+                   "\n"
                    ]
             fp.write("\n".join(lines))
 
@@ -308,7 +308,7 @@ class StageBC(BC):
                    "FILETYPE=9",
                    "METHOD=3",
                    "OPERAND=O",
-                   ""]
+                   "\n"]
             fp.write("\n".join(lines))
 
     def filename_base(self):
@@ -344,7 +344,7 @@ class FlowBC(BC):
                    "FILETYPE=9",
                    "METHOD=3",
                    "OPERAND=O",
-                   ""]
+                   "\n"]
             fp.write("\n".join(lines))
 
     def write_pli(self):
@@ -396,7 +396,7 @@ class SourceSinkBC(BC):
                    "FILETYPE=9",
                    "METHOD=1", # how is this different than method=3?
                    "OPERAND=O",
-                   ""]
+                   "\n"]
             fp.write("\n".join(lines))
 
     def write_pli(self):
@@ -444,7 +444,7 @@ class WindBC(BC):
                    "FILETYPE=2",
                    "METHOD=1",
                    "OPERAND=O",
-                   ""]
+                   "\n"]
             fp.write("\n".join(lines))
     def write_data(self):
         assert self.wind is not None
@@ -997,7 +997,7 @@ class VelocityBC(BC):
                    "FILETYPE=9",
                    "METHOD=3",
                    "OPERAND=O",
-                   ""]
+                   "\n"]
             fp.write("\n".join(lines))
     def filename_base(self):
         """
@@ -1342,7 +1342,7 @@ class DFlowModel(HydroModel):
                    "FILETYPE=2",
                    "METHOD=1",
                    "OPERAND=O",
-                   ""]
+                   "\n"]
             fp.write("\n".join(lines))
 
         # write_data()
@@ -1359,7 +1359,7 @@ class DFlowModel(HydroModel):
                    "FILETYPE=7",
                    "METHOD=4",
                    "OPERAND=O",
-                   ""
+                   "\n"
                    ]
             fp.write("\n".join(lines))
 
