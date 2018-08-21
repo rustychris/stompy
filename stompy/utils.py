@@ -1,5 +1,6 @@
 from __future__ import print_function 
 import six
+import time
 import os
 import logging
 log=logging.getLogger('utils')
@@ -2002,3 +2003,12 @@ def call_with_path(cmd,path):
         os.chdir(pwd)
 
 
+def progress(a,interval_s=5.0):
+    L=len(a) # may fail?
+    t0=time.time()
+    for i,elt in enumerate(a):
+        t=time.time()
+        if t-t0>interval_s:
+            log.info("%d/%d"%(i,L))
+            t0=t
+        yield elt
