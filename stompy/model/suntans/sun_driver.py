@@ -964,6 +964,8 @@ class SuntansModel(dfm.HydroModel):
 
     def partition(self):
         self.run_mpi(["-g","-vv","--datadir=%s"%self.run_dir])
+    def run_simulation(self):
+        self.run_mpi(["-s","-vv","--datadir=%s"%self.run_dir])
     def run_mpi(self,sun_args):
         sun="sun"
         if self.sun_bin_dir is not None:
