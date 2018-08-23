@@ -124,8 +124,6 @@ time_strings=[ utils.to_datetime(t).strftime('%Y-%m-%d %H:%M:%S')
 time_string_array=np.array( [ np.frombuffer( t.encode(),dtype='S1' )
                               for t in time_strings ] )
 
-time_string_array[1,0]='3'# testing
-
 # both of these have issues
 # this results in fish ptm reading the first character of all the time stamps instead
 # of all the characters of the first timestamp
@@ -500,9 +498,6 @@ for ti,t in enumerate(times):
     vols=vols.reshape( (nkmax,g.Ncells()) )[::-1,:]
     vol_var[:,:,ti] = vols.T
 
-    if ti>6:
-        print("DEBUGGING")
-        break # DBG
 ##
 out_nc.close()
 
