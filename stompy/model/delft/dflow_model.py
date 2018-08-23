@@ -558,6 +558,7 @@ class HydroModel(object):
         self.log=log
         self.bcs=[]
         self.extra_files=[]
+        self.gazetteers=[]
 
     def add_extra_file(self,path,copy=True):
         self.extra_files.append( (path,copy) )
@@ -719,7 +720,6 @@ class HydroModel(object):
     def run_model(self):
         self.run_dflowfm(cmd="--autostartstop %s"%os.path.basename(self.mdu.filename))
 
-    gazetteers=[]
     def add_gazetteer(self,shp_fn):
         """
         Register a shapefile for resolving feature locations
