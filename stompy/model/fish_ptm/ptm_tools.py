@@ -176,8 +176,9 @@ class PtmBin(object):
         self.p_handle.set_ydata(y)
         self.title=ax.set_title('Particle positions at %s'%(datetime.strftime(t,'%Y-%m-%d %H:%M:%S')))
         if zoom:
-            ax.axis(zoom)
+            ax.set_adjustable('datalim')
             ax.set_aspect('equal')
+            ax.axis(zoom)
 
 def shp2pol(shpfile,outdir):
     """
