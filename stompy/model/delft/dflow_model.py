@@ -30,6 +30,11 @@ from . import io as dio
 class BC(object):
     name=None
     _geom=None
+    # set geom_type in subclasses to limit the matching geometries
+    # to just 'Point', 'LineString', etc.   Avoids conflicts if
+    # there are multiple features with the same name
+    geom_type=None
+
     # not sure if I'll keep these -- may be better to query at time of use
     grid_edge=None
     grid_cell=None
@@ -61,12 +66,14 @@ class BC(object):
     @property
     def geom(self):
         if (self._geom is None):
-            self._geom=self.model.get_geometry(name=self.name)
+            kw={}
+            if self.geom_type is not None:
+                kw['geom_type']=self.geom_type
+            self._geom=self.model.get_geometry(name=self.name,**kw)
         return self._geom
     @geom.setter
     def set_geom(self,g):
         self._geom=g
-
 
     def write(self):
         log.info("Writing feature: %s"%self.name)
@@ -294,6 +301,7 @@ class StageBC(BC):
     # If other than None, can compare to make sure it's the same as the model
     # datum.
     datum=None
+    geom_type='LineString'
 
     def __init__(self,z=None,**kw):
         super(StageBC,self).__init__(**kw)
@@ -327,6 +335,7 @@ class StageBC(BC):
 class FlowBC(BC):
     dredge_depth=-1.0
     Q=None
+    geom_type='LineString'
 
     def __init__(self,Q=None,**kw):
         super(FlowBC,self).__init__(**kw)
@@ -372,6 +381,11 @@ class FlowBC(BC):
 class SourceSinkBC(BC):
     # The grid, at the entry point, will be taken down to this elevation
     # to ensure that prescribed flows are not prevented due to a dry cell.
+
+    # could allow this to come in as a point, though it is probably not
+    # supported in the code below at this point.
+    geom_type=None
+
     dredge_depth=-1.0
     def __init__(self,Q=None,**kw):
         """
@@ -560,6 +574,9 @@ class HydroModel(object):
         self.extra_files=[]
         self.gazetteers=[]
 
+        self.mon_sections=[]
+        self.mon_points=[]
+
     def add_extra_file(self,path,copy=True):
         self.extra_files.append( (path,copy) )
 
@@ -607,7 +624,8 @@ class HydroModel(object):
                 shutil.rmtree(path)
             os.makedirs(path)
         elif mode=='noclobber':
-            assert not os.path.exists(path)
+            assert not os.path.exists(path),"Directory %s exists, but mode is noclobber"%path
+            os.makedirs(path)
 
     def set_run_dir(self,path,mode='create'):
         """
@@ -665,6 +683,23 @@ class HydroModel(object):
             return self.default_grid_target_filename
         else:
             return os.path.basename(self.grid.filename)
+
+    def add_monitor_sections(self,sections):
+        """
+        sections: list or array of features.  each feature
+        must have a 'geom' item giving the shapely geometry as a
+        LineString.  the feature name is pulled from a 'name'
+        item if it exists, otherwise 'obs_sec_NNN'
+        """
+        self.mon_sections.extend(sections)
+    def add_monitor_points(self,points):
+        """
+        points: list or array of features, must have a 'geom' item giving
+        the shapely geometry as a Point.  if there is a 'name' item,
+        that will be used to name the feature, otherwise it will be given
+        a numeric name 'obs_pnt_NNN'
+        """
+        self.mon_points.extend(points)
 
     def write(self):
         # Make sure instance data has been pushed to the MDUFile, this
@@ -756,14 +791,23 @@ class HydroModel(object):
         """
         check the critera in dict kws against feat, a numpy record as
         returned by shp2geom.
+        there is special handling for several values:
+          'geom_type' is the geom_type attribute of the geometry itself,
+          e.g. 'LineString' or 'Point'
         """
         for k in kws:
-            try:
-                if feat[k] == kws[k]:
-                    continue
-                else:
+            if k=='geom_type':
+                feat_val=feat['geom'].geom_type
+            else:
+                try:
+                    feat_val=feat[k]
+                except KeyError:
                     return False
-            except KeyError:
+                except ValueError: # depending on type of feat can get either
+                    return False
+            if feat_val==kws[k]:
+                continue
+            else:
                 return False
         return True
 
@@ -808,6 +852,7 @@ class HydroModel(object):
         self.add_bcs(WindBC(model=self,**kw))
     def add_RoughnessBC(self,**kw):
         self.add_bcs(RoughnessBC(model=self,**kw))
+    # def add_Structure(self,**kw): # only for DFM now.
 
     def add_bcs(self,bcs):
         """
@@ -1192,6 +1237,9 @@ class DFlowModel(HydroModel):
     # get blocked by a dry edge. Set to None to disable.
     dredge_depth=-1.0
 
+    def __init__(self,*a,**kw):
+        super(DFlowModel,self).__init__(*a,**kw)
+        self.structures=[]
 
     def write_forcing(self,overwrite=True):
         bc_fn=self.ext_force_file()
@@ -1227,9 +1275,78 @@ class DFlowModel(HydroModel):
 
         self.mdu['geometry','NetFile'] = self.grid_target_filename()
 
+        # Try to allow for the caller handling observation and cross-section
+        # files externally or through the interface -- to that end, don't
+        # overwrite ObsFile or CrsFile, but if internally there are point/
+        # line observations set, make sure that there is a filename there.
+        if len(self.mon_points)>0 and not self.mdu['output','ObsFile']:
+            self.mdu['output','ObsFile']="obs_points.xyn"
+        if len(self.mon_sections)>0 and not self.mdu['output','CrsFile']:
+            self.mdu['output','CrsFile']="obs_sections.pli"
+
     def write_config(self):
         # Assumes update_config() already called
+        self.write_structures() # updates mdu
+        self.write_monitors()
         self.mdu.write()
+
+    def write_monitors(self):
+        self.write_monitor_points()
+        self.write_monitor_sections()
+
+    def write_monitor_points(self):
+        fn=self.mdu.filepath( ('output','ObsFile') )
+        with open(fn,'at') as fp:
+            for i,mon_feat in enumerate(self.mon_points):
+                try:
+                    name=mon_feat['name']
+                except KeyError:
+                    name="obs_pnt_%03d"%i
+                xy=np.array(mon_feat['geom'])
+                fp.write("%.3f %.3f '%s'\n"%(xy[0],xy[1],name))
+    def write_monitor_sections(self):
+        fn=self.mdu.filepath( ('output','CrsFile') )
+        with open(fn,'at') as fp:
+            for i,mon_feat in enumerate(self.mon_sections):
+                try:
+                    name=mon_feat['name']
+                except KeyError:
+                    name="obs_sec_%03d"%i
+                xy=np.array(mon_feat['geom'])
+                dio.write_pli(fp,[ (name,xy) ])
+
+    def add_Structure(self,**kw):
+        self.structures.append(kw)
+
+    def write_structures(self):
+        structure_file='structures.ini'
+        if len(self.structures)==0:
+            return
+
+        self.mdu['geometry','StructureFile']=structure_file
+
+        with open( self.mdu.filepath(('geometry','StructureFile')),'wt') as fp:
+            for s in self.structures:
+                lines=[
+                    "[structure]",
+                    "type         = %s"%s['type'],
+                    "id           = %s"%s['name'],
+                    "polylinefile = %s.pli"%s['name'],
+                    "door_height  = %.3f"%s['door_height'],
+                    "lower_edge_level = %.3f"%s['lower_edge_level'],
+                    "opening_width = %.3f"%s['opening_width'],
+                    "sill_level     = %.3f"%s['sill_level'],
+                    "horizontal_opening_direction = %s"%s['horizontal_opening_direction'],
+                    "\n"
+                ]
+                fp.write("\n".join(lines))
+                pli_fn=os.path.join(self.run_dir,s['name']+'.pli')
+                feat=self.match_gazetteer(name=s['name'])
+                assert len(feat)==1
+                geom=feat[0]['geom']
+                assert geom.type=='LineString'
+                pli_data=[ (s['name'], np.array(geom.coords)) ]
+                dio.write_pli(pli_fn,pli_data)
 
     def write_bc(self,bc):
         if isinstance(bc,StageBC):
