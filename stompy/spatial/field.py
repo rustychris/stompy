@@ -1397,7 +1397,7 @@ except AttributeError:
 
 if not has_apollonius:
     has_apollonius=True
-    log.info("Falling back to slow python implementation of ApolloniusField")
+    log.debug("Falling back to slow python implementation of ApolloniusField")
     ApolloniusField=PyApolloniusField
 
 class ConstrainedScaleField(XYZField):
