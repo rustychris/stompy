@@ -76,9 +76,10 @@ def request_square(ax):
     # ax.axis('equal')
     # But in newer matplotlib, if the axes are shared,
     # that fails.
-    # Maybe this is better?
-    plt.setp(ax,aspect=1.0,adjustable='box-forced')
-    
+    # Maybe this is better?  But it artificially squeezes the
+    # plot box sometimes.
+    # plt.setp(ax,aspect=1.0,adjustable='box-forced')
+    plt.setp(ax,aspect=1.0,adjustable='datalim')
 
 def find_common_nodes(gA,gB):
     """
