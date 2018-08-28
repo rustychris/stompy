@@ -533,6 +533,15 @@ if __name__=='__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("mdu",help="MDU filename, e.g. 'my_run/flowfm.mdu'")
     parser.add_argument("output",help="Output filename, e.g. 'hydro.nc'" )
-    parser.parse_args()
-    converter=DFlowToPTMHydro(parser.mdu,parser.output)
+    parser.add_argument("--times",help="Time indexes, e.g. 0:10, 5")
+    args=parser.parse_args()
+
+    kwargs={}
+    if args.times is not None:
+        # parsing python slice syntax
+        parts=[int(p) if p else None
+               for p in args.times.split(':')]
+        kwargs['time_slice']=slice(*parts)
+
+    converter=DFlowToPTMHydro(args.mdu,args.output,**kwargs)
 
