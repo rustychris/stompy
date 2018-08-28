@@ -753,7 +753,7 @@ class HydroModel(object):
         utils.call_with_path(real_cmd,self.run_dir)
 
     def run_model(self):
-        self.run_dflowfm(cmd="--autostartstop %s"%os.path.basename(self.mdu.filename))
+        self.run_dflowfm(cmd="-t 1 --autostartstop %s"%os.path.basename(self.mdu.filename))
 
     def add_gazetteer(self,shp_fn):
         """
