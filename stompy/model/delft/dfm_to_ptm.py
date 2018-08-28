@@ -54,6 +54,12 @@ import netCDF4
 import numpy as np
 import xarray as xr
 
+try:
+    profile
+except NameError:
+    def profile(x):
+        return x
+
 from stompy import utils
 import stompy.model.delft.io as dio
 from stompy.model.delft import dfm_grid
@@ -342,7 +348,12 @@ class DFlowToPTMHydro(object):
 
         """
 
-        link_to_edge_sign=[] # an edge index in g.edges, and a +-1 sign for whether the link is aligned the same.
+        # link_to_edge_sign=[] # an edge index in g.edges, and a +-1 sign for whether the link is aligned the same.
+        # use array to allow for vector operations later
+        link_to_edge_sign=np.zeros( (len(self.hyd.links),2), np.int32)
+        link_to_edge_sign[:,0]=-1 # no edge
+        link_to_edge_sign[:,0]=0  # 0 sign
+
         mapped_edges={} # make sure we don't map multiple links onto the same edge
 
         for link_idx,(l_from,l_to) in enumerate(self.hyd.links):
@@ -355,7 +366,7 @@ class DFlowToPTMHydro(object):
                     sign=-1
                 else:
                     assert False,"We have lost our way"
-                link_to_edge_sign.append( (j,sign) )
+                link_to_edge_sign[link_idx,:]=[j,sign]
                 assert j not in mapped_edges
                 mapped_edges[j]=link_idx
             else:
@@ -367,7 +378,7 @@ class DFlowToPTMHydro(object):
                     j=potential_edges[0]
                 elif len(potential_edges)==0:
                     print("No boundary edge for link %d->%d to an edge"%(l_from,l_to))
-                    link_to_edge_sign.append( (9999999,0) ) # may be able to relax this
+                    link_to_edge_sign[link_idx,:]=[9999999,0] # may be able to relax this
                     continue
                 else:
                     print("Link %d->%d could map to %d edges - will choose first unclaimed"
@@ -382,14 +393,15 @@ class DFlowToPTMHydro(object):
                 mapped_edges[j]=link_idx
                 j_cells=self.g.edge_to_cells(j)
                 if j_cells[0]==l_to:
-                    link_to_edge_sign.append( (j,-1) )
+                    link_to_edge_sign[link_idx,:]=[j,-1]
                 elif j_cells[1]==l_to:
-                    link_to_edge_sign.append( (j,1) )
+                    link_to_edge_sign[link_idx,:]=[j,1]
                 else:
                     assert False,"whoa there"
 
         self.link_to_edge_sign=link_to_edge_sign
 
+    @profile
     def write_time_steps(self):
         """
         The heavy lifting writing out hydro fields at each time step.
@@ -457,22 +469,48 @@ class DFlowToPTMHydro(object):
             # links, and copy into h_flow_avg.  start with naive loops
             h_flow_avg=np.zeros((self.g.Nedges(),self.nkmax),np.float64)
             h_area_avg=np.zeros_like(h_flow_avg)
-            for exch in range(self.hyd.n_exch_x+self.hyd.n_exch_y):
-                Q=flows[exch]
+
+            if 0: # as a loop
+                for exch in range(self.hyd.n_exch_x+self.hyd.n_exch_y):
+                    Q=flows[exch]
+                    # for horizontal exchanges in a sigma grid, this is a safe way
+                    # to get layer:
+                    k=self.hyd.seg_k[self.poi0[exch][1]]
+                    link=self.hyd.exch_to_2d_link['link'][exch]
+                    Q=Q*self.hyd.exch_to_2d_link['sgn'][exch]
+
+                    j,j_sgn=self.link_to_edge_sign[link]
+                    if j<0:
+                        continue
+                    Q=Q*j_sgn
+                    # so far this is k in the DWAQ world, surface to bed.
+                    # but now we assign in the untrim sense, bed to surface.
+                    h_flow_avg[j,self.nkmax-k-1]=Q
+                    h_area_avg[j,self.nkmax-k-1]=areas[exch]
+            else: # vectorized
+                # just the horizontal exchanges
+                exchs=np.arange(self.hyd.n_exch_x+self.hyd.n_exch_y)
+
+                Qs=flows[exchs]
                 # for horizontal exchanges in a sigma grid, this is a safe way
                 # to get layer:
-                k=self.hyd.seg_k[self.poi0[exch][1]]
-                link=self.hyd.exch_to_2d_link['link'][exch]
-                Q=Q*self.hyd.exch_to_2d_link['sgn'][exch]
+                ks=self.hyd.seg_k[self.poi0[exchs][:,1]]
+                links=self.hyd.exch_to_2d_link['link'][exchs]
 
-                j,j_sgn=self.link_to_edge_sign[link]
-                if j<0:
-                    continue
-                Q=Q*j_sgn
+                link_sgns=self.hyd.exch_to_2d_link['sgn'][exchs]
+                js_j_sgns=self.link_to_edge_sign[links,:]
+                js=js_j_sgns[:,0]
+                j_sgns=js_j_sgns[:,1]
+
+                sgns=np.where(js>=0,link_sgns*j_sgns,0)
+
                 # so far this is k in the DWAQ world, surface to bed.
                 # but now we assign in the untrim sense, bed to surface.
-                h_flow_avg[j,self.nkmax-k-1]=Q
-                h_area_avg[j,self.nkmax-k-1]=areas[exch]
+                ptm_ks=self.nkmax-ks-1
+
+                h_flow_avg[js,ptm_ks]=Qs*sgns
+                h_area_avg[js,ptm_ks]=np.where(js>=0,areas[exchs],0.0)
+
             self.h_flow_var[:,:,ti]=h_flow_avg
             self.A_edge_var[:,:,ti]=h_area_avg
 
