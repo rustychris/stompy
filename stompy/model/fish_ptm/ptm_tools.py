@@ -151,7 +151,7 @@ class PtmBin(object):
             self.time.append(t)
 
     def plot(self,ts,ax=None,zoom='auto',fontcolor='k',update=True,
-             marker='.',color='m',**kwargs):
+             mask=slice(None),marker='.',color='m',**kwargs):
         """
         Plots the current time step
         """
@@ -167,8 +167,8 @@ class PtmBin(object):
 
         # Now just update the plot
         t,parts = self.read_timestep(ts=ts)
-        x = parts['x'][:,0]
-        y = parts['x'][:,1]
+        x = parts['x'][mask,0]
+        y = parts['x'][mask,1]
         if zoom=='auto':
             zoom= [x.min(), x.max(), y.min(), y.max()]
 

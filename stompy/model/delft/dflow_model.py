@@ -615,6 +615,7 @@ class HydroModel(object):
         mode: 'create'  create the folder if it doesn't exist
          'pristine' create, and clear anything already in there
          'noclobber' create, and fail if it already exists.
+         'existing' assert that the path exists, but do nothing to it.
         """
         if mode=='create':
             if not os.path.exists(path):
@@ -626,6 +627,8 @@ class HydroModel(object):
         elif mode=='noclobber':
             assert not os.path.exists(path),"Directory %s exists, but mode is noclobber"%path
             os.makedirs(path)
+        elif mode=='existing':
+            assert os.path.exists(path),"Directory %s does not exist"%path
 
     def set_run_dir(self,path,mode='create'):
         """

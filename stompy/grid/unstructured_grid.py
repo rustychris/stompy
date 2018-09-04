@@ -565,6 +565,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         xyz=np.loadtxt(points_fn)
         edge_nnmcc=np.loadtxt(edges_fn).astype('i4')
 
+        if edge_nnmcc.shape[1]==6:
+            # partitioned output has an extra colum - all zero in my
+            # one glance.
+            logging.debug("Dropping 6th column from edge data")
+            edge_nnmcc=edge_nnmcc[:,:5]
+
         max_sides=3
         cell_nodes=[]
         cell_ccs=[]
