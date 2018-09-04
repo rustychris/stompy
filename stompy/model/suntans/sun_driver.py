@@ -1,4 +1,5 @@
 import os
+import glob
 import subprocess
 
 import six
@@ -441,6 +442,23 @@ class SuntansModel(dfm.HydroModel):
         mark[ (mark==0) & bc_edge ] = 1
         # allow other marks to stay
         self.grid.edges['mark'][:]=mark
+
+    @staticmethod
+    def load(fn):
+        """
+        Open an existing model setup, from path to its suntans.dat
+        """
+        model=SuntansModel()
+        model.load_template(fn)
+        model.set_run_dir(os.path.dirname(fn),mode='existing')
+        # infer number of processors based on celldata files
+        sub_cells=glob.glob( os.path.join(model.run_dir,'celldata.dat.*') )
+        if len(sub_cells)>0:
+            model.num_procs=len(sub_cells)
+        else:
+            # probably better to test whether it has even been processed
+            model.num_procs=1
+        return model
 
     def load_template(self,fn):
         self.template_fn=fn
@@ -978,3 +996,96 @@ class SuntansModel(dfm.HydroModel):
             cmd=[mpiexec,"-n","%d"%self.num_procs] + cmd
         subprocess.call(cmd)
 
+    # Methods related to using model output
+    def map_outputs(self):
+        """
+        return a list of map output files -- if netcdf output is enabled,
+        that is what will be returned.
+        """
+        if int(self.config['outputNetcdf']):
+            if int(self.config['mergeArrays']):
+                # should just be 1
+                return [os.path.join(self.run_dir,self.config['outputNetcdfFile'])]
+            else:
+                fns=glob.glob(os.path.join(self.run_dir,self.config['outputNetcdfFile']+"*"))
+                fns.sort()
+                return fns
+        else:
+            raise Exception("Need to implement map output filenames for non-netcdf")
+
+    _subdomain_grids=None
+    def subdomain_grid(self,p):
+        if self._subdomain_grids is None:
+            self._subdomain_grids={}
+
+        if p not in self._subdomain_grids:
+            edges_fn=os.path.join(self.run_dir,'edges.dat.%d')
+            cells_fn=os.path.join(self.run_dir,'cells.dat.%d')
+            points_fn=os.path.join(self.run_dir,'points.dat')
+            sub_g=unstructured_grid.UnstructuredGrid.read_suntans_hybrid(path=self.run_dir,
+                                                                         points='points.dat',
+                                                                         edges='edges.dat.%d'%p,
+                                                                         cells='cells.dat.%d'%p)
+            self._subdomain_grids[p]=sub_g
+        return self._subdomain_grids[p]
+
+    def extract_transect(self,xy,time=slice(None),dx=None):
+        # assume for the moment that xy already has enough samples
+        proc_point_cell=np.zeros( [self.num_procs,len(xy)], np.int32)-1
+        point_datasets=[None]*len(xy)
+        vars=['uc','vc','Ac','dv','dzz','eta','w']
+        for proc in range(self.num_procs):
+            sub_g=self.subdomain_grid(proc)
+            ds=None
+            for pnti,pnt in enumerate(xy):
+                if point_datasets[pnti] is not None:
+                    continue
+                c=sub_g.select_cells_nearest(pnt,inside=True)
+                if c is not None:
+                    proc_point_cell[proc,pnti]=c
+                    if ds is None:
+                        ds=xr.open_dataset(self.map_outputs()[proc])
+                        # doctor up the Nk dimensions
+                        ds['Nkf']=ds['Nk'] # copy the variable
+                        del ds['Nk'] # delete old variable, leaving Nk as just a dimension
+                    point_ds=ds[vars].isel(time=time,Nc=c)
+                    point_ds['x_sample']=pnt[0]
+                    point_ds['y_sample']=pnt[1]
+                    point_datasets[pnti]=point_ds
+        ##
+        transect=xr.concat(point_datasets,dim='sample')
+        transect=transect.rename(Nk='layer',
+                                 Nkw='interface',
+                                 uc='Ve',
+                                 vc='Vn',
+                                 w='Vu_int')
+        transect['U']=('sample','layer','xy'),np.concatenate( [transect.Ve.values[...,None],
+                                                               transect.Vn.values[...,None]],
+                                                              axis=-1)
+
+        Vu_int=transect.Vu_int.values.copy()
+        Vu_int[np.isnan(Vu_int)]=0.0
+        transect['Vu']=('sample','layer'), 0.5*(Vu_int[:,1:] + Vu_int[:,:-1])
+        # construct layer-center depths
+        dzz=transect.dzz.values.copy() # sample, Nk
+        z_bot=transect['eta'].values[:,None] - dzz.cumsum(axis=1)
+        z_top=z_bot+dzz
+        z_ctr=0.5*(z_top+z_bot)
+        z_ctr[dzz==0.0]=np.nan # indicate no data
+        transect['z_ctr']=('sample','layer'), z_ctr
+
+        # first, the interior interfaces
+        def choose_valid(a,b):
+            return np.where(np.isfinite(a),a,b)
+        z_int=choose_valid(z_top[:,1:],z_bot[:,:-1])
+        # and no choice of where the first and last rows come from
+        z_int=np.concatenate( [z_top[:,:1],
+                               z_int,
+                               z_bot[:,-1:]],
+                              axis=1)
+        transect['z_int']=('sample','interface'),z_int
+        # we've got dzz, so go ahead and use it, but honor xr_transect
+        # sign convention that z_dz ~ diff(z_int)
+        transect['z_dz']=('sample','layer'),-dzz
+
+        return transect

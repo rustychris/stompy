@@ -46,37 +46,46 @@ def get_z_dz(tran):
 
     v_dim=vert_dim(tran)
 
-    # center to center spacing:
-    axis=tran.z_ctr.get_axis_num(v_dim)
+    if 'z_int' in tran:
+        int_dim='interface'
+        # get numpy values just for consistency with the else clause
+        # dz=tran.z_int.diff(dim=int_dim).rename({int_dim:v_dim})
+        dz=tran.z_int.diff(dim=int_dim).values
+        dz[dz==0]=np.nan # not sure this the right place to do this..
+    else:
+        # center to center spacing:
+        axis=tran.z_ctr.get_axis_num(v_dim)
 
-    #dctr=tran[z_ctr].diff(dim=v_dim)
-    dctr=np.diff(tran.z_ctr.values,axis=axis)
+        #dctr=tran[z_ctr].diff(dim=v_dim)
+        dctr=np.diff(tran.z_ctr.values,axis=axis)
 
-    def b(i):
-        dims=[]
-        for dim in range(tran.z_ctr.ndim):
-            if dim==axis:
-                dims.append(i)
-            else:
-                dims.append(slice(None))
-        return tuple(dims)
+        def b(i):
+            dims=[]
+            for dim in range(tran.z_ctr.ndim):
+                if dim==axis:
+                    dims.append(i)
+                else:
+                    dims.append(slice(None))
+            return tuple(dims)
 
-    # hmm - have to use .values to keep it from trying to line up
-    # indices.
-    #dz_middle=0.5*(dctr.isel( **{v_dim:slice(None,-1)} ).values +
-    #               dctr.isel( **{v_dim:slice(1,None)}).values )
-    dz_middle=0.5*(dctr[b(slice(None,-1))]
-                   +
-                   dctr[b(slice(1,None))] )
+        # This drops a layer top&bottom in z-layers
+        # have to use .values to keep xr from trying to line up
+        # indices.
+        dz_middle=0.5*(dctr[b(slice(None,-1))]
+                       +
+                       dctr[b(slice(1,None))] )
 
-    dz=np.concatenate( [ dz_middle[b(slice(None,1))],
-                         dz_middle,
-                         dz_middle[b(slice(-1,None))] ],
-                       axis=axis)
+        dz=np.concatenate( [ dz_middle[b(slice(None,1))],
+                             dz_middle,
+                             dz_middle[b(slice(-1,None))] ],
+                           axis=axis)
+
     tran['z_dz']=tran.z_ctr.dims,dz
 
     signs=np.sign(dz)
-    assert np.all(signs[0]==signs),"Problem with mixed signs of dz"
+    # allow for 0 and nan, just not 1 and -1
+    if np.nanmin(signs)<0 and np.nanmax(signs)>0:
+        assert False,"Problem with mixed signs of dz"
 
     return tran['z_dz']
 
@@ -95,15 +104,40 @@ def get_dx_sample(tran):
 
 def depth_int(tran,v):
     # integrate the variable named by v in the vertical
+    # note that regardless of the order or sign of the vertical
+    # coordinate, this will use non-negative values of dz.
     if isinstance(v,six.string_types):
         v=tran[v]
-    return (v*get_z_dz(tran)).sum(dim=vert_dim(tran))
+    z_dz=get_z_dz(tran)
+    # adjust for get_z_dz returning negative dz (i.e. positive
+    # z coordinate, but ordered surface to bed, or a positive
+    # down coordinate, ordered bed to surface
+    sign=np.sign( np.nanmean(z_dz) )
+
+    return sign*(v*z_dz).sum(dim=vert_dim(tran))
 
 def depth_avg(tran,v):
     # average the variable named by v in the vertical
     integrated=depth_int(tran,v)
     depth = depth_int(tran,1)
     return integrated/depth
+
+def lateral_int(tran,v):
+    """
+    tran: xarray dataset transect
+    v: DataArray or name of variable in tran
+    integrates v laterally, using dx_sample
+    """
+    if isinstance(v,six.string_types):
+        v=tran[v]
+    dx=get_dx_sample(tran)
+    return (v*dx).sum(dim='sample')
+
+def total_int(tran,v):
+    return lateral_int(tran,depth_int(tran,v))
+
+def total_avg(tran,v):
+    return total_int(tran,v) / total_int(tran,1.0)
 
 def Qleft(tran):
     """
@@ -507,6 +541,7 @@ def plot_scalar_polys(tran,v,ax=None,**kw):
     if ('positive' in y.attrs) and (y.attrs['positive']=='down'):
         Y=-Y
 
+    # I think Dz is getting contaminated at the top/bottom
     # Expands the vertical coordinate in the vertical
     Ybot=Y-0.5*Dz
     Yexpand=np.concatenate( (Ybot,Ybot[:,-1:]), axis=1)
