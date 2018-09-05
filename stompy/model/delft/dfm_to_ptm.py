@@ -70,6 +70,11 @@ class DFlowToPTMHydro(object):
     overwrite=False
     time_slice=slice(None)
 
+    write_grd=False
+    grd_fn=None
+
+    write_nc=True
+
     def __init__(self,mdu_path,output_fn,**kwargs):
         self.__dict__.update(kwargs)
 
@@ -90,16 +95,21 @@ class DFlowToPTMHydro(object):
             raise Exception("Not ready for MPI runs")
 
         self.open_dflow_output()
-        self.open_waq_output()
-        self.initialize_output()
-        try:
-            self.initialize_output_variables()
-            self.write_time_steps()
-        finally:
-            # helps netCDF4 release the dataset and not block
-            # subsequent runs in the case of an error on this
-            # run.
-            self.close()
+
+        if self.write_grd:
+            self.write_grd(self.grd_fn)
+
+        if self.write_nc:
+            self.open_waq_output()
+            self.initialize_output()
+            try:
+                self.initialize_output_variables()
+                self.write_time_steps()
+            finally:
+                # helps netCDF4 release the dataset and not block
+                # subsequent runs in the case of an error on this
+                # run.
+                self.close()
 
     def open_dflow_output(self):
         """
@@ -124,6 +134,36 @@ class DFlowToPTMHydro(object):
         })
 
         self.g=unstructured_grid.UnstructuredGrid.from_ugrid(self.map_ds)
+        # copy depth into a field where it is expected by the code that
+        # writes a ptm grid.  note this is a positive:up quantity
+        self.g.add_cell_field('depth',self.g.cells['mesh2d_flowelem_bl'])
+
+        # set markers as ptm expects:
+        # 0: internal, 1 external, 2 flow, 3 open
+        # from DFM: 0=> internal closed, 1=>internal, 2=>flow or stage bc, 3=>closed
+        # map to -1 (error), 0=>internal, 1=>closed, 2=>flow.  no easy way to
+        # distinguish flow from stage bc right here.
+        translator=np.array([-1,0,2,1])
+        self.g.edges['mark'][:]=translator[ self.map_ds.mesh2d_edge_type.values.astype(np.int32) ]
+
+        self.g.cells['mark'][:]=0
+        # punt, and call any cell adjacent to a marked edge BC a stage-bc cell
+        bc_edges=np.nonzero(self.g.edges['mark']>1)[0]
+        bc_cells=self.g.edge_to_cells(bc_edges).max(axis=1) # drop the negative neighbors
+        self.g.cells['mark'][bc_cells]=1
+
+        # regardless of the how DFM was configured, we will set edge
+        # depths to the shallower of the cells
+        e2c=self.g.edge_to_cells()
+        n1=e2c[:,0] ; n2=e2c[:,1]
+
+        # but no info right here on flow/open boundaries.
+        n1=np.where(n1>=0,n1,n2)
+        n2=np.where(n2>=0,n2,n1)
+        edge_depths=np.maximum( self.g.cells['depth'][n1],
+                                self.g.cells['depth'][n2] )
+        self.g.add_edge_field('depth',edge_depths)
+
         # flip edges to keep invariant that external cells are always
         # second.
         e2c=self.g.edge_to_cells()
@@ -135,6 +175,10 @@ class DFlowToPTMHydro(object):
             self.g.edges[fld][to_flip,1] = a
 
         self.flipped=to_flip
+
+    def write_grd(self,grd_fn):
+        self.g.write_ptm_gridfile(grd_fn,overwrite=self.overwrite,
+                                  subgrid=True)
 
     def template_ds(self):
         """
@@ -204,23 +248,14 @@ class DFlowToPTMHydro(object):
             out_ds['Mesh2_sea_surface_elevation']=('nMesh2_face','nMesh2_data_time'),s1.T
 
         if 1: # edge and cell marks
-            # from DFM: 0=> internal closed, 1=>internal, 2=>flow or stage bc, 3=>closed
-            # map to -1 (error), 0=>internal, 1=>closed, 2=>flow.  no easy way to
-            # distinguish flow from stage bc right here.
-            translator=np.array([-1,0,2,1])
-            edge_marks=translator[ self.mod_map_ds.mesh2d_edge_type.values.astype(np.int32) ]
+            edge_marks=self.g.edges['mark']
             assert not np.any(edge_marks<0),"Need to implement internal closed edges"
             # this gets us to 0: internal, 1:boundary, 2: boundary_closed
             # this looks like 1 for stage or flow BC, 2 for land, 0 for internal.
             out_ds['Mesh2_edge_bc']=('nMesh2_edge',),edge_marks
 
             # 'facemark':'Mesh2_face_bc'
-            cell_marks=np.zeros(self.g.Ncells(),np.int8)
-            # punt, and call any cell adjacent to a marked edge BC a stage-bc cell
-            bc_edges=np.nonzero(edge_marks>1)[0]
-            bc_cells=self.g.edge_to_cells(bc_edges).max(axis=1) # drop the negative neighbors
-            cell_marks[bc_cells]=1
-            out_ds['Mesh2_face_bc']=('nMesh2_face',),cell_marks
+            out_ds['Mesh2_face_bc']=('nMesh2_face',),self.g.cells['mark']
 
         if 1: # layers
             ucx=self.mod_map_ds['mesh2d_ucx']
@@ -561,18 +596,22 @@ class DFlowToPTMHydro(object):
 # [Qa, Qb, Qc, Qd, Qd].  I don't understand what that's about.
 # look at cell 18, around time index 200, 201
 
-if 0:
+if 1:
     # Testing
-    mdu_path="/home/rusty/src/csc/dflowfm/runs/20180807_grid97_04_ptm/flowfm.mdu"
-    converter=DFlowToPTMHydro(mdu_path,'dfm_ptm_hydro3.nc')
-
-if __name__=='__main__':
+    mdu_path="/home/rusty/src/csc/dflowfm/runs/20180807_grid98_17/flowfm.mdu"
+    converter=DFlowToPTMHydro(mdu_path,'test_hydro.nc',time_slice=slice(0,2),
+                              grd_fn='test_sub.grd',overwrite=True)
+elif __name__=='__main__':
     # Command line use:
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("mdu",help="MDU filename, e.g. 'my_run/flowfm.mdu'")
     parser.add_argument("output",help="Output filename, e.g. 'hydro.nc'" )
     parser.add_argument("--times",help="Time indexes, e.g. 0:10, 5")
+    parser.add_argument("--subgrid","-s",help="Write fake subgrid output_sub.grd too",
+                        action='store_true')
+    parser.add_argument("--skip-nc","-n",help="Do not write netcdf, usu. in conjunction with --subgrid",
+                        action='store_true')
     args=parser.parse_args()
 
     kwargs={}
@@ -581,6 +620,11 @@ if __name__=='__main__':
         parts=[int(p) if p else None
                for p in args.times.split(':')]
         kwargs['time_slice']=slice(*parts)
+    if args.subgrid:
+        kwargs['write_grd']=True
+        kwargs['grd_fn']=os.path.join(args.output.replace('.nc','_sub.grd'))
+    if args.skip_nc:
+        kwargs['write_nc']=False
 
     converter=DFlowToPTMHydro(args.mdu,args.output,**kwargs)
 

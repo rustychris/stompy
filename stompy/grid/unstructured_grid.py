@@ -3959,13 +3959,6 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         return new_ds,new_layer
 
 
-    def edge_depths(self):
-        try:
-            return self._edge_depth
-        except:
-            undefined_edge_depth = np.zeros(len(self.edges),np.float64)
-            return undefined_edge_depth
-
     def write_edges_shp(self,shpname,extra_fields=[],overwrite=False):
         """ Write a shapefile with each edge as a polyline.
         see write_cells_shp for description of extra_fields
@@ -4040,8 +4033,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         wkb2shp.wkb2shp(shpname,input_wkbs=node_geoms,fields=node_data,
                         overwrite=overwrite)
 
-    def write_ptm_gridfile(self,fn,overwrite=False):
+    def write_ptm_gridfile(self,fn,overwrite=False,subgrid=True):
         """ write this grid out in the ptm grid format.
+        subgrid: append cell and edge subgrid data.  this is
+        really just faked, with a single sub-element per item.
         """
         vertex_hdr = " Vertex Data: vertex_number, x, y"
         poly_hdr = " Polygon Data: polygon_number, number_of_sides,center_x, center_y, center_depth, side_indices(number_of_sides), marker(0=internal,1=open boundary)"
@@ -4072,26 +4067,30 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             fp.write(poly_hdr+"\n")
             cell_write_str1 = " %10d %10d %16.7f %16.7f %16.7f "
             cell_depths = self.cell_depths()
-            for e in range(self.Ncells()):
-                edges = self.cells['edges'][e,:]
+            self.update_cell_edges()
+            cc=self.cells_center()
+            for c in range(self.Ncells()):
+                edges = self.cells['edges'][c,:]
                 edges[edges<0] = -1
                 edge_str = " ".join( ["%10d"%(s+1) for s in edges] )
-                edge_str = edge_str+" %10d\n"%(self.cells['mark'][e])
+                edge_str = edge_str+" %10d\n"%(self.cells['mark'][c])
                 nsides = sum(edges>=0)
-                fp.write(cell_write_str1%(e+1,
+                # RH: cell_depths is positive:up, but ptm expects positive:down
+                #     as far as I can tell.
+                fp.write(cell_write_str1%(c+1,
                                           nsides,
-                                          self.cells['_center'][e,0],
-                                          self.cells['_center'][e,1],
-                                          cell_depths[e]))
+                                          cc[c,0],
+                                          cc[c,1],
+                                          -cell_depths[c]))
                 fp.write(edge_str)
-            
+
             # write side info
             fp.write(side_hdr+"\n")
             edge_depths = self.edge_depths()
             edge_write_str = " %10d %16.7f %10d %10d %10d %10d %10d\n"
             for s in range(self.Nedges()):
                 edges = self.edges['cells'][s,:]
-                edges[edges<0] = -1          
+                edges[edges<0] = -1
                 nodes = self.edges['nodes'][s,:]
                 nodes[nodes<0] = -1
                 fp.write(edge_write_str%(s+1,
@@ -4100,14 +4099,58 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                                           nodes[1]+1,
                                           edges[0]+1,
                                           edges[1]+1,
-                                          self.edges['mark'][s])) 
+                                          self.edges['mark'][s]))
+            if subgrid:
+                Ac=self.cells_area()
+                for c in range(self.Ncells()):
+                    cell_n_sub=1
+                    fp.write("%10d %10d\n"%(c+1,cell_n_sub))
+                    fp.write("%15.4f\n"%Ac[c])
+                    fp.write("%15.4f\n"%(-cell_depths[c]))
+                Le=self.edges_length()
+                for s in range(self.Nedges()):
+                    edge_n_sub=1
+                    fp.write("%10d %10d\n"%(s+1,edge_n_sub))
+                    fp.write("%15.4f\n"%Le[s])
+                    fp.write("%15.4f\n"%(-edge_depths[s]))
 
     def cell_depths(self):
+        """
+        Return an array of cell-centered depths.  This *should* be
+        a positive:up quantity.
+
+        Returns all zeros if no edge depth data is found
+        """
+        try:
+            return self.cells['depth']
+        except ValueError:
+            pass
+
         try:
             return self._cell_depth
-        except:
-            undefined_cell_depth = np.zeros(len(self.cells),np.float64)
-            return undefined_cell_depth
+        except AttributeError:
+            pass
+
+        return np.zeros(len(self.cells),np.float64)
+
+    def edge_depths(self):
+        """
+        Return an array of edge-centered depths.  This *should* be
+        a positive:up quantity.
+
+        Returns all zero if no edge depth data is found.
+        """
+        try:
+            return self.edges['depth']
+        except ValueError:
+            pass
+
+        try:
+            return self._edge_depth
+        except AttributeError:
+            pass
+
+        return np.zeros(len(self.edges),np.float64)
 
     #--# generation methods
     def add_rectilinear(self,p0,p1,nx,ny):
@@ -4231,17 +4274,6 @@ class UGrid(UnstructuredGrid):
         self.refresh_metadata()
         self.build_node_to_cells()
         self.build_node_to_edges()
-       
-    #def cell_depths(self):
-    #    return self._cell_depths   
-
-    def cell_depths(self):
-        
-        try:
-            return self._cell_depth
-        except:
-            undefined_cell_depth = np.zeros(len(self.cells),np.float64)
-            return undefined_cell_depth
 
     def data_variable_names(self):
         """ return list of variables which appear to have real data (i.e. not just mesh
