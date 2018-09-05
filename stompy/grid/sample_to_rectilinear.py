@@ -60,6 +60,8 @@ class Structurer(object):
             region_hash = hashlib.md5()
             region_hash.update( utm.tostring() )
             region_hash.update( radii.tostring() )
+            # include a notion of the grid geometry too
+            region_hash.update( self.vcf.X.tobytes() )
             cache_basename = "region_"+region_hash.hexdigest()+".bin"
             log.info("Cache filename is %s"%cache_basename)
         else:
@@ -221,6 +223,7 @@ class UgridAverager(Structurer):
     """
     Uses the first mesh name found in the file
     """
+    cache_dirs=None
     def __init__(self,nc_fn,**kwargs):
         self.nc_fn = nc_fn
         Structurer.__init__(self,**kwargs)
@@ -256,8 +259,9 @@ class UgridAverager(Structurer):
         directories holding the cached regions.
         the first element should be where any new cache files should go.
         """
-        datadirs = [ os.path.dirname(self.nc_fn) ]
-        return datadirs
+        if self.cache_dirs is None:
+            self.cache_dirs=[ os.path.dirname(self.nc_fn) ]
+        return self.cache_dirs
 
     def global_grid(self):
         return self.grid
