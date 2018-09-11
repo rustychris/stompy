@@ -303,77 +303,77 @@ class SunConfig(GenericConfig):
         self.set_value('start_year',other.conf_int('start_year'))
         self.set_value('start_day',other.conf_float('start_day'))
 
-    def set_simulation_period(self,start_date,end_date):
-        """ Based on the two python datetime instances given, sets
-        start_day, start_year and nsteps
-        """
-        self.set_value('start_year',start_date.year)
-        t0 = datetime.datetime( start_date.year,1,1,tzinfo=utc )
-        self.set_value('start_day',date2num(start_date) - date2num(t0))
-
-        # roundoff dangers here -
-        # self.set_simulation_duration_days( date2num(end_date) - date2num(start_date))
-        self.set_simulation_duration(delta=(end_date - start_date))
-
-    def set_simulation_duration_days(self,days):
-        self.set_simulation_duration(days=days)
-    def set_simulation_duration(self,
-                                days=None,
-                                delta=None,
-                                seconds = None):
-        """ Set the number of steps for the simulation - exactly one of the parameters should
-        be specified:
-        days: decimal number of days - DANGER - it's very easy to get some round-off issues here
-        delta: a datetime.timedelta object.
-          hopefully safe, as long as any differencing between dates was done with UTC dates
-          (or local dates with no daylight savings transitions)
-        seconds: total number of seconds - this should be safe, though there are some possibilities for
-          roundoff.
-
-        """
-        print("Setting simulation duration:")
-        print("  days=",days)
-        print("  delta=",delta)
-        print("  seconds=",seconds)
-
-        # convert everything to a timedelta -
-        if (days is not None) + (delta is not None) + (seconds is not None) != 1:
-            raise Exception("Exactly one of days, delta, or seconds must be specified")
-        if days is not None:
-            delta = datetime.timedelta(days=days)
-        elif seconds is not None:
-            delta = datetime.timedelta(seconds=seconds)
-
-        # assuming that dt is also a multiple of the precision (currently 10ms), this is
-        # safe
-        delta = dt_round(delta)
-        print("  rounded delta = ",delta)
-        timestep = dt_round(datetime.timedelta(seconds=self.conf_float('dt')))
-        print("  rounded timestep =",timestep)
-
-        # now we have a hopefully exact simulation duration in integer days, seconds, microseconds
-        # and a similarly exact timestep
-        # would like to do this:
-        #   nsteps = delta / timestep
-        # but that's not supported until python 3.3 or so
-        def to_quanta(td):
-            """ return integer number of time quanta in the time delta object
-            """
-            us_per_quanta = 1000000 // datenum_precision_per_s
-            return (td.days*86400 + td.seconds)*datenum_precision_per_s + \
-                   int( round( td.microseconds/us_per_quanta) )
-        quanta_timestep = to_quanta(timestep)
-        quanta_delta = to_quanta(delta)
-
-        print("  quanta_timestep=",quanta_timestep)
-        print("  quanta_delta=",quanta_delta)
-        nsteps = quanta_delta // quanta_timestep
-
-        print("  nsteps = ",nsteps)
-        # double-check, going back to timedelta objects:
-        err = nsteps * timestep - delta
-        self.set_value('nsteps',int(nsteps))
-        print("Simulation duration requires %i steps (rounding error=%s)"%(self.conf_int('nsteps'),err))
+    # def set_simulation_period(self,start_date,end_date):
+    #     """ Based on the two python datetime instances given, sets
+    #     start_day, start_year and nsteps
+    #     """
+    #     self.set_value('start_year',start_date.year)
+    #     t0 = datetime.datetime( start_date.year,1,1,tzinfo=utc )
+    #     self.set_value('start_day',date2num(start_date) - date2num(t0))
+    #
+    #     # roundoff dangers here -
+    #     # self.set_simulation_duration_days( date2num(end_date) - date2num(start_date))
+    #     self.set_simulation_duration(delta=(end_date - start_date))
+    #
+    # def set_simulation_duration_days(self,days):
+    #     self.set_simulation_duration(days=days)
+    # def set_simulation_duration(self,
+    #                             days=None,
+    #                             delta=None,
+    #                             seconds = None):
+    #     """ Set the number of steps for the simulation - exactly one of the parameters should
+    #     be specified:
+    #     days: decimal number of days - DANGER - it's very easy to get some round-off issues here
+    #     delta: a datetime.timedelta object.
+    #       hopefully safe, as long as any differencing between dates was done with UTC dates
+    #       (or local dates with no daylight savings transitions)
+    #     seconds: total number of seconds - this should be safe, though there are some possibilities for
+    #       roundoff.
+    #
+    #     """
+    #     print("Setting simulation duration:")
+    #     print("  days=",days)
+    #     print("  delta=",delta)
+    #     print("  seconds=",seconds)
+    #
+    #     # convert everything to a timedelta -
+    #     if (days is not None) + (delta is not None) + (seconds is not None) != 1:
+    #         raise Exception("Exactly one of days, delta, or seconds must be specified")
+    #     if days is not None:
+    #         delta = datetime.timedelta(days=days)
+    #     elif seconds is not None:
+    #         delta = datetime.timedelta(seconds=seconds)
+    #
+    #     # assuming that dt is also a multiple of the precision (currently 10ms), this is
+    #     # safe
+    #     delta = dt_round(delta)
+    #     print("  rounded delta = ",delta)
+    #     timestep = dt_round(datetime.timedelta(seconds=self.conf_float('dt')))
+    #     print("  rounded timestep =",timestep)
+    #
+    #     # now we have a hopefully exact simulation duration in integer days, seconds, microseconds
+    #     # and a similarly exact timestep
+    #     # would like to do this:
+    #     #   nsteps = delta / timestep
+    #     # but that's not supported until python 3.3 or so
+    #     def to_quanta(td):
+    #         """ return integer number of time quanta in the time delta object
+    #         """
+    #         us_per_quanta = 1000000 // datenum_precision_per_s
+    #         return (td.days*86400 + td.seconds)*datenum_precision_per_s + \
+    #                int( round( td.microseconds/us_per_quanta) )
+    #     quanta_timestep = to_quanta(timestep)
+    #     quanta_delta = to_quanta(delta)
+    #
+    #     print("  quanta_timestep=",quanta_timestep)
+    #     print("  quanta_delta=",quanta_delta)
+    #     nsteps = quanta_delta // quanta_timestep
+    #
+    #     print("  nsteps = ",nsteps)
+    #     # double-check, going back to timedelta objects:
+    #     err = nsteps * timestep - delta
+    #     self.set_value('nsteps',int(nsteps))
+    #     print("Simulation duration requires %i steps (rounding error=%s)"%(self.conf_int('nsteps'),err))
 
     def is_grid_compatible(self,other):
         """ Compare two config's, and return False if any parameters which would
@@ -937,13 +937,26 @@ class SuntansModel(dfm.HydroModel):
     def update_config(self):
         assert self.config is not None,"Only support starting from template"
 
-        # This is old, for my old version of suntans
+        # Have to be careful about the difference between starttime,
+        # which reflects time0, and the start of the initial run,
+        # vs. run_start, which is when this simulation will begin
+        # (possibly restarting a prior simulation)
         start_dt=utils.to_datetime(self.run_start)
         end_dt=utils.to_datetime(self.run_stop)
-        self.config.set_simulation_period(start_date=start_dt,end_date=end_dt)
 
-        # and this is a newer approach:
-        self.config['starttime']=start_dt.strftime('%Y%m%d.%H%M%S')
+        # In the case of restarts, this needs to reflect the
+        # start of the first simulation, not a later restart.
+        if not self.restart:
+            self.config['starttime']=start_dt.strftime('%Y%m%d.%H%M%S')
+        else:
+            log.info("starttime pulled from previous run: %s"%self.config['starttime'])
+            restart_time=self.restart_model.restartable_time()
+            assert self.run_start==restart_time,"Configured sim start and restart timestamp don't match"
+
+        dt=np.timedelta64(1,'us') * int(1e6*float(self.config['dt']))
+        nsteps=(self.run_stop-self.run_start)/dt
+        log.info("Number of steps in this simulation: %d"%nsteps)
+        self.config['nsteps']=nsteps
 
         max_faces=self.grid.max_sides
         if int(self.config['maxFaces']) < max_faces:
