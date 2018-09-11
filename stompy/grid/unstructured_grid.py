@@ -493,8 +493,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                         logging.warning("Variable %s has bad start_index, assume 0"%(varname))
                     start_index=0
                 else:
-                    start_index=0
-                    logging.warning("Variable %s has bad start_index, punting with %d"%(varname,start_index))
+                    assumed=0
+                    if start_index is not None:
+                        logging.warning("Variable %s has bad start_index, punting with %d"%(varname,assumed))
+                    start_index=assumed
 
             idxs = idxs - start_index
             # force the move to numpy land
