@@ -1,6 +1,10 @@
 import datetime
 import os
 import logging
+import re
+import six
+
+from six.moves import cPickle
 
 import numpy as np
 import xarray as xr
@@ -81,6 +85,9 @@ def nwis_dataset(station,start_date,end_date,products,
     notably "Discharge, cubic feet per second" may be reported as 
     "stream_flow_mean_daily"
     """
+    start_date=utils.to_dt64(start_date)
+    end_date=utils.to_dt64(end_date)
+
     params=dict(site_no=station,
                 format='rdb')
 
@@ -179,3 +186,34 @@ def add_salinity(ds):
                                          0) # no pressure effects
                 ds[salt_name]=ds[v].dims, salt
 
+def station_metadata(station,cache_dir=None):
+    if cache_dir is not None:
+        cache_fn=os.path.join(cache_dir,"meta-%s.pkl"%station)
+
+        if os.path.exists(cache_fn):
+            with open(cache_fn,'rb') as fp:
+                meta=cPickle.load(fp)
+            return meta
+
+    url="https://waterdata.usgs.gov/nwis/inventory?agency_code=USGS&site_no=%s"%station
+
+    resp=requests.get(url)
+
+    m=re.search(r"Latitude\s+([.0-9&#;']+\")",resp.text)
+    lat=m.group(1)
+    m=re.search(r"Longitude\s+([.0-9&#;']+\")",resp.text)
+    lon=m.group(1)
+
+    def dms_to_dd(s):
+        s=s.replace('&#176;',' ').replace('"',' ').replace("'"," ").strip()
+        d,m,s =[float(p) for p in s.split()]
+        return d + m/60. + s/3600.
+    lat=dms_to_dd(lat)
+    # no mention of west longitude, but can assume it is west.
+    lon=-dms_to_dd(lon)
+    meta=dict(lat=lat,lon=lon)
+
+    if cache_dir is not None:
+        with open(cache_fn,'wb') as fp:
+            cPickle.dump(meta,fp)
+    return meta
