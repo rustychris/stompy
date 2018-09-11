@@ -1,5 +1,6 @@
 import os
 import glob
+import copy
 import subprocess
 
 import six
@@ -14,6 +15,8 @@ from ... import utils
 from ..delft import dflow_model as dfm
 from ..delft import dfm_grid
 from ...grid import unstructured_grid
+
+from . import store_file
 
 import logging as log
 
@@ -69,9 +72,12 @@ def dt_round(dt):
 
 # certainly there is a better way to do this...
 MultiBC=dfm.MultiBC
-OTPSStageBC=dfm.OTPSStageBC
 StageBC=dfm.StageBC
 FlowBC=dfm.FlowBC
+VelocityBC=dfm.VelocityBC
+OTPSStageBC=dfm.OTPSStageBC
+OTPSFlowBC=dfm.OTPSFlowBC
+OTPSVelocityBC=dfm.OTPSVelocityBC
 
 class GenericConfig(object):
     """ Handles reading and writing of suntans.dat formatted files.
@@ -109,6 +115,10 @@ class GenericConfig(object):
                 self.entries[key] = [val,i]
         if filename:
             fp.close()
+
+    def copy(self):
+        # punt copy semantics and handling to copy module
+        return copy.deepcopy(self)
 
     def conf_float(self,key):
         return self.conf_str(key,float)
@@ -397,6 +407,11 @@ class SuntansModel(dfm.HydroModel):
     z_offset=0.0
     ic_ds=None
 
+    # None: not a restart, or
+    # path to suntans.dat for the run being restarted
+    restart=None
+    restart_model=None # model instance being restarted
+
     # for partition, run, etc.
     sun_bin_dir=None
     mpi_bin_dir=None
@@ -406,6 +421,23 @@ class SuntansModel(dfm.HydroModel):
     # None: leave whatever value is in the template
     # <float>: use that as the coriolis parameter
     coriolis_f='auto'
+
+    @property
+    def time0(self):
+        self.config['starttime']
+        dt=datetime.datetime.strptime(self.config['starttime'],
+                                      "%Y%m%d.%H%M%S")
+        return utils.to_dt64(dt)
+
+    def create_restart(self,symlink=True):
+        new_model=SuntansModel()
+        new_model.config=self.config.copy()
+        # things that have to match up, but are not part of the config:
+        new_model.num_procs=self.num_procs
+        new_model.restart=self.config_filename
+        new_model.restart_model=self
+        new_model.restart_symlink=symlink
+        return new_model
 
     def set_grid(self,grid):
         """
@@ -468,6 +500,12 @@ class SuntansModel(dfm.HydroModel):
         assert mode!='clean',"Suntans driver doesn't know what clean is"
         return super(SuntansModel,self).set_run_dir(path,mode)
 
+    def file_path(self,key,proc=None):
+        fn=os.path.join(self.run_dir,self.config[key])
+        if proc is not None:
+            fn+=".%d"%proc
+        return fn
+
     @property
     def config_filename(self):
         return os.path.join(self.run_dir,"suntans.dat")
@@ -483,9 +521,21 @@ class SuntansModel(dfm.HydroModel):
         self.write_forcing()
         # Must come after write_forcing() to allow BCs to modify grid
         self.write_grid()
+
         # Must come after write_forcing(), to get proper grid and to
         # have access to freesurface BCs
+        if self.restart:
+            self.log.info("Even though this is a restart, write IC")
+        # There are times that it is useful to be able to read the IC
+        # back in, e.g. to set a boundary condition equal to its initial
+        # condition.  For a restart, this would ideally be the same state
+        # as in the StartFiles.  That's going to take some work for
+        # relatively little gain.  So just create the IC as if this was
+        # not a restart.
         self.write_ic()
+
+        if self.restart:
+            self.write_startfiles()
 
     def initialize_initial_condition(self):
         """
@@ -505,6 +555,40 @@ class SuntansModel(dfm.HydroModel):
         if self.ic_ds is None:
             self.initialize_initial_condition()
         self.write_ic_ds()
+
+    def write_startfiles(self):
+        src_base=os.path.join(os.path.dirname(self.restart),
+                              self.restart_model.config['StoreFile'])
+        dst_base=os.path.join(self.run_dir,self.config['StartFile'])
+
+        for proc in range(self.num_procs):
+            src=src_base+".%d"%proc
+            dst=dst_base+".%d"%proc
+            self.restart_copier(src,dst)
+
+    def copy_ic_to_bc(self,ic_var,bc_var):
+        """
+        Copy IC values to the boundary conditions
+
+        Copies data for the given IC variable (e.g. 'salt'), to
+        open and flow boundaries for bc_var (e.g. 'S').
+        for flow boundaries, 'boundary_' is prepended to bc_var.
+
+        The initial condition is copied into bc_ds for all time steps,
+        and all layers.
+        """
+
+        # Open boundaries
+        for ci,c in enumerate(utils.progress(self.bc_ds.cellp.values,msg="IC=>Open BCs")):
+            ic_values = self.ic_ds[ic_var].values[0,:,c]
+            self.bc_ds[bc_var].isel(Ntype3=ci).values[:,:]=ic_values[None,:]
+
+        # Flow boundaries
+        for ei,e in enumerate(utils.progress(self.bc_ds.edgep.values,msg="IC=>Flow BCs")):
+            c=self.grid.edges['cells'][e,0]
+            assert c>=0,"Is this edge flipped"
+            ic_values=self.ic_ds[ic_var].values[0,:,c]
+            self.bc_ds["boundary_"+bc_var].isel(Ntype2=ei).values[:,:]=ic_values[None,:]
 
     def write_ic_ds(self):
         self.ic_ds.to_netcdf( os.path.join(self.run_dir,self.config['initialNCfile']) )
@@ -621,7 +705,7 @@ class SuntansModel(dfm.HydroModel):
                                             self.config['metfile']),
                                encoding=dict(time={'units':self.ds_time_units()}) )
 
-    def layer_data(self):
+    def layer_data(self,with_offset=False):
         """
         Returns layer data without z_offset applied, and
         positive up.
@@ -630,12 +714,35 @@ class SuntansModel(dfm.HydroModel):
         with z_min, z_max, Nk, z_interface, z_mid.
 
         z_interface and z_mid are ordered surface to bed.
+
+        if with_offset is True, the z_offset is included, which yields
+        more accurate (i.e. similar to suntans) layers when there is stretching
         """
         Nk=int(self.config['Nkmax'])
         z_min=self.grid.cells['depth'].min() # bed
         z_max=self.grid.cells['depth'].max() # surface
-        log.warning("Layers not fully implemented -- assuming evenly spaced Nk=%d"%Nk)
-        z_interface=-np.linspace(-z_max,-z_min,Nk+1) # evenly spaced...
+
+        r=float(self.config['rstretch'])
+
+        if with_offset:
+            z_min-=self.z_offset
+            z_max=0
+
+        if 1: # newer code
+            depth=-z_min # positive:down
+            dzs=np.zeros(Nk, np.float64)
+            if r>1.0:
+                dzs[0]=depth*(r-1)/(r**Nk-1)
+                for k in range(1,Nk):
+                    dzs[k]=r*dzs[k-1]
+            else:
+                dzs[:]=depth/float(Nk)
+            z_interface=np.concatenate( ( [z_max],
+                                          z_max-np.cumsum(dzs) ) )
+        if 0: # older code
+            # log.warning("Layers not fully implemented -- calculating with assuming evenly spaced Nk=%d"%Nk)
+            z_interface=-np.linspace(-z_max,-z_min,Nk+1) # evenly spaced...
+
         z_mid=0.5*(z_interface[:-1]+z_interface[1:])
 
         ds=xr.Dataset()
@@ -643,6 +750,8 @@ class SuntansModel(dfm.HydroModel):
         ds['z_max']=(),z_max
         ds['z_interface']=('Nkp1',),z_interface
         ds['z_mid']=('Nk',),z_mid
+        for v in ['z_min','z_max','z_interface','z_mid']:
+            ds[v].attrs['positive']='up'
         return ds
 
     def compile_bcs(self):
@@ -676,6 +785,12 @@ class SuntansModel(dfm.HydroModel):
         ds['h']=('Nt','Ntype3'),np.zeros( (Nt, Ntype3), np.float64 )
 
         def interp_time(da):
+            if da.ndim==2:
+                assert da.dims[0]=='time'
+                # recursively call per-layer, which is assumed to be the second
+                # dimension
+                profiles=[ interp_time(da[:,i]) for i in range(da.shape[1]) ]
+                return np.vstack(profiles).T
             return np.interp( utils.to_dnum(ds.time.values),
                               utils.to_dnum(da.time.values), da.values )
 
@@ -736,7 +851,11 @@ class SuntansModel(dfm.HydroModel):
                     offset=0.0
 
                 if v!='Q':
-                    ds['boundary_'+v].isel(Ntype2=type2_i).values[:] = interp_time(bc[v]) + offset
+                    data=interp_time(bc[v]) + offset
+                    # aside from Q and h, other variables are 3D
+                    if v!='h' and data.ndim==1:
+                        data=data[:,None] # add broadcastable vertical axis
+                    ds['boundary_'+v].isel(Ntype2=type2_i).values[:] = data
                 else:
                     seg_name=bc[v]
                     seg_idx=segment_ids[segment_names.index(seg_name)]
@@ -761,6 +880,8 @@ class SuntansModel(dfm.HydroModel):
             self.write_stage_bc(bc)
         elif isinstance(bc,dfm.FlowBC):
             self.write_flow_bc(bc)
+        elif isinstance(bc,dfm.VelocityBC):
+            self.write_velocity_bc(bc)
         else:
             super(SuntansModel,self).write_bc(bc)
 
@@ -771,6 +892,18 @@ class SuntansModel(dfm.HydroModel):
         cells=self.bc_geom_to_cells(bc.geom)
         for cell in cells:
             self.bc_type3[cell]['h']=water_level
+
+    def write_velocity_bc(self,bc):
+        # interface isn't exactly nailed down with the BC
+        # classes.  whether the model wants vector velocity
+        # or normal velocity varies by model.  could
+        # standardize on vector velocity, and project to normal
+        # here?
+        ds=bc.dataset()
+        edges=self.bc_geom_to_edges(bc.geom)
+        for j in edges:
+            self.bc_type2[j]['u']=ds['u']
+            self.bc_type2[j]['v']=ds['v']
 
     def write_flow_bc(self,bc):
         da=bc.dataarray()
@@ -812,6 +945,11 @@ class SuntansModel(dfm.HydroModel):
         # and this is a newer approach:
         self.config['starttime']=start_dt.strftime('%Y%m%d.%H%M%S')
 
+        max_faces=self.grid.max_sides
+        if int(self.config['maxFaces']) < max_faces:
+            log.info("Increasing maxFaces to %d"%max_faces)
+            self.config['maxFaces']=max_faces
+
         if self.coriolis_f=='auto':
             xy_ctr=self.grid.nodes['x'].mean(axis=0)
             ll_ctr=self.native_to_ll(xy_ctr)
@@ -824,10 +962,30 @@ class SuntansModel(dfm.HydroModel):
         elif self.coriolis_f is not None:
             self.config['Coriolis_f']=self.coriolis_f
 
+    def restart_copier(self,src,dst):
+        """
+        src: source file for copy, relative to present working dir
+        dst: destination.
+        will either symlink or copy src to dst, based on self.restart_symlink
+        setting
+        """
+        if self.restart_symlink:
+            src_rel=os.path.relpath(src,self.run_dir)
+            os.symlink(src_rel,dst)
+        else:
+            shutil.copyfile(src,dst)
+
     def write_grid(self):
-        # Write a grid that suntans will read:
-        self.grid.write_suntans_hybrid(self.run_dir,overwrite=True,z_offset=self.z_offset)
-        self.write_grid_bathy()
+        if not self.restart:
+            # Write a grid that suntans will read:
+            self.grid.write_suntans_hybrid(self.run_dir,overwrite=True,z_offset=self.z_offset)
+            self.write_grid_bathy()
+        else:
+            parent_base=os.path.dirname(self.restart)
+            for fn in ['cells.dat','edges.dat',
+                       'points.dat','depths.dat-voro']:
+                self.restart_copier(os.path.join(parent_base,fn),
+                                    os.path.join(self.run_dir,fn))
     def write_grid_bathy(self):
         # And write cell bathymetry separately
         # This filename is hardcoded into suntans, not part of
@@ -981,9 +1139,29 @@ class SuntansModel(dfm.HydroModel):
         return ds_met
 
     def partition(self):
-        self.run_mpi(["-g","-vv","--datadir=%s"%self.run_dir])
+        if self.restart:
+            # multiprocessor files except the .<proc> suffix, to be symlinked
+            # or copied
+            parent_base=os.path.dirname(self.restart)
+            for fn_base in ['celldata.dat','cells.dat',
+                            'edgedata.dat','edges.dat',
+                            'nodes.dat','topology.dat']:
+                for proc in range(self.num_procs):
+                    fn=fn_base+".%d"%proc
+                    self.restart_copier(os.path.join(parent_base,fn),
+                                        os.path.join(self.run_dir,fn))
+            # single files
+            for fn in ['vertspace.dat']:
+                self.restart_copier(os.path.join(parent_base,fn),
+                                    os.path.join(self.run_dir,fn))
+        else:
+            self.run_mpi(["-g","-vv","--datadir=%s"%self.run_dir])
     def run_simulation(self):
-        self.run_mpi(["-s","-vv","--datadir=%s"%self.run_dir])
+        args=['-s']
+        if self.restart:
+            args.append("-r")
+        args+=["-vv","--datadir=%s"%self.run_dir]
+        self.run_mpi(args)
     def run_mpi(self,sun_args):
         sun="sun"
         if self.sun_bin_dir is not None:
@@ -997,6 +1175,25 @@ class SuntansModel(dfm.HydroModel):
         subprocess.call(cmd)
 
     # Methods related to using model output
+    def restartable_time(self):
+        """
+        If store output is enabled, and this run has already been
+        executed, return the datetime64 of the restart files.
+        Otherwise None
+        """
+        store_files=self.store_outputs()
+        if not store_files:
+            return None
+
+        store=store_file.StoreFile(model=self,proc=0,filename=store_files[0])
+        return store.time()
+
+    def store_outputs(self):
+        store_fn=os.path.join(self.run_dir,self.config['StoreFile'])
+        fns=glob.glob( store_fn+"*" )
+        fns.sort()
+        return fns
+
     def map_outputs(self):
         """
         return a list of map output files -- if netcdf output is enabled,
@@ -1089,3 +1286,51 @@ class SuntansModel(dfm.HydroModel):
         transect['z_dz']=('sample','layer'),-dzz
 
         return transect
+
+    warn_initial_water_level=0
+    def initial_water_level(self):
+        """
+        some BC methods which want a depth need an estimate of the water surface
+        elevation, and the initial water level is as good a guess as any.
+        """
+        if self.ic_ds is not None:
+            return float(self.ic_ds.eta.mean())
+        else:
+            if not self.warn_initial_water_level==0:
+                log.warning("Request for initial water level, but no IC is set yet")
+            self.warn_initial_water_level+=1
+            return 0.0
+
+    def extract_station(self,xy=None,ll=None):
+        # For the moment, just use map output
+        if xy is None:
+            xy=self.ll_to_native(ll)
+        map_fns=self.map_outputs()
+
+        # Find which subdomain to use:
+        match=[None,None,np.inf,None] # proc,cell,distance,ds
+        for proc,map_fn in enumerate(map_fns):
+            map_ds=xr.open_dataset(map_fn)
+            g=unstructured_grid.UnstructuredGrid.from_ugrid(map_ds)
+            c=g.select_cells_nearest(xy,inside=False)
+            d=utils.dist(g.cells_center()[c],xy)
+            if d<match[2]:
+                match=[proc,c,d,map_ds]
+        if match[1] is None:
+            raise Exception("Could not find model output at %.0f,%.0f"%(xy[0],xy[1]))
+        # print("Matched to cell center %.0fm away"%(match[2]))
+
+        map_ds=match[3]
+        # Work around bad naming of dimensions
+        map_ds['Nk_c']=map_ds['Nk']
+        del map_ds['Nk']
+
+        # Extract time series there:
+        model_out=xr.Dataset()
+        model_out['time']=map_ds.time
+        model_out['distance_from_target']=(),match[2]
+
+        for d in map_ds.data_vars:
+            if 'Nc' in map_ds[d].dims:
+                model_out[d]=map_ds[d].isel(Nc=match[1])
+        return model_out

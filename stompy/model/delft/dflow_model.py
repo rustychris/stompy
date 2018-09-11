@@ -75,6 +75,37 @@ class BC(object):
     def set_geom(self,g):
         self._geom=g
 
+    # Utilities for specific types of BCs which need more information
+    # about the grid
+    def get_inward_normal(self,grid_edge=None):
+        """
+        Query the grid based on self.grid_edge to find the unit
+        normal vector for this velocity BC, positive pointing into
+        the domain.
+        """
+        if grid_edge is None:
+            grid_edge=self.grid_edge
+        assert grid_edge is not None
+        return self.model.grid.edges_normals(grid_edge,force_inward=True)
+    def get_depth(self,grid_edge=None):
+        """
+        Estimate the water column depth associated with this BC.
+        This is currently limited to a constant value, calculated for
+        self.grid_edge.
+        For the purposes here, this is a strictly positive quantity.
+        """
+        if grid_edge is None:
+            grid_edge=self.grid_edge
+        assert grid_edge is not None
+
+        # This feels like it should be somewhere else, maybe in DFlowModel?
+        h=-self.model.edge_depth(self.grid_edge,datum='eta0')
+        if h<=0:
+            log.warning("Depth for velocity BC is %f, should be >0"%h)
+        return h
+
+    # Below are more DFM specific methods which have not yet been
+    # refactored
     def write(self):
         log.info("Writing feature: %s"%self.name)
 
@@ -902,7 +933,7 @@ class HydroModel(object):
 
         if datum is not None:
             if datum=='eta0':
-                z+=float(self.mdu['geometry','WaterLevIni'])
+                z+=self.initial_water_level()
         return z
 
 # Functions for manipulating DFM input/output
@@ -997,14 +1028,24 @@ def extract_transect(ds,line,grid=None,dx=None,cell_dim='nFlowElem',
 
     return new_ds
 
-class OTPSStageBC(StageBC):
-    def __init__(self,otps_model,**kw):
-        super(OTPSStageBC,self).__init__(**kw)
-        self.otps_model=otps_model # something like OhS
+class OTPSHelper(object):
+    # water columns shallower than this will have a velocity calculated
+    # based on this water column depth rather than their actual value.
+    min_h=5.0
 
-    # write_config same as superclass
-    # filename_base same as superclass
+    otps_model=None
+    def __init__(self,otps_model,**kw):
+        self.otps_model=otps_model # something like OhS
     def dataset(self):
+        """
+        extract h,u,v from OTPS.
+        returns a xr.Dataset with time,U,V,u,v,h,Q,unorm
+          U,V: east/north transport in m2/s
+          u,v: east/north velocity in m/s, relative to model depth.
+          h: tidal freesurface
+          Q: inward-postive flux in m3/s
+          unorm: inward-positive velocity in m/s
+        """
         from stompy.model.otps import read_otps
 
         pad=2*np.timedelta64(24,'h')
@@ -1015,23 +1056,69 @@ class OTPSStageBC(StageBC):
         log.debug("Will generate tidal prediction for %d time steps"%len(times))
         ds['time']=('time',),times
         modfile=read_otps.model_path(self.otps_model)
-
         xy=np.array(self.geom.coords)
         ll=self.model.native_to_ll(xy)
+        # Note z=1.0 to get transport values in m2/s
+        pred_h,pred_U,pred_V=read_otps.tide_pred(modfile,lon=ll[:,0],lat=ll[:,1],
+                                                 time=times,z=1.0)
+        pred_h=pred_h.mean(axis=1)
+        pred_U=pred_U.mean(axis=1)
+        pred_V=pred_V.mean(axis=1)
 
-        pred_h,pred_u,pred_v=read_otps.tide_pred(modfile,lon=ll[:,0],lat=ll[:,1],
-                                                 time=times)
-        # Here - we'll query OTPS for this
-        ds['water_level']=('time',),pred_h[:,0]
+        ds['U']=('time',),pred_U
+        ds['V']=('time',),pred_V
+        ds['water_level']=('time',),pred_h
+
+        # need a normal vector and a length.  And make sure normal vector is pointing
+        # into the domain.
+        L=utils.dist(xy[0],xy[-1])
+        j=self.model.grid.select_edges_nearest( 0.5*(xy[0]+xy[-1]) )
+        grid_n=self.get_inward_normal(j)
+        Q=L*(grid_n[0]*pred_U + grid_n[1]*pred_V)
+        ds['Q']=('time',),Q
+
+        # u,v,unorm need model depth
+        edge_depth=max(self.get_depth(j),self.min_h)
+        # no adjustment for changing freesurface.  maybe later.
+        ds['u']=ds.U/edge_depth
+        ds['v']=ds.V/edge_depth
+        ds['unorm']=ds.Q/(L*edge_depth)
         return ds
+
+class OTPSStageBC(StageBC,OTPSHelper):
+    def __init__(self,**kw):
+        super(OTPSStageBC,self).__init__(**kw)
+
+    # write_config same as superclass
+    # filename_base same as superclass
+
     def dataarray(self):
         return self.dataset()['water_level']
 
     def write_data(self): # DFM IMPLEMENTATION!
         self.write_tim(self.dataarray())
 
+
+
+class OTPSFlowBC(FlowBC,OTPSHelper):
+    def __init__(self,**kw):
+        super(OTPSFlowBC,self).__init__(**kw)
+
+    # write_config same as superclass
+    # filename_base same as superclass
+
+    def dataarray(self):
+        return self.dataset()['Q']
+
+    def write_data(self): # DFM IMPLEMENTATION!
+        self.write_tim(self.dataarray())
+
 class VelocityBC(BC):
     """
+    expects a dataset() method which provides a dataset with time, u,v, and unorm
+    (positive into the domain).
+
+    dflowfm notes:
     BC setting edge-normal velocity (velocitybnd), uniform in the vertical.
     positive is into the domain.
     """
@@ -1054,82 +1141,19 @@ class VelocityBC(BC):
         return super(VelocityBC,self).filename_base()+"_vel"
     def write_data(self):
         raise Exception("Implement write_data() in subclass")
-    def get_inward_normal(self):
-        """
-        Query the grid based on self.grid_edge to find the unit
-        normal vector for this velocity BC, positive pointing into
-        the domain.
-        """
-        assert self.grid_edge is not None
-        norm=self.model.grid.edges_normals(self.grid_edge,force_inward=True)
-        return norm
-    def get_depth(self):
-        """
-        Estimate the water column depth associated with this BC.
-        This is currently limited to a constant value, calculated for
-        self.grid_edge.
-        For the purposes here, this is a strictly positive quantity.
-        """
-        assert self.grid_edge is not None
-        # This feels like it should be somewhere else, maybe in DFlowModel?
-        h=-self.model.edge_depth(self.grid_edge,datum='eta0')
-        if h<=0:
-            log.warning("Depth for velocity BC is %f, should be >0"%h)
-        return h
 
-class OTPSVelocityBC(VelocityBC):
+class OTPSVelocityBC(VelocityBC,OTPSHelper):
     """
     Force 2D transport based on depth-integrated transport from OTPS.
     """
-    # water columns shallower than this will have a velocity calculated
-    # based on this water column depth rather than their actual value.
-    min_h=5.0
-    def __init__(self,model,otps_model,**kw):
-        super(OTPSVelocityBC,self).__init__(model,**kw)
-        self.otps_model=otps_model # something like OhS or wc
+    def __init__(self,**kw):
+        super(OTPSVelocityBC,self).__init__(**kw)
 
-    def transport_ds(self):
-        from stompy.model.otps import read_otps
-        ref_date,start,stop=self.model.mdu.time_range()
-        pad=2*np.timedelta64(24,'h')
-        ds=xr.Dataset()
-
-        times=np.arange( start-pad,stop+pad, 15*np.timedelta64(60,'s') )
-        log.debug("Will generate tidal prediction for %d time steps"%len(times))
-
-        ds['time']=('time',),times
-        modfile=read_otps.model_path(self.otps_model)
-        xy=np.array(self.geom.coords)
-        ll=self.model.native_to_ll(xy)
-        # read_otps returns velocities in m/s
-        pred_h,pred_U,pred_V=read_otps.tide_pred(modfile,lon=ll[:,0],lat=ll[:,1],
-                                                 time=times,z=1)
-        # mean() is goofy - it's because xy is actually an array of points,
-        ds['h']=('time',),pred_h.mean(axis=1)
-        ds['U']=('time',),pred_U.mean(axis=1)
-        ds['V']=('time',),pred_V.mean(axis=1)
-        return ds
-
-    def velocity_ds(self):
-        """
-        Return time series of normal velocity in 'unorm'
-        variable in a xr.dataset.
-        """
-        ds=self.transport_ds()
-        UV=np.c_[ ds.U.values, ds.V.values ]
-        assert self.grid_edge is not None,"Normal velocity BC from OTPS requires grid_edge"
-
-        norm=self.get_inward_normal()
-        h=self.get_depth() # not the water surface elevation ds.h, but surf-bed depth
-
-        # clip h here to avoid anything too crazy
-        unorm=(UV*norm).sum(axis=1) / max(h,self.min_h)
-        ds['unorm']=('time',),unorm
-        return ds
+    def dataarray(self):
+        return self.dataset()['unorm']
 
     def write_data(self):
-        ds=self.velocity_ds()
-        da=ds['unorm']
+        da=self.dataarray()
         if 'z' in da.dims:
             self.write_t3d(da,z_bed=self.model.edge_depth(self.grid_edge))
         else:
@@ -1139,6 +1163,8 @@ class OTPSVelocity3DBC(OTPSVelocityBC):
     """
     Force 3D transport based on depth-integrated transport from OTPS.
     This is a temporary shim to test setting a 3D velocity BC.
+
+    It is definitely wrong.  Don't use this yet.
     """
     def velocity_ds(self):
         ds=super(OTPSVelocity3DBC,self).velocity_ds()
@@ -1147,7 +1173,7 @@ class OTPSVelocity3DBC(OTPSVelocityBC):
         z_bed=self.model.edge_depth(self.grid_edge)
         z_surf=1.0
 
-        assert z_bed<0
+        assert z_bed<0 # should probably use self.get_depth() instead.
 
         # pad out a bit above/below
         # and try populating more levels, in case things are getting chopped off
@@ -1164,7 +1190,6 @@ class OTPSVelocity3DBC(OTPSVelocityBC):
         ds['unorm'] = ds.unorm + delta
 
         return ds
-
 
 class MultiBC(BC):
     """
@@ -1486,3 +1511,9 @@ class DFlowModel(HydroModel):
         # write_data()
         np.savetxt(xyz_path,bc.data())
 
+    def initial_water_level(self):
+        """
+        some BC methods which want a depth need an estimate of the water surface
+        elevation, and the initial water level is as good a guess as any.
+        """
+        return float(self.mdu['geometry','WaterLevIni'])
