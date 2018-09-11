@@ -995,7 +995,7 @@ def savefig_geo(fig,fn,*args,**kws):
     # Add annotations for the frontal zones:
     from PIL import Image
 
-    fig.savefig(fn) # *args,**kws)
+    fig.savefig(fn,*args,**kws)
     # get the image resolution:
     img_size=Image.open(fn).size 
 
