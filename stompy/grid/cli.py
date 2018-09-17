@@ -48,7 +48,7 @@ class Dualify(Op):
     def run(self,args):
         g=stack.pop()
         gd=g.create_dual(center='circumcenter',create_cells=True)
-        stack.append(g)
+        stack.append(gd)
 
 class WriteGrid(Op):
     clobber=False
