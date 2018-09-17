@@ -49,7 +49,7 @@ def nwis_dataset_collection(stations,*a,**k):
 
 def nwis_dataset(station,start_date,end_date,products,
                  days_per_request='M',frequency='realtime',
-                 cache_dir=None,clip=True):
+                 cache_dir=None,clip=True,cache_only=False):
     """
     Retrieval script for USGS waterdata.usgs.gov
 
@@ -75,14 +75,16 @@ def nwis_dataset(station,start_date,end_date,products,
 
     clip: if True, then even if more data was fetched, return only the period requested.
 
-    frequency: defaults to "realtime" which should correspond to the original 
+    frequency: defaults to "realtime" which should correspond to the original
       sample frequency.  Alternatively, "daily" which access daily average values.
+
+    cache_only: If true, only read from cache, not attempting to fetch any new data.
 
     returns an xarray dataset.
 
     Note that names of variables are inferred from parameter codes where possible,
     but this is not 100% accurate with respect to the descriptions provided in the rdb,
-    notably "Discharge, cubic feet per second" may be reported as 
+    notably "Discharge, cubic feet per second" may be reported as
     "stream_flow_mean_daily"
     """
     start_date=utils.to_dt64(start_date)
@@ -103,15 +105,14 @@ def nwis_dataset(station,start_date,end_date,products,
         base_url="https://waterdata.usgs.gov/nwis/dv"
     else:
         raise Exception("Unknown frequency: %s"%(frequency))
-    
+
     params['period']=''
 
     # generator for dicing up the request period
-
     datasets=[]
 
     last_url=None
-    
+
     for interval_start,interval_end in periods(start_date,end_date,days_per_request):
 
         params['begin_date']=utils.to_datetime(interval_start).strftime('%Y-%m-%d')
@@ -125,10 +126,13 @@ def nwis_dataset(station,start_date,end_date,products,
                                                     params['end_date']))
         else:
             cache_fn=None
-            
+
         if (cache_fn is not None) and os.path.exists(cache_fn):
             log.info("Cached   %s -- %s"%(interval_start,interval_end))
             ds=xr.open_dataset(cache_fn)
+        elif cache_only:
+            log.info("Cache only - no data for %s -- %s"%(interval_start,interval_end))
+            continue
         else:
             log.info("Fetching %s -- %s"%(interval_start,interval_end))
             req=requests.get(base_url,params=params)
@@ -141,7 +145,7 @@ def nwis_dataset(station,start_date,end_date,products,
 
             if cache_fn is not None:
                 ds.to_netcdf(cache_fn)
-                
+
         # USGS returns data inclusive of the requested date range - leading to some overlap
         if len(datasets):
             ds=ds.isel(time=ds.time>datasets[-1].time[-1])

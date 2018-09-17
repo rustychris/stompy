@@ -195,6 +195,13 @@ def center_to_edge(c,dx_single=None,axis=0):
     return d
 
 def center_to_edge_2d(X,Y,dx_single=None,dy_single=None):
+    # xarray DataArrays will cause this to fail because
+    # the indexing tries to keep everything lined up.
+    if xr is not None:
+        if isinstance(X,xr.DataArray):
+            X=X.values
+        if isinstance(Y,xr.DataArray):
+            Y=Y.values
     if np.any(np.isnan(X)) or np.any(np.isnan(Y)):
         log.warning('center_to_edge2d() does not cope well with nan')
     if X.ndim==Y.ndim==1:

@@ -3399,19 +3399,19 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
     def cells_connected_components(self,edge_mask,cell_mask=None,randomize=True):
         """
-        Label the cells of the grid based on connections. 
+        Label the cells of the grid based on connections.
         edge_mask: boolean array, true for edges which should be considered a connection.
         cell_mask: optional boolean array, true for cells which should be considered
-          active.  Currently this is taken into account as a post-processing step - 
+          active.  Currently this is taken into account as a post-processing step -
           connectivity is defined based on edges, and inactive cells are trimmed from
           the output.  This may change in the future, though.
-        randomize: the returned labels are randomly assigned.  This can help with 
-          color plotting of the labels by generally creating more contrast between 
+        randomize: the returned labels are randomly assigned.  This can help with
+          color plotting of the labels by generally creating more contrast between
           adjacent components.
 
         Returns: labels, masked integer array of size self.Ncells().  Inactive cells
           masked out, other cells labeled with the component to which they belong.
-          
+
         """
         # further constrain to edges which are not on the boundary
         edge_mask=edge_mask & np.all( self.edges['cells']>=0,axis=1)
