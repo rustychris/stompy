@@ -703,7 +703,8 @@ class SuntansModel(dfm.HydroModel):
     def write_met_ds(self):
         self.met_ds.to_netcdf( os.path.join(self.run_dir,
                                             self.config['metfile']),
-                               encoding=dict(time={'units':self.ds_time_units()}) )
+                               encoding=dict(nt={'units':self.ds_time_units()},
+                                             Time={'units':self.ds_time_units()}) )
 
     def layer_data(self,with_offset=False):
         """
@@ -1120,11 +1121,19 @@ class SuntansModel(dfm.HydroModel):
 
         return ds_ic
 
+    met_pad=np.timedelta64(1,'D')
     def zero_met(self):
         ds_met=xr.Dataset()
 
         # this is nt in the sample, but maybe time is okay??
-        ds_met['time']=('time',),[self.run_start,self.run_stop]
+        # nope -- needs to be nt.
+        # quadratic interpolation is used, so we need to pad out before/after
+        # the simulation
+        ds_met['nt']=('nt',),[self.run_start-self.met_pad,
+                              self.run_start,
+                              self.run_stop,
+                              self.run_stop+self.met_pad]
+        ds_met['Time']=('nt',),ds_met.nt.values
 
         xxyy=self.grid.bounds()
         xy0=[ 0.5*(xxyy[0]+xxyy[1]), 0.5*(xxyy[2]+xxyy[3])]
@@ -1139,15 +1148,14 @@ class SuntansModel(dfm.HydroModel):
             shape=tuple( [ds_met.dims[d] for d in dims] )
             return dims,val*np.ones(shape)
 
-        ds_met['Uwind']=const(('time','NUwind'), 0.0)
+        ds_met['Uwind']=const(('nt','NUwind'), 0.0)
 
-
-        ds_met['Vwind']=const(('time','NVwind'), 0.0)
-        ds_met['Tair'] =const(('time','NTair'), 20.0)
-        ds_met['Pair'] =const(('time','NPair'), 1000.) # units?
-        ds_met['RH']=const(('time','NRH'), 80.)
-        ds_met['rain']=const(('time','Nrain'), 0.)
-        ds_met['cloud']=const(('time','Ncloud'), 0.5)
+        ds_met['Vwind']=const(('nt','NVwind'), 0.0)
+        ds_met['Tair'] =const(('nt','NTair'), 20.0)
+        ds_met['Pair'] =const(('nt','NPair'), 1000.) # units?
+        ds_met['RH']=const(('nt','NRH'), 80.)
+        ds_met['rain']=const(('nt','Nrain'), 0.)
+        ds_met['cloud']=const(('nt','Ncloud'), 0.5)
 
         return ds_met
 
@@ -1168,12 +1176,13 @@ class SuntansModel(dfm.HydroModel):
                 self.restart_copier(os.path.join(parent_base,fn),
                                     os.path.join(self.run_dir,fn))
         else:
-            self.run_mpi(["-g","-vv","--datadir=%s"%self.run_dir])
+            self.run_mpi(["-g",self.sun_verbose_flag,"--datadir=%s"%self.run_dir])
+    sun_verbose_flag="-vv"
     def run_simulation(self):
         args=['-s']
         if self.restart:
             args.append("-r")
-        args+=["-vv","--datadir=%s"%self.run_dir]
+        args+=[self.sun_verbose_flag,"--datadir=%s"%self.run_dir]
         self.run_mpi(args)
     def run_mpi(self,sun_args):
         sun="sun"
@@ -1309,7 +1318,7 @@ class SuntansModel(dfm.HydroModel):
         if self.ic_ds is not None:
             return float(self.ic_ds.eta.mean())
         else:
-            if not self.warn_initial_water_level==0:
+            if self.warn_initial_water_level==0:
                 log.warning("Request for initial water level, but no IC is set yet")
             self.warn_initial_water_level+=1
             return 0.0
