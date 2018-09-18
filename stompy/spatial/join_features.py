@@ -19,19 +19,26 @@ from numpy.linalg import norm
 from . import wkb2shp
 from .. import utils
 
-try:
-    # 2017-07-01: RH - this is most likely not true any more
-    #if sys.platform == 'darwin':
-    #    print( "MacOS prepared geometries appear to be buggy.")
-    #    raise ImportError("Intential abort on OSX")
-    from shapely import prepared
-except ImportError:
-    prepared = None
-    print("Prepared geometries not available - tests will be slow")
-    
 import logging
 logging.basicConfig(level=logging.INFO)
 log=logging.getLogger('join_features')
+
+try:
+    import shapely.prepared.prep as prepare_geometry
+except ImportError:
+    prepare_geometry=lambda x:x
+    log.warning("Prepared geometries not available - tests will be slow")
+
+try:
+    from shapely.strtree import STRtree
+except ImportError:
+    # this will make complex inputs horrifically slow, but might
+    # complete
+    class STRtree(object):
+        def __init__(self,geoms):
+            self.geoms=geoms
+        def query(self,g):
+            return self.geoms
 
 def progress_printer(str,steps_done=None,steps_total=None):
     if steps_done is not None and steps_total is not None:
@@ -90,7 +97,7 @@ def merge_lines(layer=None,segments=None):
                 fid,points = next_seg()
             except StopIteration:
                 break
-            
+
         features[fid] = points
 
         start_point = tuple(points[0])
@@ -173,7 +180,6 @@ def merge_lines(layer=None,segments=None):
     progress_message("merge completed")
     # cast to list for python 3
     return list(features.values())
-    
 
 def tolerant_merge_lines(features,tolerance):
     """ expects features to be formatted like the output of merge_lines,
@@ -188,7 +194,7 @@ def tolerant_merge_lines(features,tolerance):
     INIT_MATCH =5 # dummy value to kick-start the loop
 
     closed_already = [ all(feat[0]==feat[-1]) for feat in features]
-    
+
     def check_match(pntsA,pntsB):
         if norm(pntsA[0]-pntsB[0]) <= tolerance:
             return FIRST_FIRST
@@ -200,7 +206,7 @@ def tolerant_merge_lines(features,tolerance):
             return LAST_LAST
         else:
             return NO_MATCH
-        
+
     # how to do the matching:
     #  nested loops?  match the i-th feature against each jth other feature
     #    if they match, merge j onto i, set j-th to None, and start scanning
@@ -210,13 +216,13 @@ def tolerant_merge_lines(features,tolerance):
             continue
         if closed_already[i]:
             continue
-        
+
         progress_message("Merge lines tolerant",i,len(features))
-        
+
         # once we've tried to match the i-th feature against everybody
         # after i, there's no reason to look at it again, so the inner
         # loop starts at i+1
-        
+
         match = INIT_MATCH
         while match:
             match = NO_MATCH
@@ -264,11 +270,9 @@ def tolerant_merge_lines(features,tolerance):
         if delta > 0.0 and delta <= tolerance:
             log.info("tolerant_merge: joining a loop - dist = %f"%delta)
             feat[-1] = feat[0]
-    
-    return features
-                
 
-    
+    return features
+
 # how many of the features are closed, and return the one that isn't
 # since it will define the exterior ring in the output
 # if all the rings are closed, return the ring with the greatest area
@@ -308,7 +312,7 @@ def find_exterior_ring(point_lists):
     open_strings = []
     max_area = 0
     max_area_id = None
-    
+
     for i in range(len(point_lists)):
         point_list = point_lists[i]
         if all(point_list[0]!=point_list[-1]):
@@ -332,13 +336,14 @@ def find_exterior_ring(point_lists):
         return open_strings[0],False
     else:
         log.info( "No open linestrings, resorting to choosing exterior ring by area" )
+        print("Selected exterior ring with area %.0f"%max_area)
         return max_area_id,True
 
 def arc_to_close_line(points,n_arc_points=40):
     """ Given a list of points, return an arc that closes the linestring,
     and faces away from the centroid of the points
     """
-    
+
     # Find the centroid of the original points.
     geo = shapely.geometry.Polygon(points)
     centroid = np.array(geo.centroid)
@@ -379,14 +384,15 @@ def arc_to_close_line(points,n_arc_points=40):
 
     return arc_points
 
-def lines_to_polygons(new_features,close_arc=False,single_feature=True,force_orientation=True):
+
+def lines_to_polygons_slow(new_features,close_arc=False,single_feature=True,force_orientation=True):
     """
     single_feature: False is not yet implemented!
     returns a list of Polygons and a list of features which were not part of a polygon
     force_orientation: ensure that interior rings have negative signed area
     """
     assert single_feature
-        
+
     ### Remove non-polygons - still not smart enough to handle duplicate points
     new_features = [f for f in new_features if len(f) > 2]
 
@@ -447,6 +453,92 @@ def lines_to_polygons(new_features,close_arc=False,single_feature=True,force_ori
     poly_geom = shapely.geometry.Polygon(exterior,new_interiors)
     return [poly_geom],extras
 
+# updated version, hopefully faster in the usual case of no open loops, but
+# multiple polygons
+def lines_to_polygons(new_features,close_arc=False,single_feature=True,force_orientation=True):
+    """
+    returns a list of Polygons and a list of features which were not part of a polygon
+    force_orientation: ensure that interior rings have negative signed area
+    """
+    ### Remove non-polygons - still not smart enough to handle duplicate points
+    new_features = [f for f in new_features if len(f) > 2]
+    new_features = clean_degenerate_rings(new_features)
+
+    open_strings=[]
+    simple_polys=[]
+    for i,point_list in enumerate(new_features):
+        if np.any(point_list[0]!=point_list[-1]):
+            open_strings.append(i)
+        else: # closed - check it's area
+            simple_polys.append(shapely.geometry.Polygon(point_list))
+
+    log.info("%d open strings, %d simple polygons"%(len(open_strings),
+                                                    len(simple_polys)))
+
+    if len(open_strings):
+        log.error("New version of lines_to_polygons is faster but intolerant.  Cannot handle ")
+        log.error("open strings")
+        raise Exception("No longer can handle open line strings")
+
+    polys=[] # output polygons
+
+    areas=np.array([p.area for p in simple_polys])
+    # sort big to small
+    ordering=np.argsort(-areas)
+    simple_polys=[simple_polys[i] for i in ordering]
+    areas=areas[ordering]
+
+    log.info("Building index")
+    # Because the index only hands back the poly, not an index.
+    for i,p in enumerate(simple_polys):
+        p.join_id=i
+
+    index=STRtree(simple_polys)
+    log.info("done building index")
+
+    poly_geoms=[] # accumulate results
+
+    assigned_p=[False]*len(simple_polys)
+    unassigned_idxs=list(range(len(simple_polys)))
+
+    while len(unassigned_idxs):
+        ext_idx=unassigned_idxs.pop(0) # get first/biggest one
+        if assigned_p[ext_idx]:
+            continue # was included as a sub-feature already
+
+        assigned_p[ext_idx]=True
+        ext_poly=simple_polys[ext_idx]
+
+        ### Find exterior ring
+        log.info("Examining largest poly left with area=%f, %d potential interiors"%
+                 (ext_poly.area,len(unassigned_idxs)))
+        prep_ext_poly = prepared.prep(ext_poly)
+
+        hits=index.query(ext_poly)
+        hit_indexes=[p.join_id for p in hits]
+        # this keeps us comparing large->small, needed to avoid
+        # confusing islands in lake with lakes
+        hit_indexes.sort()
+
+        for i in hit_indexes:
+            if assigned_p[i]:
+                continue
+            int_poly=simple_polys[i]
+            if prep_ext_poly.contains(int_poly):
+                # include that poly as an interior
+                ext_poly=shapely.geometry.Polygon(ext_poly.exterior,
+                                                  list(ext_poly.interiors)+[int_poly.exterior])
+                prep_ext_poly=prepared.prep(ext_poly)
+                assigned_p[i]=True # lazily remove from unassigned_idxs at top of loop
+
+        poly_geoms.append(ext_poly)
+
+        if single_feature:
+            break
+
+    return poly_geoms,simple_polys
+
+
 ####### Running the actual steps ########
 
 def vector_mag(vectors):
@@ -494,7 +586,7 @@ def process_layer(orig_layer,output_name,tolerance=0.0,
         # want to remove all of them, just enough to keep the minimal spacing above
         # tolerance.
         short_tol = 0.5*tolerance
-        
+
         for fi in range(len(new_features)):
             pnts = new_features[fi]
             valid = np.ones( len(pnts), np.bool8)
@@ -510,7 +602,7 @@ def process_layer(orig_layer,output_name,tolerance=0.0,
                         valid[i] = False
                 else:
                     last_valid = i
-            
+
             # print "Ring %d: # invalid=%d / %d"%(i,sum(~valid),len(new_features[i]))
             new_features[fi] = new_features[fi][valid,:]
 
@@ -518,17 +610,18 @@ def process_layer(orig_layer,output_name,tolerance=0.0,
         new_features = tolerant_merge_lines(new_features,tolerance)
 
     ### </processing>
-    
+
     ### <output>
     if create_polygons:
         if single_feature:
-            geoms,extras = lines_to_polygons(new_features,close_arc=close_arc)
+            geoms,extras = lines_to_polygons(new_features,close_arc=close_arc,single_feature=True)
         else:
-            geoms=[]
-            unmatched=new_features
-            while len(unmatched):
-                one_poly,unmatched=lines_to_polygons(unmatched,close_arc=close_arc,single_feature=True)
-                geoms.append(one_poly[0])
+            # geoms=[]
+            # unmatched=new_features
+            # while len(unmatched):
+            #     one_poly,unmatched=lines_to_polygons(unmatched,close_arc=close_arc,single_feature=True)
+            #     geoms.append(one_poly[0])
+            geoms,extras=lines_to_polygons(new_features,close_arc=close_arc,single_feature=False)
     else:
         # Line output
         geoms = [shapely.geometry.LineString(pnts) for pnts in new_features]
@@ -559,15 +652,14 @@ if __name__ == '__main__':
                       help="Tolerance for joining two endpoints, in geographic units")
     parser.add_option("-m","--multiple", dest="single_feature", default=True,
                       action="store_false",metavar="SINGLE_FEATURE")
-    
+
     (options, args) = parser.parse_args()
     input_shp,output_shp = args
-    
+
     ods = ogr.Open(input_shp)
     layer = ods.GetLayer(0)
 
     process_layer(layer,output_shp,
                   create_polygons=options.create_polygons,close_arc=options.close_arc,
                   tolerance=options.tolerance,single_feature=options.single_feature)
-    
-    
+
