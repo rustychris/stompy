@@ -24,7 +24,7 @@ logging.basicConfig(level=logging.INFO)
 log=logging.getLogger('join_features')
 
 try:
-    import shapely.prepared.prep as prepare_geometry
+    from shapely.prepared import prep as prepare_geometry
 except ImportError:
     prepare_geometry=lambda x:x
     log.warning("Prepared geometries not available - tests will be slow")
@@ -512,7 +512,7 @@ def lines_to_polygons(new_features,close_arc=False,single_feature=True,force_ori
         ### Find exterior ring
         log.info("Examining largest poly left with area=%f, %d potential interiors"%
                  (ext_poly.area,len(unassigned_idxs)))
-        prep_ext_poly = prepared.prep(ext_poly)
+        prep_ext_poly = prepare_geometry(ext_poly)
 
         hits=index.query(ext_poly)
         hit_indexes=[p.join_id for p in hits]
@@ -528,7 +528,7 @@ def lines_to_polygons(new_features,close_arc=False,single_feature=True,force_ori
                 # include that poly as an interior
                 ext_poly=shapely.geometry.Polygon(ext_poly.exterior,
                                                   list(ext_poly.interiors)+[int_poly.exterior])
-                prep_ext_poly=prepared.prep(ext_poly)
+                prep_ext_poly=prepare_geometry(ext_poly)
                 assigned_p[i]=True # lazily remove from unassigned_idxs at top of loop
 
         poly_geoms.append(ext_poly)
@@ -536,7 +536,8 @@ def lines_to_polygons(new_features,close_arc=False,single_feature=True,force_ori
         if single_feature:
             break
 
-    return poly_geoms,simple_polys
+    extras=[p for p,is_assigned in zip(simple_polys,assigned_p) if not is_assigned]
+    return poly_geoms,extras
 
 
 ####### Running the actual steps ########
