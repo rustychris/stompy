@@ -359,13 +359,18 @@ def polyline_to_boundary_edges(g,linestring,rrtol=3.0):
     boundary_edges=np.nonzero( np.any(g.edges['cells']<0,axis=1) )[0]
     adj_cells=g.edges['cells'][boundary_edges].max(axis=1)
 
-    # some of this assumes that the grid is orthogonal, so we're not worrying
-    # about overridden cell centers
     adj_centers=g.cells_center()[adj_cells]
     edge_centers=g.edges_center()[boundary_edges]
     cell_to_edge=edge_centers-adj_centers
     cell_to_edge_dist=utils.dist(cell_to_edge)
-    outward=cell_to_edge / cell_to_edge_dist[:,None]
+    if 0: # older code that assumes grid is orthogonal, with centers
+        # properly inside cells.
+        outward=cell_to_edge / cell_to_edge_dist[:,None]
+    else:
+        # use newer grid code which only needs edge geometry and
+        # edge_to_cells().
+        outward=-g.edges_normals(edges=boundary_edges,force_inward=True)
+
     dis=np.maximum( 0.5*np.sqrt(g.cells_area()[adj_cells]),
                     cell_to_edge_dist )
     probes=edge_centers+(2*rrtol*dis)[:,None]*outward
