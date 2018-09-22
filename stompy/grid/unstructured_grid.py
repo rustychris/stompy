@@ -433,7 +433,23 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 new_cells[name]=self.cells[name]
 
         self.cells=new_cells
-        
+
+    def remove_duplicates(self):
+        cc=self.cells_center()
+
+        to_delete=[]
+        # have a duplicate triangle:
+        for c in range(self.Ncells()):
+            other=self.select_cells_nearest(cc[c])
+            if other!=c:
+                logging.warning("deleting duplicate cell %d"%c)
+                to_delete.append(c)
+
+        if to_delete:
+            for n in to_delete:
+                self.delete_cell(n)
+            self.renumber()
+
     @staticmethod
     def from_trigrid(g):
         return UnstructuredGrid(edges=g.edges,points=g.points,cells=g.cells)
@@ -557,8 +573,29 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     @staticmethod
     def read_suntans_hybrid(path='.',points='points.dat',edges='edges.dat',cells='cells.dat'):
         """
+        For backwards compatibility.  Better to use read_suntans which auto-detects
+        format.
+        """
+        return UnstructuredGrid.read_suntans(path=path,points=points,edges=edges,cells=cells,
+                                             dialect='hybrid')
+    @staticmethod
+    def read_suntans_classic(path='.',points='points.dat',edges='edges.dat',cells='cells.dat'):
+        """
+        For backwards compatibility.  Better to use read_suntans which auto-detects
+        format.
+        """
+        return UnstructuredGrid.read_suntans(path=path,points=points,edges=edges,cells=cells,
+                                             dialect='classic')
+
+    @staticmethod
+    def read_suntans(path='.',points='points.dat',edges='edges.dat',cells='cells.dat',
+                     dialect='auto'):
+        """
         Read text-based suntans format which can accomodate arbitrary numbers of sides.
         This can be read/written by Janet.
+        dialect: 'auto' = attempt classic fall back to hybrid
+         'classic': assume classic, fail otherwise
+         'hybrid': assume hybrid, fail otherwise
         """
         points_fn=os.path.join(path,points)
         edges_fn=os.path.join(path,edges)
@@ -573,31 +610,53 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             logging.debug("Dropping 6th column from edge data")
             edge_nnmcc=edge_nnmcc[:,:5]
 
-        max_sides=3
+        # if we read classic, this gets reset to 3
+        # otherwise, why not leave some breathing room?
+        max_sides=8
         cell_nodes=[]
         cell_ccs=[]
         cell_nbrs=[]
-        with open(cells_fn,'rt') as fp:
-            for line in fp:
-                parts=line.strip().split()
-                nsides=int(parts[0])
-                max_sides=max(nsides,max_sides)
-                cc=[float(p) for p in parts[1:3]]
-                nodes=[int(p) for p in parts[3:3+nsides]]
-                nbrs=[int(p) for p in parts[3+nsides:3+2*nsides]]
-                cell_nodes.append(nodes)
-                cell_ccs.append(cc)
-                cell_nbrs.append(nbrs)
 
-        for n,nbr in zip(cell_nodes,cell_nbrs):
-            extra=max_sides-len(n)
-            if extra:
-                n.extend([-1]*extra)
-                nbr.extend([-1]*extra)
-        all_cells=np.array(cell_nodes)
-        all_cc=np.array(cell_ccs)
+        # classic suntans has lines ctrx ctry node1 node2 node3 nbrcell1 nbrcell2 nbrcell3
+        if dialect in ['auto','classic']:
+            cell_dtype=[ ('center',np.float64,2),
+                         ('nodes',np.int32,3),
+                         ('nbrs',np.int32,3) ]
+            try:
+                cells=np.loadtxt(cells_fn,dtype=cell_dtype)
+            except ValueError:
+                if dialect=='auto':
+                    cells=None
+                else:
+                    raise Exception("Failed to parse %s as classic suntans"%cells_fn)
+            if cells is not None:
+                max_sides=3
+                dialect='classic' # prevent fall-through to hybrid
+                all_cells=cells['nodes']
+                all_cc=cells['center']
 
-        g=UnstructuredGrid(max_sides=8)
+        if dialect in ['auto','hybrid']:
+            with open(cells_fn,'rt') as fp:
+                for line in fp:
+                    parts=line.strip().split()
+                    nsides=int(parts[0])
+                    max_sides=max(nsides,max_sides)
+                    cc=[float(p) for p in parts[1:3]]
+                    nodes=[int(p) for p in parts[3:3+nsides]]
+                    nbrs=[int(p) for p in parts[3+nsides:3+2*nsides]]
+                    cell_nodes.append(nodes)
+                    cell_ccs.append(cc)
+                    cell_nbrs.append(nbrs)
+
+            for n,nbr in zip(cell_nodes,cell_nbrs):
+                extra=max_sides-len(n)
+                if extra:
+                    n.extend([-1]*extra)
+                    nbr.extend([-1]*extra)
+            all_cells=np.array(cell_nodes)
+            all_cc=np.array(cell_ccs)
+
+        g=UnstructuredGrid(max_sides=max_sides)
         g.from_simple_data(points=xyz[:,:2],
                            edges=edge_nnmcc,
                            cells=all_cells)
@@ -1491,10 +1550,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             to_update=refresh
             if isinstance(to_update,slice):
                 do_update=True
-            elif to_update.dtype==np.bool8:
-                do_update=to_update.sum()
             else:
-                do_update=len(to_update)
+                to_update=np.asarray(to_update)
+                if to_update.dtype==np.bool8:
+                    do_update=to_update.sum()
+                else:
+                    do_update=len(to_update)
         else:
             to_update = np.isnan(self.cells['_center'][:,0])
             do_update=to_update.sum()
@@ -3643,11 +3704,13 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     def from_pickle(fn):
         with open(fn,'rb') as fp:
             return pickle.load(fp)
-        
-    def write_pickle(self,fn):
+
+    def write_pickle(self,fn,overwrite=False):
+        if os.path.exists(fn) and not overwrite:
+            raise Exception("File %s exists, and overwrite is False"%fn)
         with open(fn,'wb') as fp:
             pickle.dump(self,fp,-1)
-            
+
     def __getstate__(self):
         # Mostly just clear out elements which can be easily recreated,
         # or objects which don't pickle well.

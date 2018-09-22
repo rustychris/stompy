@@ -27,8 +27,12 @@ class ReadGrid(Op):
         fmt,path=args[0].split(':')
         log.info("Reading %s as %s"%(path,fmt))
 
-        if fmt=='suntans':
-            g=unstructured_grid.SuntansGrid(path)
+        if fmt=='suntans_classic':
+            g=unstructured_grid.UnstructuredGrid.read_suntans_classic(path)
+        elif fmt=='suntans_hybrid':
+            g=unstructured_grid.UnstructuredGrid.read_suntans_hybrid(path)
+        elif fmt=='suntans':
+            g=unstructured_grid.UnstructuredGrid.read_suntans(path)
         elif fmt=='ugrid':
             g=unstructured_grid.UnstructuredGrid.from_ugrid(path)
         elif fmt=='untrim':
