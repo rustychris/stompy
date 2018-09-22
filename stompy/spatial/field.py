@@ -376,10 +376,13 @@ class XYZField(Field):
         if self._lin_interper is None:
             self._lin_interper = get_lin_interp(self.tri(),self.F)
         return self._lin_interper
-    
+
     #_voronoi = None
     # default_interpolation='naturalneighbor'# phased out by mpl
-    default_interpolation='linear' 
+    default_interpolation='linear'
+    # If true, linear interpolation will revert to nearest when queried outside
+    # the convex hull
+    outside_hull_fallback=True
     def interpolate(self,X,interpolation=None):
         if interpolation is None:
             interpolation=self.default_interpolation
@@ -405,54 +408,14 @@ class XYZField(Field):
             # print "why aren't you using linear?!"
         elif interpolation=='linear':
             interper = self.lin_interper()
-            if 0:
-                # old calling convention
-                for i in range(len(X)):
-                    if i>0 and i%100000==0:
-                        print("%d/%d"%(i,len(X)))
-                    # remember, the slices are y, x
-                    vals = interper[X[i,1]:X[i,1]:2j,X[i,0]:X[i,0]:2j]
-
-                    newF[i] = vals[0,0]
-            else:
-                newF[:] = interper(X[:,0],X[:,1])
-        #elif interpolation=='delaunay':
-        #    if self._voronoi is None:
-        #        self._voronoi = self.calc_voronoi()
-        #
-        #    for i in range(len(X)):
-        #        # get a cell index...
-        #        cell = self._voronoi.closest( X[i] )
-        #        # then which of our vertices are in the cell:
-        #        abc = self._voronoi.nodes(cell)
-        #        # and the locations of those nodes, relative to us
-        #        pnts = self.X[abc]
-        #        # along the AB edge:
-        #        AB = (pnts[1] - pnts[0])
-        #        lenAB = sqrt( (AB*AB).sum() )
-        #        ABunit = AB / lenAB
-        #        AX = (X[i] - pnts[0])
-        #        # project AX onto AB
-        #        alongAX = (AX[0]*ABunit[0] + AX[1]*ABunit[1])
-        #        beta = alongAX / lenAB
-        #        alpha = 1-beta
-        #        D = alpha*pnts[0] + beta*pnts[1]
-        #        
-        #        DC = pnts[2] - D
-        #        lenDC = sqrt( (DC*DC).sum() )
-        #        DCunit = DC / lenDC
-        #        DX = X[i] - D
-        #
-        #        alongDC = DX[0]*DCunit[0] + DX[1]*DCunit[1]
-        #        gamma = alongDC / lenDC
-        #        alpha *= (1-gamma)
-        #        beta  *= (1-gamma)
-        #        
-        #        # now linearly across the triangle:
-        #        v = alpha*self.F[abc[0]] + \
-        #            beta *self.F[abc[1]] + \
-        #            gamma*self.F[abc[2]]
-        #        newF[i] = v
+            newF[:] = interper(X[:,0],X[:,1])
+            if self.outside_hull_fallback:
+                # lin_interper may return masked array instead
+                # of nans.
+                newF=np.ma.filled(newF,np.nan)
+                bad=np.isnan(newF)
+                if np.any(bad):
+                    newF[bad]=self.interpolate(X[bad],'nearest')
         else:
             raise Exception("Bad value for interpolation method %s"%interpolation)
         return newF
@@ -481,7 +444,6 @@ class XYZField(Field):
             self.index = PointIndex(tuples,interleaved=False)
         else:
             self.index = PointIndex(interleaved=False)
-                
         #print "Done"
 
     def within_r(self,p,r):
@@ -491,12 +453,12 @@ class XYZField(Field):
             else: # rtree
                 # first query a rectangle
                 rect = np.array( [p[0]-r,p[0]+r,p[1]-r,p[1]+r] )
-                
+
                 subset = self.index.intersection( rect )
                 if isinstance(subset, types.GeneratorType):
                     subset = list(subset)
                 subset = np.array( subset )
-                
+
                 if len(subset) > 0:
                     dsqr = ((self.X[subset]-p)**2).sum(axis=1)
                     subset = subset[ dsqr<=r**2 ]
@@ -629,7 +591,7 @@ class XYZField(Field):
         return SimpleGrid(extents=[xmin,xmax,ymin,ymax],
                           F=newF,projection=self.projection())
 
-    def to_grid(self,nx=2000,ny=2000,interp='nn',bounds=None,dx=None,dy=None,aspect=1.0):
+    def to_grid(self,nx=2000,ny=2000,interp='linear',bounds=None,dx=None,dy=None,aspect=1.0):
         """ use the delaunay based griddata() to interpolate this field onto
         a rectilinear grid.  In theory interp='linear' would give bilinear
         interpolation, but it tends to complain about grid spacing, so best to stick
@@ -652,12 +614,12 @@ class XYZField(Field):
             # round xmin/ymin to be an even multiple of dx/dy
             xmin = xmin - (xmin%dx)
             ymin = ymin - (ymin%dy)
-            
+
             nx = int( (xmax-xmin)/dx )
             ny = int( (ymax-ymin)/dy )
             xmax = xmin + nx*dx
             ymax = ymin + ny*dy
-            
+
         # hopefully this is more compatibale between versions, also exposes more of what's
         # going on
         if interp == 'nn':
@@ -670,12 +632,11 @@ class XYZField(Field):
             y=np.linspace(aspect*ymin,aspect*ymax,ny)
             x=np.linspace(xmin,xmax,nx)
             # y,x led to the dimensions being swapped
-            X,Y=np.meshgrid(x,y) 
+            X,Y=np.meshgrid(x,y)
             # Y,X below led to all values being nan...
             griddedF = interper(X,Y) # not sure about index ordering here...
 
         return SimpleGrid(extents=[xmin,xmax,ymin,ymax],F=griddedF)
-
 
     def crop(self,rect):
         xmin,xmax,ymin,ymax = rect
