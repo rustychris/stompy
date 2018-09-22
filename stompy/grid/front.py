@@ -170,10 +170,10 @@ class Curve(object):
     """
     class CurveException(Exception):
         pass
-    
+
     def __init__(self,points,closed=True,ccw=None):
         """
-        points: [N,2] 
+        points: [N,2]
         closed: if True, treat this as a closed ring
         ccw: if True, make sure the order is ccw,
         False - make sure cw
@@ -183,7 +183,7 @@ class Curve(object):
             area=utils.signed_area(points)
             if (area>0) != bool(ccw):
                 points=points[::-1,:]
-                
+
         self.points=np.asarray(points)
         self.closed=bool(closed)
         if self.closed:
@@ -237,7 +237,7 @@ class Curve(object):
             npoints = max(1,round( l/local_scale ))
             alphas = np.arange(npoints) / float(npoints)
             alphas=alphas[:,None]
-            
+
             new_segment = (1.0-alphas)*A + alphas*B
             new_segments.append(new_segment)
             if return_sources:
@@ -1319,7 +1319,7 @@ class AdvancingFront(object):
                     self.grid.edges['ring_sign'][j]=-1
                 else:
                     assert False,"Failed invariant"
-            
+
         return oring-1
 
     def instrument_grid(self,g):
@@ -1348,11 +1348,11 @@ class AdvancingFront(object):
         # if oring nonzero, then +1 if n1=>n2 is forward on the curve, -1 
         # otherwise
         g.add_edge_field('ring_sign',np.zeros(g.Nedges(),'i1'),on_exists='pass')
-        
+
         # Subscribe to operations *before* they happen, so that the constrained
         # DT can signal that an invariant would be broken
         self.cdt=self.shadow_cdt_factory(g)
-                          
+
         return g
 
     def shadow_cdt_factory(self,g):
@@ -1362,13 +1362,24 @@ class AdvancingFront(object):
             klass=shadow_cdt.ShadowCDT
 
         return klass(g)
-        
-    def initialize_boundaries(self):
+
+    def initialize_boundaries(self,upsample=True):
         """
         Add nodes and edges to the the grid from curves.
+        if upsample is True, resample curves at scale.
         """
         for curve_i,curve in enumerate(self.curves):
-            curve_points,srcs=curve.upsample(self.scale,return_sources=True)
+            # this is problematic when the goal is to have an
+            # entirely rigid set of nodes.
+            if upsample:
+                curve_points,srcs=curve.upsample(self.scale,return_sources=True)
+            else:
+                if curve.closed:
+                    # avoid repeated point
+                    curve_points=curve.points[:-1]
+                else:
+                    curve_points=curve.points
+                srcs=curve.distances[:len(curve_points)]
 
             # add the nodes in:
             # used to initialize as SLIDE
@@ -1456,8 +1467,8 @@ class AdvancingFront(object):
                             self.grid.nodes['x'][trav] )
         nodes.append(trav)
         return span,nodes
-    
-    max_span_factor=4     
+
+    max_span_factor=4
     def resample(self,n,anchor,scale,direction):
         """
         move/replace n, such that from anchor to n/new_n the edge
@@ -1481,7 +1492,6 @@ class AdvancingFront(object):
         """
         #self.log.debug("resample %d to be %g away from %d in the %s direction"%(n,scale,anchor,
         #                                                                        direction) )
-        
         if direction==1: # anchor to n is t
             he=self.grid.nodes_to_halfedge(anchor,n)
         elif direction==-1:
@@ -1494,11 +1504,10 @@ class AdvancingFront(object):
         if self.grid.nodes['oring'][n]==0:
             self.log.debug("Node is not on a ring, no resampling possible")
             return n
-            
         # must be able to either muck with n, or split the anchor-n edge
         # in the past we assumed that this sort of check was already done
         j=he.j
-        edge_resamplable=( (self.grid.edges['fixed'][he.j]!=self.RIGID)
+        edge_resamplable=( (self.grid.edges['fixed'][j]!=self.RIGID)
                            and (self.grid.edges['cells'][j,0]<0)
                            and (self.grid.edges['cells'][j,1]<0) )
 
@@ -1514,7 +1523,7 @@ class AdvancingFront(object):
 
         span_length,span_nodes = self.free_span(he,self.max_span_factor*scale,direction)
         # anchor-n distance should be in there, already.
-        
+
         # self.log.debug("free span from the anchor is %g"%span_length)
 
         if span_length < self.max_span_factor*scale:
@@ -1799,7 +1808,7 @@ class AdvancingFront(object):
         def track_node_edits(g,func_name,n,**k):
             if n not in edits['nodes']:
                 edits['nodes'].append(n)
-                
+
         self.grid.subscribe_after('modify_node',track_node_edits)
         self.optimize_nodes(nodes,**kw)
         self.grid.unsubscribe_after('modify_node',track_node_edits)
@@ -2110,11 +2119,11 @@ class AdvancingFront(object):
             if count==0:
                 break
         return True
-            
+
     def advance_at_site(self,site):
         # This can modify site! May also fail.
         resampled_success = self.resample_neighbors(site)
-        
+
         actions=site.actions()
         metrics=[a.metric(site) for a in actions]
         bests=np.argsort(metrics)
@@ -2124,7 +2133,7 @@ class AdvancingFront(object):
                 self.log.info("Chose strategy %s"%( actions[best] ) )
                 edits=actions[best].execute(site)
                 opt_edits=self.optimize_edits(edits)
-                
+
                 failures=self.check_edits(opt_edits)
                 if len(failures['cells'])>0:
                     self.log.info("Some cells failed")
@@ -2268,7 +2277,7 @@ class AdvancingTriangles(AdvancingFront):
             C=list(x0)
             cc_cost=0
             scale_cost=0
-            
+
             for A,B in zip(Alist,Blist):
                 tri_cc=circumcenter_py(A,B,C)
 
@@ -2306,7 +2315,7 @@ class AdvancingTriangles(AdvancingFront):
                     this_cc_cost = ( math.exp(min(100,cc_fac*leftAB/magABs)) +
                                      math.exp(min(100,cc_fac*leftBC/magBCs)) +
                                      math.exp(min(100,cc_fac*leftCA/magCAs)) )
-                
+
                 # mixture
                 # 0.3: let's the scale vary too much between the cells
                 #      adjacent to n
@@ -2316,7 +2325,7 @@ class AdvancingTriangles(AdvancingFront):
                                   + (magBCs-avg_length)**2 
                                   + (magCAs-avg_length)**2 )
                 this_scale_cost/=avg_length*avg_length
-                
+
                 cc_cost+=this_cc_cost
                 scale_cost+=this_scale_cost
 
