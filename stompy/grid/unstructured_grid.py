@@ -3005,19 +3005,27 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         return lines
 
-    def boundary_polygon_by_edges(self):
+    def boundary_polygon_by_edges(self,allow_multiple=False):
         """ return polygon, potentially with holes, representing the domain.
         equivalent to unioning all cell_polygons, but hopefully faster.
         in one test, this method was 3.9 times faster than union.  This is 
         certainly depends on the complexity and size of the grid, though.
+
+        allow_multiple: generally the grid is contiguous, and there can only be
+         one boundary polygon (possibly with holes).  when multiple polygons
+         are found, that is usually interpreted as an error in topology.  allow_multiple
+         will instead return a list of polygons.
         """
         lines=self.boundary_linestrings()
-        polys,extras=join_features.lines_to_polygons(lines,close_arc=False)
-        if len(polys)>1:
+        polys,extras=join_features.lines_to_polygons(lines,close_arc=False,single_feature=False)
+        if len(polys)>1 and not allow_multiple:
             raise GridException("somehow there are multiple boundary polygons")
         if len(extras)>1:
             raise GridException("not all boundary edges were in a boundary polygon?")
-        return polys[0]
+        if allow_multiple:
+            return polys
+        else:
+            return polys[0]
 
     def boundary_polygon_by_union(self):
         """ Compute a polygon encompassing the full domain by unioning all
@@ -3388,11 +3396,44 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         else:
             return return_values
 
-    def create_dual(self,center='centroid',create_cells=False):
+    def remove_disconnected_components(self,renumber=True):
+        """
+        Clean up disconnected portions of the grid.  Disconnected
+        portions are chosen based on area -- the largest contiguous
+        area is kept, and all others removed.
+
+        renumber: if False, skip renumbering afterwards
+        """
+        node_starts=[]
+        boundary_polys=self.boundary_polygon_by_edges(allow_multiple=True)
+        areas=[p.area for p in boundary_polys]
+        to_keep=np.argmax(areas)
+        for i,p in enumerate(boundary_polys):
+            if i==to_keep: continue
+            pnt=np.array(p.exterior)[0] # grab 1st point
+            node_starts.append(self.select_nodes_nearest(pnt))
+
+        stack=node_starts
+        while stack:
+            n=stack.pop(0)
+            if self.nodes['deleted'][n]: continue # already visited
+            nbrs=self.node_to_nodes(n)
+            self.delete_node_cascade(n) # deleted cells/edges, too
+            stack.extend(nbrs)
+
+        if renumber:
+            self.renumber()
+
+    def create_dual(self,center='centroid',create_cells=False,
+                    remove_disconnected=True,remove_1d=True):
         """
         Return a new grid which is the dual of this grid. This
         is currently only robust for triangle->'hex' grids.  other
         source grids will require more nuance in coalescing centers.
+
+        remove_1d: avoid creating edges in the dual which have no
+          cell.  This happens when an input cell has all of its nodes
+          on the boundary.
         """
         gd=UnstructuredGrid()
 
@@ -3404,20 +3445,39 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         gd.add_node_field('dual_cell',np.zeros(0,'i4'))
         gd.add_edge_field('dual_edge',np.zeros(0,'i4'))
 
+        if remove_1d:
+            e2c=self.edge_to_cells()
+            boundary_edge_mask=e2c.min(axis=1)<0
+            boundary_nodes=np.unique(self.edges['nodes'][boundary_edge_mask])
+            boundary_node_mask=np.zeros(self.Nnodes(),np.bool8)
+            boundary_node_mask[boundary_nodes]=True
+            # now if a cells nodes are all True in boundary_node_mask,
+            # it will be skipped
+
+        cell_to_dual_node={}
         for c in self.valid_cell_iter():
-            # redundant, but we both force the index of this
-            # to be c, but also store a dual_cell index.  This
-            # be streamlined once it's clear that dual_cell is not needed.
-            gd.add_node(_index=c,x=cc[c],dual_cell=c)
+            # dual_cell is redundant if remove_1d is False.
+            if remove_1d:
+                nodes=self.cell_to_nodes(c)
+                if np.all(boundary_node_mask[nodes]):
+                    continue
+            node_idx=gd.add_node(x=cc[c],dual_cell=c)
+            cell_to_dual_node[c]=node_idx
 
         e2c=self.edge_to_cells()
 
         for j in self.valid_edge_iter():
             if e2c[j].min() < 0:
                 continue # boundary
+            if np.all(boundary_node_mask[self.edges['nodes'][j]]):
+                continue # would create a 1D link
+
+            dn1=cell_to_dual_node[e2c[j,0]]
+            dn2=cell_to_dual_node[e2c[j,1]]
+
             dj_exist=gd.nodes_to_edge(e2c[j])
             if dj_exist is None:
-                dj=gd.add_edge(nodes=e2c[j],dual_edge=j)
+                dj=gd.add_edge(nodes=[dn1,dn2],dual_edge=j)
 
         if create_cells:
             # to create cells in the dual -- these map to interior nodes
@@ -3436,7 +3496,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 if np.any(e2c[js,:]<0): # boundary
                     continue
                 tri_cells=self.node_to_cells(n) # i.e. same as dual nodes
-                dual_nodes=np.array(tri_cells)
+                dual_nodes=np.array([cell_to_dual_node[c] for c in tri_cells])
 
                 # but those have to be sorted.  sort the tri cell centers, same
                 # as dual nodes, relative to tri node
@@ -3455,6 +3515,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             # the original node locations are a more accurate orthogonal
             # center than what we can calculate currently.
             gd.cells['_center']=self.nodes['x'][gd.cells['source_node']]
+
+        if remove_disconnected:
+            gd.remove_disconnected_components()
 
         return gd
 
