@@ -439,6 +439,22 @@ class SuntansModel(dfm.HydroModel):
         new_model.restart_symlink=symlink
         return new_model
 
+    @classmethod
+    def run_completed(cls,fn):
+        if not os.path.exists(fn):
+            return False
+        if os.path.isdir(fn):
+            fn=os.path.join(fn,"suntans.dat")
+        model=cls.load(fn)
+        return model.is_completed()
+    def is_completed(self):
+        step_fn=os.path.join(self.run_dir,self.config['ProgressFile'])
+        if not os.path.exists(step_fn):
+            return False
+        with open(step_fn,'rt') as fp:
+            progress=fp.read()
+        return "100% Complete" in progress
+
     def set_grid(self,grid):
         """
         read/load grid, check for depth data and edge marks.
