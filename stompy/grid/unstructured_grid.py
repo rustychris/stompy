@@ -917,7 +917,13 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         self.edge_dtype=self.edges.dtype
 
     def add_node_field(self,name,data,on_exists='fail'):
-        """ add a new field to nodes, amend node_dtype """
+        """ add a new field to nodes, amend node_dtype
+        on_exists: what to do if the name is already a node field.
+         'fail'  raise exception
+         'pass'  leave existing
+         'overwrite' replace existing -- note that this does not currently
+           change the type of the field, but may do so in the future.
+        """
         if name in np.dtype(self.node_dtype).names:
             if on_exists == 'fail':
                 raise GridException("Node field %s already exists"%name)
@@ -932,7 +938,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     def delete_node_field(self,*names):
         self.nodes=recarray_del_fields(self.nodes,names)
         self.node_dtype=self.nodes.dtype
-        
+
     def add_cell_field(self,name,data,on_exists='fail'):
         """
         modifies cell_dtype to include a new field given by name,
@@ -2936,13 +2942,23 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         p2 = self.nodes['x'][self.edges['nodes'][:,1]]
         return mag( p2-p1 )
 
-    def cells_area(self):
-        sel = np.isnan(self.cells['_area']) & (~self.cells['deleted'])
+    def cells_area(self,sel=None):
+        """
+        sel: list/array of cell indices to calculate.  Can be multidimensional,
+          but cannot be a bitmask.
+        defaults to cells which have a nan area
+        """
+        if sel is None:
+            recalc=np.nonzero( np.isnan(self.cells['_area']) & (~self.cells['deleted']))[0]
+        else:
+            recalc=sel.ravel()
 
-        if sum(sel)>0:
-            for c in np.nonzero(sel)[0]:
-                self.cells['_area'][c] = signed_area(self.nodes['x'][self.cell_to_nodes(c)])
-        return self.cells['_area']
+        for c in recalc:
+            self.cells['_area'][c] = signed_area(self.nodes['x'][self.cell_to_nodes(c)])
+
+        if sel is None:
+            sel=slice(None)
+        return self.cells['_area'][sel]
 
     #-# Selection methods:
     #  various methods which return a bitmask over cells, edges or nodes
