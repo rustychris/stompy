@@ -15,6 +15,7 @@ from ... import utils
 from ..delft import dflow_model as dfm
 from ..delft import dfm_grid
 from ...grid import unstructured_grid
+from ...spatial import linestring_utils
 
 from . import store_file
 
@@ -437,6 +438,7 @@ class SuntansModel(dfm.HydroModel):
         new_model.restart=self.config_filename
         new_model.restart_model=self
         new_model.restart_symlink=symlink
+        new_model.set_grid(unstructured_grid.UnstructuredGrid.read_suntans(self.run_dir))
         return new_model
 
     @classmethod
@@ -497,7 +499,10 @@ class SuntansModel(dfm.HydroModel):
         Open an existing model setup, from path to its suntans.dat
         """
         model=SuntansModel()
+        if os.path.isdir(fn):
+            fn=os.path.join(fn,'suntans.dat')
         model.load_template(fn)
+        model.set_times_from_config()
         model.set_run_dir(os.path.dirname(fn),mode='existing')
         # infer number of processors based on celldata files
         sub_cells=glob.glob( os.path.join(model.run_dir,'celldata.dat.*') )
@@ -951,6 +956,19 @@ class SuntansModel(dfm.HydroModel):
         """
         return dfm_grid.polyline_to_boundary_edges(self.grid,np.array(geom.coords))
 
+    def set_times_from_config(self):
+        """
+        Pull run_start,run_stop from a loaded config file.
+        """
+        if self.restart:
+            raise Exception("This hasn't been tested for restarts")
+        start_dt=datetime.datetime.strptime(self.config['starttime'],'%Y%m%d.%H%M%S')
+        self.run_start=utils.to_dt64(start_dt)
+
+        nsteps=int(self.config['nsteps'])
+        dt=np.timedelta64(1,'us') * int(1e6*float(self.config['dt']))
+        self.run_stop=self.run_start + nsteps*dt
+
     def update_config(self):
         assert self.config is not None,"Only support starting from template"
 
@@ -1265,7 +1283,13 @@ class SuntansModel(dfm.HydroModel):
         return self._subdomain_grids[p]
 
     def extract_transect(self,xy,time=slice(None),dx=None):
-        # assume for the moment that xy already has enough samples
+        """
+        xy: [N,2] coordinates defining the line of the transect
+        time: time index or slice to extract
+        dx: omit to use xy as is, or a length scale for resampling xy
+        """
+        if dx is not None:
+            xy=linestring_utils.upsample_linearring(xy,dx,closed_ring=False)
         proc_point_cell=np.zeros( [self.num_procs,len(xy)], np.int32)-1
         point_datasets=[None]*len(xy)
         vars=['uc','vc','Ac','dv','dzz','eta','w']
@@ -1287,7 +1311,8 @@ class SuntansModel(dfm.HydroModel):
                     point_ds['x_sample']=pnt[0]
                     point_ds['y_sample']=pnt[1]
                     point_datasets[pnti]=point_ds
-        ##
+        # drop xy points that didn't hit a cell
+        point_datasets=[p for p in point_datasets if p is not None]
         transect=xr.concat(point_datasets,dim='sample')
         transect=transect.rename(Nk='layer',
                                  Nkw='interface',
@@ -1323,6 +1348,8 @@ class SuntansModel(dfm.HydroModel):
         # sign convention that z_dz ~ diff(z_int)
         transect['z_dz']=('sample','layer'),-dzz
 
+        # helps with plotting
+        transect.attrs['source']=self.run_dir
         return transect
 
     warn_initial_water_level=0
