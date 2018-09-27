@@ -468,6 +468,105 @@ def resample_z(tran,new_z):
 
     return ds
 
+def resample_d(tran,new_xy):
+    """
+    tran: xr_transect style Dataset
+    new_xy: [N,2] points for resampling horizontal transect dimension
+    """
+    # need a function which takes per-sample data from ds_in,
+    # returns per-sample data at new_xy
+    old_xy=np.c_[tran.x_sample, tran.y_sample]
+
+    # per point in new_xy, an array of averaging weights to apply across samples
+    weights=np.zeros( (len(new_xy),len(old_xy)), np.float64)
+    # for categorical data, just have to choose one input element
+    # -1 => no match
+    selectors=np.zeros(len(new_xy), np.int32)-1
+
+    # rather than iterate over all new points, check first to see if some
+    # new points fall off the end of the input, and should be left nan.
+    dists0=utils.dist(new_xy,old_xy[0,:])
+    distsN=utils.dist(new_xy,old_xy[-1,:])
+    new_start=np.argmin(dists0)
+    new_stop =np.argmin(distsN)
+    if new_start>new_stop:
+        print("Resampling: flip transect to match order of new points")
+        new_start,new_stop = new_stop,new_start
+
+    for row in range(new_start,new_stop+1):
+        pnt=new_xy[row]
+        # start with simple -- choose nearest point in input
+        dists=utils.dist(pnt,old_xy)
+        best=np.argmin(dists)
+        weights[row,best]=1.0
+        selectors[row]=best
+
+    ds=xr.Dataset()
+    ds['sample']=('sample',),np.arange(len(new_xy))
+    sample_dim='sample'
+
+    ds['x_sample']=('sample',),new_xy[:,0]
+    ds['y_sample']=('sample',),new_xy[:,1]
+    ds['d_sample']=('sample',),utils.dist_along(new_xy)
+
+    for v in tran.data_vars:
+        var=tran[v]
+        if sample_dim not in var.dims:
+            ds[v]=var
+            continue
+        elif v in ['x_sample','y_sample','d_sample','dx_sample']:
+            continue # manually supplied above
+
+        dims=var.dims # dimension names don't change
+        # any new dimensions we need to copy?
+        for d in dims:
+            if (d not in ds) and (d not in [sample_dim]):
+                # unclear how to deal with things like wdim.  For now
+                # it will get copied, but then it will not be valid.
+                ds[d]=tran[d]
+        shape=[ len(ds[d]) for d in dims]
+
+        new_val=np.zeros( shape, var.dtype )
+        if np.issubdtype(var.dtype,np.floating):
+            new_val[...]=np.nan
+        sample_num=list(dims).index(sample_dim)
+
+        # handling below is simplified by casting dates to floats.
+        if np.issubdtype(var.dtype,np.datetime64):
+            cast=utils.to_dnum
+            uncast=utils.to_dt64
+        else:
+            def cast(x): return x
+            def uncast(x): return x
+
+        for index in np.ndindex( *var.shape ):
+            if index[sample_num]>0:
+                continue # really only iterating over the non-sample dimensions
+            # replace sample index with slice(None)
+            index=list(index)
+            index[sample_num]=slice(None)
+
+            my_src=cast(var.values[index])
+            if not np.issubdtype(my_src.dtype,np.floating):
+                print("Variable %s will be treated as a category"%var.name)
+                my_dst=my_src[selectors]
+                my_dst[selectors<0]=None
+            else:
+                valid=np.isfinite(my_src)
+
+                my_dst=(my_src[valid]*weights[:,valid]).sum(axis=1)
+                weight_sum=weights[:,valid].sum(axis=1)
+
+                bad=(weight_sum==0)
+                my_dst[bad]=np.nan
+                my_dst[~bad]=my_dst[~bad]/weight_sum[~bad]
+
+            new_val[index]=my_dst
+        ds[v]=dims,uncast(new_val)
+
+    return ds
+
+
 
 def lplt():
     """ lazy load plotting library """
@@ -655,3 +754,105 @@ def transects_to_segment(trans,unweight=True,ax=None):
         ax.plot(seg[:,0],seg[:,1],'k-o',lw=5,alpha=0.5,label='Segment')
         ax.legend()
     return seg
+
+def resample_to_common_z(trans,dz=None):
+    """
+    apply resample_z to a list of transects, making the respective
+     vertical coordinates compatible.   may not be smart enough
+     when it comes to transects with mixed sign conventions
+    """
+
+    all_dz=[ np.abs(get_z_dz(tran).values.ravel())
+             for tran in trans]
+    all_dz=np.concatenate( all_dz )
+
+    if all_dz.min()<0:
+        assert all_dz.max()<=0,"Looks like mixing sign conventions"
+    if all_dz.max()>0:
+        assert all_dz.min()>=0,"Looks like mixing sign conventions"
+    if dz is None:
+        # generally want to retain most of the vertical
+        # resolution, but not minimum dz since there could be
+        # some partial layers, near-field layers, etc.
+        # even 10th percentile may be small.
+        dz=np.percentile(all_dz[np.isfinite(all_dz)],10)
+
+    # Get the maximum range of valid vertical
+    z_bnds=[]
+    for tran in trans:
+        V,z_full,z_dz = xr.broadcast(tran.Ve, tran.z_ctr, get_z_dz(tran))
+        valid=np.isfinite(V.values * z_dz.values)
+        z_valid=z_full.values[valid]
+        z_low=z_full.values[valid] - z_dz.values[valid]/2.0
+        z_high=z_full.values[valid] + z_dz.values[valid]/2.0
+        z_bnds.append( [z_low.min(), z_high.max()] )
+
+    z_bnds=np.concatenate(z_bnds)
+    z_min=z_bnds.min()
+    z_max=z_bnds.max()
+
+    # Resample each transect in the vertical:
+    new_z=np.linspace(z_min,z_max,int(round((z_max-z_min)/dz)))
+
+    ds_resamp=[resample_z(tran,new_z)
+               for tran in trans]
+    return ds_resamp
+
+def resample_to_common(trans,dz=None,dx=None,resample_x=True,resample_z=True,
+                       seg=None):
+    """
+    trans: list of xr_transect Datasets.
+    dx: length scale for horizontal resampling, defaults to median.  Pass 0
+     to use seg as is.
+    dz: length scale for vertical resampling.  defaults to 10th percentile.
+    resample_x: can be set to false to skip horizontal resampling if all transects
+     already have the same horizontal coordinates
+    resample_z: can be set to false to skip vertical resampling if all transects
+     already have the same vertical coordinates.
+    seg: the linestring of the new transect.  defaults to fitting a line.
+    """
+    if resample_z:
+        trans=resample_to_common_z(trans,dz=dz)
+
+    if resample_x:
+        if seg is None:
+            seg=transects_to_segment(trans)
+
+        if dx is None:
+            # Define the target vertical and horizontal bins
+            all_dx=[get_dx_sample(tran).values
+                    for tran in trans]
+            median_dx=np.median(np.concatenate(all_dx))
+            dx=median_dx
+
+        if dx>=0:
+            # Keep this general, so that segment is allowed to have more than
+            # just two vertices
+            new_xy = linestring_utils.resample_linearring(seg,dx,closed_ring=False)
+        else:
+            new_xy = seg
+
+        trans=[resample_d(tran,new_xy)
+               for tran in trans]
+    return trans
+
+def average_transects(trans,dz=None,dx=None,resample_x=True,resample_z=True,
+                      seg=None):
+    """
+    See resample_to_common for description of most of the parameters.
+
+    returns a new Dataset.
+    """
+    trans=resample_to_common(trans,dz=dz,dx=dx,resample_x=resample_x,resample_z=resample_z,
+                             seg=seg)
+
+    # Do the actual averaging
+    combined=xr.concat(trans,dim='repeat')
+    # here we could also calculate variance in the future
+    ds_average=combined.mean(dim='repeat')
+
+    # copy metadata over too
+    for var in ds_average.data_vars:
+        ds_average[var].attrs.update(trans[0][var].attrs)
+
+    return ds_average
