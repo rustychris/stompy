@@ -79,6 +79,17 @@ def get_z_dz(tran):
                              dz_middle,
                              dz_middle[b(slice(-1,None))] ],
                            axis=axis)
+        # Tricky - the copying above is fine when the valid values go all the way
+        # to index 0 and N of dz.  When the ends are nan, then we have to copy
+        # internally.  This is a gross way of doing that without an explicit loop,
+        # essentially saying dz[:-1]=dz[1:], where dz[:-1] is nan, and dealing with
+        # arbitrary dimensions.  ick.
+        dz[b(slice(None,-1))] = np.where( np.isnan(dz[b(slice(None,-1))]),
+                                          dz[b(slice(1,None))],
+                                          dz[b(slice(None,-1))])
+        dz[b(slice(1,None))]  = np.where( np.isnan(dz[b(slice(1,None))]),
+                                          dz[b(slice(None,-1))],
+                                          dz[b(slice(1,None))])
 
     tran['z_dz']=tran.z_ctr.dims,dz
 
@@ -365,9 +376,9 @@ def resample_z(tran,new_z):
     """
     Resample z coordinate to the given vector new_z [N].
     """
-    # Resample to evenly spaced vertical axis.  Will be shifting to be positive up, relative to
-    # water surface, below.
-
+    # had been a comment about resampling to positive up, but the code
+    # doesn't actually do that.  instead, assumes that new_z is the
+    # same reference and sign as tran.z_ctr
     ds=xr.Dataset()
 
     z_dim='layer'
@@ -375,6 +386,8 @@ def resample_z(tran,new_z):
     ds['sample']=tran['sample']
     ds['z_ctr']=(z_dim,),new_z
     ds['z_dz']=(z_dim,),utils.center_to_interval(new_z)
+
+    ds['z_ctr'].attrs.update(tran.z_ctr.attrs)
 
     for v in tran.data_vars:
         var=tran[v]
@@ -417,18 +430,23 @@ def resample_z(tran,new_z):
         for index in np.ndindex( *iter_shape ):
             if index[z_num]>0:
                 continue
+            # Why are values getting filled to the bed?
+            # import pdb
+            # pdb.set_trace()
             index=list(index)
             index[z_num]=slice(None)
             my_src_z=src_z.values[index]
-            my_src_dz=src_dz.values[index]
+            my_src_dz=src_dz.values[index] # this has a nan
             my_src=var.values[index]
-            my_src_bottom=my_src_z-0.5*my_src_dz
+            my_src_bottom=my_src_z-0.5*my_src_dz # for each layer
             my_src_top=my_src_z+0.5*my_src_dz
 
             # all-nan columns are not valid below because 'bad' bins are still
             # accessed.  Could rewrite to avoid the partial indexing by src_valid
-            # early on.
-            if np.all(np.isnan(my_src)):
+            # early on.  in theory we should always have valid z if we have valid
+            # var, but in the case of sontek files, we can have valid SNR, but for
+            # bins below the bed or otherwise invalid, and z will b reported as nan.
+            if np.all(np.isnan(my_src + my_src_z)):
                 new_val[index]=np.nan
                 continue
             src_valid=np.isfinite(my_src_z+my_src)
@@ -446,6 +464,7 @@ def resample_z(tran,new_z):
             new_val[index]=np.where( bad,np.nan,var.values[index][src_valid][bins] )
 
         ds[v]=dims,new_val
+        ds[v].attrs.update(var.attrs)
 
     return ds
 
@@ -582,3 +601,57 @@ def plot_scalar_polys(tran,v,ax=None,**kw):
 
 
 plot_scalar=plot_scalar_polys
+
+
+# Code related to averaging multiple transects
+def transects_to_segment(trans,unweight=True,ax=None):
+    """
+    trans: list of transects per xr_transect
+    unweight: if True, follow ADCPy and thin dense clumps of pointer.
+
+    return a segment [ [x0,y0],[x1,y1] ] approximating the
+    points
+
+    if ax is supplied, it is a matplotlib Axes into which the steps
+    of this method are plotted.
+    """
+    from stompy.spatial import linestring_utils
+    all_xy=[]
+    all_dx=[]
+
+    all_dx=[get_dx_sample(tran).values
+            for tran in trans]
+    median_dx=np.median(np.concatenate(all_dx))
+
+    for tran_i,tran in enumerate(trans):
+        xy=np.c_[ tran.x_sample.values,tran.y_sample.values]
+
+        if ax:
+            ax.plot(xy[:,0],xy[:,1],marker='.',label='Input %d'%tran_i)
+
+        if unweight:
+            # resample_linearring() allows for adding new points, which can be
+            # problematic if the GPS jumps around, adding many new points on a
+            # rogue line segment.
+            # downsample makes sure that clusters are thinned, but does not add
+            # new points between large jumps.
+            xy=linestring_utils.downsample_linearring(xy,density=3*median_dx,
+                                                      closed_ring=False)
+        all_xy.append(xy)
+
+    all_xy=np.concatenate(all_xy)
+    if ax:
+        ax.plot(all_xy[:,0],all_xy[:,1],'bo',label='Unweighted')
+
+    C=np.cov(all_xy.T)
+    vec=utils.to_unit(C[:,0])
+
+    centroid=all_xy.mean(axis=0)
+    dist_along=np.dot((all_xy-centroid),vec)
+    dist_range=np.array( [dist_along.min(), dist_along.max()] )
+
+    seg=centroid + dist_range[:,None]*vec
+    if ax:
+        ax.plot(seg[:,0],seg[:,1],'k-o',lw=5,alpha=0.5,label='Segment')
+        ax.legend()
+    return seg
