@@ -424,8 +424,13 @@ def resample_z(tran,new_z):
         all_sgns=np.sign(src_dz).values.ravel()
         # some of these may be nan - just look past those
         all_sgns=all_sgns[ np.isfinite(all_sgns) ]
-        sgn = all_sgns[0] # should all be the same
-        assert np.all( all_sgns==sgn )
+        if all_sgns.max()>0:
+            sgn=1
+        elif all_sgns.min()<0:
+            sgn=-1
+        else:
+            raise Exception("All signs are 0?")
+        assert np.all( sgn*all_sgns>=0 )
 
         for index in np.ndindex( *iter_shape ):
             if index[z_num]>0:
@@ -775,21 +780,25 @@ def resample_to_common_z(trans,dz=None):
         # resolution, but not minimum dz since there could be
         # some partial layers, near-field layers, etc.
         # even 10th percentile may be small.
-        dz=np.percentile(all_dz[np.isfinite(all_dz)],10)
+        dz_finite=all_dz[np.isfinite(all_dz)]
+        # some datasets have dz=0 to mark nonexistent cells
+        dz_pos=dz_finite[dz_finite>0]
+        dz=np.percentile(dz_pos,10)
 
     # Get the maximum range of valid vertical
     z_bnds=[]
     for tran in trans:
         V,z_full,z_dz = xr.broadcast(tran.Ve, tran.z_ctr, get_z_dz(tran))
-        valid=np.isfinite(V.values * z_dz.values)
+        valid=np.isfinite(V.values * z_dz.values * z_full.values)
         z_valid=z_full.values[valid]
-        z_low=z_full.values[valid] - z_dz.values[valid]/2.0
-        z_high=z_full.values[valid] + z_dz.values[valid]/2.0
+        dz2_valid=z_dz.values[valid]/2.0
+        z_low=z_valid - dz2_valid
+        z_high=z_valid + dz2_valid
         z_bnds.append( [z_low.min(), z_high.max()] )
 
     z_bnds=np.concatenate(z_bnds)
-    z_min=z_bnds.min()
-    z_max=z_bnds.max()
+    z_min=np.nanmin(z_bnds)
+    z_max=np.nanmax(z_bnds)
 
     # Resample each transect in the vertical:
     new_z=np.linspace(z_min,z_max,int(round((z_max-z_min)/dz)))
