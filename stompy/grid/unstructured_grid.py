@@ -1114,11 +1114,11 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         self.cells['edges'] = edge_map[self.cells['edges']]
         return edge_map
 
-    def add_grid(self,ugB,merge_nodes=None):
+    def add_grid(self,ugB,merge_nodes=None,log=None):
         """
         Add the nodes, edges, and cells from another grid to this grid.
         Copies fields with common names, any other fields are dropped from ugB.
-        Assumes (for the moment) that max_sides is compatible. 
+        Assumes (for the moment) that max_sides is compatible.
 
         merge_nodes: [ (self_node,ugB_node), ... ]
           Nodes which overlap and will be mapped instead of added.
@@ -1195,8 +1195,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 c=self.nodes_to_cell( kwargs['nodes'], fail_hard=False)
                 if c is not None:
                     cell_map[n]=c
-                    print("Skipping existing cell: %d: %s => %d: %s"%( n,str(orig_nodes),
-                                                                       c,str(kwargs['nodes'])))
+                    if log: log.info("Skipping existing cell: %d: %s => %d: %s"%( n,str(orig_nodes),
+                                                                                  c,str(kwargs['nodes'])))
                     continue
 
             for i,edge in enumerate(kwargs['edges']):
