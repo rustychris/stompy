@@ -409,7 +409,9 @@ class SuntansModel(dfm.HydroModel):
     ic_ds=None
 
     # None: not a restart, or
-    # path to suntans.dat for the run being restarted
+    # path to suntans.dat for the run being restarted, or True if this is
+    # a restart but we don't we have a separate directory for the restart,
+    # just StartFiles
     restart=None
     restart_model=None # model instance being restarted
 
@@ -502,7 +504,6 @@ class SuntansModel(dfm.HydroModel):
         if os.path.isdir(fn):
             fn=os.path.join(fn,'suntans.dat')
         model.load_template(fn)
-        model.set_times_from_config()
         model.set_run_dir(os.path.dirname(fn),mode='existing')
         # infer number of processors based on celldata files
         sub_cells=glob.glob( os.path.join(model.run_dir,'celldata.dat.*') )
@@ -511,7 +512,25 @@ class SuntansModel(dfm.HydroModel):
         else:
             # probably better to test whether it has even been processed
             model.num_procs=1
+        model.infer_restart()
+        model.set_times_from_config()
         return model
+
+    def infer_restart(self):
+        start_path=os.path.join(self.run_dir,self.config['StartFile']+".0")
+        if os.path.exists(start_path):
+            log.info("Looks like a restart")
+            self.restart=True
+
+            if os.path.islink(start_path):
+                parent=os.path.dirname(os.readlink(start_path))
+                parent_sun=os.path.join(parent,"suntans.dat")
+                if os.path.exists(parent_sun):
+                    log.info("And the previous suntans.dat: %s"%parent_sun)
+                    self.restart=parent_sun
+        else:
+            log.info("Does not look like a restart based on %s"%start_path)
+            self.restart=None
 
     def load_template(self,fn):
         self.template_fn=fn
