@@ -8,7 +8,8 @@ log=logging.getLogger('utils')
 try:
     import xlrd
 except ImportError:
-    log.info('xlrd unavailable')
+    # rarely used, so log at debug
+    log.debug('xlrd unavailable')
     xlrd=None
 
 import functools

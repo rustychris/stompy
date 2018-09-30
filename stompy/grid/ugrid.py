@@ -192,10 +192,9 @@ class Ugrid(object):
 
     def get_cell_scalar(self,label,time_step,mesh_name=None):
         mesh_name = mesh_name or self.mesh_name
-        
         # totally untested!
         return self.nc.variables[mesh_name + '_' + label][:,:,time_step]
-    
+
     def to_trigrid(self,mesh_name=None,skip_edges=False):
         nc = self.nc
         mesh_name = mesh_name or self.mesh_name
@@ -425,7 +424,8 @@ class UgridXr(object):
     face_u_vname=None
     face_v_vname=None
     face_eta_vname=None
-            
+    face_depth_vname=None
+
     def __init__(self,nc,mesh_name=None,**kw):
         """
         nc: path to netcdf dataset, or open dataset
@@ -613,15 +613,22 @@ class UgridXr(object):
         if self.face_eta_vname is None:
             self.face_eta_vname=self.find_var(standard_name='sea_surface_height_above_geoid')
         surface=self.face_eta_vname
-        
+
         face_select={face_dim:face_slice}
         h = self.nc[self.face_eta_vname].isel({self.time_dim:time_slice,
                                                face_dim:face_slice})
 
-        depth=self.find_var(standard_name=["sea_floor_depth_below_geoid",
-                                           "sea_floor_depth"],
-                            location='face') # ala 'Mesh_depth'
-        
+        if self.face_depth_vname is None:
+            self.face_depth_vname=self.find_var(standard_name=["sea_floor_depth_below_geoid",
+                                                               "sea_floor_depth"],
+                                                location='face') # ala 'Mesh_depth'
+        if self.face_depth_vname is None:
+            # c'mon people -- should be fixed in source now,
+            self.face_depth_vname=self.find_var(stanford_name=["sea_floor_depth_below_geoid",
+                                                               "sea_floor_depth"],
+                                                location='face') # ala 'Mesh_depth'
+
+        depth=self.face_depth_vname
         bed = self.nc[depth].isel(**face_select).values
         if self.nc[depth].attrs.get('positive')=='down':
             log.debug("Cell depth is positive-down")

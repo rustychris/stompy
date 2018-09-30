@@ -523,11 +523,17 @@ class SuntansModel(dfm.HydroModel):
             self.restart=True
 
             if os.path.islink(start_path):
-                parent=os.path.dirname(os.readlink(start_path))
-                parent_sun=os.path.join(parent,"suntans.dat")
+                start_path=os.path.realpath(start_path)
+                parent_dir=os.path.dirname(start_path)
+                assert not os.path.samefile(parent_dir,self.run_dir)
+                parent_sun=os.path.join(parent_dir,"suntans.dat")
                 if os.path.exists(parent_sun):
                     log.info("And the previous suntans.dat: %s"%parent_sun)
                     self.restart=parent_sun
+                else:
+                    log.info("Checked for %s but no luck"%parent_sun)
+            else:
+                log.info("Restart file %s is not a link"%start_path)
         else:
             log.info("Does not look like a restart based on %s"%start_path)
             self.restart=None
@@ -980,9 +986,18 @@ class SuntansModel(dfm.HydroModel):
         Pull run_start,run_stop from a loaded config file.
         """
         if self.restart:
-            raise Exception("This hasn't been tested for restarts")
-        start_dt=datetime.datetime.strptime(self.config['starttime'],'%Y%m%d.%H%M%S')
-        self.run_start=utils.to_dt64(start_dt)
+            start_files=self.start_inputs()
+            if start_files:
+                start=store_file.StoreFile(model=self,proc=0,filename=start_files[0])
+                self.run_start=start.time()
+            else:
+                # maybe we're constructing a restart?  sequencing of this stuff,
+                # and the exact state of the model is quirky and under-designed
+                self.run_start=self.restart_model.restartable_time()
+            log.info("Inferred start time of restart to be %s"%self.run_start)
+        else:
+            start_dt=datetime.datetime.strptime(self.config['starttime'],'%Y%m%d.%H%M%S')
+            self.run_start=utils.to_dt64(start_dt)
 
         nsteps=int(self.config['nsteps'])
         dt=np.timedelta64(1,'us') * int(1e6*float(self.config['dt']))
@@ -1266,6 +1281,12 @@ class SuntansModel(dfm.HydroModel):
     def store_outputs(self):
         store_fn=os.path.join(self.run_dir,self.config['StoreFile'])
         fns=glob.glob( store_fn+"*" )
+        fns.sort()
+        return fns
+
+    def start_inputs(self):
+        start_fn=os.path.join(self.run_dir,self.config['StartFile'])
+        fns=glob.glob( start_fn+"*" )
         fns.sort()
         return fns
 

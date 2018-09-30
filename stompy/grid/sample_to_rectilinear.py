@@ -103,13 +103,28 @@ class Structurer(object):
         self.proc_to_index = [ [] for p in range(self.Nsubdomains())]
 
         self.cell_infos['masked'] = False
+
+        if self.mask_land:
+            # quick sweep of exterior
+            grid_poly=grid.boundary_polygon()
+            ext_xy=np.array(grid_poly.exterior)
+            from matplotlib.path import Path
+            p=Path(ext_xy)
+            # doesn't care about order.  on the line counts as outside
+            wet=p.contains_points(self.utm[:,:])
+            self.cell_infos['masked']=~wet
+
         for i in range(len(self.radii)):
+            if self.cell_infos['masked'][i]: continue
+
             if i % 1000 == 0:
                 log.info("Finding averaging inputs for %d/%d "%(i,len(self.radii)))
+
             # Find all cells within the given radius:
             P = self.utm[i]
             if self.mask_land:
-                # mask points which aren't really on water
+                # mask points which aren't really on water.
+                # with the patch check above, this is just for islands.
                 c = grid.select_cells_nearest(P,inside=True)
                 if c is None:
                     self.cell_infos[i]['masked'] = True
@@ -165,7 +180,7 @@ class Structurer(object):
         if var_name == 'U_top1m':
             # will have to get reshaped later...
             self.var_data = meanU = np.zeros( (len(self.utm),2), np.float64 )
-        elif var_name in ['u_wind','v_wind']:
+        elif var_name in ['u_wind','v_wind','eta']:
             self.var_data = mean_scal = np.zeros( len(self.utm), np.float64 )
         else:
             raise Exception("unsupported variable requested: %s"%var_name)
@@ -186,6 +201,8 @@ class Structurer(object):
                 # this does the vertical averaging in each water column
                 U[ weights==0 ] = 0.0 # avoid nan contamination
                 data_for_proc = np.sum( U[:,:,:2] * weights[:,:,None],axis=1)
+            elif var_name=='eta':
+                data_for_proc = self.read_cell_scalar(label='eta',processor=proc,time_step = tindex)
             elif var_name in ['u_wind','v_wind']:
                 if var_name == 'u_wind':
                     label = 'wind_u'
@@ -224,35 +241,56 @@ class UgridAverager(Structurer):
     Uses the first mesh name found in the file
     """
     cache_dirs=None
-    def __init__(self,nc_fn,**kwargs):
-        self.nc_fn = nc_fn
+    def __init__(self,nc_fns,**kwargs):
+        self.nc_fns = nc_fns
+        self._global_grid=kwargs.pop('global_grid',None)
         Structurer.__init__(self,**kwargs)
 
     def prepare(self):
-        log.info("Loading global ugrid")
+        log.info("Loading individual ugrids")
         # not enough metadata or smarts to figure out some of these
         # names
-        self.ugrid = ugrid.UgridXr(self.nc_fn,
-                                   face_eta_vname='eta',
-                                   face_u_vname='uc',
-                                   face_v_vname='vc')
-        self.ugrid.nc.z_r.attrs['positive']='down'
-        self.ugrid.nc.z_w.attrs['positive']='down'
+        self.ugrids=[]
+        self.grids=[]
 
-        self.grid = self.ugrid.grid
-        vc = self.grid.cells_center()
+        for nc_fn in self.nc_fns:
+            ug = ugrid.UgridXr(nc_fn,
+                               face_eta_vname='eta',
+                               face_u_vname='uc',
+                               face_v_vname='vc')
+            ug.nc.z_r.attrs['positive']='down'
+            ug.nc.z_w.attrs['positive']='down'
+            self.ugrids.append(ug)
+            self.grids.append(ug.grid)
+
+        if self._global_grid is None:
+            gg=self.grids[0].copy()
+            for g in self.grids[1:]:
+                gg.add_grid(g,merge_nodes='auto')
+            self._global_grid=gg
+        else:
+            gg=self._global_grid
+
+        # this should be on the *global grid*
+        vc = gg.cells_center()
         self.vcf = field.XYZField(X=vc,F=np.arange(len(vc)))
         self.vcf.build_index()
 
-        # no support for multiple subdomains, so the mapping is
-        # just the identity
-        self.global_to_local = np.zeros( self.grid.Ncells(),
+        self.global_to_local = np.zeros( gg.Ncells(),
                                          dtype = [('global',np.int32),
                                                   ('proc',np.int32),
                                                   ('local',np.int32)])
-        self.global_to_local['global'] = np.arange(self.grid.Ncells())
-        self.global_to_local['proc'] = 0
-        self.global_to_local['local'] = self.global_to_local['global']
+        self.global_to_local['global'][:]=np.arange(gg.Ncells())
+        self.global_to_local['proc'][:]=-1
+
+        for p,g in enumerate(self.grids):
+            gcc=g.cells_center()
+            for c,xy in enumerate(gcc):
+                global_c=gg.select_cells_nearest(xy,inside=True)
+                if global_c is None: continue
+                if self.global_to_local['proc'][global_c]>=0: continue
+                self.global_to_local['proc'][global_c]=p
+                self.global_to_local['local'][global_c]=c
 
     def cache_directories(self):
         """ return list, in anti-chronological order, of possible
@@ -263,20 +301,23 @@ class UgridAverager(Structurer):
             self.cache_dirs=[ os.path.dirname(self.nc_fn) ]
         return self.cache_dirs
 
+    _global_grid=None
     def global_grid(self):
-        return self.grid
+        if self._global_grid is None:
+            raise Exception("Need some code to calc global grid or pass it in")
+        return self._global_grid
 
     def Nsubdomains(self):
-        return 1
+        return len(self.ugrids)
 
     def averaging_weights(self,proc,time_step,ztop=None,dz=None,zbottom=None):
-        return self.ugrid.vertical_averaging_weights(time_slice=time_step,ztop=ztop,dz=dz,zbottom=zbottom)
+        return self.ugrids[proc].vertical_averaging_weights(time_slice=time_step,ztop=ztop,dz=dz,zbottom=zbottom)
 
     def cell_velocity(self,processor,time_step):
-        return self.ugrid.get_cell_velocity(time_step)
+        return self.ugrids[processor].get_cell_velocity(time_step)
 
     def read_cell_scalar(self,label,processor,time_step):
-        return self.ugrid.get_cell_scalar(label=label,time_step=time_step)
+        return self.ugrids[processor].get_cell_scalar(label=label,time_step=time_step)
 
     def datenum(self,time_step):
         """ should be referenced to UTC
@@ -284,4 +325,4 @@ class UgridAverager(Structurer):
         return self.available_steps()[time_step]
 
     def available_steps(self):
-        return self.ugrid.times()
+        return self.ugrids[0].times()
