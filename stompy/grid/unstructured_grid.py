@@ -68,9 +68,11 @@ class GridException(Exception):
 class Missing(GridException):
     pass
 
-def request_square(ax):
+def request_square(ax,max_bounds=None):
     """
     Attempt to set a square aspect ratio on matplotlib axes ax
+    max_bounds: if specified, adjust axes to include that area,
+     unless ax is already zoomed in smaller than bounds
     """
     # in older matplotlib, this was sufficient:
     # ax.axis('equal')
@@ -80,6 +82,16 @@ def request_square(ax):
     # plot box sometimes.
     # plt.setp(ax,aspect=1.0,adjustable='box-forced')
     plt.setp(ax,aspect=1.0,adjustable='datalim')
+    if max_bounds is not None:
+        bounds=ax.axis()
+        if ( (bounds[0]>=max_bounds[0]) and
+             (bounds[1]<=max_bounds[1]) and
+             (bounds[2]>=max_bounds[2]) and
+             (bounds[3]<=max_bounds[3]) ):
+            pass #
+        else:
+            ax.axis(max_bounds)
+
 
 def find_common_nodes(gA,gB):
     """
@@ -811,7 +823,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 nodes=[self.add_or_find_node(x=x)
                        for x in coords]
                 for a,b in zip(nodes[:-1],nodes[1:]):
-                    self.add_edge(nodes=[a,b])
+                    j=self.nodes_to_edge(a,b)
+                    if j is None:
+                        self.add_edge(nodes=[a,b])
             else:
                 raise GridException("Not ready for geometry type %s"%geo.type)
         # still need to collapse duplicate nodes
@@ -2611,9 +2625,18 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                         self.nodes['x'][mask][:,1],
                         sizes,
                         **kwargs)
-        request_square(ax)
+        bounds=[ self.nodes['x'][mask][:,0].min(),
+                 self.nodes['x'][mask][:,0].max(),
+                 self.nodes['x'][mask][:,1].min(),
+                 self.nodes['x'][mask][:,1].max()]
+        if (bounds[0]<bounds[1]) and (bounds[2]<bounds[3]):
+            request_square(ax,bounds)
+        else:
+            # in case the bounds are degenerate
+            request_square(ax)
+
         return coll
-    
+
     def plot_edges(self,ax=None,mask=None,values=None,clip=None,labeler=None,
                    **kwargs):
         """
@@ -2662,7 +2685,11 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                         labeler(n,self.edges[n]))
 
         ax.add_collection(lcoll)
-        request_square(ax)
+        bounds=[segs[...,0].min(),
+                segs[...,0].max(),
+                segs[...,1].min(),
+                segs[...,1].max()]
+        request_square(ax,bounds)
         return lcoll
 
     def plot_halfedges(self,ax=None,mask=None,values=None,clip=None,
@@ -3012,10 +3039,18 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 start=trav
                 this_line_nodes=[trav.node_rev(),trav.node_fwd()]
                 while 1:
+                    if marked[trav.j]:
+                        print("maybe hit a dead end -- boundary maybe not closed")
+                        break
                     this_line_nodes.append(trav.node_fwd())
                     marked[trav.j]=True
                     trav=trav.fwd()
+                    # in grids with no cell marks, trav test appears
+                    # unreliable
                     if trav==start:
+                        break
+                    if this_line_nodes[-1]==this_line_nodes[0]:
+                        print("trav was different, but nodes are the same")
                         break
                 lines.append( self.nodes['x'][this_line_nodes] )
 
