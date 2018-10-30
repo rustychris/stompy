@@ -636,6 +636,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                          ('nbrs',np.int32,3) ]
             try:
                 cells=np.loadtxt(cells_fn,dtype=cell_dtype)
+                if cells.shape[1]!=8:
+                    raise ValueError("Looks like a hybrid file with all triangles")
             except ValueError:
                 if dialect=='auto':
                     cells=None
@@ -3041,6 +3043,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 while 1:
                     if marked[trav.j]:
                         print("maybe hit a dead end -- boundary maybe not closed")
+                        print("edge centered at %s traversed twice"%(self.edges_center()[trav.j]))
                         break
                     this_line_nodes.append(trav.node_fwd())
                     marked[trav.j]=True
@@ -4317,7 +4320,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         Return an array of edge-centered depths.  This *should* be
         a positive:up quantity.
 
-        Returns all zero if no edge depth data is found.
+        Returns all nan if no edge depth data is found. (used to return
+        all zero)
         """
         try:
             return self.edges['depth']
@@ -4329,7 +4333,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         except AttributeError:
             pass
 
-        return np.zeros(len(self.edges),np.float64)
+        return np.nan*np.ones(len(self.edges),np.float64)
 
     #--# generation methods
     def add_rectilinear(self,p0,p1,nx,ny):
