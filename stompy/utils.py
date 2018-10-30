@@ -1949,12 +1949,13 @@ def remove_repeated(A):
     return np.concatenate( ( A[:1], A[1:][ np.diff(A)!=0 ] ) )
 
 
-def download_url(url,local_file,log=None,on_abort='pass'):
+def download_url(url,local_file,log=None,on_abort='pass',**extra_args):
     """
     log: an object or module with info(), warning(), and error()
     methods ala the logging module.
     on_abort: if an exception is raised during download, 'pass'
       leaves partial files in tact, 'remove' deletes partial files
+    extra_args: keyword arguments passed on to requests.get or ftplib.FTP()
     """
     parsed=six.moves.urllib_parse.urlparse(url)
 
@@ -1973,7 +1974,7 @@ def download_url(url,local_file,log=None,on_abort='pass'):
     try:
         if parsed.scheme in ['http','https']:
             import requests
-            r=requests.get(url,stream=True)
+            r=requests.get(url,stream=True,**extra_args)
 
             with open(local_file,'wb') as fp:
                 for chunk in r.iter_content(chunk_size=1024):
@@ -1995,6 +1996,8 @@ def download_url(url,local_file,log=None,on_abort='pass'):
                     my_cb=fp.write
 
                 ftp.retrbinary("RETR " + ftp_file , my_cb)
+        else:
+            raise Exception("Could not figure out the scheme for url %s"%url)
 
     except Exception as exc:
         if on_abort=='remove':
