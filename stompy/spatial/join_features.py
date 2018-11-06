@@ -240,13 +240,13 @@ def tolerant_merge_lines(features,tolerance):
                 # otherwise if they are very close we'll end up with numerical issues
                 # related to repeated points.
                 if match==FIRST_FIRST:
-                    features[i] = concatenate((features[i][::-1],features[j][1:]))
+                    features[i] = np.concatenate((features[i][::-1],features[j][1:]))
                 elif match==FIRST_LAST:
-                    features[i] = concatenate((features[j],features[i][1:]))
+                    features[i] = np.concatenate((features[j],features[i][1:]))
                 elif match==LAST_FIRST:
-                    features[i] = concatenate((features[i],features[j][1:]))
+                    features[i] = np.concatenate((features[i],features[j][1:]))
                 elif match==LAST_LAST:
-                    features[i] = concatenate((features[i][:-1],features[j][::-1]))
+                    features[i] = np.concatenate((features[i][:-1],features[j][::-1]))
 
                 # if we get a match, we just merged the features and can
                 # remove the j-th feature.
@@ -409,7 +409,7 @@ def lines_to_polygons_slow(new_features,close_arc=False,single_feature=True,forc
         # to add the arc.
         closing_arc = arc_to_close_line(new_features[exterior_id])
 
-        new_features[exterior_id] = concatenate((new_features[exterior_id],closing_arc))
+        new_features[exterior_id] = np.concatenate((new_features[exterior_id],closing_arc))
 
     exterior = new_features[exterior_id]
     interiors = [new_features[i] for i in range(len(new_features)) if i!=exterior_id]
@@ -477,7 +477,8 @@ def lines_to_polygons(new_features,close_arc=False,single_feature=True,force_ori
 
     if len(open_strings):
         log.error("New version of lines_to_polygons is faster but intolerant.  Cannot handle ")
-        log.error("open strings")
+        log.error("%d open strings"%len(open_strings))
+        log.error("First open string starts at %s"%(new_features[open_strings[0]][0]))
         raise Exception("No longer can handle open line strings")
 
     polys=[] # output polygons

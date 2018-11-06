@@ -33,7 +33,7 @@ from matplotlib.path import Path
 from ..spatial import gen_spatial_index, proj_utils
 from ..utils import (mag, circumcenter, circular_pairs,signed_area, poly_circumcenter,
                      orient_intersection,array_append,within_2d, to_unit,
-                     recarray_add_fields,recarray_del_fields)
+                     dist_along, recarray_add_fields,recarray_del_fields)
 
 try:
     import netCDF4    
@@ -68,9 +68,11 @@ class GridException(Exception):
 class Missing(GridException):
     pass
 
-def request_square(ax):
+def request_square(ax,max_bounds=None):
     """
     Attempt to set a square aspect ratio on matplotlib axes ax
+    max_bounds: if specified, adjust axes to include that area,
+     unless ax is already zoomed in smaller than bounds
     """
     # in older matplotlib, this was sufficient:
     # ax.axis('equal')
@@ -80,6 +82,16 @@ def request_square(ax):
     # plot box sometimes.
     # plt.setp(ax,aspect=1.0,adjustable='box-forced')
     plt.setp(ax,aspect=1.0,adjustable='datalim')
+    if max_bounds is not None:
+        bounds=ax.axis()
+        if ( (bounds[0]>=max_bounds[0]) and
+             (bounds[1]<=max_bounds[1]) and
+             (bounds[2]>=max_bounds[2]) and
+             (bounds[3]<=max_bounds[3]) ):
+            pass #
+        else:
+            ax.axis(max_bounds)
+
 
 def find_common_nodes(gA,gB):
     """
@@ -624,6 +636,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                          ('nbrs',np.int32,3) ]
             try:
                 cells=np.loadtxt(cells_fn,dtype=cell_dtype)
+                #if cells.shape[1]!=8:
+                #    raise ValueError("Looks like a hybrid file with all triangles")
             except ValueError:
                 if dialect=='auto':
                     cells=None
@@ -811,7 +825,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 nodes=[self.add_or_find_node(x=x)
                        for x in coords]
                 for a,b in zip(nodes[:-1],nodes[1:]):
-                    self.add_edge(nodes=[a,b])
+                    j=self.nodes_to_edge(a,b)
+                    if j is None:
+                        self.add_edge(nodes=[a,b])
             else:
                 raise GridException("Not ready for geometry type %s"%geo.type)
         # still need to collapse duplicate nodes
@@ -2611,9 +2627,18 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                         self.nodes['x'][mask][:,1],
                         sizes,
                         **kwargs)
-        request_square(ax)
+        bounds=[ self.nodes['x'][mask][:,0].min(),
+                 self.nodes['x'][mask][:,0].max(),
+                 self.nodes['x'][mask][:,1].min(),
+                 self.nodes['x'][mask][:,1].max()]
+        if (bounds[0]<bounds[1]) and (bounds[2]<bounds[3]):
+            request_square(ax,bounds)
+        else:
+            # in case the bounds are degenerate
+            request_square(ax)
+
         return coll
-    
+
     def plot_edges(self,ax=None,mask=None,values=None,clip=None,labeler=None,
                    **kwargs):
         """
@@ -2662,7 +2687,11 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                         labeler(n,self.edges[n]))
 
         ax.add_collection(lcoll)
-        request_square(ax)
+        bounds=[segs[...,0].min(),
+                segs[...,0].max(),
+                segs[...,1].min(),
+                segs[...,1].max()]
+        request_square(ax,bounds)
         return lcoll
 
     def plot_halfedges(self,ax=None,mask=None,values=None,clip=None,
@@ -3012,10 +3041,19 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 start=trav
                 this_line_nodes=[trav.node_rev(),trav.node_fwd()]
                 while 1:
+                    if marked[trav.j]:
+                        print("maybe hit a dead end -- boundary maybe not closed")
+                        print("edge centered at %s traversed twice"%(self.edges_center()[trav.j]))
+                        break
                     this_line_nodes.append(trav.node_fwd())
                     marked[trav.j]=True
                     trav=trav.fwd()
+                    # in grids with no cell marks, trav test appears
+                    # unreliable
                     if trav==start:
+                        break
+                    if this_line_nodes[-1]==this_line_nodes[0]:
+                        print("trav was different, but nodes are the same")
                         break
                 lines.append( self.nodes['x'][this_line_nodes] )
 
@@ -4282,7 +4320,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         Return an array of edge-centered depths.  This *should* be
         a positive:up quantity.
 
-        Returns all zero if no edge depth data is found.
+        Returns all nan if no edge depth data is found. (used to return
+        all zero)
         """
         try:
             return self.edges['depth']
@@ -4294,7 +4333,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         except AttributeError:
             pass
 
-        return np.zeros(len(self.edges),np.float64)
+        return np.nan*np.ones(len(self.edges),np.float64)
 
     #--# generation methods
     def add_rectilinear(self,p0,p1,nx,ny):
@@ -4329,6 +4368,76 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 cell_ids[xi,yi]=self.add_cell_and_edges(nodes=nodes) 
         return {'cells':cell_ids,
                 'nodes':node_ids}
+
+    def add_rectilinear_on_line(self,centerline,profile,add_streamwise=True):
+        """
+        add nodes,edges and cells defining a quad grid.
+        centerline: [N,2] centerline points, already at desired resolution.
+        profile: function(x,s) => [M] values for lateral spacing.
+        add_streamwise: d_lat,d_long will be set for nodes and cells, holding
+         dimensional streamwise coordinates
+
+        returns a dict with nodes=> [nx,ny] array of node indices
+           cells=>[nx-1,ny-1] array of cell indices.
+           currently does not return edge indices
+        """
+        assert self.max_sides>=4
+
+        if add_streamwise:
+            # so we can track cell's in streamwise coordinates
+            zero=np.float64(0)
+            self.add_cell_field('d_lat',zero,on_exists='pass')
+            self.add_cell_field('d_long',zero,on_exists='pass')
+            self.add_node_field('d_lat',zero,on_exists='pass')
+            self.add_node_field('d_long',zero,on_exists='pass')
+
+        nx=len(centerline)
+        prof0=profile(x=centerline[0],s=0)
+        ny=len(prof0)
+        node_ids=np.zeros( (nx,ny), int)-1
+
+        centerline_s=dist_along(centerline)
+
+        center_deltas=centerline[2:]-centerline[:-2]
+        center_deltas=np.concatenate( [ center_deltas[:1],
+                                        center_deltas,
+                                        center_deltas[-1:] ] )
+        # left-pointing normals
+        center_norms=np.c_[ -center_deltas[:,1], center_deltas[:,0] ]
+        center_norms=to_unit(center_norms)
+
+        # create the nodes
+        for xi in range(nx):
+            ctr=centerline[xi]
+            s=centerline_s[xi]
+            prof=profile(x=ctr,s=s)
+
+            for yi in range(ny):
+                X=ctr+prof[yi]*center_norms[xi]
+                kw={}
+                if add_streamwise:
+                    kw['d_lat']=prof[yi]
+                    kw['d_long']=s
+                node_ids[xi,yi] = self.add_node(x=X,**kw)
+
+        cell_ids=np.zeros( (nx-1,ny-1), int)-1
+
+        # create the cells
+        for xi in range(nx-1):
+            for yi in range(ny-1):
+                nodes=[ node_ids[xi,yi],
+                        node_ids[xi+1,yi],
+                        node_ids[xi+1,yi+1],
+                        node_ids[xi,yi+1] ]
+                kw={}
+                if add_streamwise:
+                    kw['d_lat']=self.nodes['d_lat'][nodes].mean()
+                    kw['d_long']=self.nodes['d_long'][nodes].mean()
+                cell_ids[xi,yi]=self.add_cell_and_edges(nodes=nodes,**kw)
+
+        return {'cells':cell_ids,
+                'nodes':node_ids}
+
 
     # Half-edge interface
     def halfedge(self,j,orient):

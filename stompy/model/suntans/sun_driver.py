@@ -754,10 +754,15 @@ class SuntansModel(dfm.HydroModel):
                                encoding=dict(nt={'units':self.ds_time_units()},
                                              Time={'units':self.ds_time_units()}) )
 
-    def layer_data(self,with_offset=False):
+    def layer_data(self,with_offset=False,edge_index=None,cell_index=None,z_bed=None):
         """
         Returns layer data without z_offset applied, and
         positive up.
+
+        with no additional arguments, returns global information.  edge_index or
+        cell_index will use a z_bed based on that element.  z_bed is used to clip
+        z layers.  z_bed should be a positive-up quantity.  A specified z_bed
+        takes precendece over edge_index or cell_index.
 
         Returns a xr.Dataset
         with z_min, z_max, Nk, z_interface, z_mid.
@@ -767,6 +772,12 @@ class SuntansModel(dfm.HydroModel):
         if with_offset is True, the z_offset is included, which yields
         more accurate (i.e. similar to suntans) layers when there is stretching
         """
+        if z_bed is None:
+            if edge_index is not None:
+                z_bed=self.grid.edge_depths()[edge_index]
+            elif cell_index is not None:
+                z_bed=self.grid.cell_depths()[cell_index]
+
         Nk=int(self.config['Nkmax'])
         z_min=self.grid.cells['depth'].min() # bed
         z_max=self.grid.cells['depth'].max() # surface
@@ -777,21 +788,17 @@ class SuntansModel(dfm.HydroModel):
             z_min-=self.z_offset
             z_max=0
 
-        if 1: # newer code
-            depth=-z_min # positive:down
-            dzs=np.zeros(Nk, np.float64)
-            if r>1.0:
-                dzs[0]=depth*(r-1)/(r**Nk-1)
-                for k in range(1,Nk):
-                    dzs[k]=r*dzs[k-1]
-            else:
-                dzs[:]=depth/float(Nk)
-            z_interface=np.concatenate( ( [z_max],
-                                          z_max-np.cumsum(dzs) ) )
-        if 0: # older code
-            # log.warning("Layers not fully implemented -- calculating with assuming evenly spaced Nk=%d"%Nk)
-            z_interface=-np.linspace(-z_max,-z_min,Nk+1) # evenly spaced...
-
+        depth=-z_min # positive:down
+        dzs=np.zeros(Nk, np.float64)
+        if r>1.0:
+            dzs[0]=depth*(r-1)/(r**Nk-1)
+            for k in range(1,Nk):
+                dzs[k]=r*dzs[k-1]
+        else:
+            dzs[:]=depth/float(Nk)
+        z_interface=np.concatenate( ( [z_max],
+                                      z_max-np.cumsum(dzs) ) )
+        
         z_mid=0.5*(z_interface[:-1]+z_interface[1:])
 
         ds=xr.Dataset()

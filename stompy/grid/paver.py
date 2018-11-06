@@ -1110,7 +1110,7 @@ class Paving(paving_base,OptimizeGridMixin):
         if geom.type == 'MultiPolygon':
             print("Geometry is a multipolygon - will use the polygon with greatest area")
             areas = [g.area for g in geom.geoms]
-            best = argmax(areas)
+            best = np.argmax(areas)
             old_geom = geom # don't dereference too hastily...
             geom = old_geom.geoms[best]
         

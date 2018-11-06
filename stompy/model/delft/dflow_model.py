@@ -791,9 +791,12 @@ class HydroModel(object):
 
     def add_gazetteer(self,shp_fn):
         """
-        Register a shapefile for resolving feature locations
+        Register a shapefile for resolving feature locations.
+        shp_fn: string, to be loaded as shapefile, or a structure array with a geom field.
         """
-        self.gazetteers.append(wkb2shp.shp2geom(shp_fn))
+        if not isinstance(shp_fn,np.ndarray):
+            shp_fn=wkb2shp.shp2geom(shp_fn)
+        self.gazetteers.append(shp_fn)
     def get_geometry(self,**kws):
         """
         The gazetteer interface for BC geometry.  given criteria as keyword arguments,
