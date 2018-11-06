@@ -449,6 +449,8 @@ class SuntansModel(dfm.HydroModel):
             return False
         if os.path.isdir(fn):
             fn=os.path.join(fn,"suntans.dat")
+            if not os.path.exists(fn):
+                return False
         model=cls.load(fn)
         return model.is_completed()
     def is_completed(self):
