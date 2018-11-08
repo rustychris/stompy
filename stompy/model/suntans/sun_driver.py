@@ -445,6 +445,13 @@ class SuntansModel(dfm.HydroModel):
 
     @classmethod
     def run_completed(cls,fn):
+        """
+        fn: path to either folder containing suntans.dat, or path
+        to suntans.dat itself.
+
+        returns: True if the file exists and the folder contains a run which
+          ran to completion. Otherwise False.
+        """
         if not os.path.exists(fn):
             return False
         if os.path.isdir(fn):
@@ -1254,7 +1261,7 @@ class SuntansModel(dfm.HydroModel):
                                     os.path.join(self.run_dir,fn))
         else:
             self.run_mpi(["-g",self.sun_verbose_flag,"--datadir=%s"%self.run_dir])
-    sun_verbose_flag="-vv"
+    sun_verbose_flag="-vv" 
     def run_simulation(self):
         args=['-s']
         if self.restart:

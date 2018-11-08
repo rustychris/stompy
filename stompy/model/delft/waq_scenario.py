@@ -6962,9 +6962,11 @@ class Scenario(scriptable.Scriptable):
     time0=None
     # time0=datetime.datetime(1990,8,5) # defaults to hydro value
     scu=datetime.timedelta(seconds=1)
-    time_step=None # will be taken from the hydro, unless specified otherwise
+    time_step=None  # these are taken from hydro, unless specified otherwise
+    start_time=None # 
+    stop_time=None  # 
 
-    log=logging # take a stab at managing messages via logging
+    log=logging # python logging 
 
     # backward differencing,
     # .60 => second and third keywords are set 
@@ -7031,7 +7033,7 @@ class Scenario(scriptable.Scriptable):
     mon_stop_time=None
     mon_time_step=None
 
-    def __init__(self,hydro,**kw):
+    def __init__(self,hydro=None,**kw):
         self.log=logging.getLogger(self.__class__.__name__)
 
         # list of dicts.  moving towards standard setting of loads via src_tags
@@ -7041,11 +7043,7 @@ class Scenario(scriptable.Scriptable):
         self.dispersions=NamedObjects(scenario=self)
         self.velocities=NamedObjects(scenario=self)
 
-        if hydro:
-            print( "Setting hydro")
-            self.set_hydro(hydro)
-        else:
-            self.hydro=None # will have limited functionality
+        self.hydro=hydro
 
         self.inp=InpFile(scenario=self)
 
@@ -7119,17 +7117,34 @@ class Scenario(scriptable.Scriptable):
 END_MULTIGRID"""%num_layers
         else:
             return " ; sigma layers - no multigrid stanza"
-    
-    def set_hydro(self,hydro):
-        self.hydro=hydro
-        self.hydro.scenario=self
 
-        # sensible defaults for simulation period
+    _hydro=None
+    @property
+    def hydro(self):
+        return self._hydro
+    @hydro.setter
+    def hydro(self,value):
+        self.set_hydro(value)
+
+    def set_hydro(self,hydro):
+        self._hydro=hydro
+
+        if hydro is None:
+            return
+
+        self._hydro.scenario=self
+
+        # I think it's required that these match
+        self.time0 = self._hydro.time0
+
+        # Other time-related values needn't match, but the hydro
+        # is a reasonable default if no value has been set yet.
         if self.time_step is None:
-            self.time_step=self.hydro.time_step
-        self.time0 = self.hydro.time0
-        self.start_time=self.time0+self.scu*self.hydro.t_secs[0]
-        self.stop_time =self.time0+self.scu*self.hydro.t_secs[-1]
+            self.time_step=self._hydro.time_step
+        if self.start_time is None:
+            self.start_time=self.time0+self.scu*self._hydro.t_secs[0]
+        if self.stop_time is None:
+            self.stop_time =self.time0+self.scu*self._hydro.t_secs[-1]
 
     def init_parameters(self):
         params=NamedObjects(scenario=self,cast_value=cast_to_parameter)
@@ -7409,9 +7424,9 @@ END_MULTIGRID"""%num_layers
         t can be a datetime object, an integer number of seconds since time0,
         or a floating point datenum
         """
-        if np.issubdtype(type(t),int):
+        if np.issubdtype(type(t),np.integer):
             return self.time0 + t*self.scu
-        elif np.issubdtype(type(t),float):
+        elif np.issubdtype(type(t),np.floating):
             return num2date(t)
         elif isinstance(t,datetime.datetime):
             return t
@@ -7433,6 +7448,9 @@ END_MULTIGRID"""%num_layers
         hda=os.path.join( self.base_path,self.name+".hda")
         hdf=os.path.join( self.base_path,self.name+".hdf")
         if os.path.exists(hda):
+            if nefis.nef_lib() is None:
+                self.log.warning("Nefis library not configured -- will not read nef history")
+                return None
             return nefis.Nefis(hda, hdf)
         else:
             return None
@@ -7485,7 +7503,6 @@ END_MULTIGRID"""%num_layers
         """
         if output_settings is None:
             output_settings=self.default_ugrid_output_settings
-
 
         if nef is None:
             if mode is 'map':
@@ -7992,7 +8009,7 @@ END_MULTIGRID"""%num_layers
     def write_nefis_his_nc(self):
         nc2_fn=os.path.join(self.base_path,'dwaq_hist.nc')
         nc2=self.ugrid_history(nc_kwargs=dict(fn=nc2_fn,overwrite=True))
-        # if no history output, no nc2.
+        # if no history output or nefis is not setup, no nc2.
         if nc2:
             nc2.close()
             return True
@@ -8257,6 +8274,7 @@ class InpFile(object):
 ;
 #1 ; delimiter for the first block
 """
+        assert len(self.desc)==3,"Scenario.desc must have exactly 3 strings"
         return block01.format(self=self,
                               time0=self.fmt_time0(),scu=self.fmt_scu(),
                               substances=self.fmt_substance_names())
