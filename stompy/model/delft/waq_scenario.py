@@ -1510,6 +1510,9 @@ class HydroFiles(Hydro):
         self.parse_hyd()
 
         super(HydroFiles,self).__init__(**kw)
+        if sys.platform=='win32' and self.enable_write_symlink:
+            self.log.warning("Symlinks disabled on windows")
+            self.enable_write_symlink=False            
 
     def parse_hyd(self):
         self.hyd_toks={}
@@ -2097,7 +2100,7 @@ class HydroFiles(Hydro):
             fn=self.get_path(key)
             if os.path.exists(fn):
                 print("%s does exist, so will add it to the parameters"%fn)
-                hyd[var]=ParameterSpatioTemporal(seg_func_file=fn,enable_write_symlink=True,
+                hyd[var]=ParameterSpatioTemporal(seg_func_file=fn,
                                                  hydro=self)
         return hyd
 
@@ -6557,7 +6560,7 @@ class ParameterSpatioTemporal(Parameter):
     interpolation='LINEAR' # or 'BLOCK'
 
     def __init__(self,times=None,values=None,func_t=None,scenario=None,name=None,
-                 seg_func_file=None,enable_write_symlink=False,n_seg=None,
+                 seg_func_file=None,enable_write_symlink=None,n_seg=None,
                  hydro=None):
         """
         times: [N] sized array, 'i4', giving times in system clock units
@@ -6584,7 +6587,15 @@ class ParameterSpatioTemporal(Parameter):
         self._times=times
         self.values=values
         self.seg_func_file=seg_func_file
-        self.enable_write_symlink=enable_write_symlink
+        # generally follow hydro on whether to use symlinks, but allow
+        # an explicit option, too.
+        if enable_write_symlink is None:
+            if hydro is not None:
+                self.enable_write_symlink=hydro.enable_write_symlink
+            else:
+                self.enable_write_symlink=False
+        else:
+            self.enable_write_symlink=enable_write_symlink
         self._n_seg=n_seg # only needed for evaluate() when scenario isn't set
 
     # goofy helpers when n_seg or times can only be inferred after instantiation
@@ -8027,15 +8038,18 @@ END_MULTIGRID"""%num_layers
         else:
             bloom_part=""
 
-        cmd="{} -waq {} -p {}".format(self.delwaq1_path,
-                                      bloom_part,
-                                      self.proc_path)
+        cmd=[self.delwaq1_path,
+             "-waq", bloom_part,
+             "-p",self.proc_path]
+        #cmd='{} -waq {} -p {}'.format(self.delwaq1_path,
+        #                              bloom_part,
+        #                              self.proc_path)
         self.log.info("Running delwaq1:")
-        self.log.info("  "+ cmd)
+        self.log.info("  "+ " ".join(cmd))
 
         t_start=time.time()
         try:
-            ret=subprocess.check_output(cmd,shell=True,cwd=self.base_path,stderr=subprocess.STDOUT)
+            ret=subprocess.check_output(cmd,shell=False,cwd=self.base_path,stderr=subprocess.STDOUT)
         except subprocess.CalledProcessError as exc:
             self.log.error("problem running delwaq1")
             self.log.error("output: ")
@@ -8046,7 +8060,8 @@ END_MULTIGRID"""%num_layers
         self.log.info("delwaq1 ran in %.2fs"%(time.time() - t_start))
 
         nerrors=nwarnings=-1
-        for line in ret.decode().split("\n"):
+        # dwaq likes to draw boxes with code page 437
+        for line in ret.decode('cp437','ignore').split("\n"):
             if 'Number of WARNINGS' in line:
                 nwarnings=int(line.split()[-1])
             elif 'Number of ERRORS during input' in line:
@@ -8062,21 +8077,21 @@ END_MULTIGRID"""%num_layers
         """
         Run delwaq2 (computation)
         """
-        cmd="{} {}".format(self.delwaq2_path,self.name)
+        cmd=[self.delwaq2_path,self.name]
         if not output_filename:
             output_filename= os.path.join(self.base_path,'delwaq2.out')
 
         t_start=time.time()
         with open(output_filename,'wt') as fp_out:
             self.log.info("Running delwaq2 - might take a while...")
-            self.log.info("  " + cmd)
+            self.log.info("  " + " ".join(cmd))
             
             sim_time=(self.stop_time-self.start_time).total_seconds()
             tail=MonTail(os.path.join(self.base_path,self.name+".mon"),
                          log=self.log,sim_time_seconds=sim_time)
             try:
                 try:
-                    ret=subprocess.check_call(cmd,shell=True,cwd=self.base_path,stdout=fp_out,
+                    ret=subprocess.check_call(cmd,shell=False,cwd=self.base_path,stdout=fp_out,
                                               stderr=subprocess.STDOUT)
                 except subprocess.CalledProcessError as exc:
                     raise WaqException("delwaq2 exited with an error code - check %s"%output_filename)
