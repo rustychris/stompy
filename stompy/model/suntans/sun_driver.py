@@ -449,6 +449,8 @@ class SuntansModel(dfm.HydroModel):
             return False
         if os.path.isdir(fn):
             fn=os.path.join(fn,"suntans.dat")
+        if not os.path.isdir(fn):
+            return False
         model=cls.load(fn)
         return model.is_completed()
     def is_completed(self):
@@ -1252,7 +1254,7 @@ class SuntansModel(dfm.HydroModel):
                                     os.path.join(self.run_dir,fn))
         else:
             self.run_mpi(["-g",self.sun_verbose_flag,"--datadir=%s"%self.run_dir])
-    sun_verbose_flag="-vv"
+    sun_verbose_flag="-vv" 
     def run_simulation(self):
         args=['-s']
         if self.restart:
