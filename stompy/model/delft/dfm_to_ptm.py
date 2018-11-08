@@ -70,7 +70,6 @@ class DFlowToPTMHydro(object):
     overwrite=False
     time_slice=slice(None)
 
-    write_grd=False
     grd_fn=None
 
     write_nc=True
@@ -96,7 +95,7 @@ class DFlowToPTMHydro(object):
 
         self.open_dflow_output()
 
-        if self.write_grd:
+        if self.grd_fn is not None:
             self.write_grd(self.grd_fn)
 
         if self.write_nc:
@@ -621,8 +620,8 @@ elif __name__=='__main__':
                for p in args.times.split(':')]
         kwargs['time_slice']=slice(*parts)
     if args.subgrid:
-        kwargs['write_grd']=True
-        kwargs['grd_fn']=os.path.join(args.output.replace('.nc','_sub.grd'))
+        kwargs['grd_fn']=args.output.replace('.nc','_sub.grd')
+        assert kwargs['grd_fn']!=args.output,"Output filename should end in .nc"
     if args.skip_nc:
         kwargs['write_nc']=False
 

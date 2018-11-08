@@ -445,12 +445,19 @@ class SuntansModel(dfm.HydroModel):
 
     @classmethod
     def run_completed(cls,fn):
+        """
+        fn: path to either folder containing suntans.dat, or path
+        to suntans.dat itself.
+
+        returns: True if the file exists and the folder contains a run which
+          ran to completion. Otherwise False.
+        """
         if not os.path.exists(fn):
             return False
         if os.path.isdir(fn):
             fn=os.path.join(fn,"suntans.dat")
-        if not os.path.isdir(fn):
-            return False
+            if not os.path.exists(fn):
+                return False
         model=cls.load(fn)
         return model.is_completed()
     def is_completed(self):
