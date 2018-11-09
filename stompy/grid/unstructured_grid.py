@@ -1500,6 +1500,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     def cell_Nsides(self,c):
         return np.sum(self.cells['nodes'][c]>=0)
 
+    def edge_center(self,j):
+        return self.nodes['x'][self.edges['nodes'][j]].mean(axis=0)
     def edges_center(self):
         centers=np.zeros( (self.Nedges(), 2), 'f8')
         valid=~self.edges['deleted']
@@ -2045,12 +2047,13 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         edge_data['nodes']=new_nodes
         self.add_edge(_index=A,**edge_data)
         return A
-    def split_edge(self,j,**node_args):
+    def split_edge_basic(self,j,**node_args):
         """
         The opposite of merge_edges, take an existing edge and insert
         a node into the middle of it.
         Does not allow for any cells to be involved.
-        Defaults to midpoint
+        Defaults to midpoint.
+        Returns index of new edge and index of new node
         """
         nA,nC=self.edges['nodes'][j]
         assert np.all( self.edge_to_cells(j) < 0 )
@@ -2071,6 +2074,73 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         edge_data['nodes']=[nB,nC]
         jnew=self.add_edge(**edge_data)
         return jnew,nB
+
+    def split_edge(self,j=None,x=None,split_cells=True,**node_args):
+        """
+        Split an edge, optionally with cells, too.
+
+        split_cells: True: split cells, creating two
+         or three cells from the original.
+        False: just insert the new node into cells
+          Note that this may be ignore if self.max_sides
+          is not large enough!
+        """
+        # This edge will get a point inserted at the midpoint
+        if j is None:
+            j=self.select_edges_nearest(x)
+        else:
+            assert pnt is None,"Can't specify edge index and point"
+
+        j_nodes=self.edges['nodes'][j].copy()
+
+        c_nbrs=[]
+        for ci,c in enumerate(self.edge_to_cells(j)):
+            if c<0:
+                continue
+            nodes=self.cell_to_nodes(c)
+            saved=unstructured_grid.rec_to_dict(self.cells[c])
+            self.delete_cell(c)
+            c_nbrs.append( dict(nodes=nodes,c=c) )
+
+        j_new,n_new=self.split_edge_basic(j,x=x)
+
+        for c_nbr in c_nbrs:
+            # the new ring of nodes, with n_new in the right spot
+            nodes=list(c_nbr['nodes'])
+            na_i=nodes.index(j_nodes[0])
+            nb_i=nodes.index(j_nodes[1])
+
+            # then na_i,nb_i are in sequence
+            if (nb_i-na_i) % len(nodes) == 1:
+                new_i=na_i+1
+            elif (na_i-nb_i) % len(nodes) == 1:
+                new_i=nb_i+1
+            else:
+                raise Exception("Failed to insert node in order either way")
+            nodes[new_i:new_i]=[n_new]
+
+            if not split_cells:
+                if len(c_nbr['nodes'])+1 > self.max_sides:
+                    print("Will not insert node into cell because max_sides is too small")
+                    split_cells=True
+                else:
+                    # probably ought to copy more stuff from the original
+                    self.add_cell(nodes=nodes)
+                    continue
+            if split_cells:
+                # one triangle going forward:
+                new_cells=[]
+                rolled=(nodes[new_i:]+nodes[:new_i])
+                new_cells.append( rolled[:3] ) # tri_fwd
+                new_cells.append( rolled[-2:] + rolled[:1]) # tri_rev
+
+                mid=rolled[2:-1]
+                if len(mid)>1:
+                    new_cells.append(mid+[n_new]) # poly_mid
+
+            for new_cell in new_cells:
+                self.add_cell_and_edges(nodes=new_cell)
+        return j_new,n_new
 
     def merge_nodes(self,n0,n1):
         """ 
