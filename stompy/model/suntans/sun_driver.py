@@ -76,9 +76,12 @@ MultiBC=dfm.MultiBC
 StageBC=dfm.StageBC
 FlowBC=dfm.FlowBC
 VelocityBC=dfm.VelocityBC
+ScalarBC=dfm.ScalarBC
 OTPSStageBC=dfm.OTPSStageBC
 OTPSFlowBC=dfm.OTPSFlowBC
 OTPSVelocityBC=dfm.OTPSVelocityBC
+HycomMultiVelocityBC=dfm.HycomMultiVelocityBC
+HycomMultiScalarBC=dfm.HycomMultiScalarBC
 
 class GenericConfig(object):
     """ Handles reading and writing of suntans.dat formatted files.
@@ -834,12 +837,29 @@ class SuntansModel(dfm.HydroModel):
         Nt=len(self.bc_time)
         ds['time']=('Nt',),self.bc_time
 
+        # Scalars will introduce type3 and type2 because they may not know
+        # what type of flow forcing is there.  Here we skim out scalars that
+        # do not have an associated flow
+
+        # Only h BCs introduce type3 cells
+        # the list(...keys()) part is to make a copy, so the del's
+        # don't upset the iteration
+        for cell in list(self.bc_type3.keys()):
+            if 'h' not in self.bc_type3[cell]:
+                del self.bc_type3[cell]
+        # 'u' 'v' and 'Q' for type2
+        for edge in list(self.bc_type2.keys()):
+            if not ( ('u' in self.bc_type2[edge]) or
+                     ('v' in self.bc_type2[edge]) or
+                     ('Q' in self.bc_type2[edge])):
+                del self.bc_type2[edge]
+
         Ntype3=len(self.bc_type3)
         ds['cellp']=('Ntype3',),np.zeros(Ntype3,np.int32)-1
         ds['xv']=('Ntype3',),np.zeros(Ntype3,np.float64)
         ds['yv']=('Ntype3',),np.zeros(Ntype3,np.float64)
 
-        # the actual data variables for typr 3:
+        # the actual data variables for type 3:
         ds['uc']=('Nt','Nk','Ntype3',),np.zeros((Nt,Nk,Ntype3),np.float64)
         ds['vc']=('Nt','Nk','Ntype3',),np.zeros((Nt,Nk,Ntype3),np.float64)
         ds['wc']=('Nt','Nk','Ntype3',),np.zeros((Nt,Nk,Ntype3),np.float64)
@@ -848,6 +868,11 @@ class SuntansModel(dfm.HydroModel):
         ds['h']=('Nt','Ntype3'),np.zeros( (Nt, Ntype3), np.float64 )
 
         def interp_time(da):
+            if 'time' not in da.dims: # constant value
+                # this should  do the right thing for both scalar and vector
+                # values
+                return da.values * np.ones( (Nt,)+da.values.shape )
+                
             if da.ndim==2:
                 assert da.dims[0]=='time'
                 # recursively call per-layer, which is assumed to be the second
@@ -945,6 +970,8 @@ class SuntansModel(dfm.HydroModel):
             self.write_flow_bc(bc)
         elif isinstance(bc,dfm.VelocityBC):
             self.write_velocity_bc(bc)
+        elif isinstance(bc,dfm.ScalarBC):
+            self.write_scalar_bc(bc)
         else:
             super(SuntansModel,self).write_bc(bc)
 
@@ -967,6 +994,24 @@ class SuntansModel(dfm.HydroModel):
         for j in edges:
             self.bc_type2[j]['u']=ds['u']
             self.bc_type2[j]['v']=ds['v']
+
+    def write_scalar_bc(self,bc):
+        da=bc.dataarray()
+
+        scalar_name=bc.scalar
+        # canonicalize scalar names for suntans BC files
+        if scalar_name.lower() in ['salinity','salt','s']:
+            scalar_name='S'
+        elif scalar_name.lower() in ['temp','t','temperature']:
+            scalar_name='T'
+        else:
+            self.log.warning("Scalar %s is not S or T or similar"%scalar_name)
+
+        # scalars could be set on edges or cells
+        for j in self.bc_geom_to_edges(bc.geom):
+            self.bc_type2[j][scalar_name]=da
+        for cell in self.bc_geom_to_cells(bc.geom):
+            self.bc_type3[cell][scalar_name]=da
 
     def write_flow_bc(self,bc):
         da=bc.dataarray()
@@ -1338,7 +1383,8 @@ class SuntansModel(dfm.HydroModel):
             self._subdomain_grids[p]=sub_g
         return self._subdomain_grids[p]
 
-    def extract_transect(self,xy,time=slice(None),dx=None):
+    def extract_transect(self,xy,time=slice(None),dx=None,
+                         vars=['uc','vc','Ac','dv','dzz','eta','w']):
         """
         xy: [N,2] coordinates defining the line of the transect
         time: time index or slice to extract
@@ -1348,7 +1394,7 @@ class SuntansModel(dfm.HydroModel):
             xy=linestring_utils.upsample_linearring(xy,dx,closed_ring=False)
         proc_point_cell=np.zeros( [self.num_procs,len(xy)], np.int32)-1
         point_datasets=[None]*len(xy)
-        vars=['uc','vc','Ac','dv','dzz','eta','w']
+        
         for proc in range(self.num_procs):
             sub_g=self.subdomain_grid(proc)
             ds=None
@@ -1370,18 +1416,19 @@ class SuntansModel(dfm.HydroModel):
         # drop xy points that didn't hit a cell
         point_datasets=[p for p in point_datasets if p is not None]
         transect=xr.concat(point_datasets,dim='sample')
-        transect=transect.rename(Nk='layer',
-                                 Nkw='interface',
-                                 uc='Ve',
-                                 vc='Vn',
-                                 w='Vu_int')
+        renames=dict(Nk='layer',Nkw='interface',
+                     uc='Ve',vc='Vn',w='Vu_int')
+        renames={x:renames[x] for x in renames if (x in transect) or (x in transect.dims)}
+        transect=transect.rename(**renames)
         transect['U']=('sample','layer','xy'),np.concatenate( [transect.Ve.values[...,None],
                                                                transect.Vn.values[...,None]],
                                                               axis=-1)
+        if 'Vu_int' in transect:
+            Vu_int=transect.Vu_int.values.copy()
+            Vu_int[np.isnan(Vu_int)]=0.0
+            transect['Vu']=('sample','layer'), 0.5*(Vu_int[:,1:] + Vu_int[:,:-1])
 
-        Vu_int=transect.Vu_int.values.copy()
-        Vu_int[np.isnan(Vu_int)]=0.0
-        transect['Vu']=('sample','layer'), 0.5*(Vu_int[:,1:] + Vu_int[:,:-1])
+
         # construct layer-center depths
         dzz=transect.dzz.values.copy() # sample, Nk
         z_bot=transect['eta'].values[:,None] - dzz.cumsum(axis=1)
