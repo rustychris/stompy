@@ -317,7 +317,9 @@ class Hydro(object):
                                          self.scenario.stop_time])
         if start_i>0:
             start_i-=1
-        if stop_i < len(self.t_secs):
+        if stop_i <= len(self.t_secs):
+            # careful to check <= so we don't drop the last time
+            # step.
             stop_i+=1
         return self.t_secs[start_i:stop_i]
 
@@ -1830,6 +1832,9 @@ class HydroFiles(Hydro):
         return self.seg_func(t_sec,label='vert-diffusion-file')
 
     def write_flo(self):
+        # TODO: allow an option to avoid copying, and just supply
+        # the original path.  this is tested in windows, no need
+        # to escape backslash, seems okay with long lines.
         if not self.enable_write_symlink:
             return super(HydroFiles,self).write_flo()
         else:
