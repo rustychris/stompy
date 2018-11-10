@@ -2088,8 +2088,6 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         # This edge will get a point inserted at the midpoint
         if j is None:
             j=self.select_edges_nearest(x)
-        else:
-            assert pnt is None,"Can't specify edge index and point"
 
         j_nodes=self.edges['nodes'][j].copy()
 
@@ -2098,11 +2096,14 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             if c<0:
                 continue
             nodes=self.cell_to_nodes(c)
-            saved=unstructured_grid.rec_to_dict(self.cells[c])
+            saved=rec_to_dict(self.cells[c])
             self.delete_cell(c)
             c_nbrs.append( dict(nodes=nodes,c=c) )
 
-        j_new,n_new=self.split_edge_basic(j,x=x)
+        kw={}
+        if x is not None:
+            kw['x']=x
+        j_new,n_new=self.split_edge_basic(j,**kw)
 
         for c_nbr in c_nbrs:
             # the new ring of nodes, with n_new in the right spot
@@ -2141,6 +2142,26 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             for new_cell in new_cells:
                 self.add_cell_and_edges(nodes=new_cell)
         return j_new,n_new
+
+    def merge_cells(self,j=None,x=None):
+        """
+        Given an edge or point near an edge midpoint,
+        merge cells on either side and return the new index.
+        Raises exception if there are not cells on both sides.
+        """
+        if j is None:
+            j=self.select_edges_nearest(x)
+
+        # the two cells:
+        cells=self.edge_to_cells(j)
+        if cells.min()<0:
+            raise Exception("merge_cells on edge without two neighors")
+
+        # not the fastest, but easy!
+        x=self.edge_center(j)
+        self.delete_edge_cascade(j)
+        return self.add_cell_at_point(x)
+
 
     def merge_nodes(self,n0,n1):
         """ 
