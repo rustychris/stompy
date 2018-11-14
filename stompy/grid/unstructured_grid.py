@@ -635,9 +635,15 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                          ('nodes',np.int32,3),
                          ('nbrs',np.int32,3) ]
             try:
-                cells=np.loadtxt(cells_fn,dtype=cell_dtype)
-                #if cells.shape[1]!=8:
-                #    raise ValueError("Looks like a hybrid file with all triangles")
+                # seems that numpy will not reliably fail when there is an
+                # extra column of data.
+                raw_cells=np.loadtxt(cells_fn)
+                if raw_cells.shape[1]!=8:
+                    raise ValueError("Looks like a hybrid file with all triangles")
+                cells=np.zeros(len(raw_cells),dtype=cell_dtype)
+                cells['center']=raw_cells[:,0:2]
+                cells['nodes']=raw_cells[:,2:5]
+                cells['nbrs']=raw_cells[:,5:8]
             except ValueError:
                 if dialect=='auto':
                     cells=None
