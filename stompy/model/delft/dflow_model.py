@@ -3,9 +3,6 @@ Automate parts of setting up a DFlow hydro model.
 
 TODO:
   allow for setting grid bathy from the model instance
-  consider a procedural approach to BCs:
-    add_bc_shp(...)
-    add_bc_match(FlowBC(...), name="SJ_upstream")
 """
 import os,shutil,glob,inspect
 import six
@@ -38,6 +35,10 @@ class BC(object):
     # not sure if I'll keep these -- may be better to query at time of use
     grid_edge=None
     grid_cell=None
+
+    # some BCs allow 'add', which just applies a delta to a previously
+    # set BC.
+    mode='overwrite'
 
     def __init__(self,name,model=None,**kw):
         """
@@ -275,23 +276,101 @@ class BC(object):
         dataset => pull just the data variable, either based on quantity, or if there
           is a single data variable that is not a coordinate, use that.
         constant => create a two-point timeseries
+
+        This should be used within these classes as a converter tool behind
+        self.dataarray(), which should be used external to this class.
         """
         if isinstance(data,xr.DataArray):
+            data.attrs['mode']=self.mode
             return data
         elif isinstance(data,xr.Dataset):
             if len(data.data_vars)==1:
-                return data[data.data_vars[0]]
+                da=data[data.data_vars[0]]
+                da.attrs['mode']=self.mode
+                return da
             else:
                 raise Exception("Dataset has multiple data variables -- not sure which to use: %s"%( str(data.data_vars) ))
         elif isinstance(data,(np.integer,np.floating,int,float)):
             # handles expanding a constant to the length of the run
             ds=xr.Dataset()
-            pad=np.timedelta64(24,'h')
-            ds['time']=('time',),np.array( [self.model.run_start-pad,self.model.run_stop+pad] )
+            ds['time']=('time',),np.array( [self.data_start,self.data_stop] )
             ds[quantity]=('time',),np.array( [data,data] )
-            return ds[quantity]
+            da=ds[quantity]
+            da.attrs['mode']=self.mode
+            return da
         else:
             raise Exception("Not sure how to cast %s to be a DataArray"%data)
+
+    # Not all BCs have a time dimension, but enough do that we have some general utility
+    # getters/setters at this level
+    _start=None
+    _stop =None
+    pad=np.timedelta64(24,'h')
+    @property
+    def data_start(self):
+        if self._start is None:
+            return self.model.run_start-self.pad
+        else:
+            return self._start
+    @data_start.setter
+    def data_start(self,v):
+        self._start=v
+
+    @property
+    def data_stop(self):
+        if self._stop is None:
+            return self.model.run_stop+self.pad
+        else:
+            return self._stop
+    @data_stop.setter
+    def data_stop(self,v):
+        self._stop=v
+
+    def write_bokeh(self,filename=None,path=".",title=None,mode='cdn'):
+        """
+        Write a bokeh html plot for this dataset.
+        path: folder in which to place the plot.
+        filename: relative or absolute filename.  defaults to path/{self.name}.html
+        mode: this is passed to bokeh, 'cdn' yields small files but requires an internet
+         connection to view them.  'inline' yields self-contained, larger (~800k) files.
+        """
+        import bokeh.io as bio # output_notebook, show, output_file
+        import bokeh.plotting as bplt
+
+        bplt.reset_output()
+
+        if title is None:
+            title="Name: %s"%self.name
+
+        p = bplt.figure(plot_width=750, plot_height=350,
+                        title=title,
+                        active_scroll='wheel_zoom',
+                        x_axis_type="datetime")
+
+        da=self.dataarray()
+        self.plot_bokeh(da,p)
+        if filename is None:
+            filename="bc_%s.html"%self.name
+        output_fn=os.path.join(path,filename)
+        bio.output_file(output_fn,
+                        title=title,
+                        mode=mode)
+        bio.show(p) # show the results
+
+    def plot_bokeh(self,da,plot):
+        """
+        Generic plotting implementation -- will have to override for complicated
+        datatypes
+        """
+        plot.yaxis.axis_label = da.attrs.get('units','n/a')
+        if 'time' in da.dims:
+            plot.line( da.time.values, da.values, legend=self.name)
+        else:
+            from bokeh.models import Label
+            label=Label(x=70, y=70, x_units='screen', y_units='screen',
+                        text="No plotting for %s"%str(self))
+            plot.add_layout(label)
+
 
 class RoughnessBC(BC):
     shapefile=None
@@ -407,8 +486,6 @@ class FlowBC(BC):
     def write_data(self):
         self.write_tim(self.dataarray())
 
-
-
 class SourceSinkBC(BC):
     # The grid, at the entry point, will be taken down to this elevation
     # to ensure that prescribed flows are not prevented due to a dry cell.
@@ -458,11 +535,9 @@ class SourceSinkBC(BC):
             log.info("dredging disabled")
 
     def write_data(self):
-        assert self.Q is not None
-
-        da=self.as_data_array(self.Q)
-        self.write_tim(da)
+        self.write_tim(self.dataarray())
     def dataarray(self):
+        assert self.Q is not None
         return self.as_data_array(self.Q)
 
 class WindBC(BC):
@@ -492,10 +567,9 @@ class WindBC(BC):
                    "\n"]
             fp.write("\n".join(lines))
     def write_data(self):
-        assert self.wind is not None
-        da=self.as_data_array(self.wind)
-        self.write_tim(da)
+        self.write_tim(self.dataarray())
     def dataarray(self):
+        assert self.wind is not None
         return self.as_data_array(self.wind)
 
 class ScalarBC(BC):
@@ -511,7 +585,12 @@ class ScalarBC(BC):
         super(ScalarBC,self).__init__(**kw)
     def dataarray(self):
         # Base implementation does nothing
-        return self.value
+        if not isinstance(self.value,xr.DataArray):
+            da=xr.DataArray(self.value)
+        else:
+            da=self.value
+        da.attrs['mode']=self.mode
+        return da
 
 #class NoaaTides(BC):
 #    datum=None
@@ -1049,6 +1128,9 @@ class OTPSHelper(object):
     min_h=5.0
 
     otps_model=None
+    # slightly larger than default pad. probably unnecessary
+    pad=2*np.timedelta64(24,'h')
+
     def __init__(self,otps_model,**kw):
         self.otps_model=otps_model # something like OhS
     def dataset(self):
@@ -1063,10 +1145,9 @@ class OTPSHelper(object):
         """
         from stompy.model.otps import read_otps
 
-        pad=2*np.timedelta64(24,'h')
         ds=xr.Dataset()
-        times=np.arange( self.model.run_start-pad,
-                         self.model.run_stop+pad,
+        times=np.arange( self.data_start,
+                         self.data_stop,
                          15*np.timedelta64(60,'s') )
         log.debug("Will generate tidal prediction for %d time steps"%len(times))
         ds['time']=('time',),times
@@ -1098,6 +1179,7 @@ class OTPSHelper(object):
         ds['u']=ds.U/edge_depth
         ds['v']=ds.V/edge_depth
         ds['unorm']=ds.Q/(L*edge_depth)
+        ds.attrs['mode']=self.mode
         return ds
 
 class OTPSStageBC(StageBC,OTPSHelper):
@@ -1304,10 +1386,8 @@ class HycomMultiBC(MultiBC):
         self.populate_values()
 
     def populate_files(self):
-        data_start=self.model.run_start-self.pad
-        data_stop =self.model.run_stop+self.pad
         self.data_files=hycom.fetch_range(self.ll_box[:2],self.ll_box[2:],
-                                          [data_start,data_stop],
+                                          [self.data_start,self.data_stop],
                                           cache_dir=self.cache_dir)
 
     def init_bathy(self):
@@ -1347,9 +1427,12 @@ class HycomMultiScalarBC(HycomMultiBC):
         cache_dir=None # unused now, but makes parameter-setting logic cleaner
         _dataset=None # supplied by factory
         def dataset(self):
+            self._dataset.attrs['mode']=self.mode
             return self._dataset
         def dataarray(self):
-            return self.dataset()[self.scalar]
+            da=self.dataset()[self.scalar]
+            da.attrs['mode']=self.mode
+            return da
 
     def populate_values(self):
         """ Do the actual work of iterating over sub-edges and hycom files,
@@ -1478,6 +1561,7 @@ class HycomMultiVelocityBC(HycomMultiBC):
         cache_dir=None # unused now, but makes parameter-setting logic cleaner
         _dataset=None # supplied by factory
         def dataset(self):
+            self._dataset.attrs['mode']=self.mode
             return self._dataset
         def update_Q_in(self):
             """calculate time series flux~m3/s from self._dataset,

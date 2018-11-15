@@ -677,15 +677,16 @@ class SuntansModel(dfm.HydroModel):
         log.info("Setting initial eta from BCs, value=max(z_bed,%.4f) (including z_offset of %.2f)"%(h,self.z_offset))
 
     def write_forcing(self,overwrite=True):
+        # these map to lists of BCs, in case there are BC with mode='add'
         # map edge to BC data
-        self.bc_type2=defaultdict(dict) # [<edge index>][<variable>]=>DataArray
+        self.bc_type2=defaultdict(lambda: defaultdict(list)) # [<edge index>][<variable>]=>[DataArray,...]
         # map cell to BC data
-        self.bc_type3=defaultdict(dict) # [<cell index>][<variable>]=>DataArray
+        self.bc_type3=defaultdict(lambda: defaultdict(list)) # [<cell index>][<variable>]=>[DataArray,...]
         # Flow BCs are handled specially since they apply across a group of edges
         # Each participating edge should have an entry in bc_type2,
         # [<edge index>]["Q"]=>"segment_name"
         # and a corresponding entry in here:
-        self.bc_type2_segments=defaultdict(dict) # [<segment name>][<variable>]=>DataArray
+        self.bc_type2_segments=defaultdict(lambda: defaultdict(list)) # [<segment name>][<variable>]=>[DataArray,...]
 
         super(SuntansModel,self).write_forcing()
 
@@ -694,13 +695,14 @@ class SuntansModel(dfm.HydroModel):
         # edge, cells, groups of edges
         for bc_typ in [self.bc_type2,self.bc_type3,self.bc_type2_segments]:
             for bc in bc_typ.values(): # each edge idx/cell idx/segment name
-                for v in bc.values(): # each variable on that edge/cell/segment
-                    if isinstance(v,six.string_types):
-                        # type2 edges which reference a segment have no
-                        # time series of their own.
-                        continue
-                    if 'time' in v.dims:
-                        all_times.append( v['time'].values )
+                for vlist in bc.values(): # each variable on that edge/cell/segment
+                    for v in vlist: #list of BCs for this variable on this element
+                        if isinstance(v,six.string_types):
+                            # type2 edges which reference a segment have no
+                            # time series of their own.
+                            continue
+                        if 'time' in v.dims:
+                            all_times.append( v['time'].values )
         common_time=np.unique(np.concatenate(all_times))
         # Make sure that brackets the run:
         pad=np.timedelta64(1,'D')
@@ -839,9 +841,8 @@ class SuntansModel(dfm.HydroModel):
 
         # Scalars will introduce type3 and type2 because they may not know
         # what type of flow forcing is there.  Here we skim out scalars that
-        # do not have an associated flow
+        # do not have an associated h (type3) or flow (type2) boundary
 
-        # Only h BCs introduce type3 cells
         # the list(...keys()) part is to make a copy, so the del's
         # don't upset the iteration
         for cell in list(self.bc_type3.keys()):
@@ -882,6 +883,31 @@ class SuntansModel(dfm.HydroModel):
             return np.interp( utils.to_dnum(ds.time.values),
                               utils.to_dnum(da.time.values), da.values )
 
+        def combine_items(values,bc_items,offset=0.0):
+            base_item=None
+            # include the last mode='overwrite' bc, and sum the mode='add'
+            # bcs.
+            values[:]=offset
+
+            # aside from Q and h, other variables are 3D, which means
+            # that if the data comes back 2D, pad out the layer dimension
+
+            def pad_dims(data):
+                if values.ndim==2 and data.ndim==1:
+                    return data[:,None] # broadcastable vertical dimension
+                else:
+                    return data
+
+            for bc_item in bc_items:
+                if bc_item.mode=='add':
+                    values[:] += pad_dims(interp_time(bc_item))
+                else:
+                    base_item=bc_item
+            if base_item is None:
+                self.log.warning("BC for cell %d has no overwrite items"%type3_cell)
+            else:
+                values[:] += pad_dims(interp_time(bc_item))
+
         cc=self.grid.cells_center()
 
         for type3_i,type3_cell in enumerate(self.bc_type3): # each edge/cell
@@ -891,12 +917,14 @@ class SuntansModel(dfm.HydroModel):
 
             bc=self.bc_type3[type3_cell]
             for v in bc.keys(): # each variable on that edge/cell
-                # hmm - how to assign bc[v].values to ds[v] ?
                 if v=='h':
                     offset=self.z_offset
                 else:
                     offset=0
-                ds[v].isel(Ntype3=type3_i).values[:] = interp_time(bc[v]) + offset
+                # will set bc values in place
+                combine_items(ds[v].isel(Ntype3=type3_i).values,
+                              bc[v],
+                              offset=offset)
 
         Ntype2=len(self.bc_type2)
         Nseg=len(self.bc_type2_segments)
@@ -923,7 +951,8 @@ class SuntansModel(dfm.HydroModel):
         for seg_i,seg_name in enumerate(segment_names):
             bc=self.bc_type2_segments[seg_name]
             for v in bc.keys(): # only Q, but stick to the same pattern
-                ds['boundary_'+v].isel(Nseg=seg_i).values[:] = interp_time(bc[v])
+                combine_items(ds['boundary_'+v].isel(Nseg=seg_i).values,
+                              bc[v])
 
         ec=self.grid.edges_center()
         for type2_i,type2_edge in enumerate(self.bc_type2): # each edge
@@ -939,11 +968,8 @@ class SuntansModel(dfm.HydroModel):
                     offset=0.0
 
                 if v!='Q':
-                    data=interp_time(bc[v]) + offset
-                    # aside from Q and h, other variables are 3D
-                    if v!='h' and data.ndim==1:
-                        data=data[:,None] # add broadcastable vertical axis
-                    ds['boundary_'+v].isel(Ntype2=type2_i).values[:] = data
+                    combine_items(ds['boundary_'+v].isel(Ntype2=type2_i).values,
+                                  bc[v],offset)
                 else:
                     seg_name=bc[v]
                     seg_idx=segment_ids[segment_names.index(seg_name)]
@@ -981,7 +1007,7 @@ class SuntansModel(dfm.HydroModel):
 
         cells=self.bc_geom_to_cells(bc.geom)
         for cell in cells:
-            self.bc_type3[cell]['h']=water_level
+            self.bc_type3[cell]['h'].append(water_level)
 
     def write_velocity_bc(self,bc):
         # interface isn't exactly nailed down with the BC
@@ -991,9 +1017,12 @@ class SuntansModel(dfm.HydroModel):
         # here?
         ds=bc.dataset()
         edges=self.bc_geom_to_edges(bc.geom)
+
         for j in edges:
-            self.bc_type2[j]['u']=ds['u']
-            self.bc_type2[j]['v']=ds['v']
+            for comp in ['u','v']:
+                da=ds[comp]
+                da.attrs['mode']=bc.mode
+                self.bc_type2[j][comp].append(da)
 
     def write_scalar_bc(self,bc):
         da=bc.dataarray()
@@ -1009,19 +1038,19 @@ class SuntansModel(dfm.HydroModel):
 
         # scalars could be set on edges or cells
         for j in self.bc_geom_to_edges(bc.geom):
-            self.bc_type2[j][scalar_name]=da
+            self.bc_type2[j][scalar_name].append(da)
         for cell in self.bc_geom_to_cells(bc.geom):
-            self.bc_type3[cell][scalar_name]=da
+            self.bc_type3[cell][scalar_name].append(da)
 
     def write_flow_bc(self,bc):
         da=bc.dataarray()
-        self.bc_type2_segments[bc.name]['Q']=da
+        self.bc_type2_segments[bc.name]['Q'].append(da)
 
         assert len(da.dims)<=1,"Flow must have dims either time, or none"
 
         edges=self.bc_geom_to_edges(bc.geom)
         for j in edges:
-            self.bc_type2[j]['Q']=bc.name
+            self.bc_type2[j]['Q'].append(bc.name)
 
     def bc_geom_to_cells(self,geom):
         """ geom: a LineString geometry. Return the list of cells interior
