@@ -235,7 +235,12 @@ class Hydro(object):
     # tested, leave this flag in place so it's easier to find where
     # the change is
     omit_inactive_exchanges=True
-    
+
+    # if True, allow symlinking to original files where possible.
+    # not directly relevant for some Hydro instances, but this will be
+    # used as the default for parameters, too.
+    enable_write_symlink=True
+
     @property
     def fn_base(self): # base filename for output. typically com-<scenario name>
         return 'com-{}'.format(self.scenario.name)
@@ -247,7 +252,6 @@ class Hydro(object):
     # constants:
     CLOSED=CLOSED
     BOUNDARY=BOUNDARY
-
 
     def __init__(self, **kws):
         self.log=logging.getLogger(self.__class__.__name__)
@@ -1504,9 +1508,6 @@ class HydroFiles(Hydro):
     DWAQ hydro data read from existing files, by parsing
     .hyd file.
     """
-    # if True, allow symlinking to original files where possible.
-    enable_write_symlink=True
-
     def __init__(self,hyd_path,**kw):
         self.hyd_path=hyd_path
         self.parse_hyd()
