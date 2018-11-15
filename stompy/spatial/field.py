@@ -3201,10 +3201,10 @@ class CompositeField(Field):
                 pixels=int(round(float(dist)/dx))
                 niters=np.maximum( pixels//3, 2 )
                 src_data.fill_by_convolution(iterations=niters)
-            # def blur(dist):
-            #     "smooth data channel with gaussian filter - this allows spreading beyond original poly!"
-            #     pixels=int(round(float(dist)/dx))
-            #     src_data.F=ndimage.gaussian_filter(src_alpha.F,pixels)
+            #def blur(dist):
+            #    "smooth data channel with gaussian filter - this allows spreading beyond original poly!"
+            #    pixels=int(round(float(dist)/dx))
+            #    src_data.F=ndimage.gaussian_filter(src_data.F,pixels)
 
             def overlay():
                 pass
@@ -3213,15 +3213,20 @@ class CompositeField(Field):
                 # updates alpha channel to be zero where source data is missing.
                 data_missing=np.isnan(src_data.F)
                 src_alpha.F[data_missing]=0.0
-            # def blur_alpha(dist):
-            #     "smooth alpha channel with gaussian filter - this allows spreading beyond original poly!"
-            #     pixels=int(round(float(dist)/dx))
-            #     src_alpha.F=ndimage.gaussian_filter(src_alpha.F,pixels)
-            def feather(dist):
+            def blur_alpha(dist):
+                "smooth alpha channel with gaussian filter - this allows spreading beyond original poly!"
+                pixels=int(round(float(dist)/dx))
+                src_alpha.F=ndimage.gaussian_filter(src_alpha.F,pixels)
+            def feather_in(dist):
                 "linear feathering within original poly"
                 pixels=int(round(float(dist)/dx))
                 Fsoft=ndimage.distance_transform_bf(src_alpha.F)
                 src_alpha.F = (Fsoft/pixels).clip(0,1)
+            feather=feather_in
+            def feather_out(dist):
+                pixels=int(round(float(dist)/dx))
+                Fsoft=ndimage.distance_transform_bf(1-src_alpha.F)
+                src_alpha.F = (1-Fsoft/pixels).clip(0,1)
 
             # dangerous! executing code from a shapefile!
             eval(self.data_mode[src_i])
