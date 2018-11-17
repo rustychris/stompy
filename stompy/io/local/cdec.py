@@ -30,6 +30,8 @@ def cdec_df_to_ds(df):
     ds['time']=('time',),times
     # make the adjustment to UTC, even though this is daily data...
     ds.time.values[:] += np.timedelta64(8,'h')
+    # not convention, but a nice reminder
+    ds.time.attrs['timezone']='UTC'
 
     sensor_num=df['SENSOR_NUMBER'][0]
     vname='sensor%04d'%sensor_num
@@ -112,7 +114,12 @@ def cdec_dataset(station,start_date,end_date,sensor,
         else:
             log.info("Fetching %s -- %s"%(interval_start,interval_end))
             req=requests.get(base_url,params=params)
-            df=pd.read_csv(StringIO(req.text))
+            df=pd.read_csv(StringIO(req.text),na_values=['---'])
+            # debugging a parsing problem
+            if not (np.issubdtype(df['VALUE'].dtype,np.integer) or
+                    np.issubdtype(df['VALUE'].dtype,np.floating)):
+                # in case they change their nan string
+                log.warning("Some VALUE items may not have been parsed")
             ds=cdec_df_to_ds(df)
             ds.attrs['url']=req.url
 
