@@ -529,6 +529,13 @@ class SuntansModel(dfm.HydroModel):
         return model
 
     def infer_restart(self):
+        """
+        See if this run is a restart.
+        Sets self.restart to:
+          None: not a restart
+          True: is a restart, but insufficient information to find the parent run
+          string: path to suntans.dat for the parent run
+        """
         start_path=os.path.join(self.run_dir,self.config['StartFile']+".0")
         if os.path.exists(start_path):
             log.info("Looks like a restart")
@@ -549,6 +556,24 @@ class SuntansModel(dfm.HydroModel):
         else:
             log.info("Does not look like a restart based on %s"%start_path)
             self.restart=None
+
+    def chain_restarts(self,count=None):
+        """
+        return a list of up to count (None: unlimited) Model instances
+        in forward chronological order of consecutive restarts.
+        """
+        runs=[self]
+        run=self
+        while 1:
+            if count and len(runs)>=count:
+                break
+            run.infer_restart()
+            if run.restart and run.restart is not True:
+                run=SuntansModel.load(run.restart)
+                runs.insert(0,run)
+            else:
+                break
+        return runs
 
     def load_template(self,fn):
         self.template_fn=fn
@@ -1498,7 +1523,16 @@ class SuntansModel(dfm.HydroModel):
             self.warn_initial_water_level+=1
             return 0.0
 
-    def extract_station(self,xy=None,ll=None):
+    def extract_station(self,xy=None,ll=None,chain_count=1):
+        """
+        Return a dataset for a single point in the model
+        xy: native model coordinates
+        ll: lon/lat coordinates
+        chain_count: max number of restarts to go back.
+          1=>no chaining just this model.  None or 0:
+          chain all runs possible.  Otherwise, go back max
+          number of runs up to chain_count
+        """
         # For the moment, just use map output
         if xy is None:
             xy=self.ll_to_native(ll)
@@ -1512,22 +1546,43 @@ class SuntansModel(dfm.HydroModel):
             c=g.select_cells_nearest(xy,inside=False)
             d=utils.dist(g.cells_center()[c],xy)
             if d<match[2]:
-                match=[proc,c,d,map_ds]
+                match=[proc,c,d,map_fn]
+            map_ds.close()
         if match[1] is None:
             raise Exception("Could not find model output at %.0f,%.0f"%(xy[0],xy[1]))
         # print("Matched to cell center %.0fm away"%(match[2]))
 
-        map_ds=match[3]
-        # Work around bad naming of dimensions
-        map_ds['Nk_c']=map_ds['Nk']
-        del map_ds['Nk']
+        if chain_count==1:
+            runs=[self]
+        else:
+            runs=self.chain_restarts(count=chain_count)
 
-        # Extract time series there:
-        model_out=xr.Dataset()
-        model_out['time']=map_ds.time
-        model_out['distance_from_target']=(),match[2]
+        proc,cell,distance,map_fn=match
 
-        for d in map_ds.data_vars:
-            if 'Nc' in map_ds[d].dims:
-                model_out[d]=map_ds[d].isel(Nc=match[1])
-        return model_out
+        dss=[] # per-restart datasets
+
+        for run in runs:
+            map_ds=xr.open_dataset(run.map_outputs()[proc])
+
+            # Work around bad naming of dimensions
+            map_ds['Nk_c']=map_ds['Nk']
+            del map_ds['Nk']
+
+            # Extract time series there:
+            model_out=xr.Dataset() # not middle out
+            model_out['time']=map_ds.time
+            model_out['distance_from_target']=(),match[2]
+
+            for d in map_ds.data_vars:
+                if 'Nc' in map_ds[d].dims:
+                    model_out[d]=map_ds[d].isel(Nc=match[1])
+
+            if dss:
+                # limit to non-overlapping
+                time_sel=model_out.time.values>dss[-1].time.values[-1]
+                model_out=model_out.isel(time=time_sel)
+            dss.append(model_out)
+
+        combined_ds=xr.concat(dss,dim='time',data_vars='minimal')
+
+        return combined_ds
