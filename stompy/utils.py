@@ -2023,3 +2023,19 @@ def progress(a,interval_s=5.0,msg="%s"):
             log.info( msg%("%d/%d"%(i,L)) )
             t0=t
         yield elt
+
+
+def is_stale(target,srcs):
+    """
+    Makefile-esque checker --
+    if target does not exist or is older than any of srcs,
+    return true (i.e. stale).
+    if a src does not exist, raise an Exception
+    """
+    if not os.path.exists(target): return True
+    for src in srcs:
+        if not os.path.exists(src):
+            raise Exception("Dependency %s does not exist"%src)
+        if os.stat(src).st_mtime > os.stat(target).st_mtime:
+            return True
+    return False
