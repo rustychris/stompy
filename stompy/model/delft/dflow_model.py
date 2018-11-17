@@ -790,10 +790,8 @@ class SigmaCoord(VerticalCoord):
 
 
 class HydroModel(object):
-    # If these are the empty string, then assumes that the executables are
-    # found in existing $PATH
-    dfm_bin_dir="" # .../bin  giving directory containing dflowfm
     mpi_bin_dir=None # same, but for mpiexec.  None means use dfm_bin_dir
+    mpi_bin_exe='mpiexec'
     num_procs=1
     run_dir="." # working directory when running dflowfm
     cache_dir=None
@@ -995,6 +993,17 @@ class HydroModel(object):
         cmd="%s %s %d 6"%(gen_parallel,os.path.basename(self.mdu.filename),self.num_procs)
         utils.call_with_path(cmd,self.run_dir)
 
+    _dflowfm_exe=None
+    @property
+    def dflowfm_exe(self):
+        if self._dflowfm_exe is None:
+            return os.path.join(self.dfm_bin_dir,self.dfm_bin_exe)
+        else:
+            return self._dflowfm_exe
+    @dflowfm_exe.setter
+    def dflowfm_exe(self,v):
+        self._dflowfm_exe=v
+        
     def run_dflowfm(self,cmd):
         # Names of the executables
         dflowfm=os.path.join(self.dfm_bin_dir,"dflowfm")
@@ -1872,6 +1881,11 @@ class HycomMultiVelocityBC(HycomMultiBC):
 
 
 class DFlowModel(HydroModel):
+    # If these are the empty string, then assumes that the executables are
+    # found in existing $PATH
+    dfm_bin_dir="" # .../bin  giving directory containing dflowfm
+    dfm_bin_exe='dflowfm'
+
     # flow and source/sink BCs will get the adjacent nodes dredged
     # down to this depth in order to ensure the impose flow doesn't
     # get blocked by a dry edge. Set to None to disable.
@@ -2149,3 +2163,10 @@ class DFlowModel(HydroModel):
         elevation, and the initial water level is as good a guess as any.
         """
         return float(self.mdu['geometry','WaterLevIni'])
+
+
+import sys
+if sys.platform=='win32':
+    cls=HydroModel
+    cls.dfm_bin_exe="dflowfm-cli.exe"
+    cls.mpi_bin_exe="mpiexec.exe"
