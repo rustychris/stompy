@@ -1002,7 +1002,7 @@ class SuntansModel(dfm.HydroModel):
             super(SuntansModel,self).write_bc(bc)
 
     def write_stage_bc(self,bc):
-        water_level=bc.dataarray()
+        water_level=bc.data()
         assert len(water_level.dims)<=1,"Water level must have dims either time, or none"
 
         cells=self.bc_geom_to_cells(bc.geom)
@@ -1043,7 +1043,7 @@ class SuntansModel(dfm.HydroModel):
             self.bc_type3[cell][scalar_name].append(da)
 
     def write_flow_bc(self,bc):
-        da=bc.dataarray()
+        da=bc.data()
         self.bc_type2_segments[bc.name]['Q'].append(da)
 
         assert len(da.dims)<=1,"Flow must have dims either time, or none"

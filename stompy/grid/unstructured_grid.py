@@ -1156,6 +1156,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             for my_node,B_node in merge_nodes:
                 node_map[B_node]=my_node
 
+            # Also need to be careful about overlapping cells when there
+            # is the possibility of merging nodes, and that means having
+            # up to date edges['cells']
+            self.edge_to_cells()
+            ugB.edge_to_cells()
+
         def bad_fields(Adata,Bdata): # field froms B which get dropped
             A_fields =Adata.dtype.names
             B_fields =Bdata.dtype.names
