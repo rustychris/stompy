@@ -40,6 +40,10 @@ class BC(object):
     # set BC.
     mode='overwrite'
 
+    # extend the data before/after the model period by this much
+    pad=np.timedelta64(24,'h')
+
+
     def __init__(self,name,model=None,**kw):
         """
         Create boundary condition object.  Note that no work should be done
@@ -51,6 +55,8 @@ class BC(object):
         """
         self.model=model # may be None!
         self.name=name
+        self.filters=[]
+
         if 'geom' in kw:
             kw['_geom']=kw['geom']
 
@@ -60,6 +66,9 @@ class BC(object):
             except AttributeError:
                 raise Exception("Setting attribute %s failed because it doesn't exist on %s"%(k,self))
             self.__dict__[k]=kw[k]
+
+        for f in self.filters:
+            f.setup(self)
 
     # A little goofy - the goal is to make geometry lazily
     # fetched against the model gazetteer, but it makes
@@ -270,15 +279,16 @@ class BC(object):
 
     def as_data_array(self,data,quantity='value'):
         """
-        Convert several types into a consistent DataArray ready to be written
-        data:
+        Convert several types into a consistent DataArray ready to be
+        post-processed and then written out.
+
+        Conversion rules:
         dataarray => no change
         dataset => pull just the data variable, either based on quantity, or if there
           is a single data variable that is not a coordinate, use that.
-        constant => create a two-point timeseries
-
-        This should be used within these classes as a converter tool behind
-        self.dataarray(), which should be used external to this class.
+        constant => wrap in a DataArray with no time dimension.
+          used to create a two-point timeseries, but if that is needed it should be moved
+          to model specific code.
         """
         if isinstance(data,xr.DataArray):
             data.attrs['mode']=self.mode
@@ -291,11 +301,12 @@ class BC(object):
             else:
                 raise Exception("Dataset has multiple data variables -- not sure which to use: %s"%( str(data.data_vars) ))
         elif isinstance(data,(np.integer,np.floating,int,float)):
-            # handles expanding a constant to the length of the run
-            ds=xr.Dataset()
-            ds['time']=('time',),np.array( [self.data_start,self.data_stop] )
-            ds[quantity]=('time',),np.array( [data,data] )
-            da=ds[quantity]
+            # # handles expanding a constant to the length of the run
+            # ds=xr.Dataset()
+            # ds['time']=('time',),np.array( [self.data_start,self.data_stop] )
+            # ds[quantity]=('time',),np.array( [data,data] )
+            # da=ds[quantity]
+            da=xr.DataArray(data)
             da.attrs['mode']=self.mode
             return da
         else:
@@ -303,29 +314,61 @@ class BC(object):
 
     # Not all BCs have a time dimension, but enough do that we have some general utility
     # getters/setters at this level
-    _start=None
-    _stop =None
-    pad=np.timedelta64(24,'h')
+    # Note that data_start, data_stop are from the point of view of the data source,
+    # e.g. a model starting on 2015-01-01 could have a 31 day lag, such that
+    # data_start is actually 2014-12-01.
+    _data_start=None
+    _data_stop =None
     @property
     def data_start(self):
-        if self._start is None:
-            return self.model.run_start-self.pad
+        if self._data_start is None:
+            return self.transform_time_input(self.model.run_start-self.pad)
         else:
-            return self._start
+            return self._data_start
     @data_start.setter
     def data_start(self,v):
-        self._start=v
+        self._data_start=v
 
     @property
     def data_stop(self):
-        if self._stop is None:
-            return self.model.run_stop+self.pad
+        if self._data_stop is None:
+            return self.transform_time_input(self.model.run_stop+self.pad)
         else:
-            return self._stop
+            return self._data_stop
     @data_stop.setter
     def data_stop(self,v):
-        self._stop=v
+        self._data_stop=v
 
+    def transform_time_input(self,t):
+        for filt in self.filters:
+            t=filt.transform_time_input(t)
+        return t
+    def transform_output(self,da):
+        """
+        Apply filter stack to da, including model-based time zone
+        correction of model is set.
+        """
+        for filt in self.filters[::-1]:
+            da=filt.transform_output(da)
+        da=self.to_model_timezone(da)
+        return da
+    def to_model_timezone(self,da):
+        if 'time' in da.dims and self.model is not None:
+            da.time.values[:]=self.model.utc_to_native(da.time.values)
+        return da
+
+    def src_data(self):
+        raise Exception("src_data must be set in subclass")
+
+    def data(self):
+        da=self.src_data()
+        da=self.as_data_array(da)
+        da=self.transform_output(da)
+        return da
+
+    # if True, bokeh plot will include time series for intermediate
+    # data as filters are applied
+    bokeh_show_intermediate=True
     def write_bokeh(self,filename=None,path=".",title=None,mode='cdn'):
         """
         Write a bokeh html plot for this dataset.
@@ -347,30 +390,102 @@ class BC(object):
                         active_scroll='wheel_zoom',
                         x_axis_type="datetime")
 
-        da=self.dataarray()
-        self.plot_bokeh(da,p)
+        if self.bokeh_show_intermediate:
+            da=self.src_data()
+            self.plot_bokeh(da,p,label="src")
+            for filt in self.filters[::-1]:
+                da=filt.transform_output(da)
+                self.plot_bokeh(da,p,label=filt.label())
+            da=self.to_model_timezone(da)
+            self.plot_bokeh(da,p)
+        else:
+            da=self.data()
+            self.plot_bokeh(da,p)
         if filename is None:
             filename="bc_%s.html"%self.name
         output_fn=os.path.join(path,filename)
         bio.output_file(output_fn,
                         title=title,
                         mode=mode)
-        bio.show(p) # show the results
+        bio.save(p) # show the results
 
-    def plot_bokeh(self,da,plot):
+    #annoying, but bokeh not cycle colors automatically
+    _colors=None
+    def get_color(self):
+        if self._colors is None:
+            from bokeh.palettes import Dark2_5 as palette
+            import itertools
+            self._colors=itertools.cycle(palette)
+        return six.next(self._colors)
+    def plot_bokeh(self,da,plot,label=None):
         """
         Generic plotting implementation -- will have to override for complicated
         datatypes
         """
         plot.yaxis.axis_label = da.attrs.get('units','n/a')
+        if label is None:
+            label=self.name
         if 'time' in da.dims:
-            plot.line( da.time.values, da.values, legend=self.name)
+            plot.line( da.time.values.copy(), da.values.copy(), legend=label,
+                       color=self.get_color())
         else:
             from bokeh.models import Label
             label=Label(x=70, y=70, x_units='screen', y_units='screen',
-                        text="No plotting for %s"%str(self))
+                        text="No plotting for %s (%s)"%(label,self.__class__.__name__))
             plot.add_layout(label)
 
+class BCFilter(object):
+    """
+    Transformation/translations that can be applied to
+    a BC
+    """
+    def setup(self,bc):
+        """
+        This is where you might increase the pad
+        """
+        self.bc=bc
+    def transform_time_input(self,t):
+        """
+        Transform the externally requested time to what the data source
+        should provide
+        """
+        return t
+    def transform_output(self,da):
+        """
+        Whatever dataarray comes back from the source, apply the necessary
+        transformations (including the inverse of the time_input transform)
+        """
+        return da
+    def label(self):
+        return self.__class__.__name__
+
+class LowpassGodin(BCFilter):
+    min_pad=np.timedelta64(5*24,'h')
+    def setup(self,bc):
+        super(LowpassGodin,self).setup(bc)
+        if self.bc.pad<self.min_pad:
+            self.bc.pad=self.min_pad
+    def transform_output(self,da):
+        assert da.ndim==1,"Only ready for simple time series"
+        from ... import filters
+        da.values[:]=filters.lowpass_godin(da.values,
+                                           utils.to_dnum(da.time))
+        return da
+
+class Lag(BCFilter):
+    def __init__(self,lag):
+        self.lag=lag
+    def transform_time_input(self,t):
+        return t+self.lag
+    def transform_output(self,da):
+        da.time.values[:]=da.time.values-self.lag
+        return da
+class Transform(BCFilter):
+    def __init__(self,fn):
+        self.fn=fn
+    def transform_output(self,da):
+        da.values[:]=self.fn(da.values)
+        return da
 
 class RoughnessBC(BC):
     shapefile=None
@@ -394,18 +509,80 @@ class RoughnessBC(BC):
     def xyz_filename(self):
         return self.filename_base()+".xyz"
 
-    def data(self):
+    def src_data(self):
         assert self.shapefile is not None,"Currently only support shapefile input for roughness"
         shp_data=wkb2shp.shp2geom(self.shapefile)
         coords=np.array( [np.array(pnt) for pnt in shp_data['geom'] ] )
         n=shp_data['n']
-        xyz=np.c_[coords,n]
-        return xyz
+        da=xr.DataArray(n,dims=['location'],name='n')
+        da=da.assign_coords(x=xr.DataArray(coords[:,0],dims='location'))
+        da=da.assign_coords(y=xr.DataArray(coords[:,1],dims='location'))
+        da.attrs['long_name']='Manning n'
+                
+        return da
 
     def write_data(self):
         data_fn=os.path.join(self.model.run_dir,self.xyz_filename())
         xyz=self.data()
         np.savetxt(data_fn,xyz)
+
+    def write_bokeh(self,filename=None,path=".",title=None,mode='cdn'):
+        """
+        Write a bokeh html plot for this dataset.  RoughnessBC has specific
+        needs here.
+        path: folder in which to place the plot.
+        filename: relative or absolute filename.  defaults to path/{self.name}.html
+        mode: this is passed to bokeh, 'cdn' yields small files but requires an internet
+         connection to view them.  'inline' yields self-contained, larger (~800k) files.
+        """
+        import bokeh.io as bio # output_notebook, show, output_file
+        import bokeh.plotting as bplt
+
+        bplt.reset_output()
+
+        if title is None:
+            title="Name: %s"%self.name
+
+        p = bplt.figure(plot_width=750, plot_height=750,
+                        title=title,
+                        active_scroll='wheel_zoom')
+        p.match_aspect=True # aiming for analog to axis('equal')
+
+        da=self.data()
+        self.plot_bokeh(da,p)
+        if filename is None:
+            filename="bc_%s.html"%self.name
+        output_fn=os.path.join(path,filename)
+        bio.output_file(output_fn,
+                        title=title,
+                        mode=mode)
+        bio.save(p) # save the results
+
+    def plot_bokeh(self,da,plot,label=None):
+        if label is None:
+            label=self.name
+        rough=da.values
+
+        from bokeh.models import LinearColorMapper,ColorBar
+
+        color_mapper=LinearColorMapper(palette="Viridis256",
+                                       low=rough.min(), high=rough.max())
+        from matplotlib import cm
+        cmap=cm.viridis
+        norm_rough=(rough-rough.min())/(rough.max()-rough.min())
+        mapped=[cmap(v) for v in norm_rough]
+        colors = [
+            "#%02x%02x%02x" % (int(m[0]*255),
+                               int(m[1]*255),
+                               int(m[2]*255))
+            for m in mapped ]
+
+        plot.scatter(da.x.values.copy(), da.y.values.copy(), radius=3,
+                     fill_color=colors, line_color=None,legend=label)
+
+        color_bar = ColorBar(color_mapper=color_mapper, 
+                             label_standoff=12, border_line_color=None, location=(0,0))
+        plot.add_layout(color_bar, 'right')
 
 class StageBC(BC):
     # If other than None, can compare to make sure it's the same as the model
@@ -435,12 +612,12 @@ class StageBC(BC):
         """
         return super(StageBC,self).filename_base()+"_ssh"
 
-    def dataarray(self):
-        return self.as_data_array(self.z)
+    def src_data(self):
+        return self.z
 
     def write_data(self):
         # just write a single node
-        self.write_tim(self.dataarray())
+        self.write_tim(self.data())
 
 class FlowBC(BC):
     dredge_depth=-1.0
@@ -479,12 +656,12 @@ class FlowBC(BC):
         else:
             log.info("Dredging disabled")
 
-    def dataarray(self):
+    def src_data(self):
         # probably need some refactoring here...
-        return self.as_data_array(self.Q)
+        return self.Q
 
     def write_data(self):
-        self.write_tim(self.dataarray())
+        self.write_tim(self.data())
 
 class SourceSinkBC(BC):
     # The grid, at the entry point, will be taken down to this elevation
@@ -535,12 +712,15 @@ class SourceSinkBC(BC):
             log.info("dredging disabled")
 
     def write_data(self):
-        self.write_tim(self.dataarray())
-    def dataarray(self):
+        self.write_tim(self.data())
+    def src_data(self):
         assert self.Q is not None
-        return self.as_data_array(self.Q)
+        return self.Q
 
 class WindBC(BC):
+    """
+    Not yet fully updated
+    """
     wind=None
     def __init__(self,**kw):
         if 'name' not in kw:
@@ -567,10 +747,21 @@ class WindBC(BC):
                    "\n"]
             fp.write("\n".join(lines))
     def write_data(self):
-        self.write_tim(self.dataarray())
-    def dataarray(self):
+        self.write_tim(self.data())
+    def src_data(self):
         assert self.wind is not None
-        return self.as_data_array(self.wind)
+        return self.wind
+    def plot_bokeh(self,da,plot,label=None):
+        # this will have to get smarter time...
+        # da will almost certainly have an xy dimension for the two components.
+        # for now, we assume no spatial variation, and plot two time series
+        if label is None:
+            label=self.name
+        for xy in [0,1]:
+            plot.line( da.time.values.copy(),
+                       da.isel(xy=xy).values.copy(),
+                       legend=label+"-"+"xy"[xy],
+                       color=self.get_color())
 
 class ScalarBC(BC):
     scalar=None
@@ -583,71 +774,9 @@ class ScalarBC(BC):
         value: floating point
         """
         super(ScalarBC,self).__init__(**kw)
-    def dataarray(self):
+    def src_data(self):
         # Base implementation does nothing
-        if not isinstance(self.value,xr.DataArray):
-            da=xr.DataArray(self.value)
-        else:
-            da=self.value
-        da.attrs['mode']=self.mode
-        return da
-
-#class NoaaTides(BC):
-#    datum=None
-#    def __init__(self,station,datum=None,z_offset=0.0):
-#        self.station=station
-#        self.datum=datum
-#        self.z_offset=z_offset
-#    def write(self,mdu,feature,grid):
-#        print("Writing feature: %s"%(feature['name']))
-#
-#        name=feature['name']
-#        old_bc_fn=mdu.filepath( ['external forcing','ExtForceFile'] )
-#
-#        for var_name in self.var_names:
-#            if feature['geom'].type=='LineString':
-#                pli_data=[ (name, np.array(feature['geom'].coords)) ]
-#                base_fn=os.path.join(mdu.base_path,"%s_%s"%(name,var_name))
-#                pli_fn=base_fn+'.pli'
-#                dio.write_pli(pli_fn,pli_data)
-#
-#                if var_name=='ssh':
-#                    quant='waterlevelbnd'
-#                else:
-#                    assert False
-#
-#                with open(old_bc_fn,'at') as fp:
-#                    lines=["QUANTITY=%s"%quant,
-#                           "FILENAME=%s_%s.pli"%(name,var_name),
-#                           "FILETYPE=9",
-#                           "METHOD=3",
-#                           "OPERAND=O",
-#                           ""]
-#                    fp.write("\n".join(lines))
-#
-#                self.write_data(mdu,feature,var_name,base_fn)
-#            else:
-#                assert False
-#
-#    def write_data(self,mdu,feature,var_name,base_fn):
-#        tides=noaa_coops.coops_dataset_product(self.station,'water_level',
-#                                               mdu.time_range()[1],mdu.time_range()[2],
-#                                               days_per_request='M',cache_dir=cache_dir)
-#        tide=tides.isel(station=0)
-#        water_level=utils.fill_tidal_data(tide.water_level) + self.z_offset
-#        # IIR butterworth.  Nicer than FIR, with minor artifacts at ends
-#        # 3 hours, defaults to 4th order.
-#        water_level[:] = filters.lowpass(water_level[:].values,
-#                                         utils.to_dnum(water_level.time),
-#                                         cutoff=3./24)
-#
-#        ref_date=mdu.time_range()[0]
-#        elapsed_minutes=(tide.time.values - ref_date)/BADnp.timedelta64(60,'s')BAD
-#
-#        # just write a single node
-#        tim_fn=base_fn + "_0001.tim"
-#        data=np.c_[elapsed_minutes,water_level]
-#        np.savetxt(tim_fn,data)
+        return self.value
 
 class VerticalCoord(object):
     """
@@ -677,8 +806,11 @@ class HydroModel(object):
     mdu=None
     grid=None
 
-    projection=None
+    projection=None # string like "EPSG:26910"
     z_datum=None
+
+    # this is only used for setting utc_to_native, and native_to_utc
+    utc_offset=np.timedelta64(0,'h') # -8 for PST
 
     def __init__(self):
         self.log=log
@@ -997,6 +1129,11 @@ class HydroModel(object):
             bc.model=self
         self.bcs.extend(bcs)
 
+    def utc_to_native(self,t):
+        return t+self.utc_offset
+    def native_to_utc(self,t):
+        return t-self.utc_offset
+
     @property
     @memoize.member_thunk
     def ll_to_native(self):
@@ -1189,11 +1326,11 @@ class OTPSStageBC(StageBC,OTPSHelper):
     # write_config same as superclass
     # filename_base same as superclass
 
-    def dataarray(self):
+    def src_data(self):
         return self.dataset()['water_level']
 
     def write_data(self): # DFM IMPLEMENTATION!
-        self.write_tim(self.dataarray())
+        self.write_tim(self.data())
 
 
 
@@ -1204,11 +1341,11 @@ class OTPSFlowBC(FlowBC,OTPSHelper):
     # write_config same as superclass
     # filename_base same as superclass
 
-    def dataarray(self):
+    def src_data(self):
         return self.dataset()['Q']
 
     def write_data(self): # DFM IMPLEMENTATION!
-        self.write_tim(self.dataarray())
+        self.write_tim(self.data())
 
 class VelocityBC(BC):
     """
@@ -1246,11 +1383,11 @@ class OTPSVelocityBC(VelocityBC,OTPSHelper):
     def __init__(self,**kw):
         super(OTPSVelocityBC,self).__init__(**kw)
 
-    def dataarray(self):
+    def src_data(self):
         return self.dataset()['unorm']
 
     def write_data(self):
-        da=self.dataarray()
+        da=self.data()
         if 'z' in da.dims:
             self.write_t3d(da,z_bed=self.model.edge_depth(self.grid_edge))
         else:
@@ -1750,6 +1887,23 @@ class DFlowModel(HydroModel):
             os.unlink(bc_fn)
         super(DFlowModel,self).write_forcing()
 
+    default_grid_target_filename='grid_net.nc'
+    def grid_target_filename(self):
+        """
+        The filename, relative to self.run_dir, of the grid.  Not guaranteed
+        to exist, and if no grid has been set, or the grid has no filename information,
+        this will default to self.default_grid_target_filename
+        """
+        if self.grid is None or self.grid.filename is None:
+            return self.default_grid_target_filename
+        else:
+            grid_fn=self.grid.filename
+            if not grid_fn.endswith('_net.nc'):
+                if grid_fn.endswith('.nc'):
+                    grid_fn=grid_fn.replace('.nc','_net.nc')
+                else:
+                    grid_fn=grid_fn+"_net.nc"
+            return os.path.basename(grid_fn)
     def write_grid(self):
         """
         Write self.grid to the run directory.
@@ -1944,7 +2098,7 @@ class DFlowModel(HydroModel):
             fp.write("\n".join(lines))
 
         #self.write_data()
-        da=bc.dataarray()
+        da=bc.data()
         assert len(da.dims)<=1,"Only ready for dimensions of time or none"
         tim_path=os.path.join(self.run_dir,bc_id+"_0001.tim")
         self.write_tim(da,tim_path)
@@ -1965,8 +2119,7 @@ class DFlowModel(HydroModel):
                    "\n"]
             fp.write("\n".join(lines))
 
-        # write_data()
-        self.write_tim(bc.dataarray(),tim_path)
+        self.write_tim(bc.data(),tim_path)
 
     def write_roughness_bc(self,bc):
         # write_config()
@@ -1984,7 +2137,11 @@ class DFlowModel(HydroModel):
             fp.write("\n".join(lines))
 
         # write_data()
-        np.savetxt(xyz_path,bc.data())
+        da=bc.data()
+        xyz=np.c_[ da.x.values,
+                   da.y.values,
+                   da.values ]
+        np.savetxt(xyz_path,xyz)
 
     def initial_water_level(self):
         """
