@@ -472,6 +472,16 @@ class LowpassGodin(BCFilter):
                                            utils.to_dnum(da.time))
         return da
 
+class Lowpass(BCFilter):
+    cutoff_hours=None
+    def transform_output(self,da):
+        assert da.ndim==1,"Only ready for simple time series"
+        from ... import filters
+        assert self.cutoff_hours is not None,"Must specify lowpass threshold cutoff_hors"
+        dt_h=24*np.median(np.diff(utils.to_dnum(da.time.values))) 
+        da.values[:]=filters.lowpass(da.values,cutoff=self.cutoff_hours,dt=dt)
+        return da
+
 class Lag(BCFilter):
     def __init__(self,lag):
         self.lag=lag
