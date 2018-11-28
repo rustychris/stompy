@@ -1056,11 +1056,33 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         self.cells=recarray_del_fields(self.cells,names)
         self.cell_dtype=self.cells.dtype
 
-    def renumber(self):
+    def renumber(self,reorient_edges=True):
+        """
+        Renumber all nodes, edges and cells to omit
+        deleted items.
+        reorient_edges: also flip edges to keep interior of domain to the
+          left (see orient_edges)
+        """
         node_map=self.renumber_nodes()
         edge_map=self.renumber_edges()
         cell_map=self.renumber_cells()
+
+        if reorient_edges:
+            self.orient_edges()
         return dict(node_map=node_map,edge_map=edge_map,cell_map=cell_map)
+
+    def orient_edges(self):
+        """
+        Flip any boundary edges with the exterior on the left.
+        """
+        e2c=self.edge_to_cells()
+        to_flip=np.nonzero( (e2c[:,0]<0) & (e2c[:,1]>=0) )[0]
+        self.log.info("Will flip %d edges"%len(to_flip))
+        for j in to_flip:
+            rec=self.edges[j]
+            self.modify_edge( j=j,
+                              nodes=[rec['nodes'][1],rec['nodes'][0]],
+                              cells=[rec['cells'][1],rec['cells'][0]] )
 
     def renumber_nodes_ordering(self):
         return np.argsort(self.nodes['deleted'],kind='mergesort')
@@ -3170,6 +3192,53 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     #  easier to compose selections with bitmasks, so there it is.
     #  when implementing these, note that all selections should avoid 'deleted' elements.
     #   unless the selection criteria explicitly includes them.
+    def select_edges_by_polyline(self,geom,rrtol=3.0):
+        """
+        same as dfm_grid.polyline_to_boundary_edges:
+        
+        Mimic FlowFM boundary edge selection from polyline to edges.
+        Identifies boundary edges which would be selected as part of the
+        boundary group.
+
+        linestring: [N,2] polyline data, or shapely LineString geometry
+        rrtol: controls search distance away from boundary. Defaults to
+        roughly 3 cell length scales out from the boundary.
+
+        returns ndarray of edge indices.
+        """
+        if isinstance(geom,geometry.LineString):
+            linestring=np.array(geom.coords)
+        else:
+            linestring=np.asanyarray(geom)
+
+        self.edge_to_cells()
+        boundary_edges=np.nonzero( np.any(self.edges['cells']<0,axis=1) )[0]
+        adj_cells=self.edges['cells'][boundary_edges].max(axis=1)
+
+        adj_centers=self.cells_center()[adj_cells]
+        edge_centers=self.edges_center()[boundary_edges]
+        cell_to_edge=edge_centers-adj_centers
+        cell_to_edge_dist=mag(cell_to_edge)
+        outward=-self.edges_normals(edges=boundary_edges,force_inward=True)
+
+        dis=np.maximum( 0.5*np.sqrt(self.cells_area()[adj_cells]),
+                        cell_to_edge_dist )
+        probes=edge_centers+(2*rrtol*dis)[:,None]*outward
+        segs=np.array([adj_centers,probes]).transpose(1,0,2)
+        if 0: # plotting for verification
+            lcoll=collections.LineCollection(segs)
+            ax.add_collection(lcoll)
+
+        linestring_geom=geometry.LineString(linestring)
+
+        probe_geoms=[geometry.LineString(seg) for seg in segs]
+
+        hits=[idx
+              for idx,probe_geom in enumerate(probe_geoms)
+              if linestring_geom.intersects(probe_geom)]
+        edge_hits=boundary_edges[hits]
+        return edge_hits
+
     def select_edges_intersecting(self,geom,invert=False):
         """
         geom: a shapely geometry
