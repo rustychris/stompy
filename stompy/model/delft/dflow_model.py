@@ -889,6 +889,17 @@ class HydroModel(object):
         elif mode=='noclobber':
             assert not os.path.exists(path),"Directory %s exists, but mode is noclobber"%path
             os.makedirs(path)
+        elif mode=='askclobber':
+            if os.path.exists(path):
+                import sys
+                sys.stdout.write("Directory %s exists.  overwrite? [y/n] "%path)
+                sys.stdout.flush()
+                resp=six.moves.input()
+                if resp.lower()!='y':
+                    raise Exception("Directory %s exists -- failing out"%path)
+                return self.create_with_mode(path,'pristine')
+            else:
+                os.makedirs(path)
         elif mode=='existing':
             assert os.path.exists(path),"Directory %s does not exist"%path
 
