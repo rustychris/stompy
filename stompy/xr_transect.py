@@ -375,7 +375,7 @@ def section_hydro_to_transect(filename,name=None,index=None):
 
     return section_hydro_parsed_to_transect(section,filename)
 
-def resample_z(tran,new_z):
+def resample_z(tran,new_z,save_original=None):
     """
     Resample z coordinate to the given vector new_z [N].
     """
@@ -398,6 +398,11 @@ def resample_z(tran,new_z):
             ds[v]=var
             continue
         elif v in ['z_ctr','z_dz']:
+            if save_original is not None:
+                # This is where we could be doing something related to
+                # saving the original vertical values.  not that interesting
+                # for vertical, so for now just pass
+                pass
             continue # gets overwritten
 
         dims=var.dims # dimension names don't change
@@ -476,10 +481,11 @@ def resample_z(tran,new_z):
 
     return ds
 
-def resample_d(tran,new_xy):
+def resample_d(tran,new_xy,save_original=None):
     """
     tran: xr_transect style Dataset
     new_xy: [N,2] points for resampling horizontal transect dimension
+    save_original: if not None, a string prefix for saving original xy information
     """
     # need a function which takes per-sample data from ds_in,
     # returns per-sample data at new_xy
@@ -519,11 +525,16 @@ def resample_d(tran,new_xy):
 
     for v in tran.data_vars:
         var=tran[v]
+        v_dest=v # name of the variable to write
         if sample_dim not in var.dims:
             ds[v]=var
             continue
         elif v in ['x_sample','y_sample','d_sample','dx_sample']:
-            continue # manually supplied above
+            if save_original is None:
+                continue # manually supplied above
+            else:
+                v_dest=save_original+v
+                print("Beware - trying to save original location info to %s"%v_dest)
 
         dims=var.dims # dimension names don't change
         # any new dimensions we need to copy?
@@ -570,7 +581,8 @@ def resample_d(tran,new_xy):
                 my_dst[~bad]=my_dst[~bad]/weight_sum[~bad]
 
             new_val[index]=my_dst
-        ds[v]=dims,uncast(new_val)
+
+        ds[v_dest]=dims,uncast(new_val)
 
     return ds
 
@@ -853,7 +865,7 @@ def transects_to_segment(trans,unweight=True,ax=None):
         ax.legend()
     return seg
 
-def resample_to_common_z(trans,dz=None):
+def resample_to_common_z(trans,dz=None,save_original=None):
     """
     apply resample_z to a list of transects, making the respective
      vertical coordinates compatible.   may not be smart enough
@@ -896,12 +908,12 @@ def resample_to_common_z(trans,dz=None):
     # Resample each transect in the vertical:
     new_z=np.linspace(z_min,z_max,int(round((z_max-z_min)/dz)))
 
-    ds_resamp=[resample_z(tran,new_z)
+    ds_resamp=[resample_z(tran,new_z,save_original=save_original)
                for tran in trans]
     return ds_resamp
 
 def resample_to_common(trans,dz=None,dx=None,resample_x=True,resample_z=True,
-                       seg=None):
+                       seg=None,save_original='orig_'):
     """
     trans: list of xr_transect Datasets.
     dx: length scale for horizontal resampling, defaults to median.  Pass 0
@@ -912,9 +924,11 @@ def resample_to_common(trans,dz=None,dx=None,resample_x=True,resample_z=True,
     resample_z: can be set to false to skip vertical resampling if all transects
      already have the same vertical coordinates.
     seg: the linestring of the new transect.  defaults to fitting a line.
+
+    save_original: if not None, a prefix for saving coordinates before resampling.
     """
     if resample_z:
-        trans=resample_to_common_z(trans,dz=dz)
+        trans=resample_to_common_z(trans,dz=dz,save_original=save_original)
 
     if resample_x:
         if seg is None:
@@ -934,7 +948,7 @@ def resample_to_common(trans,dz=None,dx=None,resample_x=True,resample_z=True,
         else:
             new_xy = seg
 
-        trans=[resample_d(tran,new_xy)
+        trans=[resample_d(tran,new_xy,save_original=save_original)
                for tran in trans]
     return trans
 
