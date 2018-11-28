@@ -538,7 +538,7 @@ class SuntansModel(dfm.HydroModel):
         """
         start_path=os.path.join(self.run_dir,self.config['StartFile']+".0")
         if os.path.exists(start_path):
-            log.info("Looks like a restart")
+            log.debug("Looks like a restart")
             self.restart=True
 
             if os.path.islink(start_path):
@@ -547,7 +547,7 @@ class SuntansModel(dfm.HydroModel):
                 assert not os.path.samefile(parent_dir,self.run_dir)
                 parent_sun=os.path.join(parent_dir,"suntans.dat")
                 if os.path.exists(parent_sun):
-                    log.info("And the previous suntans.dat: %s"%parent_sun)
+                    log.debug("And the previous suntans.dat: %s"%parent_sun)
                     self.restart=parent_sun
                 else:
                     log.info("Checked for %s but no luck"%parent_sun)
@@ -1109,7 +1109,7 @@ class SuntansModel(dfm.HydroModel):
                 # maybe we're constructing a restart?  sequencing of this stuff,
                 # and the exact state of the model is quirky and under-designed
                 self.run_start=self.restart_model.restartable_time()
-            log.info("Inferred start time of restart to be %s"%self.run_start)
+            log.debug("Inferred start time of restart to be %s"%self.run_start)
         else:
             start_dt=datetime.datetime.strptime(self.config['starttime'],'%Y%m%d.%H%M%S')
             self.run_start=utils.to_dt64(start_dt)
