@@ -60,12 +60,14 @@ class BC(object):
         if 'geom' in kw:
             kw['_geom']=kw['geom']
 
-        for k in kw:
-            try:
-                getattr(self,k)
-            except AttributeError:
-                raise Exception("Setting attribute %s failed because it doesn't exist on %s"%(k,self))
-            self.__dict__[k]=kw[k]
+        utils.set_keywords(self,kw)
+        # above line should replace this stanza:
+        #   for k in kw:
+        #       try:
+        #           getattr(self,k)
+        #       except AttributeError:
+        #           raise Exception("Setting attribute %s failed because it doesn't exist on %s"%(k,self))
+        #       self.__dict__[k]=kw[k]
 
         for f in self.filters:
             f.setup(self)
@@ -439,6 +441,8 @@ class BCFilter(object):
     Transformation/translations that can be applied to
     a BC
     """
+    def __init__(self,**kw):
+        utils.set_keywords(self,kw)
     def setup(self,bc):
         """
         This is where you might increase the pad
@@ -474,12 +478,30 @@ class LowpassGodin(BCFilter):
 
 class Lowpass(BCFilter):
     cutoff_hours=None
+    # if true, replace any nans by linear interpolation, or
+    # constant extrapolation at ends
+    fill_nan=True
     def transform_output(self,da):
         assert da.ndim==1,"Only ready for simple time series"
         from ... import filters
         assert self.cutoff_hours is not None,"Must specify lowpass threshold cutoff_hors"
-        dt_h=24*np.median(np.diff(utils.to_dnum(da.time.values))) 
-        da.values[:]=filters.lowpass(da.values,cutoff=self.cutoff_hours,dt=dt)
+        dt_h=24*np.median(np.diff(utils.to_dnum(da.time.values)))
+        log.info("Lowpass: data time step is %.2fh"%dt_h)
+        data_in=da.values
+
+        if np.any(~np.isfinite(data_in)):
+            if self.fill_nan:
+                log.info("Lowpass: %d of %d data values will be filled"%( np.sum(~np.isfinite(data_in)),
+                                                                          len(data_in) ))
+                data_in=utils.fill_invalid(data_in,ends='constant')
+            else:
+                log.error("Lowpass: %d of %d data values are not finite"%( np.sum(~np.isfinite(data_in)),
+                                                                           len(data_in) ))
+        da.values[:]=filters.lowpass(data_in,cutoff=self.cutoff_hours,dt=dt_h)
+
+        assert np.all(np.isfinite(da.values)),("Lowpass: %d of %d output data values are not finite"%
+                                               ( np.sum(~np.isfinite(da.values)),
+                                                 len(da.values) ))
         return da
 
 class Lag(BCFilter):

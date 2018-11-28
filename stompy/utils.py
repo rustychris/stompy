@@ -332,6 +332,8 @@ def fill_invalid(A,axis=0,ends='constant'):
     ends:
     'constant'  missing values at the ends will take nearest valid value
     'linear' missing values will be extrapolated with a linear fit through the first/last valid values
+
+    returns new array, though currently this is just a view on the original data.
     """
     # rotate the operational index to be first:
     new_order=(np.arange(A.ndim)+axis)%A.ndim
@@ -2024,7 +2026,6 @@ def progress(a,interval_s=5.0,msg="%s"):
             t0=t
         yield elt
 
-
 def is_stale(target,srcs):
     """
     Makefile-esque checker --
@@ -2039,3 +2040,19 @@ def is_stale(target,srcs):
         if os.stat(src).st_mtime > os.stat(target).st_mtime:
             return True
     return False
+
+def set_keywords(obj,kw):
+    """
+    Utility for __init__ methods to update object state with
+    keyword arguments.  Checks that the attributes already
+    exist, to avoid spelling mistakes.  Uses getattr and
+    setattr for compatibility with properties.
+    """
+    for k in kw:
+        try:
+            getattr(obj,k)
+        except AttributeError:
+            raise Exception("Setting attribute %s failed because it doesn't exist on %s"%(k,self))
+        setattr(obj,k,kw[k])
+
+
