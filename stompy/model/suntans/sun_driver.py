@@ -728,7 +728,11 @@ class SuntansModel(dfm.HydroModel):
                             continue
                         if 'time' in v.dims:
                             all_times.append( v['time'].values )
-        common_time=np.unique(np.concatenate(all_times))
+        if all_times:
+            common_time=np.unique(np.concatenate(all_times))
+        else:
+            # no boundary conditions have times, so fabricate.
+            common_time=np.array( [self.run_start,self.run_stop] )
         # Make sure that brackets the run:
         pad=np.timedelta64(1,'D')
         if common_time[0]>=self.run_start:
@@ -997,6 +1001,12 @@ class SuntansModel(dfm.HydroModel):
                                   bc[v],offset)
                 else:
                     seg_name=bc[v]
+                    # too lazy to work through the right way to deal with combined
+                    # bcs for Q right now, so just warn the user that it may be
+                    # a problem.
+                    if len(seg_name)!=1:
+                        log.warning("Only tested with a single value, but got %s"%str(seg_name))
+                    seg_name=seg_name[0]
                     seg_idx=segment_ids[segment_names.index(seg_name)]
                     ds['segedgep'].values[type2_i] = seg_idx
 
@@ -1443,6 +1453,9 @@ class SuntansModel(dfm.HydroModel):
         xy: [N,2] coordinates defining the line of the transect
         time: time index or slice to extract
         dx: omit to use xy as is, or a length scale for resampling xy
+
+        returns xr.Dataset, unless xy does not intersect the grid at all,
+        in which case None is returned.
         """
         if dx is not None:
             xy=linestring_utils.upsample_linearring(xy,dx,closed_ring=False)
@@ -1469,6 +1482,8 @@ class SuntansModel(dfm.HydroModel):
                     point_datasets[pnti]=point_ds
         # drop xy points that didn't hit a cell
         point_datasets=[p for p in point_datasets if p is not None]
+        if len(point_datasets)==0: # transect doesn't intersect grid at all.
+            return None
         transect=xr.concat(point_datasets,dim='sample')
         renames=dict(Nk='layer',Nkw='interface',
                      uc='Ve',vc='Vn',w='Vu_int')
