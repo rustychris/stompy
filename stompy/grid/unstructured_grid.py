@@ -583,6 +583,78 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         return ug
 
     @staticmethod
+    def read_ras2d(hdf_fname, twod_area_name=None):
+        """
+        Read a RAS2D grid from HDF.
+        hdf_fname: path to hdf file
+        twod_area_name: string naming the 2D grid in the HDF file.  If omitted,
+          attempt to detect this, but will fail if the number of valid names
+          is not exactly 1.
+        Acknowledgements: Original code by Stephen Andrews.
+        """
+        import h5py # import here, since most of stompy does not rely on h5py
+        h = h5py.File(hdf_fname, 'r')
+
+        try:
+            if twod_area_name is None:
+                names=list(h['Geometry/2D Flow Areas'].keys())
+                twod_names=[]
+                for name in names:
+                    try:
+                        h['Geometry/2D Flow Areas/'+name+'/Cells Center Coordinate']
+                    except KeyError:
+                        continue
+                    twod_names.append(name)
+                if len(twod_names)==1:
+                    twod_area_name=twod_names[0]
+                elif len(twod_names)>1:
+                    raise Exception("Must specify twod_area_name from %s"%( ", ".join(twod_names) ))
+                else:
+                    raise Exception("No viable twod_area_name values")
+
+            cell_center_xy = h['Geometry/2D Flow Areas/' + twod_area_name + '/Cells Center Coordinate']
+            cell_center_xy=np.array(cell_center_xy) # a bit faster?
+
+            ncells = len(cell_center_xy)
+            ccx = np.array([cell_center_xy[i,0] for i in range(ncells)])
+            ccy = np.array([cell_center_xy[i,1] for i in range(ncells)])
+
+            points_xy = h['Geometry/2D Flow Areas/' + twod_area_name + '/FacePoints Coordinate']
+            points_xy=np.array(points_xy)
+
+            npoints = len(points_xy)
+            points = np.zeros((npoints, 2), np.float64)
+            for n in range(npoints):
+                points[n, 0] = points_xy[n,0]
+                points[n, 1] = points_xy[n,1]
+
+            edge_nodes = h['Geometry/2D Flow Areas/' + twod_area_name + '/Faces FacePoint Indexes']
+            edge_nodes=np.array(edge_nodes)
+            nedges = len(edge_nodes)
+            edges = -1 * np.ones((nedges, 2), dtype=int)
+            for j in range(nedges):
+                edges[j][0] = edge_nodes[j,0]
+                edges[j][1] = edge_nodes[j,1]
+
+            cell_nodes = h['Geometry/2D Flow Areas/' + twod_area_name + '/Cells FacePoint Indexes']
+            cell_nodes=np.array(cell_nodes)
+            max_cell_faces=cell_nodes.shape[1]
+            for i in range(len(cell_nodes)):
+                if cell_nodes[i,2] < 0:  # first ghost cell (which are sorted to end of list)
+                    break
+            ncells = i  # don't count ghost cells
+            cells = -1 * np.ones((ncells, max_cell_faces), dtype=int)
+            for i in range(ncells):
+                for k in range(max_cell_faces):
+                    cells[i][k] = cell_nodes[i][k]
+
+            grd = UnstructuredGrid(edges=edges, points=points,
+                                   cells=cells, max_sides=max_cell_faces)
+            return grd
+        finally:
+            h.close()
+
+    @staticmethod
     def read_suntans_hybrid(path='.',points='points.dat',edges='edges.dat',cells='cells.dat'):
         """
         For backwards compatibility.  Better to use read_suntans which auto-detects
