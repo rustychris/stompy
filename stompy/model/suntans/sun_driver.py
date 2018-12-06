@@ -82,6 +82,9 @@ OTPSFlowBC=dfm.OTPSFlowBC
 OTPSVelocityBC=dfm.OTPSVelocityBC
 HycomMultiVelocityBC=dfm.HycomMultiVelocityBC
 HycomMultiScalarBC=dfm.HycomMultiScalarBC
+NOAAStageBC=dfm.NOAAStageBC
+NwisFlowBC=dfm.NwisFlowBC
+NwisStageBC=dfm.NwisStageBC
 
 class GenericConfig(object):
     """ Handles reading and writing of suntans.dat formatted files.
@@ -480,17 +483,43 @@ class SuntansModel(dfm.HydroModel):
         if isinstance(grid,six.string_types):
             # step in and load as suntans, rather than generic
             grid=unstructured_grid.SuntansGrid(grid)
+
+        # depending on the source of the grid, it may need edges flipped
+        # to be consistent with suntans expectations that nc1 is always into
+        # the domain, and nc2 may be external
+        grid.orient_edges()
         super(SuntansModel,self).set_grid(grid)
 
         # make sure we have the fields expected by suntans
         if 'depth' not in grid.cells.dtype.names:
             if 'depth' in grid.nodes.dtype.names:
                 cell_depth=grid.interp_node_to_cell(grid.nodes['depth'])
+                # and avoid overlapping names
+                grid.delete_node_field('depth')
             elif 'depth' in grid.edges.dtype.names:
                 raise Exception("Not implemented interpolating edge to cell bathy")
             else:
+                self.log.warning("No depth information in grid.  Creating zero-depth")
                 cell_depth=np.zeros(grid.Ncells(),np.float64)
             grid.add_cell_field('depth',cell_depth)
+
+            
+        # with the current suntans version, depths are on cells, but model driver
+        # code in places wants an edge depth.  so copy those here.
+        e2c=grid.edge_to_cells()
+        nc1=e2c[:,0].copy()   ; nc2=e2c[:,1].copy()
+        nc1[nc1<0]=nc2[nc1<0] ; nc2[nc2<0]=nc1[nc2<0]
+        # edge depth is shallower of neighboring cells
+        edge_depth=np.minimum(grid.cells['depth'][nc1],grid.cells['depth'][nc2])
+
+        if 'edge_depth' in grid.edges.dtype.names:
+            deep_edges=(grid.edges['edge_depth']<edge_depth)
+            print("%d edges had a specified depth deeper than neighboring cells.  Replaced them"%
+                  deep_edges.sum())
+            grid.edges['edge_depth'][deep_edges]=edge_depth[deep_edges]
+        else:        
+            grid.add_edge_field('edge_depth',edge_depth)
+        
         if 'mark' not in grid.edges.dtype.names:
             mark=np.zeros( grid.Nedges(), np.int32)
             grid.add_edge_field('mark',mark)
@@ -507,6 +536,20 @@ class SuntansModel(dfm.HydroModel):
         # allow other marks to stay
         self.grid.edges['mark'][:]=mark
 
+    def edge_depth(self,j,datum=None):
+        """
+        Return the bed elevation for edge j, in meters, positive=up.
+        Suntans implementation relies on set_grid() having set edge depths
+        to be the min. of neighboring cells
+        """
+        z=self.grid.edges['edge_depth'][j]
+
+        if datum is not None:
+            if datum=='eta0':
+                z+=self.initial_water_level()
+        return z
+
+        
     @staticmethod
     def load(fn):
         """
@@ -1060,7 +1103,7 @@ class SuntansModel(dfm.HydroModel):
                 self.bc_type2[j][comp].append(da)
 
     def write_scalar_bc(self,bc):
-        da=bc.dataarray()
+        da=bc.data()
 
         scalar_name=bc.scalar
         # canonicalize scalar names for suntans BC files
@@ -1214,6 +1257,16 @@ class SuntansModel(dfm.HydroModel):
 
         cell_xyz=np.c_[cell_xy,z]
         np.savetxt(cell_depth_fn,cell_xyz) # space separated
+
+        # And edges, preparing for edge-based bathy
+        edge_depth_fn=os.path.join(self.run_dir,"depths.dat-edge")
+
+        edge_xy=self.grid.edges_center()
+
+        # make depth positive down
+        z=-(self.grid.edges['edge_depth'] + self.z_offset)
+        edge_xyz=np.c_[edge_xy,z]
+        np.savetxt(edge_depth_fn,edge_xyz) # space separated
 
     def grid_as_dataset(self):
         """

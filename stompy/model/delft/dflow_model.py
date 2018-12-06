@@ -43,7 +43,6 @@ class BC(object):
     # extend the data before/after the model period by this much
     pad=np.timedelta64(24,'h')
 
-
     def __init__(self,name,model=None,**kw):
         """
         Create boundary condition object.  Note that no work should be done
@@ -56,9 +55,6 @@ class BC(object):
         self.model=model # may be None!
         self.name=name
         self.filters=[]
-
-        if 'geom' in kw:
-            kw['_geom']=kw['geom']
 
         utils.set_keywords(self,kw)
         # above line should replace this stanza:
@@ -77,14 +73,21 @@ class BC(object):
     # get/set operations awkward
     @property
     def geom(self):
-        if (self._geom is None):
+        if (self._geom is None) and (self.model is not None):
             kw={}
             if self.geom_type is not None:
                 kw['geom_type']=self.geom_type
             self._geom=self.model.get_geometry(name=self.name,**kw)
         return self._geom
     @geom.setter
-    def set_geom(self,g):
+    def geom(self,g):
+        if isinstance(g,np.ndarray):
+            if g.ndim==1:
+                g=geometry.Point(g)
+            elif g.ndim==2:
+                g=geometry.LineString(g)
+            else:
+                raise Exception("Not sure how to convert %s to a shapely geometry"%g)
         self._geom=g
 
     # Utilities for specific types of BCs which need more information
@@ -1618,7 +1621,7 @@ class HycomMultiScalarBC(HycomMultiBC):
         def dataset(self):
             self._dataset.attrs['mode']=self.mode
             return self._dataset
-        def dataarray(self):
+        def src_data(self):# was dataarray()
             da=self.dataset()[self.scalar]
             da.attrs['mode']=self.mode
             return da
@@ -1921,6 +1924,92 @@ class HycomMultiVelocityBC(HycomMultiBC):
         adj_Q_error=adj_total_Q-target_Q
         adj_vel_error=adj_Q_error/total_flux_A
         print("Post-adjustment velocity error: %.6f -- %.6f m/s"%(adj_vel_error.min(),adj_vel_error.max()))
+
+
+class NOAAStageBC(StageBC):
+    station=None # integer station
+    product='water_level' # or 'predictions'
+    cache_dir=None
+    def src_data(self):
+        ds=self.fetch_for_period(self.data_start,self.data_stop)
+        return ds['z']
+    def write_bokeh(self,**kw):
+        defaults=dict(title="Stage: %s (%s)"%(self.name,self.station))
+        defaults.update(kw)
+        super(NOAAStageBC,self).write_bokeh(**defaults)
+    def fetch_for_period(self,period_start,period_stop):
+        """
+        Download or load from cache, take care of any filtering, unit conversion, etc.
+        Returns a dataset with a 'z' variable, and with time as UTC
+        """
+        ds=noaa_coops.coops_dataset(station=self.station,
+                                    start_date=period_start,
+                                    end_date=period_stop,
+                                    products=[self.product],
+                                    days_per_request='M',cache_dir=self.cache_dir)
+        ds=ds.isel(station=0)
+        ds['z']=ds[self.product]
+        ds['z'].attrs['units']='m'
+        return ds
+
+class NwisBC(object):
+    cache_dir=None
+    product_id="set_in_subclass"
+
+    def __init__(self,station,**kw):
+        """
+        station: int or string station id, e.g. 11455478
+        """
+        self.station=str(station)
+        super(NwisBC,self).__init__(**kw)
+
+class NwisStageBC(NwisBC,StageBC):
+    product_id=65 # gage height
+    def src_data(self):
+        ds=self.fetch_for_period(self.data_start,self.data_stop)
+        return ds['z']
+    def write_bokeh(self,**kw):
+        defaults=dict(title="Stage: %s (%s)"%(self.name,self.station))
+        defaults.update(kw)
+        super(NwisStageBC,self).write_bokeh(**defaults)
+    def fetch_for_period(self,period_start,period_stop):
+        """
+        Download or load from cache, take care of any filtering, unit conversion, etc.
+        Returns a dataset with a 'z' variable, and with time as UTC
+        """
+        from ...io.local import usgs_nwis
+        ds=usgs_nwis.nwis_dataset(station=self.station,start_date=period_start,
+                                  end_date=period_stop,
+                                  products=[self.product_id],
+                                  cache_dir=self.cache_dir)
+        ds['z']=('time',), 0.3048*ds['height_gage']
+        ds['z'].attrs['units']='m'
+        return ds
+
+class NwisFlowBC(NwisBC,FlowBC):
+    product_id=60 # discharge
+    def src_data(self):
+        ds=self.fetch_for_period(self.data_start,self.data_stop)
+        return ds['Q']
+    def write_bokeh(self,**kw):
+        defaults=dict(title="Flow: %s (%s)"%(self.name,self.station))
+        defaults.update(kw)
+        super(NwisFlowBC,self).write_bokeh(**defaults)
+    def fetch_for_period(self,period_start,period_stop):
+        """
+        Download or load from cache, take care of any filtering, unit conversion, etc.
+        Returns a dataset with a 'z' variable, and with time as UTC
+        """
+        from ...io.local import usgs_nwis
+        
+        ds=usgs_nwis.nwis_dataset(station=self.station,start_date=period_start,
+                                  end_date=period_stop,
+                                  products=[self.product_id],
+                                  cache_dir=self.cache_dir)
+        ds['Q']=('time',), 0.028316847*ds['stream_flow_mean_daily']
+        ds['Q'].attrs['units']='m3 s-1'
+        return ds
+
 
 
 class DFlowModel(HydroModel):

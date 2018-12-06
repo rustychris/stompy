@@ -366,6 +366,21 @@ def parse_boundary_conditions(inp_file):
 
     return bcs,bc_items
 
+def pli_to_shp(pli_fn,shp_fn,overwrite=False):
+    from shapely import geometry
+    from ...spatial import wkb2shp
+
+    feats=read_pli(pli_fn)
+    def clean_pnts(pnts):
+        if pnts.shape[0]==1:
+            pnts=np.concatenate( [pnts,pnts])
+        return pnts
+    geoms=[ geometry.LineString(clean_pnts(feat[1]))
+            for feat in feats ]
+    names=[ feat[0] for feat in feats ]
+    wkb2shp.wkb2shp(shp_fn,geoms,fields=dict(name=names),
+                    overwrite=overwrite)
+
 def read_pli(fn,one_per_line=True):
     """
     Parse a polyline file a la DFM inputs.
