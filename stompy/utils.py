@@ -2052,7 +2052,7 @@ def set_keywords(obj,kw):
         try:
             getattr(obj,k)
         except AttributeError:
-            raise Exception("Setting attribute %s failed because it doesn't exist on %s"%(k,self))
+            raise Exception("Setting attribute %s failed because it doesn't exist on %s"%(k,obj))
         setattr(obj,k,kw[k])
 
 
