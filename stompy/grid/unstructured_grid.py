@@ -5451,33 +5451,44 @@ class UnTRIM08Grid(UnstructuredGrid):
                 while True:
                     for item in self.fp.readline().split():
                         yield item
+            token_gen=tokenizer()
             # py2/py3 compatibility
-            next_token = lambda: six.next(tokenizer())
+            def itok(): return int(six.next(token_gen))
+            def ftok(): return float(six.next(token_gen))
 
             for c in range(Npolys):
-                check_c,nis = [int(s) for s in self.fp.readline().split()]
+                check_c=itok()
+                nis    =itok()
+                
                 if check_c != c+1:
                     print("ERROR: while reading cell subgrid, cell index mismatch: %s vs. %d"%(c+1,check_c))
 
-                areas = np.array( [float(next_token()) for sg in range(nis)] )
-                depths = np.array( [float(next_token()) for sg in range(nis)] )
+                areas = np.array( [ftok() for sg in range(nis)] )
+                depths = np.array( [ftok() for sg in range(nis)] )
 
                 self.cells['depth_mean'][c] = np.sum(areas*depths) / np.sum(areas)
                 self.cells['_area'][c] = np.sum(areas)
                 self.cells['depth_max'][c] = depths.max()
                 self.cells['subgrid'][c] = (areas,depths)
             for e in range(Nflow_sides):
-                l = self.fp.readline()
-                # print "%d/%d - Read line: %s"%(e,self.Nsides,l)
-                check_e,nis = [int(s) for s in l.split()]
+                check_e=itok()
+                nis=itok()
+                
                 if check_e != e+1:
                     print( "ERROR: While reading edge subgrid, edge index mismatch: %s vs. %s"%(e+1,check_e) )
 
-                lengths = np.array( [float(next_token()) for sg in range(nis)] )
-                depths =  np.array( [float(next_token()) for sg in range(nis)] )
+                lengths = np.array( [ftok() for sg in range(nis)] )
+                depths =  np.array( [ftok() for sg in range(nis)] )
                 if sum(lengths)<=0:
-                    print( "edge %d has bad lengths"%e )
-                self.edges['depth_mean'][e] = np.sum(lengths*depths) / sum(lengths)
+                    if len(lengths)>1:
+                        print( "edge %d has bad lengths"%e )
+                    else:
+                        # sometimes an edge with no subgrid just has a depth,
+                        # no lengths, and it's not really necessary
+                        pass 
+                    self.edges['depth_mean'][e] = np.mean(depths)
+                else:
+                    self.edges['depth_mean'][e] = np.sum(lengths*depths) / sum(lengths)
                 self.edges['depth_max'][e]  = depths.max()
                 self.edges['subgrid'][e] = (lengths,depths)
             # and land boundaries get zeros.
