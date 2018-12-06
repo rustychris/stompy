@@ -655,6 +655,134 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             h.close()
 
     @staticmethod
+    def read_dfm(nc=None,fn=None,
+                 cells_from_edges='auto',max_sides=6,cleanup=False):
+        """
+        Migrating this to here from model.delft.dfm_grid
+
+        nc: An xarray dataset or path to netcdf file holding the grid
+        fn: path to netcdf file holding the grid (redundant with nc)
+        cells_from_edges: 'auto' create cells based on edges if cells do not exist in the dataset
+          specify True or False to force or disable this.
+        max_sides: maximum number of sides per cell, used both for initializing datastructures, and
+          for determining cells from edge connectivity.
+        cleanup: for grids created from multiple subdomains, there are sometime duplicate edges and nodes.
+          this will remove those duplicates, though there are no guarantees that indices are
+          preserved.
+        """
+        filename=None
+
+        if nc is None:
+            assert fn
+            filename=fn
+            nc=xr.open_dataset(fn)
+
+        if isinstance(nc,str):
+            filename=nc
+            nc=xr.open_dataset(nc)
+
+        # Default names for fields
+        var_points_x='NetNode_x'
+        var_points_y='NetNode_y'
+
+        var_edges='NetLink'
+        var_cells='NetElemNode' # often have to infer the cells
+
+        meshes=[v for v in nc.data_vars if getattr(nc[v],'cf_role','none')=='mesh_topology']
+        if meshes:
+            mesh=nc[meshes[0]]
+            var_points_x,var_points_y = mesh.node_coordinates.split(' ')
+            var_edges=mesh.edge_node_connectivity
+            try:
+                var_cells=mesh.face_node_connectivity
+            except AttributeError:
+                var_cells='not specified'
+                cells_from_edges=True
+
+        # probably this ought to attempt to find a mesh variable
+        # with attributes that tell the correct names, and lacking
+        # that go with these as defaults
+        # seems we always get nodes and edges
+        edge_start_index=nc[var_edges].attrs.get('start_index',1)
+
+        kwargs=dict(points=np.array([nc[var_points_x].values,
+                                     nc[var_points_y].values]).T,
+                    edges=nc[var_edges].values-edge_start_index)
+
+        # some nc files also have elements...
+        if var_cells in nc.variables:
+            cells=nc[var_cells].values.copy()
+
+            # missing values come back in different ways -
+            # might come in masked, might also have some huge negative values,
+            # and regardless it will be one-based.
+            if isinstance(cells,np.ma.MaskedArray):
+                cells=cells.filled(0)
+
+            if np.issubdtype(cells.dtype,np.floating):
+                bad=np.isnan(cells)
+                cells=cells.astype(np.int32)
+                cells[bad]=0
+
+            # just to be safe, do this even if it came from Masked.
+            cell_start_index=nc[var_cells].attrs.get('start_index',1)
+            cells-=cell_start_index # force to 0-based
+            cells[ cells<0 ] = -1
+
+            kwargs['cells']=cells
+            if cells_from_edges=='auto':
+                cells_from_edges=False
+
+        var_depth='NetNode_z'
+
+        if var_depth in nc.variables: # have depth at nodes
+            kwargs['extra_node_fields']=[ ('depth','f4') ]
+
+        if cells_from_edges: # True or 'auto'
+            self.max_sides=max_sides
+
+        # Partition handling - at least the output of map_merge
+        # does *not* remap indices in edges and cells
+        if 'partitions_node_start' in nc.variables:
+            nodes_are_contiguous = np.all( np.diff(nc.partitions_node_start.values)
+                                           == nc.partitions_node_count.values[:-1] )
+            assert nodes_are_contiguous, "Merged grids can only be handled when node indices are contiguous"
+        else:
+            nodes_are_contiguous=True
+
+        if 'partitions_edge_start' in nc.variables:
+            edges_are_contiguous = np.all( np.diff(nc.partitions_edge_start.values)
+                                           == nc.partitions_edge_count.values[:-1] )
+            assert edges_are_contiguous, "Merged grids can only be handled when edge indices are contiguous"
+        else:
+            edges_are_contiguous=True
+
+        if 'partitions_face_start' in nc.variables:
+            faces_are_contiguous = np.all( np.diff(nc.partitions_face_start.values)
+                                           == nc.partitions_face_count.values[:-1] )
+            assert faces_are_contiguous, "Merged grids can only be handled when face indices are contiguous"
+            if cleanup:
+                log.warning("Some MPI grids have duplicate cells, which cannot be cleaned, but cleanup=True")
+        else:
+            face_are_contiguous=True
+
+        g=UnstructuredGrid(**kwargs)
+        g.filename=filename
+
+        if cells_from_edges:
+            print("Making cells from edges")
+            g.make_cells_from_edges()
+
+        if var_depth in nc.variables: # have depth at nodes
+            g.nodes['depth']=nc[var_depth].values.copy()
+
+        if cleanup:
+            # defined below
+            cleanup_dfm_multidomains(g)
+
+        return g
+
+    @staticmethod
     def read_suntans_hybrid(path='.',points='points.dat',edges='edges.dat',cells='cells.dat'):
         """
         For backwards compatibility.  Better to use read_suntans which auto-detects
@@ -673,6 +801,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
     @staticmethod
     def read_suntans(path='.',points='points.dat',edges='edges.dat',cells='cells.dat',
+                     edgedata=True,celldata=True,subdomain=None,
                      dialect='auto'):
         """
         Read text-based suntans format which can accomodate arbitrary numbers of sides.
@@ -680,10 +809,20 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         dialect: 'auto' = attempt classic fall back to hybrid
          'classic': assume classic, fail otherwise
          'hybrid': assume hybrid, fail otherwise
+
+        edgedata: True: try to find and load an edgedata file.
+        celldata: same, but not yet implemented
+        subdomain: if an integer, append that to the filenames to load a specific subdomain grid.
         """
         points_fn=os.path.join(path,points)
         edges_fn=os.path.join(path,edges)
         cells_fn=os.path.join(path,cells)
+
+        if subdomain is not None:
+            suffix=".%d"%subdomain
+            # points_fn is shared
+            edges_fn+=suffix
+            cells_fn+=suffix
 
         xyz=np.loadtxt(points_fn)
         edge_nnmcc=np.loadtxt(edges_fn).astype('i4')
@@ -753,6 +892,57 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                            edges=edge_nnmcc,
                            cells=all_cells)
         g.cells['_center']=all_cc
+
+        if edgedata:
+            if edgedata is True:
+                edgedata=edges_fn.replace('edges','edgedata')
+            if os.path.exists(edgedata):
+                edata=np.loadtxt(edgedata)
+                # should be same as calculated edges_length()
+                g.add_edge_field('df',edata[:,0])
+                # voronoi spacing
+                g.add_edge_field('dg',edata[:,1])
+                # edge normal
+                g.add_edge_field('n1',edata[:,2])
+                g.add_edge_field('n2',edata[:,3])
+                # number of edge layers with cells on both sides
+                g.add_edge_field('Nke',edata[:,6].astype(np.int32))
+                # number of edge layers with cells on at least one side.
+                g.add_edge_field('Nkc',edata[:,7].astype(np.int32))
+                # these are technically redundant with the internally calculated
+                # edges['cells'].
+                g.add_edge_field('nc1',edata[:,8].astype(np.int32))
+                g.add_edge_field('nc2',edata[:,9].astype(np.int32))
+                g.add_edge_field('gradf1',edata[:,10].astype(np.int32))
+                g.add_edge_field('gradf2',edata[:,11].astype(np.int32))
+                g.edges['mark']=edata[:,12].astype(np.int32)
+        if celldata:
+            if celldata is True:
+                celldata=cells_fn.replace('cells','celldata')
+            if os.path.exists(celldata):
+                with open(celldata,'rt') as fp:
+                    dv=np.zeros(g.Ncells(),np.float64)
+                    Nk=np.zeros(g.Ncells(),np.int32)
+                    
+                    for i,line in enumerate(fp):
+                        parts=line.strip().split()
+                        # too lazy to make this dynamic, but note that
+                        # there isn't a big change -- just the first entry
+                        if 1: # hybrid
+                            nsides=int(parts.pop(0))
+                        else:
+                            nsides=3 # triangles for always
+
+                        # xv, yv...
+                        dv[i]=float(parts[3])
+                        Nk[i]=int(parts[4])
+                        # for now ignore the rest since they are 
+                        # redundant
+
+                # depth at voronoi point
+                g.add_cell_field('dv',dv)
+                # layers
+                g.add_cell_field('Nk',Nk)
         return g
 
     def write_to_xarray(self,ds=None,mesh_name='mesh',
@@ -5646,3 +5836,23 @@ class PtmGrid(UnstructuredGrid):
             self.edges['nodes'][i,:] = [int(s)-1 for s in line[2:4]]
             self.edges['cells'][i,:] = [int(s)-1 for s in line[4:6]]
             self.edges['mark'][i] = int(line[6])
+
+
+
+def cleanup_dfm_multidomains(grid):
+    """
+    Given an unstructured grid which was the product of DFlow-FM
+    multiple domains stitched together, fix some of the extraneous
+    geometries left behind.
+    Grid doesn't have to have been read as a DFMGrid.
+    """
+    log.info("Regenerating edges")
+    grid.make_edges_from_cells()
+    log.info("Removing orphaned nodes")
+    grid.delete_orphan_nodes()
+    log.info("Removing duplicate nodes")
+    grid.merge_duplicate_nodes()
+    log.info("Renumbering nodes")
+    grid.renumber_nodes()
+    log.info("Extracting grid boundary")
+    return grid
