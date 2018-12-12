@@ -341,6 +341,7 @@ def cleanup_multidomains(grid):
 
 def polyline_to_boundary_edges(g,linestring,rrtol=3.0):
     """
+    This has moved to grid.select_edge_by_polyline.
     Mimic FlowFM boundary edge selection from polyline to edges.
     Currently does not get into any of the interpolation, just
     identifies boundary edges which would be selected as part of the
@@ -353,41 +354,42 @@ def polyline_to_boundary_edges(g,linestring,rrtol=3.0):
 
     returns ndarray of edge indices into g.
     """
-    linestring=np.asanyarray(linestring)
-
-    g.edge_to_cells()
-    boundary_edges=np.nonzero( np.any(g.edges['cells']<0,axis=1) )[0]
-    adj_cells=g.edges['cells'][boundary_edges].max(axis=1)
-
-    adj_centers=g.cells_center()[adj_cells]
-    edge_centers=g.edges_center()[boundary_edges]
-    cell_to_edge=edge_centers-adj_centers
-    cell_to_edge_dist=utils.dist(cell_to_edge)
-    if 0: # older code that assumes grid is orthogonal, with centers
-        # properly inside cells.
-        outward=cell_to_edge / cell_to_edge_dist[:,None]
-    else:
-        # use newer grid code which only needs edge geometry and
-        # edge_to_cells().
-        outward=-g.edges_normals(edges=boundary_edges,force_inward=True)
-
-    dis=np.maximum( 0.5*np.sqrt(g.cells_area()[adj_cells]),
-                    cell_to_edge_dist )
-    probes=edge_centers+(2*rrtol*dis)[:,None]*outward
-    segs=np.array([adj_centers,probes]).transpose(1,0,2)
-    if 0: # plotting for verification
-        lcoll=collections.LineCollection(segs)
-        ax.add_collection(lcoll)
-
-    linestring_geom= geometry.LineString(linestring)
-
-    probe_geoms=[geometry.LineString(seg) for seg in segs]
-
-    hits=[idx
-          for idx,probe_geom in enumerate(probe_geoms)
-          if linestring_geom.intersects(probe_geom)]
-    edge_hits=boundary_edges[hits]
-    return edge_hits
+    return g.select_edges_by_polyline(linestring,rrtol=rrtol)
+    # linestring=np.asanyarray(linestring)
+    # 
+    # g.edge_to_cells()
+    # boundary_edges=np.nonzero( np.any(g.edges['cells']<0,axis=1) )[0]
+    # adj_cells=g.edges['cells'][boundary_edges].max(axis=1)
+    # 
+    # adj_centers=g.cells_center()[adj_cells]
+    # edge_centers=g.edges_center()[boundary_edges]
+    # cell_to_edge=edge_centers-adj_centers
+    # cell_to_edge_dist=utils.dist(cell_to_edge)
+    # if 0: # older code that assumes grid is orthogonal, with centers
+    #     # properly inside cells.
+    #     outward=cell_to_edge / cell_to_edge_dist[:,None]
+    # else:
+    #     # use newer grid code which only needs edge geometry and
+    #     # edge_to_cells().
+    #     outward=-g.edges_normals(edges=boundary_edges,force_inward=True)
+    # 
+    # dis=np.maximum( 0.5*np.sqrt(g.cells_area()[adj_cells]),
+    #                 cell_to_edge_dist )
+    # probes=edge_centers+(2*rrtol*dis)[:,None]*outward
+    # segs=np.array([adj_centers,probes]).transpose(1,0,2)
+    # if 0: # plotting for verification
+    #     lcoll=collections.LineCollection(segs)
+    #     ax.add_collection(lcoll)
+    # 
+    # linestring_geom= geometry.LineString(linestring)
+    # 
+    # probe_geoms=[geometry.LineString(seg) for seg in segs]
+    # 
+    # hits=[idx
+    #       for idx,probe_geom in enumerate(probe_geoms)
+    #       if linestring_geom.intersects(probe_geom)]
+    # edge_hits=boundary_edges[hits]
+    # return edge_hits
 
 def dredge_boundary(g,linestring,dredge_depth):
     """

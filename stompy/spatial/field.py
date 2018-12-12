@@ -3069,6 +3069,54 @@ class CompositeField(Field):
     artifacts.  Should push these cases to nan.
     TODO: currently holes must be filled manually or after the fact.  Is there a clean
     way to handle that?  Maybe a fill data mode?
+
+    Guide
+    -----
+
+    Create a polygon shapefile, with fields:
+     +------------+-----------+
+     + priority   | numeric   |
+     +------------+-----------+
+     + data_mode  | string    |
+     +------------+-----------+
+     + alpha_mode | string    |
+     +------------+-----------+
+
+    These names match the defaults to the constructor.  Note that there is no
+    reprojection support -- the code assumes that the shapefile and all source
+    data are already in the target projection.  Some code also assumes that it
+    is a square projection.
+
+    .. image:: images/composite-shp-table.png
+
+    Each polygon in the shapefile refers to a source dataset and defines where
+    that dataset will be used.
+
+    .. image:: images/composite-shp.png
+    .. image:: images/composite-shp-zoom.png
+
+    Datasets are processed as layers, building up from the lowest priority
+    to the highest priority.  Higher priority sources generally overwrite
+    lower priority source, but that can be controlled by specifying
+    `data_mode`.  The default is `overlay()`, which simple overwrites
+    the lower priority data.  Other common modes are
+     * `min()`: use the minimum value between this source and lower
+       priority data.  This layer will only *deepen* areas.
+     * `max()`: use the maximum value between this source and lower
+       priority data.  This layer will only *raise* areas.
+     * `fill(dist)`: fill in holes up to `dist` wide in this datasets
+       before proceeding.
+
+    Multiple steps can be chained with commas, as in `fill(5.0),min()`, which
+    would fill in holes smaller than 5 spatial units (e.g. m), and then take
+    the minimum of this dataset and the existing data from previous (lower
+    priority) layers.
+
+    Another example:
+
+    .. image:: images/dcc-original.png
+    .. image:: images/dcc-dredged.png
+
     """
     def __init__(self,shp_fn=None,factory=None,
                  priority_field='priority',
@@ -3201,10 +3249,10 @@ class CompositeField(Field):
                 pixels=int(round(float(dist)/dx))
                 niters=np.maximum( pixels//3, 2 )
                 src_data.fill_by_convolution(iterations=niters)
-            # def blur(dist):
-            #     "smooth data channel with gaussian filter - this allows spreading beyond original poly!"
-            #     pixels=int(round(float(dist)/dx))
-            #     src_data.F=ndimage.gaussian_filter(src_alpha.F,pixels)
+            #def blur(dist):
+            #    "smooth data channel with gaussian filter - this allows spreading beyond original poly!"
+            #    pixels=int(round(float(dist)/dx))
+            #    src_data.F=ndimage.gaussian_filter(src_data.F,pixels)
 
             def overlay():
                 pass
@@ -3213,15 +3261,20 @@ class CompositeField(Field):
                 # updates alpha channel to be zero where source data is missing.
                 data_missing=np.isnan(src_data.F)
                 src_alpha.F[data_missing]=0.0
-            # def blur_alpha(dist):
-            #     "smooth alpha channel with gaussian filter - this allows spreading beyond original poly!"
-            #     pixels=int(round(float(dist)/dx))
-            #     src_alpha.F=ndimage.gaussian_filter(src_alpha.F,pixels)
-            def feather(dist):
+            def blur_alpha(dist):
+                "smooth alpha channel with gaussian filter - this allows spreading beyond original poly!"
+                pixels=int(round(float(dist)/dx))
+                src_alpha.F=ndimage.gaussian_filter(src_alpha.F,pixels)
+            def feather_in(dist):
                 "linear feathering within original poly"
                 pixels=int(round(float(dist)/dx))
                 Fsoft=ndimage.distance_transform_bf(src_alpha.F)
                 src_alpha.F = (Fsoft/pixels).clip(0,1)
+            feather=feather_in
+            def feather_out(dist):
+                pixels=int(round(float(dist)/dx))
+                Fsoft=ndimage.distance_transform_bf(1-src_alpha.F)
+                src_alpha.F = (1-Fsoft/pixels).clip(0,1)
 
             # dangerous! executing code from a shapefile!
             eval(self.data_mode[src_i])

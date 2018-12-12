@@ -27,7 +27,9 @@ def mapper(src,dest):
 
     """
     trans = xform(src,dest)
-    def process(X):
+    def process(X,Y=None):
+        if Y is not None:
+            X=np.stack([X,Y],axis=-1)
         X = asarray(X,float64)
         out = zeros(X.shape,float64)
         inx = X[...,0]

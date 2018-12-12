@@ -332,6 +332,8 @@ def fill_invalid(A,axis=0,ends='constant'):
     ends:
     'constant'  missing values at the ends will take nearest valid value
     'linear' missing values will be extrapolated with a linear fit through the first/last valid values
+
+    returns new array, though currently this is just a view on the original data.
     """
     # rotate the operational index to be first:
     new_order=(np.arange(A.ndim)+axis)%A.ndim
@@ -1949,12 +1951,13 @@ def remove_repeated(A):
     return np.concatenate( ( A[:1], A[1:][ np.diff(A)!=0 ] ) )
 
 
-def download_url(url,local_file,log=None,on_abort='pass'):
+def download_url(url,local_file,log=None,on_abort='pass',**extra_args):
     """
     log: an object or module with info(), warning(), and error()
     methods ala the logging module.
     on_abort: if an exception is raised during download, 'pass'
       leaves partial files in tact, 'remove' deletes partial files
+    extra_args: keyword arguments passed on to requests.get or ftplib.FTP()
     """
     parsed=six.moves.urllib_parse.urlparse(url)
 
@@ -1973,7 +1976,7 @@ def download_url(url,local_file,log=None,on_abort='pass'):
     try:
         if parsed.scheme in ['http','https']:
             import requests
-            r=requests.get(url,stream=True)
+            r=requests.get(url,stream=True,**extra_args)
 
             with open(local_file,'wb') as fp:
                 for chunk in r.iter_content(chunk_size=1024):
@@ -1995,6 +1998,8 @@ def download_url(url,local_file,log=None,on_abort='pass'):
                     my_cb=fp.write
 
                 ftp.retrbinary("RETR " + ftp_file , my_cb)
+        else:
+            raise Exception("Could not figure out the scheme for url %s"%url)
 
     except Exception as exc:
         if on_abort=='remove':
@@ -2020,3 +2025,34 @@ def progress(a,interval_s=5.0,msg="%s"):
             log.info( msg%("%d/%d"%(i,L)) )
             t0=t
         yield elt
+
+def is_stale(target,srcs):
+    """
+    Makefile-esque checker --
+    if target does not exist or is older than any of srcs,
+    return true (i.e. stale).
+    if a src does not exist, raise an Exception
+    """
+    if not os.path.exists(target): return True
+    for src in srcs:
+        if not os.path.exists(src):
+            raise Exception("Dependency %s does not exist"%src)
+        if os.stat(src).st_mtime > os.stat(target).st_mtime:
+            return True
+    return False
+
+def set_keywords(obj,kw):
+    """
+    Utility for __init__ methods to update object state with
+    keyword arguments.  Checks that the attributes already
+    exist, to avoid spelling mistakes.  Uses getattr and
+    setattr for compatibility with properties.
+    """
+    for k in kw:
+        try:
+            getattr(obj,k)
+        except AttributeError:
+            raise Exception("Setting attribute %s failed because it doesn't exist on %s"%(k,obj))
+        setattr(obj,k,kw[k])
+
+

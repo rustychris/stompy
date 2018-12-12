@@ -189,9 +189,12 @@ def add_rozovski(tran,src='U',dst='Uroz',frame='roz',comp_names=['downstream','l
     transform=src_frame + '_to_' + frame
     tran[transform]=('sample',src_frame,frame),R
 
+    tran[frame]=(frame,),comp_names
     # xarray dot() doesn't collapse dimensions correctly
     # Do it by hand, and in this order so that roz is at the end of the dimensions.
     tran[dst]=(tran[src]*tran[transform]).sum(dim=src_frame)
+    # xarray sum doesn't preserve the nans, so replace them here:
+    tran[dst].values[np.isnan(tran[src].values)]=np.nan
 
 
 #--- Functions related to reading section_hydro.txt data
@@ -372,7 +375,7 @@ def section_hydro_to_transect(filename,name=None,index=None):
 
     return section_hydro_parsed_to_transect(section,filename)
 
-def resample_z(tran,new_z):
+def resample_z(tran,new_z,save_original=None):
     """
     Resample z coordinate to the given vector new_z [N].
     """
@@ -395,6 +398,11 @@ def resample_z(tran,new_z):
             ds[v]=var
             continue
         elif v in ['z_ctr','z_dz']:
+            if save_original is not None:
+                # This is where we could be doing something related to
+                # saving the original vertical values.  not that interesting
+                # for vertical, so for now just pass
+                pass
             continue # gets overwritten
 
         dims=var.dims # dimension names don't change
@@ -473,10 +481,11 @@ def resample_z(tran,new_z):
 
     return ds
 
-def resample_d(tran,new_xy):
+def resample_d(tran,new_xy,save_original=None):
     """
     tran: xr_transect style Dataset
     new_xy: [N,2] points for resampling horizontal transect dimension
+    save_original: if not None, a string prefix for saving original xy information
     """
     # need a function which takes per-sample data from ds_in,
     # returns per-sample data at new_xy
@@ -516,11 +525,16 @@ def resample_d(tran,new_xy):
 
     for v in tran.data_vars:
         var=tran[v]
+        v_dest=v # name of the variable to write
         if sample_dim not in var.dims:
             ds[v]=var
             continue
         elif v in ['x_sample','y_sample','d_sample','dx_sample']:
-            continue # manually supplied above
+            if save_original is None:
+                continue # manually supplied above
+            else:
+                v_dest=save_original+v
+                print("Beware - trying to save original location info to %s"%v_dest)
 
         dims=var.dims # dimension names don't change
         # any new dimensions we need to copy?
@@ -567,8 +581,99 @@ def resample_d(tran,new_xy):
                 my_dst[~bad]=my_dst[~bad]/weight_sum[~bad]
 
             new_val[index]=my_dst
-        ds[v]=dims,uncast(new_val)
 
+        ds[v_dest]=dims,uncast(new_val)
+
+    return ds
+
+
+def extrapolate_vertical(tran,var_methods,eta=0,z_bed='z_bed'):
+    """
+    Extrapolate each water column in the vertical to span the
+    full bed-to-surface range.
+
+    eta: positive-up scalar for elevation of freesurface
+
+    z_bed: name of variable holding a per-sample bed elevation in the same
+     coordinate system as z_ctr.
+
+    var_methods: awkward, but something like
+    [ ('Uroz',dict(roz=0),'linear','constant'),
+      ('Uroz',dict(roz=1),'linear','constant') ]
+    where each tuple describe a variable and how it is extrapolated.
+    'Uroz': variable
+    dict(roz=0): sub-component of variable, or None to ignore.
+    'linear': how to extrapolate between the bed and the first valid data point.
+       in this case, linearly ramp from 0 at the bed up to the first value.
+    'constant': how to extrapolate between the top valid data point and the
+       free surface.
+
+    will resample in the vertical to make sure the full range of elevations is
+    in z_ctr.
+    returns a new dataset
+    """
+    z_sgn=1
+    if tran.z_ctr.attrs.get('positive','up')=='down':
+        z_sgn=-1
+
+    if np.median(np.diff(tran.z_ctr.values*z_sgn))<0:
+        order='top_down'
+        to_bottom_up=slice(None,None,-1)
+    else:
+        order='bottom_up'
+        to_bottom_up=slice(None,None,1)
+
+    # does not (yet) pad z up to eta.
+    z_bed=z_sgn*tran['z_bed'] # assumed same coordinates as z_ctr, and a value per sample
+
+    # Resample z -- otherwise we'd have to check each column to see if it was deep enough.
+    z_max=np.max(eta)
+    z_min=np.min(z_bed)
+    new_z=np.linspace(z_min,z_max,tran.dims['layer'])
+    # but keep the same sign/order as before:
+    new_z=z_sgn*new_z[to_bottom_up]
+    ds=resample_z(tran,new_z)
+
+    for data_var,isel_kw,bed_mode,surface_mode in var_methods:
+        data=ds[data_var]
+        if isel_kw:
+            data=data.isel(**isel_kw)
+
+        u,z=xr.broadcast( data, # ds['Uroz'].sel(roz='downstream'),
+                          ds['z_ctr'] )
+
+        for s in range(ds.dims['sample']):
+            # treat each individually
+            # get the data and elevations in a common order and sign:
+            # bottom-up, positive=up
+            eta_col=eta # could be extended to pull from spatially variable eta
+            z_bed_col=z_bed.values[s]
+            u_col=u[s,to_bottom_up]
+            z_col=z_sgn*z[s,to_bottom_up]
+            u_valid=np.nonzero(np.isfinite(u_col.values))[0]
+            if len(u_valid)==0:
+                continue # empty water column
+
+            top_valid_idx=u_valid[-1]
+            bottom_valid_idx=u_valid[0]
+            eta_idx=np.searchsorted(z_col,eta_col)
+            bed_idx=np.searchsorted(z_col,z_bed_col)
+
+            # remove spurious data outside depth range
+            u_col[eta_idx:]=np.nan
+            u_col[:bed_idx]=np.nan
+
+            # Surface:
+            if surface_mode=='constant':
+                u_col[top_valid_idx+1:eta_idx] = u_col[top_valid_idx]
+            else:
+                raise Exception("Unknown surface_mode %s"%surface_mode)
+
+            # Bed:
+            if bed_mode=='linear':
+                N=bottom_valid_idx - bed_idx
+                if N>0:
+                    u_col[bed_idx:bottom_valid_idx]=np.linspace(0,u_col[bottom_valid_idx],N+1)[:-1]
     return ds
 
 
@@ -760,7 +865,7 @@ def transects_to_segment(trans,unweight=True,ax=None):
         ax.legend()
     return seg
 
-def resample_to_common_z(trans,dz=None):
+def resample_to_common_z(trans,dz=None,save_original=None):
     """
     apply resample_z to a list of transects, making the respective
      vertical coordinates compatible.   may not be smart enough
@@ -803,12 +908,12 @@ def resample_to_common_z(trans,dz=None):
     # Resample each transect in the vertical:
     new_z=np.linspace(z_min,z_max,int(round((z_max-z_min)/dz)))
 
-    ds_resamp=[resample_z(tran,new_z)
+    ds_resamp=[resample_z(tran,new_z,save_original=save_original)
                for tran in trans]
     return ds_resamp
 
 def resample_to_common(trans,dz=None,dx=None,resample_x=True,resample_z=True,
-                       seg=None):
+                       seg=None,save_original='orig_'):
     """
     trans: list of xr_transect Datasets.
     dx: length scale for horizontal resampling, defaults to median.  Pass 0
@@ -819,9 +924,11 @@ def resample_to_common(trans,dz=None,dx=None,resample_x=True,resample_z=True,
     resample_z: can be set to false to skip vertical resampling if all transects
      already have the same vertical coordinates.
     seg: the linestring of the new transect.  defaults to fitting a line.
+
+    save_original: if not None, a prefix for saving coordinates before resampling.
     """
     if resample_z:
-        trans=resample_to_common_z(trans,dz=dz)
+        trans=resample_to_common_z(trans,dz=dz,save_original=save_original)
 
     if resample_x:
         if seg is None:
@@ -841,7 +948,7 @@ def resample_to_common(trans,dz=None,dx=None,resample_x=True,resample_z=True,
         else:
             new_xy = seg
 
-        trans=[resample_d(tran,new_xy)
+        trans=[resample_d(tran,new_xy,save_original=save_original)
                for tran in trans]
     return trans
 
@@ -865,3 +972,45 @@ def average_transects(trans,dz=None,dx=None,resample_x=True,resample_z=True,
         ds_average[var].attrs.update(trans[0][var].attrs)
 
     return ds_average
+
+def calc_secondary_strength(tran,name='secondary'):
+    """
+    a somewhat ad-hoc measure of secondary circulation.
+    in each water column, sort the velocities, and find the
+    zero crossing.  in the unsorted data, take the mean of the
+    velocities in the bins above the zero crossing.
+
+    the goal is to be somewhat immune to different elevations
+    of the flow reversal, and immune to noisy data.
+
+    resulting value is a velocity.
+    """
+    if np.nanstd(tran.z_dz)>1e-10:
+        print("Circulation strength assumes that z_dz is evenly spaced")
+
+    circ_velocity=np.zeros(tran.dims['sample'],np.float64)
+    # for positive-up z coordinates, starting from the surface going to the bed,
+    # a positive velocity at the surface yields a positive strength
+    flip_sgn=1
+
+    # ADCP: positive:down, first bin is at the surface, so ultimately want
+    # flip_sgn=1.
+    # suntans: positive:up, first bin is at the surface. so ultimately want
+    # flip_sgn=1.
+    if tran.z_ctr.attrs.get('positive','up')=='down':
+        flip_sgn*=-1
+    # if the first bin is at the bed
+    if tran.z_dz.mean()>0:
+        flip_sgn*=-1
+
+    for samp in tran.sample:
+        valid_left=np.isfinite(tran.U.isel(sample=samp,xy=0))
+        u_left=tran.Uroz.isel(sample=samp,roz=1)[valid_left]
+        u_left_sort=np.sort(u_left)
+        mid_idx=np.searchsorted(u_left_sort,0)
+        circ_velocity[samp]=flip_sgn*u_left[:mid_idx].mean()
+    if name is not None:
+        tran[name]=('sample',),circ_velocity
+        tran[name].attrs['units']='m s-1'
+        tran[name].attrs['description']='Average left-ward velocity in upper water column'
+    return circ_velocity

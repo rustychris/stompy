@@ -76,9 +76,15 @@ MultiBC=dfm.MultiBC
 StageBC=dfm.StageBC
 FlowBC=dfm.FlowBC
 VelocityBC=dfm.VelocityBC
+ScalarBC=dfm.ScalarBC
 OTPSStageBC=dfm.OTPSStageBC
 OTPSFlowBC=dfm.OTPSFlowBC
 OTPSVelocityBC=dfm.OTPSVelocityBC
+HycomMultiVelocityBC=dfm.HycomMultiVelocityBC
+HycomMultiScalarBC=dfm.HycomMultiScalarBC
+NOAAStageBC=dfm.NOAAStageBC
+NwisFlowBC=dfm.NwisFlowBC
+NwisStageBC=dfm.NwisStageBC
 
 class GenericConfig(object):
     """ Handles reading and writing of suntans.dat formatted files.
@@ -445,10 +451,19 @@ class SuntansModel(dfm.HydroModel):
 
     @classmethod
     def run_completed(cls,fn):
+        """
+        fn: path to either folder containing suntans.dat, or path
+        to suntans.dat itself.
+
+        returns: True if the file exists and the folder contains a run which
+          ran to completion. Otherwise False.
+        """
         if not os.path.exists(fn):
             return False
         if os.path.isdir(fn):
             fn=os.path.join(fn,"suntans.dat")
+            if not os.path.exists(fn):
+                return False
         model=cls.load(fn)
         return model.is_completed()
     def is_completed(self):
@@ -468,17 +483,43 @@ class SuntansModel(dfm.HydroModel):
         if isinstance(grid,six.string_types):
             # step in and load as suntans, rather than generic
             grid=unstructured_grid.SuntansGrid(grid)
+
+        # depending on the source of the grid, it may need edges flipped
+        # to be consistent with suntans expectations that nc1 is always into
+        # the domain, and nc2 may be external
+        grid.orient_edges()
         super(SuntansModel,self).set_grid(grid)
 
         # make sure we have the fields expected by suntans
         if 'depth' not in grid.cells.dtype.names:
             if 'depth' in grid.nodes.dtype.names:
                 cell_depth=grid.interp_node_to_cell(grid.nodes['depth'])
+                # and avoid overlapping names
+                grid.delete_node_field('depth')
             elif 'depth' in grid.edges.dtype.names:
                 raise Exception("Not implemented interpolating edge to cell bathy")
             else:
+                self.log.warning("No depth information in grid.  Creating zero-depth")
                 cell_depth=np.zeros(grid.Ncells(),np.float64)
             grid.add_cell_field('depth',cell_depth)
+
+            
+        # with the current suntans version, depths are on cells, but model driver
+        # code in places wants an edge depth.  so copy those here.
+        e2c=grid.edge_to_cells()
+        nc1=e2c[:,0].copy()   ; nc2=e2c[:,1].copy()
+        nc1[nc1<0]=nc2[nc1<0] ; nc2[nc2<0]=nc1[nc2<0]
+        # edge depth is shallower of neighboring cells
+        edge_depth=np.minimum(grid.cells['depth'][nc1],grid.cells['depth'][nc2])
+
+        if 'edge_depth' in grid.edges.dtype.names:
+            deep_edges=(grid.edges['edge_depth']<edge_depth)
+            print("%d edges had a specified depth deeper than neighboring cells.  Replaced them"%
+                  deep_edges.sum())
+            grid.edges['edge_depth'][deep_edges]=edge_depth[deep_edges]
+        else:        
+            grid.add_edge_field('edge_depth',edge_depth)
+        
         if 'mark' not in grid.edges.dtype.names:
             mark=np.zeros( grid.Nedges(), np.int32)
             grid.add_edge_field('mark',mark)
@@ -495,6 +536,20 @@ class SuntansModel(dfm.HydroModel):
         # allow other marks to stay
         self.grid.edges['mark'][:]=mark
 
+    def edge_depth(self,j,datum=None):
+        """
+        Return the bed elevation for edge j, in meters, positive=up.
+        Suntans implementation relies on set_grid() having set edge depths
+        to be the min. of neighboring cells
+        """
+        z=self.grid.edges['edge_depth'][j]
+
+        if datum is not None:
+            if datum=='eta0':
+                z+=self.initial_water_level()
+        return z
+
+        
     @staticmethod
     def load(fn):
         """
@@ -517,9 +572,16 @@ class SuntansModel(dfm.HydroModel):
         return model
 
     def infer_restart(self):
+        """
+        See if this run is a restart.
+        Sets self.restart to:
+          None: not a restart
+          True: is a restart, but insufficient information to find the parent run
+          string: path to suntans.dat for the parent run
+        """
         start_path=os.path.join(self.run_dir,self.config['StartFile']+".0")
         if os.path.exists(start_path):
-            log.info("Looks like a restart")
+            log.debug("Looks like a restart")
             self.restart=True
 
             if os.path.islink(start_path):
@@ -528,7 +590,7 @@ class SuntansModel(dfm.HydroModel):
                 assert not os.path.samefile(parent_dir,self.run_dir)
                 parent_sun=os.path.join(parent_dir,"suntans.dat")
                 if os.path.exists(parent_sun):
-                    log.info("And the previous suntans.dat: %s"%parent_sun)
+                    log.debug("And the previous suntans.dat: %s"%parent_sun)
                     self.restart=parent_sun
                 else:
                     log.info("Checked for %s but no luck"%parent_sun)
@@ -537,6 +599,24 @@ class SuntansModel(dfm.HydroModel):
         else:
             log.info("Does not look like a restart based on %s"%start_path)
             self.restart=None
+
+    def chain_restarts(self,count=None):
+        """
+        return a list of up to count (None: unlimited) Model instances
+        in forward chronological order of consecutive restarts.
+        """
+        runs=[self]
+        run=self
+        while 1:
+            if count and len(runs)>=count:
+                break
+            run.infer_restart()
+            if run.restart and run.restart is not True:
+                run=SuntansModel.load(run.restart)
+                runs.insert(0,run)
+            else:
+                break
+        return runs
 
     def load_template(self,fn):
         self.template_fn=fn
@@ -665,15 +745,16 @@ class SuntansModel(dfm.HydroModel):
         log.info("Setting initial eta from BCs, value=max(z_bed,%.4f) (including z_offset of %.2f)"%(h,self.z_offset))
 
     def write_forcing(self,overwrite=True):
+        # these map to lists of BCs, in case there are BC with mode='add'
         # map edge to BC data
-        self.bc_type2=defaultdict(dict) # [<edge index>][<variable>]=>DataArray
+        self.bc_type2=defaultdict(lambda: defaultdict(list)) # [<edge index>][<variable>]=>[DataArray,...]
         # map cell to BC data
-        self.bc_type3=defaultdict(dict) # [<cell index>][<variable>]=>DataArray
+        self.bc_type3=defaultdict(lambda: defaultdict(list)) # [<cell index>][<variable>]=>[DataArray,...]
         # Flow BCs are handled specially since they apply across a group of edges
         # Each participating edge should have an entry in bc_type2,
         # [<edge index>]["Q"]=>"segment_name"
         # and a corresponding entry in here:
-        self.bc_type2_segments=defaultdict(dict) # [<segment name>][<variable>]=>DataArray
+        self.bc_type2_segments=defaultdict(lambda: defaultdict(list)) # [<segment name>][<variable>]=>[DataArray,...]
 
         super(SuntansModel,self).write_forcing()
 
@@ -682,14 +763,19 @@ class SuntansModel(dfm.HydroModel):
         # edge, cells, groups of edges
         for bc_typ in [self.bc_type2,self.bc_type3,self.bc_type2_segments]:
             for bc in bc_typ.values(): # each edge idx/cell idx/segment name
-                for v in bc.values(): # each variable on that edge/cell/segment
-                    if isinstance(v,six.string_types):
-                        # type2 edges which reference a segment have no
-                        # time series of their own.
-                        continue
-                    if 'time' in v.dims:
-                        all_times.append( v['time'].values )
-        common_time=np.unique(np.concatenate(all_times))
+                for vlist in bc.values(): # each variable on that edge/cell/segment
+                    for v in vlist: #list of BCs for this variable on this element
+                        if isinstance(v,six.string_types):
+                            # type2 edges which reference a segment have no
+                            # time series of their own.
+                            continue
+                        if 'time' in v.dims:
+                            all_times.append( v['time'].values )
+        if all_times:
+            common_time=np.unique(np.concatenate(all_times))
+        else:
+            # no boundary conditions have times, so fabricate.
+            common_time=np.array( [self.run_start,self.run_stop] )
         # Make sure that brackets the run:
         pad=np.timedelta64(1,'D')
         if common_time[0]>=self.run_start:
@@ -752,10 +838,15 @@ class SuntansModel(dfm.HydroModel):
                                encoding=dict(nt={'units':self.ds_time_units()},
                                              Time={'units':self.ds_time_units()}) )
 
-    def layer_data(self,with_offset=False):
+    def layer_data(self,with_offset=False,edge_index=None,cell_index=None,z_bed=None):
         """
         Returns layer data without z_offset applied, and
         positive up.
+
+        with no additional arguments, returns global information.  edge_index or
+        cell_index will use a z_bed based on that element.  z_bed is used to clip
+        z layers.  z_bed should be a positive-up quantity.  A specified z_bed
+        takes precendece over edge_index or cell_index.
 
         Returns a xr.Dataset
         with z_min, z_max, Nk, z_interface, z_mid.
@@ -765,6 +856,12 @@ class SuntansModel(dfm.HydroModel):
         if with_offset is True, the z_offset is included, which yields
         more accurate (i.e. similar to suntans) layers when there is stretching
         """
+        if z_bed is None:
+            if edge_index is not None:
+                z_bed=self.grid.edge_depths()[edge_index]
+            elif cell_index is not None:
+                z_bed=self.grid.cell_depths()[cell_index]
+
         Nk=int(self.config['Nkmax'])
         z_min=self.grid.cells['depth'].min() # bed
         z_max=self.grid.cells['depth'].max() # surface
@@ -775,21 +872,17 @@ class SuntansModel(dfm.HydroModel):
             z_min-=self.z_offset
             z_max=0
 
-        if 1: # newer code
-            depth=-z_min # positive:down
-            dzs=np.zeros(Nk, np.float64)
-            if r>1.0:
-                dzs[0]=depth*(r-1)/(r**Nk-1)
-                for k in range(1,Nk):
-                    dzs[k]=r*dzs[k-1]
-            else:
-                dzs[:]=depth/float(Nk)
-            z_interface=np.concatenate( ( [z_max],
-                                          z_max-np.cumsum(dzs) ) )
-        if 0: # older code
-            # log.warning("Layers not fully implemented -- calculating with assuming evenly spaced Nk=%d"%Nk)
-            z_interface=-np.linspace(-z_max,-z_min,Nk+1) # evenly spaced...
-
+        depth=-z_min # positive:down
+        dzs=np.zeros(Nk, np.float64)
+        if r>1.0:
+            dzs[0]=depth*(r-1)/(r**Nk-1)
+            for k in range(1,Nk):
+                dzs[k]=r*dzs[k-1]
+        else:
+            dzs[:]=depth/float(Nk)
+        z_interface=np.concatenate( ( [z_max],
+                                      z_max-np.cumsum(dzs) ) )
+        
         z_mid=0.5*(z_interface[:-1]+z_interface[1:])
 
         ds=xr.Dataset()
@@ -818,12 +911,28 @@ class SuntansModel(dfm.HydroModel):
         Nt=len(self.bc_time)
         ds['time']=('Nt',),self.bc_time
 
+        # Scalars will introduce type3 and type2 because they may not know
+        # what type of flow forcing is there.  Here we skim out scalars that
+        # do not have an associated h (type3) or flow (type2) boundary
+
+        # the list(...keys()) part is to make a copy, so the del's
+        # don't upset the iteration
+        for cell in list(self.bc_type3.keys()):
+            if 'h' not in self.bc_type3[cell]:
+                del self.bc_type3[cell]
+        # 'u' 'v' and 'Q' for type2
+        for edge in list(self.bc_type2.keys()):
+            if not ( ('u' in self.bc_type2[edge]) or
+                     ('v' in self.bc_type2[edge]) or
+                     ('Q' in self.bc_type2[edge])):
+                del self.bc_type2[edge]
+
         Ntype3=len(self.bc_type3)
         ds['cellp']=('Ntype3',),np.zeros(Ntype3,np.int32)-1
         ds['xv']=('Ntype3',),np.zeros(Ntype3,np.float64)
         ds['yv']=('Ntype3',),np.zeros(Ntype3,np.float64)
 
-        # the actual data variables for typr 3:
+        # the actual data variables for type 3:
         ds['uc']=('Nt','Nk','Ntype3',),np.zeros((Nt,Nk,Ntype3),np.float64)
         ds['vc']=('Nt','Nk','Ntype3',),np.zeros((Nt,Nk,Ntype3),np.float64)
         ds['wc']=('Nt','Nk','Ntype3',),np.zeros((Nt,Nk,Ntype3),np.float64)
@@ -832,6 +941,11 @@ class SuntansModel(dfm.HydroModel):
         ds['h']=('Nt','Ntype3'),np.zeros( (Nt, Ntype3), np.float64 )
 
         def interp_time(da):
+            if 'time' not in da.dims: # constant value
+                # this should  do the right thing for both scalar and vector
+                # values
+                return da.values * np.ones( (Nt,)+da.values.shape )
+                
             if da.ndim==2:
                 assert da.dims[0]=='time'
                 # recursively call per-layer, which is assumed to be the second
@@ -840,6 +954,31 @@ class SuntansModel(dfm.HydroModel):
                 return np.vstack(profiles).T
             return np.interp( utils.to_dnum(ds.time.values),
                               utils.to_dnum(da.time.values), da.values )
+
+        def combine_items(values,bc_items,offset=0.0):
+            base_item=None
+            # include the last mode='overwrite' bc, and sum the mode='add'
+            # bcs.
+            values[:]=offset
+
+            # aside from Q and h, other variables are 3D, which means
+            # that if the data comes back 2D, pad out the layer dimension
+
+            def pad_dims(data):
+                if values.ndim==2 and data.ndim==1:
+                    return data[:,None] # broadcastable vertical dimension
+                else:
+                    return data
+
+            for bc_item in bc_items:
+                if bc_item.mode=='add':
+                    values[:] += pad_dims(interp_time(bc_item))
+                else:
+                    base_item=bc_item
+            if base_item is None:
+                self.log.warning("BC for cell %d has no overwrite items"%type3_cell)
+            else:
+                values[:] += pad_dims(interp_time(bc_item))
 
         cc=self.grid.cells_center()
 
@@ -850,12 +989,14 @@ class SuntansModel(dfm.HydroModel):
 
             bc=self.bc_type3[type3_cell]
             for v in bc.keys(): # each variable on that edge/cell
-                # hmm - how to assign bc[v].values to ds[v] ?
                 if v=='h':
                     offset=self.z_offset
                 else:
                     offset=0
-                ds[v].isel(Ntype3=type3_i).values[:] = interp_time(bc[v]) + offset
+                # will set bc values in place
+                combine_items(ds[v].isel(Ntype3=type3_i).values,
+                              bc[v],
+                              offset=offset)
 
         Ntype2=len(self.bc_type2)
         Nseg=len(self.bc_type2_segments)
@@ -882,7 +1023,8 @@ class SuntansModel(dfm.HydroModel):
         for seg_i,seg_name in enumerate(segment_names):
             bc=self.bc_type2_segments[seg_name]
             for v in bc.keys(): # only Q, but stick to the same pattern
-                ds['boundary_'+v].isel(Nseg=seg_i).values[:] = interp_time(bc[v])
+                combine_items(ds['boundary_'+v].isel(Nseg=seg_i).values,
+                              bc[v])
 
         ec=self.grid.edges_center()
         for type2_i,type2_edge in enumerate(self.bc_type2): # each edge
@@ -898,13 +1040,16 @@ class SuntansModel(dfm.HydroModel):
                     offset=0.0
 
                 if v!='Q':
-                    data=interp_time(bc[v]) + offset
-                    # aside from Q and h, other variables are 3D
-                    if v!='h' and data.ndim==1:
-                        data=data[:,None] # add broadcastable vertical axis
-                    ds['boundary_'+v].isel(Ntype2=type2_i).values[:] = data
+                    combine_items(ds['boundary_'+v].isel(Ntype2=type2_i).values,
+                                  bc[v],offset)
                 else:
                     seg_name=bc[v]
+                    # too lazy to work through the right way to deal with combined
+                    # bcs for Q right now, so just warn the user that it may be
+                    # a problem.
+                    if len(seg_name)!=1:
+                        log.warning("Only tested with a single value, but got %s"%str(seg_name))
+                    seg_name=seg_name[0]
                     seg_idx=segment_ids[segment_names.index(seg_name)]
                     ds['segedgep'].values[type2_i] = seg_idx
 
@@ -929,16 +1074,18 @@ class SuntansModel(dfm.HydroModel):
             self.write_flow_bc(bc)
         elif isinstance(bc,dfm.VelocityBC):
             self.write_velocity_bc(bc)
+        elif isinstance(bc,dfm.ScalarBC):
+            self.write_scalar_bc(bc)
         else:
             super(SuntansModel,self).write_bc(bc)
 
     def write_stage_bc(self,bc):
-        water_level=bc.dataarray()
+        water_level=bc.data()
         assert len(water_level.dims)<=1,"Water level must have dims either time, or none"
 
         cells=self.bc_geom_to_cells(bc.geom)
         for cell in cells:
-            self.bc_type3[cell]['h']=water_level
+            self.bc_type3[cell]['h'].append(water_level)
 
     def write_velocity_bc(self,bc):
         # interface isn't exactly nailed down with the BC
@@ -948,19 +1095,40 @@ class SuntansModel(dfm.HydroModel):
         # here?
         ds=bc.dataset()
         edges=self.bc_geom_to_edges(bc.geom)
+
         for j in edges:
-            self.bc_type2[j]['u']=ds['u']
-            self.bc_type2[j]['v']=ds['v']
+            for comp in ['u','v']:
+                da=ds[comp]
+                da.attrs['mode']=bc.mode
+                self.bc_type2[j][comp].append(da)
+
+    def write_scalar_bc(self,bc):
+        da=bc.data()
+
+        scalar_name=bc.scalar
+        # canonicalize scalar names for suntans BC files
+        if scalar_name.lower() in ['salinity','salt','s']:
+            scalar_name='S'
+        elif scalar_name.lower() in ['temp','t','temperature']:
+            scalar_name='T'
+        else:
+            self.log.warning("Scalar %s is not S or T or similar"%scalar_name)
+
+        # scalars could be set on edges or cells
+        for j in self.bc_geom_to_edges(bc.geom):
+            self.bc_type2[j][scalar_name].append(da)
+        for cell in self.bc_geom_to_cells(bc.geom):
+            self.bc_type3[cell][scalar_name].append(da)
 
     def write_flow_bc(self,bc):
-        da=bc.dataarray()
-        self.bc_type2_segments[bc.name]['Q']=da
+        da=bc.data()
+        self.bc_type2_segments[bc.name]['Q'].append(da)
 
         assert len(da.dims)<=1,"Flow must have dims either time, or none"
 
         edges=self.bc_geom_to_edges(bc.geom)
         for j in edges:
-            self.bc_type2[j]['Q']=bc.name
+            self.bc_type2[j]['Q'].append(bc.name)
 
     def bc_geom_to_cells(self,geom):
         """ geom: a LineString geometry. Return the list of cells interior
@@ -994,7 +1162,7 @@ class SuntansModel(dfm.HydroModel):
                 # maybe we're constructing a restart?  sequencing of this stuff,
                 # and the exact state of the model is quirky and under-designed
                 self.run_start=self.restart_model.restartable_time()
-            log.info("Inferred start time of restart to be %s"%self.run_start)
+            log.debug("Inferred start time of restart to be %s"%self.run_start)
         else:
             start_dt=datetime.datetime.strptime(self.config['starttime'],'%Y%m%d.%H%M%S')
             self.run_start=utils.to_dt64(start_dt)
@@ -1089,6 +1257,16 @@ class SuntansModel(dfm.HydroModel):
 
         cell_xyz=np.c_[cell_xy,z]
         np.savetxt(cell_depth_fn,cell_xyz) # space separated
+
+        # And edges, preparing for edge-based bathy
+        edge_depth_fn=os.path.join(self.run_dir,"depths.dat-edge")
+
+        edge_xy=self.grid.edges_center()
+
+        # make depth positive down
+        z=-(self.grid.edges['edge_depth'] + self.z_offset)
+        edge_xyz=np.c_[edge_xy,z]
+        np.savetxt(edge_depth_fn,edge_xyz) # space separated
 
     def grid_as_dataset(self):
         """
@@ -1245,7 +1423,7 @@ class SuntansModel(dfm.HydroModel):
                                     os.path.join(self.run_dir,fn))
         else:
             self.run_mpi(["-g",self.sun_verbose_flag,"--datadir=%s"%self.run_dir])
-    sun_verbose_flag="-vv"
+    sun_verbose_flag="-vv" 
     def run_simulation(self):
         args=['-s']
         if self.restart:
@@ -1322,17 +1500,21 @@ class SuntansModel(dfm.HydroModel):
             self._subdomain_grids[p]=sub_g
         return self._subdomain_grids[p]
 
-    def extract_transect(self,xy,time=slice(None),dx=None):
+    def extract_transect(self,xy,time=slice(None),dx=None,
+                         vars=['uc','vc','Ac','dv','dzz','eta','w']):
         """
         xy: [N,2] coordinates defining the line of the transect
         time: time index or slice to extract
         dx: omit to use xy as is, or a length scale for resampling xy
+
+        returns xr.Dataset, unless xy does not intersect the grid at all,
+        in which case None is returned.
         """
         if dx is not None:
             xy=linestring_utils.upsample_linearring(xy,dx,closed_ring=False)
         proc_point_cell=np.zeros( [self.num_procs,len(xy)], np.int32)-1
         point_datasets=[None]*len(xy)
-        vars=['uc','vc','Ac','dv','dzz','eta','w']
+        
         for proc in range(self.num_procs):
             sub_g=self.subdomain_grid(proc)
             ds=None
@@ -1353,19 +1535,22 @@ class SuntansModel(dfm.HydroModel):
                     point_datasets[pnti]=point_ds
         # drop xy points that didn't hit a cell
         point_datasets=[p for p in point_datasets if p is not None]
+        if len(point_datasets)==0: # transect doesn't intersect grid at all.
+            return None
         transect=xr.concat(point_datasets,dim='sample')
-        transect=transect.rename(Nk='layer',
-                                 Nkw='interface',
-                                 uc='Ve',
-                                 vc='Vn',
-                                 w='Vu_int')
+        renames=dict(Nk='layer',Nkw='interface',
+                     uc='Ve',vc='Vn',w='Vu_int')
+        renames={x:renames[x] for x in renames if (x in transect) or (x in transect.dims)}
+        transect=transect.rename(**renames)
         transect['U']=('sample','layer','xy'),np.concatenate( [transect.Ve.values[...,None],
                                                                transect.Vn.values[...,None]],
                                                               axis=-1)
+        if 'Vu_int' in transect:
+            Vu_int=transect.Vu_int.values.copy()
+            Vu_int[np.isnan(Vu_int)]=0.0
+            transect['Vu']=('sample','layer'), 0.5*(Vu_int[:,1:] + Vu_int[:,:-1])
 
-        Vu_int=transect.Vu_int.values.copy()
-        Vu_int[np.isnan(Vu_int)]=0.0
-        transect['Vu']=('sample','layer'), 0.5*(Vu_int[:,1:] + Vu_int[:,:-1])
+
         # construct layer-center depths
         dzz=transect.dzz.values.copy() # sample, Nk
         z_bot=transect['eta'].values[:,None] - dzz.cumsum(axis=1)
@@ -1406,7 +1591,16 @@ class SuntansModel(dfm.HydroModel):
             self.warn_initial_water_level+=1
             return 0.0
 
-    def extract_station(self,xy=None,ll=None):
+    def extract_station(self,xy=None,ll=None,chain_count=1):
+        """
+        Return a dataset for a single point in the model
+        xy: native model coordinates
+        ll: lon/lat coordinates
+        chain_count: max number of restarts to go back.
+          1=>no chaining just this model.  None or 0:
+          chain all runs possible.  Otherwise, go back max
+          number of runs up to chain_count
+        """
         # For the moment, just use map output
         if xy is None:
             xy=self.ll_to_native(ll)
@@ -1420,22 +1614,43 @@ class SuntansModel(dfm.HydroModel):
             c=g.select_cells_nearest(xy,inside=False)
             d=utils.dist(g.cells_center()[c],xy)
             if d<match[2]:
-                match=[proc,c,d,map_ds]
+                match=[proc,c,d,map_fn]
+            map_ds.close()
         if match[1] is None:
             raise Exception("Could not find model output at %.0f,%.0f"%(xy[0],xy[1]))
         # print("Matched to cell center %.0fm away"%(match[2]))
 
-        map_ds=match[3]
-        # Work around bad naming of dimensions
-        map_ds['Nk_c']=map_ds['Nk']
-        del map_ds['Nk']
+        if chain_count==1:
+            runs=[self]
+        else:
+            runs=self.chain_restarts(count=chain_count)
 
-        # Extract time series there:
-        model_out=xr.Dataset()
-        model_out['time']=map_ds.time
-        model_out['distance_from_target']=(),match[2]
+        proc,cell,distance,map_fn=match
 
-        for d in map_ds.data_vars:
-            if 'Nc' in map_ds[d].dims:
-                model_out[d]=map_ds[d].isel(Nc=match[1])
-        return model_out
+        dss=[] # per-restart datasets
+
+        for run in runs:
+            map_ds=xr.open_dataset(run.map_outputs()[proc])
+
+            # Work around bad naming of dimensions
+            map_ds['Nk_c']=map_ds['Nk']
+            del map_ds['Nk']
+
+            # Extract time series there:
+            model_out=xr.Dataset() # not middle out
+            model_out['time']=map_ds.time
+            model_out['distance_from_target']=(),match[2]
+
+            for d in map_ds.data_vars:
+                if 'Nc' in map_ds[d].dims:
+                    model_out[d]=map_ds[d].isel(Nc=match[1])
+
+            if dss:
+                # limit to non-overlapping
+                time_sel=model_out.time.values>dss[-1].time.values[-1]
+                model_out=model_out.isel(time=time_sel)
+            dss.append(model_out)
+
+        combined_ds=xr.concat(dss,dim='time',data_vars='minimal')
+
+        return combined_ds

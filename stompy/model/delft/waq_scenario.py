@@ -235,7 +235,12 @@ class Hydro(object):
     # tested, leave this flag in place so it's easier to find where
     # the change is
     omit_inactive_exchanges=True
-    
+
+    # if True, allow symlinking to original files where possible.
+    # not directly relevant for some Hydro instances, but this will be
+    # used as the default for parameters, too.
+    enable_write_symlink=True
+
     @property
     def fn_base(self): # base filename for output. typically com-<scenario name>
         return 'com-{}'.format(self.scenario.name)
@@ -247,7 +252,6 @@ class Hydro(object):
     # constants:
     CLOSED=CLOSED
     BOUNDARY=BOUNDARY
-
 
     def __init__(self, **kws):
         self.log=logging.getLogger(self.__class__.__name__)
@@ -317,7 +321,9 @@ class Hydro(object):
                                          self.scenario.stop_time])
         if start_i>0:
             start_i-=1
-        if stop_i < len(self.t_secs):
+        if stop_i <= len(self.t_secs):
+            # careful to check <= so we don't drop the last time
+            # step.
             stop_i+=1
         return self.t_secs[start_i:stop_i]
 
@@ -1528,14 +1534,14 @@ class HydroFiles(Hydro):
     DWAQ hydro data read from existing files, by parsing
     .hyd file.
     """
-    # if True, allow symlinking to original files where possible.
-    enable_write_symlink=True
-
     def __init__(self,hyd_path,**kw):
         self.hyd_path=hyd_path
         self.parse_hyd()
 
         super(HydroFiles,self).__init__(**kw)
+        if sys.platform=='win32' and self.enable_write_symlink:
+            self.log.warning("Symlinks disabled on windows")
+            self.enable_write_symlink=False            
 
     def parse_hyd(self):
         self.hyd_toks={}
@@ -1853,6 +1859,9 @@ class HydroFiles(Hydro):
         return self.seg_func(t_sec,label='vert-diffusion-file')
 
     def write_flo(self):
+        # TODO: allow an option to avoid copying, and just supply
+        # the original path.  this is tested in windows, no need
+        # to escape backslash, seems okay with long lines.
         if not self.enable_write_symlink:
             return super(HydroFiles,self).write_flo()
         else:
@@ -2123,7 +2132,7 @@ class HydroFiles(Hydro):
             fn=self.get_path(key)
             if os.path.exists(fn):
                 print("%s does exist, so will add it to the parameters"%fn)
-                hyd[var]=ParameterSpatioTemporal(seg_func_file=fn,enable_write_symlink=True,
+                hyd[var]=ParameterSpatioTemporal(seg_func_file=fn,
                                                  hydro=self)
         return hyd
 
@@ -6599,7 +6608,7 @@ class ParameterSpatioTemporal(Parameter):
     interpolation='LINEAR' # or 'BLOCK'
 
     def __init__(self,times=None,values=None,func_t=None,scenario=None,name=None,
-                 seg_func_file=None,enable_write_symlink=False,n_seg=None,
+                 seg_func_file=None,enable_write_symlink=None,n_seg=None,
                  hydro=None):
         """
         times: [N] sized array, 'i4', giving times in system clock units
@@ -6626,7 +6635,15 @@ class ParameterSpatioTemporal(Parameter):
         self._times=times
         self.values=values
         self.seg_func_file=seg_func_file
-        self.enable_write_symlink=enable_write_symlink
+        # generally follow hydro on whether to use symlinks, but allow
+        # an explicit option, too.
+        if enable_write_symlink is None:
+            if hydro is not None:
+                self.enable_write_symlink=hydro.enable_write_symlink
+            else:
+                self.enable_write_symlink=False
+        else:
+            self.enable_write_symlink=enable_write_symlink
         self._n_seg=n_seg # only needed for evaluate() when scenario isn't set
 
     # goofy helpers when n_seg or times can only be inferred after instantiation
@@ -6993,9 +7010,11 @@ class Scenario(scriptable.Scriptable):
     time0=None
     # time0=datetime.datetime(1990,8,5) # defaults to hydro value
     scu=datetime.timedelta(seconds=1)
-    time_step=None # will be taken from the hydro, unless specified otherwise
+    time_step=None  # these are taken from hydro, unless specified otherwise
+    start_time=None # 
+    stop_time=None  # 
 
-    log=logging # take a stab at managing messages via logging
+    log=logging # python logging 
 
     # backward differencing,
     # .60 => second and third keywords are set 
@@ -7062,7 +7081,7 @@ class Scenario(scriptable.Scriptable):
     mon_stop_time=None
     mon_time_step=None
 
-    def __init__(self,hydro,**kw):
+    def __init__(self,hydro=None,**kw):
         self.log=logging.getLogger(self.__class__.__name__)
 
         # list of dicts.  moving towards standard setting of loads via src_tags
@@ -7072,11 +7091,7 @@ class Scenario(scriptable.Scriptable):
         self.dispersions=NamedObjects(scenario=self)
         self.velocities=NamedObjects(scenario=self)
 
-        if hydro:
-            print( "Setting hydro")
-            self.set_hydro(hydro)
-        else:
-            self.hydro=None # will have limited functionality
+        self.hydro=hydro
 
         self.inp=InpFile(scenario=self)
 
@@ -7150,17 +7165,34 @@ class Scenario(scriptable.Scriptable):
 END_MULTIGRID"""%num_layers
         else:
             return " ; sigma layers - no multigrid stanza"
-    
-    def set_hydro(self,hydro):
-        self.hydro=hydro
-        self.hydro.scenario=self
 
-        # sensible defaults for simulation period
+    _hydro=None
+    @property
+    def hydro(self):
+        return self._hydro
+    @hydro.setter
+    def hydro(self,value):
+        self.set_hydro(value)
+
+    def set_hydro(self,hydro):
+        self._hydro=hydro
+
+        if hydro is None:
+            return
+
+        self._hydro.scenario=self
+
+        # I think it's required that these match
+        self.time0 = self._hydro.time0
+
+        # Other time-related values needn't match, but the hydro
+        # is a reasonable default if no value has been set yet.
         if self.time_step is None:
-            self.time_step=self.hydro.time_step
-        self.time0 = self.hydro.time0
-        self.start_time=self.time0+self.scu*self.hydro.t_secs[0]
-        self.stop_time =self.time0+self.scu*self.hydro.t_secs[-1]
+            self.time_step=self._hydro.time_step
+        if self.start_time is None:
+            self.start_time=self.time0+self.scu*self._hydro.t_secs[0]
+        if self.stop_time is None:
+            self.stop_time =self.time0+self.scu*self._hydro.t_secs[-1]
 
     def init_parameters(self):
         params=NamedObjects(scenario=self,cast_value=cast_to_parameter)
@@ -7440,9 +7472,9 @@ END_MULTIGRID"""%num_layers
         t can be a datetime object, an integer number of seconds since time0,
         or a floating point datenum
         """
-        if np.issubdtype(type(t),int):
+        if np.issubdtype(type(t),np.integer):
             return self.time0 + t*self.scu
-        elif np.issubdtype(type(t),float):
+        elif np.issubdtype(type(t),np.floating):
             return num2date(t)
         elif isinstance(t,datetime.datetime):
             return t
@@ -7464,6 +7496,9 @@ END_MULTIGRID"""%num_layers
         hda=os.path.join( self.base_path,self.name+".hda")
         hdf=os.path.join( self.base_path,self.name+".hdf")
         if os.path.exists(hda):
+            if nefis.nef_lib() is None:
+                self.log.warning("Nefis library not configured -- will not read nef history")
+                return None
             return nefis.Nefis(hda, hdf)
         else:
             return None
@@ -7516,7 +7551,6 @@ END_MULTIGRID"""%num_layers
         """
         if output_settings is None:
             output_settings=self.default_ugrid_output_settings
-
 
         if nef is None:
             if mode is 'map':
@@ -8023,7 +8057,7 @@ END_MULTIGRID"""%num_layers
     def write_nefis_his_nc(self):
         nc2_fn=os.path.join(self.base_path,'dwaq_hist.nc')
         nc2=self.ugrid_history(nc_kwargs=dict(fn=nc2_fn,overwrite=True))
-        # if no history output, no nc2.
+        # if no history output or nefis is not setup, no nc2.
         if nc2:
             nc2.close()
             return True
@@ -8069,15 +8103,18 @@ END_MULTIGRID"""%num_layers
         else:
             bloom_part=""
 
-        cmd="{} -waq {} -p {}".format(self.delwaq1_path,
-                                      bloom_part,
-                                      self.proc_path)
+        cmd=[self.delwaq1_path,
+             "-waq", bloom_part,
+             "-p",self.proc_path]
+        #cmd='{} -waq {} -p {}'.format(self.delwaq1_path,
+        #                              bloom_part,
+        #                              self.proc_path)
         self.log.info("Running delwaq1:")
-        self.log.info("  "+ cmd)
+        self.log.info("  "+ " ".join(cmd))
 
         t_start=time.time()
         try:
-            ret=subprocess.check_output(cmd,shell=True,cwd=self.base_path,stderr=subprocess.STDOUT)
+            ret=subprocess.check_output(cmd,shell=False,cwd=self.base_path,stderr=subprocess.STDOUT)
         except subprocess.CalledProcessError as exc:
             self.log.error("problem running delwaq1")
             self.log.error("output: ")
@@ -8088,7 +8125,8 @@ END_MULTIGRID"""%num_layers
         self.log.info("delwaq1 ran in %.2fs"%(time.time() - t_start))
 
         nerrors=nwarnings=-1
-        for line in ret.decode().split("\n"):
+        # dwaq likes to draw boxes with code page 437
+        for line in ret.decode('cp437','ignore').split("\n"):
             if 'Number of WARNINGS' in line:
                 nwarnings=int(line.split()[-1])
             elif 'Number of ERRORS during input' in line:
@@ -8104,21 +8142,21 @@ END_MULTIGRID"""%num_layers
         """
         Run delwaq2 (computation)
         """
-        cmd="{} {}".format(self.delwaq2_path,self.name)
+        cmd=[self.delwaq2_path,self.name]
         if not output_filename:
             output_filename= os.path.join(self.base_path,'delwaq2.out')
 
         t_start=time.time()
         with open(output_filename,'wt') as fp_out:
             self.log.info("Running delwaq2 - might take a while...")
-            self.log.info("  " + cmd)
+            self.log.info("  " + " ".join(cmd))
             
             sim_time=(self.stop_time-self.start_time).total_seconds()
             tail=MonTail(os.path.join(self.base_path,self.name+".mon"),
                          log=self.log,sim_time_seconds=sim_time)
             try:
                 try:
-                    ret=subprocess.check_call(cmd,shell=True,cwd=self.base_path,stdout=fp_out,
+                    ret=subprocess.check_call(cmd,shell=False,cwd=self.base_path,stdout=fp_out,
                                               stderr=subprocess.STDOUT)
                 except subprocess.CalledProcessError as exc:
                     raise WaqException("delwaq2 exited with an error code - check %s"%output_filename)
@@ -8284,6 +8322,7 @@ class InpFile(object):
 ;
 #1 ; delimiter for the first block
 """
+        assert len(self.desc)==3,"Scenario.desc must have exactly 3 strings"
         return block01.format(self=self,
                               time0=self.fmt_time0(),scu=self.fmt_scu(),
                               substances=self.fmt_substance_names())

@@ -3,9 +3,6 @@ Automate parts of setting up a DFlow hydro model.
 
 TODO:
   allow for setting grid bathy from the model instance
-  consider a procedural approach to BCs:
-    add_bc_shp(...)
-    add_bc_match(FlowBC(...), name="SJ_upstream")
 """
 import os,shutil,glob,inspect
 import six
@@ -20,7 +17,7 @@ from shapely import geometry
 
 import stompy.model.delft.io as dio
 from stompy import xr_utils
-from stompy.io.local import noaa_coops
+from stompy.io.local import noaa_coops, hycom
 from stompy import utils, filters, memoize
 from stompy.spatial import wkb2shp, proj_utils
 from stompy.model.delft import dfm_grid
@@ -39,6 +36,13 @@ class BC(object):
     grid_edge=None
     grid_cell=None
 
+    # some BCs allow 'add', which just applies a delta to a previously
+    # set BC.
+    mode='overwrite'
+
+    # extend the data before/after the model period by this much
+    pad=np.timedelta64(24,'h')
+
     def __init__(self,name,model=None,**kw):
         """
         Create boundary condition object.  Note that no work should be done
@@ -50,29 +54,40 @@ class BC(object):
         """
         self.model=model # may be None!
         self.name=name
-        if 'geom' in kw:
-            kw['_geom']=kw['geom']
+        self.filters=[]
 
-        for k in kw:
-            try:
-                getattr(self,k)
-            except AttributeError:
-                raise Exception("Setting attribute %s failed because it doesn't exist on %s"%(k,self))
-            self.__dict__[k]=kw[k]
+        utils.set_keywords(self,kw)
+        # above line should replace this stanza:
+        #   for k in kw:
+        #       try:
+        #           getattr(self,k)
+        #       except AttributeError:
+        #           raise Exception("Setting attribute %s failed because it doesn't exist on %s"%(k,self))
+        #       self.__dict__[k]=kw[k]
+
+        for f in self.filters:
+            f.setup(self)
 
     # A little goofy - the goal is to make geometry lazily
     # fetched against the model gazetteer, but it makes
     # get/set operations awkward
     @property
     def geom(self):
-        if (self._geom is None):
+        if (self._geom is None) and (self.model is not None):
             kw={}
             if self.geom_type is not None:
                 kw['geom_type']=self.geom_type
             self._geom=self.model.get_geometry(name=self.name,**kw)
         return self._geom
     @geom.setter
-    def set_geom(self,g):
+    def geom(self,g):
+        if isinstance(g,np.ndarray):
+            if g.ndim==1:
+                g=geometry.Point(g)
+            elif g.ndim==2:
+                g=geometry.LineString(g)
+            else:
+                raise Exception("Not sure how to convert %s to a shapely geometry"%g)
         self._geom=g
 
     # Utilities for specific types of BCs which need more information
@@ -269,29 +284,243 @@ class BC(object):
 
     def as_data_array(self,data,quantity='value'):
         """
-        Convert several types into a consistent DataArray ready to be written
-        data:
+        Convert several types into a consistent DataArray ready to be
+        post-processed and then written out.
+
+        Conversion rules:
         dataarray => no change
         dataset => pull just the data variable, either based on quantity, or if there
           is a single data variable that is not a coordinate, use that.
-        constant => create a two-point timeseries
+        constant => wrap in a DataArray with no time dimension.
+          used to create a two-point timeseries, but if that is needed it should be moved
+          to model specific code.
         """
         if isinstance(data,xr.DataArray):
+            data.attrs['mode']=self.mode
             return data
         elif isinstance(data,xr.Dataset):
             if len(data.data_vars)==1:
-                return data[data.data_vars[0]]
+                da=data[data.data_vars[0]]
+                da.attrs['mode']=self.mode
+                return da
             else:
                 raise Exception("Dataset has multiple data variables -- not sure which to use: %s"%( str(data.data_vars) ))
         elif isinstance(data,(np.integer,np.floating,int,float)):
-            # handles expanding a constant to the length of the run
-            ds=xr.Dataset()
-            pad=np.timedelta64(24,'h')
-            ds['time']=('time',),np.array( [self.model.run_start-pad,self.model.run_stop+pad] )
-            ds[quantity]=('time',),np.array( [data,data] )
-            return ds[quantity]
+            # # handles expanding a constant to the length of the run
+            # ds=xr.Dataset()
+            # ds['time']=('time',),np.array( [self.data_start,self.data_stop] )
+            # ds[quantity]=('time',),np.array( [data,data] )
+            # da=ds[quantity]
+            da=xr.DataArray(data)
+            da.attrs['mode']=self.mode
+            return da
         else:
             raise Exception("Not sure how to cast %s to be a DataArray"%data)
+
+    # Not all BCs have a time dimension, but enough do that we have some general utility
+    # getters/setters at this level
+    # Note that data_start, data_stop are from the point of view of the data source,
+    # e.g. a model starting on 2015-01-01 could have a 31 day lag, such that
+    # data_start is actually 2014-12-01.
+    _data_start=None
+    _data_stop =None
+    @property
+    def data_start(self):
+        if self._data_start is None:
+            return self.transform_time_input(self.model.run_start-self.pad)
+        else:
+            return self._data_start
+    @data_start.setter
+    def data_start(self,v):
+        self._data_start=v
+
+    @property
+    def data_stop(self):
+        if self._data_stop is None:
+            return self.transform_time_input(self.model.run_stop+self.pad)
+        else:
+            return self._data_stop
+    @data_stop.setter
+    def data_stop(self,v):
+        self._data_stop=v
+
+    def transform_time_input(self,t):
+        for filt in self.filters:
+            t=filt.transform_time_input(t)
+        return t
+    def transform_output(self,da):
+        """
+        Apply filter stack to da, including model-based time zone
+        correction of model is set.
+        """
+        for filt in self.filters[::-1]:
+            da=filt.transform_output(da)
+        da=self.to_model_timezone(da)
+        return da
+    def to_model_timezone(self,da):
+        if 'time' in da.dims and self.model is not None:
+            da.time.values[:]=self.model.utc_to_native(da.time.values)
+        return da
+
+    def src_data(self):
+        raise Exception("src_data must be set in subclass")
+
+    def data(self):
+        da=self.src_data()
+        da=self.as_data_array(da)
+        da=self.transform_output(da)
+        return da
+
+    # if True, bokeh plot will include time series for intermediate
+    # data as filters are applied
+    bokeh_show_intermediate=True
+    def write_bokeh(self,filename=None,path=".",title=None,mode='cdn'):
+        """
+        Write a bokeh html plot for this dataset.
+        path: folder in which to place the plot.
+        filename: relative or absolute filename.  defaults to path/{self.name}.html
+        mode: this is passed to bokeh, 'cdn' yields small files but requires an internet
+         connection to view them.  'inline' yields self-contained, larger (~800k) files.
+        """
+        import bokeh.io as bio # output_notebook, show, output_file
+        import bokeh.plotting as bplt
+
+        bplt.reset_output()
+
+        if title is None:
+            title="Name: %s"%self.name
+
+        p = bplt.figure(plot_width=750, plot_height=350,
+                        title=title,
+                        active_scroll='wheel_zoom',
+                        x_axis_type="datetime")
+
+        if self.bokeh_show_intermediate:
+            da=self.src_data()
+            self.plot_bokeh(da,p,label="src")
+            for filt in self.filters[::-1]:
+                da=filt.transform_output(da)
+                self.plot_bokeh(da,p,label=filt.label())
+            da=self.to_model_timezone(da)
+            self.plot_bokeh(da,p)
+        else:
+            da=self.data()
+            self.plot_bokeh(da,p)
+        if filename is None:
+            filename="bc_%s.html"%self.name
+        output_fn=os.path.join(path,filename)
+        bio.output_file(output_fn,
+                        title=title,
+                        mode=mode)
+        bio.save(p) # show the results
+
+    #annoying, but bokeh not cycle colors automatically
+    _colors=None
+    def get_color(self):
+        if self._colors is None:
+            from bokeh.palettes import Dark2_5 as palette
+            import itertools
+            self._colors=itertools.cycle(palette)
+        return six.next(self._colors)
+    def plot_bokeh(self,da,plot,label=None):
+        """
+        Generic plotting implementation -- will have to override for complicated
+        datatypes
+        """
+        plot.yaxis.axis_label = da.attrs.get('units','n/a')
+        if label is None:
+            label=self.name
+        if 'time' in da.dims:
+            plot.line( da.time.values.copy(), da.values.copy(), legend=label,
+                       color=self.get_color())
+        else:
+            from bokeh.models import Label
+            label=Label(x=70, y=70, x_units='screen', y_units='screen',
+                        text="No plotting for %s (%s)"%(label,self.__class__.__name__))
+            plot.add_layout(label)
+
+class BCFilter(object):
+    """
+    Transformation/translations that can be applied to
+    a BC
+    """
+    def __init__(self,**kw):
+        utils.set_keywords(self,kw)
+    def setup(self,bc):
+        """
+        This is where you might increase the pad
+        """
+        self.bc=bc
+    def transform_time_input(self,t):
+        """
+        Transform the externally requested time to what the data source
+        should provide
+        """
+        return t
+    def transform_output(self,da):
+        """
+        Whatever dataarray comes back from the source, apply the necessary
+        transformations (including the inverse of the time_input transform)
+        """
+        return da
+    def label(self):
+        return self.__class__.__name__
+
+class LowpassGodin(BCFilter):
+    min_pad=np.timedelta64(5*24,'h')
+    def setup(self,bc):
+        super(LowpassGodin,self).setup(bc)
+        if self.bc.pad<self.min_pad:
+            self.bc.pad=self.min_pad
+    def transform_output(self,da):
+        assert da.ndim==1,"Only ready for simple time series"
+        from ... import filters
+        da.values[:]=filters.lowpass_godin(da.values,
+                                           utils.to_dnum(da.time))
+        return da
+
+class Lowpass(BCFilter):
+    cutoff_hours=None
+    # if true, replace any nans by linear interpolation, or
+    # constant extrapolation at ends
+    fill_nan=True
+    def transform_output(self,da):
+        assert da.ndim==1,"Only ready for simple time series"
+        from ... import filters
+        assert self.cutoff_hours is not None,"Must specify lowpass threshold cutoff_hors"
+        dt_h=24*np.median(np.diff(utils.to_dnum(da.time.values)))
+        log.info("Lowpass: data time step is %.2fh"%dt_h)
+        data_in=da.values
+
+        if np.any(~np.isfinite(data_in)):
+            if self.fill_nan:
+                log.info("Lowpass: %d of %d data values will be filled"%( np.sum(~np.isfinite(data_in)),
+                                                                          len(data_in) ))
+                data_in=utils.fill_invalid(data_in,ends='constant')
+            else:
+                log.error("Lowpass: %d of %d data values are not finite"%( np.sum(~np.isfinite(data_in)),
+                                                                           len(data_in) ))
+        da.values[:]=filters.lowpass(data_in,cutoff=self.cutoff_hours,dt=dt_h)
+
+        assert np.all(np.isfinite(da.values)),("Lowpass: %d of %d output data values are not finite"%
+                                               ( np.sum(~np.isfinite(da.values)),
+                                                 len(da.values) ))
+        return da
+
+class Lag(BCFilter):
+    def __init__(self,lag):
+        self.lag=lag
+    def transform_time_input(self,t):
+        return t+self.lag
+    def transform_output(self,da):
+        da.time.values[:]=da.time.values-self.lag
+        return da
+class Transform(BCFilter):
+    def __init__(self,fn):
+        self.fn=fn
+    def transform_output(self,da):
+        da.values[:]=self.fn(da.values)
+        return da
 
 class RoughnessBC(BC):
     shapefile=None
@@ -315,18 +544,80 @@ class RoughnessBC(BC):
     def xyz_filename(self):
         return self.filename_base()+".xyz"
 
-    def data(self):
+    def src_data(self):
         assert self.shapefile is not None,"Currently only support shapefile input for roughness"
         shp_data=wkb2shp.shp2geom(self.shapefile)
         coords=np.array( [np.array(pnt) for pnt in shp_data['geom'] ] )
         n=shp_data['n']
-        xyz=np.c_[coords,n]
-        return xyz
+        da=xr.DataArray(n,dims=['location'],name='n')
+        da=da.assign_coords(x=xr.DataArray(coords[:,0],dims='location'))
+        da=da.assign_coords(y=xr.DataArray(coords[:,1],dims='location'))
+        da.attrs['long_name']='Manning n'
+                
+        return da
 
     def write_data(self):
         data_fn=os.path.join(self.model.run_dir,self.xyz_filename())
         xyz=self.data()
         np.savetxt(data_fn,xyz)
+
+    def write_bokeh(self,filename=None,path=".",title=None,mode='cdn'):
+        """
+        Write a bokeh html plot for this dataset.  RoughnessBC has specific
+        needs here.
+        path: folder in which to place the plot.
+        filename: relative or absolute filename.  defaults to path/{self.name}.html
+        mode: this is passed to bokeh, 'cdn' yields small files but requires an internet
+         connection to view them.  'inline' yields self-contained, larger (~800k) files.
+        """
+        import bokeh.io as bio # output_notebook, show, output_file
+        import bokeh.plotting as bplt
+
+        bplt.reset_output()
+
+        if title is None:
+            title="Name: %s"%self.name
+
+        p = bplt.figure(plot_width=750, plot_height=750,
+                        title=title,
+                        active_scroll='wheel_zoom')
+        p.match_aspect=True # aiming for analog to axis('equal')
+
+        da=self.data()
+        self.plot_bokeh(da,p)
+        if filename is None:
+            filename="bc_%s.html"%self.name
+        output_fn=os.path.join(path,filename)
+        bio.output_file(output_fn,
+                        title=title,
+                        mode=mode)
+        bio.save(p) # save the results
+
+    def plot_bokeh(self,da,plot,label=None):
+        if label is None:
+            label=self.name
+        rough=da.values
+
+        from bokeh.models import LinearColorMapper,ColorBar
+
+        color_mapper=LinearColorMapper(palette="Viridis256",
+                                       low=rough.min(), high=rough.max())
+        from matplotlib import cm
+        cmap=cm.viridis
+        norm_rough=(rough-rough.min())/(rough.max()-rough.min())
+        mapped=[cmap(v) for v in norm_rough]
+        colors = [
+            "#%02x%02x%02x" % (int(m[0]*255),
+                               int(m[1]*255),
+                               int(m[2]*255))
+            for m in mapped ]
+
+        plot.scatter(da.x.values.copy(), da.y.values.copy(), radius=3,
+                     fill_color=colors, line_color=None,legend=label)
+
+        color_bar = ColorBar(color_mapper=color_mapper, 
+                             label_standoff=12, border_line_color=None, location=(0,0))
+        plot.add_layout(color_bar, 'right')
 
 class StageBC(BC):
     # If other than None, can compare to make sure it's the same as the model
@@ -356,12 +647,12 @@ class StageBC(BC):
         """
         return super(StageBC,self).filename_base()+"_ssh"
 
-    def dataarray(self):
-        return self.as_data_array(self.z)
+    def src_data(self):
+        return self.z
 
     def write_data(self):
         # just write a single node
-        self.write_tim(self.dataarray())
+        self.write_tim(self.data())
 
 class FlowBC(BC):
     dredge_depth=-1.0
@@ -400,14 +691,12 @@ class FlowBC(BC):
         else:
             log.info("Dredging disabled")
 
-    def dataarray(self):
+    def src_data(self):
         # probably need some refactoring here...
-        return self.as_data_array(self.Q)
+        return self.Q
 
     def write_data(self):
-        self.write_tim(self.dataarray())
-
-
+        self.write_tim(self.data())
 
 class SourceSinkBC(BC):
     # The grid, at the entry point, will be taken down to this elevation
@@ -458,14 +747,15 @@ class SourceSinkBC(BC):
             log.info("dredging disabled")
 
     def write_data(self):
+        self.write_tim(self.data())
+    def src_data(self):
         assert self.Q is not None
-
-        da=self.as_data_array(self.Q)
-        self.write_tim(da)
-    def dataarray(self):
-        return self.as_data_array(self.Q)
+        return self.Q
 
 class WindBC(BC):
+    """
+    Not yet fully updated
+    """
     wind=None
     def __init__(self,**kw):
         if 'name' not in kw:
@@ -492,81 +782,36 @@ class WindBC(BC):
                    "\n"]
             fp.write("\n".join(lines))
     def write_data(self):
+        self.write_tim(self.data())
+    def src_data(self):
         assert self.wind is not None
-        da=self.as_data_array(self.wind)
-        self.write_tim(da)
-    def dataarray(self):
-        return self.as_data_array(self.wind)
+        return self.wind
+    def plot_bokeh(self,da,plot,label=None):
+        # this will have to get smarter time...
+        # da will almost certainly have an xy dimension for the two components.
+        # for now, we assume no spatial variation, and plot two time series
+        if label is None:
+            label=self.name
+        for xy in [0,1]:
+            plot.line( da.time.values.copy(),
+                       da.isel(xy=xy).values.copy(),
+                       legend=label+"-"+"xy"[xy],
+                       color=self.get_color())
 
-#class ScalarBC(BC):
-#    def __init__(self,name,value):
-#        """
-#        name: 'salinity','temperature', other
-#        value: floating point
-#        """
-#        self.name=name
-#        self.value=value
-#    def write(self,*a,**kw):
-#        # Base implementation does nothing
-#        pass
-
-
-#class NoaaTides(BC):
-#    datum=None
-#    def __init__(self,station,datum=None,z_offset=0.0):
-#        self.station=station
-#        self.datum=datum
-#        self.z_offset=z_offset
-#    def write(self,mdu,feature,grid):
-#        print("Writing feature: %s"%(feature['name']))
-#
-#        name=feature['name']
-#        old_bc_fn=mdu.filepath( ['external forcing','ExtForceFile'] )
-#
-#        for var_name in self.var_names:
-#            if feature['geom'].type=='LineString':
-#                pli_data=[ (name, np.array(feature['geom'].coords)) ]
-#                base_fn=os.path.join(mdu.base_path,"%s_%s"%(name,var_name))
-#                pli_fn=base_fn+'.pli'
-#                dio.write_pli(pli_fn,pli_data)
-#
-#                if var_name=='ssh':
-#                    quant='waterlevelbnd'
-#                else:
-#                    assert False
-#
-#                with open(old_bc_fn,'at') as fp:
-#                    lines=["QUANTITY=%s"%quant,
-#                           "FILENAME=%s_%s.pli"%(name,var_name),
-#                           "FILETYPE=9",
-#                           "METHOD=3",
-#                           "OPERAND=O",
-#                           ""]
-#                    fp.write("\n".join(lines))
-#
-#                self.write_data(mdu,feature,var_name,base_fn)
-#            else:
-#                assert False
-#
-#    def write_data(self,mdu,feature,var_name,base_fn):
-#        tides=noaa_coops.coops_dataset_product(self.station,'water_level',
-#                                               mdu.time_range()[1],mdu.time_range()[2],
-#                                               days_per_request='M',cache_dir=cache_dir)
-#        tide=tides.isel(station=0)
-#        water_level=utils.fill_tidal_data(tide.water_level) + self.z_offset
-#        # IIR butterworth.  Nicer than FIR, with minor artifacts at ends
-#        # 3 hours, defaults to 4th order.
-#        water_level[:] = filters.lowpass(water_level[:].values,
-#                                         utils.to_dnum(water_level.time),
-#                                         cutoff=3./24)
-#
-#        ref_date=mdu.time_range()[0]
-#        elapsed_minutes=(tide.time.values - ref_date)/BADnp.timedelta64(60,'s')BAD
-#
-#        # just write a single node
-#        tim_fn=base_fn + "_0001.tim"
-#        data=np.c_[elapsed_minutes,water_level]
-#        np.savetxt(tim_fn,data)
+class ScalarBC(BC):
+    scalar=None
+    value=None
+    def __init__(self,**kw):
+        """
+        name: feature name
+        model: HydroModel instance
+        scalar: 'salinity','temperature', other
+        value: floating point
+        """
+        super(ScalarBC,self).__init__(**kw)
+    def src_data(self):
+        # Base implementation does nothing
+        return self.value
 
 class VerticalCoord(object):
     """
@@ -580,10 +825,8 @@ class SigmaCoord(VerticalCoord):
 
 
 class HydroModel(object):
-    # If these are the empty string, then assumes that the executables are
-    # found in existing $PATH
-    dfm_bin_dir="" # .../bin  giving directory containing dflowfm
     mpi_bin_dir=None # same, but for mpiexec.  None means use dfm_bin_dir
+    mpi_bin_exe='mpiexec'
     num_procs=1
     run_dir="." # working directory when running dflowfm
     cache_dir=None
@@ -596,8 +839,11 @@ class HydroModel(object):
     mdu=None
     grid=None
 
-    projection=None
+    projection=None # string like "EPSG:26910"
     z_datum=None
+
+    # this is only used for setting utc_to_native, and native_to_utc
+    utc_offset=np.timedelta64(0,'h') # -8 for PST
 
     def __init__(self):
         self.log=log
@@ -653,11 +899,32 @@ class HydroModel(object):
                 os.makedirs(path)
         elif mode=='pristine':
             if os.path.exists(path):
-                shutil.rmtree(path)
-            os.makedirs(path)
+                # shutil.rmtree(path)
+                # rather than going scorched earth, removed the contents of
+                # the directory.  this plays nicer with processes which
+                # may be working in that directory.
+                for p in os.listdir(path):
+                    fp=os.path.join(path,p)
+                    if os.path.isdir(fp):
+                        shutil.rmtree(fp)
+                    else:
+                        os.unlink(fp)
+            else:
+                os.makedirs(path)
         elif mode=='noclobber':
             assert not os.path.exists(path),"Directory %s exists, but mode is noclobber"%path
             os.makedirs(path)
+        elif mode=='askclobber':
+            if os.path.exists(path):
+                import sys
+                sys.stdout.write("Directory %s exists.  overwrite? [y/n] "%path)
+                sys.stdout.flush()
+                resp=six.moves.input()
+                if resp.lower()!='y':
+                    raise Exception("Directory %s exists -- failing out"%path)
+                return self.create_with_mode(path,'pristine')
+            else:
+                os.makedirs(path)
         elif mode=='existing':
             assert os.path.exists(path),"Directory %s does not exist"%path
 
@@ -772,6 +1039,17 @@ class HydroModel(object):
         cmd="%s %s %d 6"%(gen_parallel,os.path.basename(self.mdu.filename),self.num_procs)
         utils.call_with_path(cmd,self.run_dir)
 
+    _dflowfm_exe=None
+    @property
+    def dflowfm_exe(self):
+        if self._dflowfm_exe is None:
+            return os.path.join(self.dfm_bin_dir,self.dfm_bin_exe)
+        else:
+            return self._dflowfm_exe
+    @dflowfm_exe.setter
+    def dflowfm_exe(self,v):
+        self._dflowfm_exe=v
+        
     def run_dflowfm(self,cmd):
         # Names of the executables
         dflowfm=os.path.join(self.dfm_bin_dir,"dflowfm")
@@ -791,9 +1069,12 @@ class HydroModel(object):
 
     def add_gazetteer(self,shp_fn):
         """
-        Register a shapefile for resolving feature locations
+        Register a shapefile for resolving feature locations.
+        shp_fn: string, to be loaded as shapefile, or a structure array with a geom field.
         """
-        self.gazetteers.append(wkb2shp.shp2geom(shp_fn))
+        if not isinstance(shp_fn,np.ndarray):
+            shp_fn=wkb2shp.shp2geom(shp_fn)
+        self.gazetteers.append(shp_fn)
     def get_geometry(self,**kws):
         """
         The gazetteer interface for BC geometry.  given criteria as keyword arguments,
@@ -902,6 +1183,11 @@ class HydroModel(object):
             assert (bc.model is None) or (bc.model==self),"Not expecting to share BC objects"
             bc.model=self
         self.bcs.extend(bcs)
+
+    def utc_to_native(self,t):
+        return t+self.utc_offset
+    def native_to_utc(self,t):
+        return t-self.utc_offset
 
     @property
     @memoize.member_thunk
@@ -1034,6 +1320,9 @@ class OTPSHelper(object):
     min_h=5.0
 
     otps_model=None
+    # slightly larger than default pad. probably unnecessary
+    pad=2*np.timedelta64(24,'h')
+
     def __init__(self,otps_model,**kw):
         self.otps_model=otps_model # something like OhS
     def dataset(self):
@@ -1048,10 +1337,9 @@ class OTPSHelper(object):
         """
         from stompy.model.otps import read_otps
 
-        pad=2*np.timedelta64(24,'h')
         ds=xr.Dataset()
-        times=np.arange( self.model.run_start-pad,
-                         self.model.run_stop+pad,
+        times=np.arange( self.data_start,
+                         self.data_stop,
                          15*np.timedelta64(60,'s') )
         log.debug("Will generate tidal prediction for %d time steps"%len(times))
         ds['time']=('time',),times
@@ -1083,6 +1371,7 @@ class OTPSHelper(object):
         ds['u']=ds.U/edge_depth
         ds['v']=ds.V/edge_depth
         ds['unorm']=ds.Q/(L*edge_depth)
+        ds.attrs['mode']=self.mode
         return ds
 
 class OTPSStageBC(StageBC,OTPSHelper):
@@ -1092,11 +1381,11 @@ class OTPSStageBC(StageBC,OTPSHelper):
     # write_config same as superclass
     # filename_base same as superclass
 
-    def dataarray(self):
+    def src_data(self):
         return self.dataset()['water_level']
 
     def write_data(self): # DFM IMPLEMENTATION!
-        self.write_tim(self.dataarray())
+        self.write_tim(self.data())
 
 
 
@@ -1107,11 +1396,11 @@ class OTPSFlowBC(FlowBC,OTPSHelper):
     # write_config same as superclass
     # filename_base same as superclass
 
-    def dataarray(self):
+    def src_data(self):
         return self.dataset()['Q']
 
     def write_data(self): # DFM IMPLEMENTATION!
-        self.write_tim(self.dataarray())
+        self.write_tim(self.data())
 
 class VelocityBC(BC):
     """
@@ -1149,11 +1438,11 @@ class OTPSVelocityBC(VelocityBC,OTPSHelper):
     def __init__(self,**kw):
         super(OTPSVelocityBC,self).__init__(**kw)
 
-    def dataarray(self):
+    def src_data(self):
         return self.dataset()['unorm']
 
     def write_data(self):
-        da=self.dataarray()
+        da=self.data()
         if 'z' in da.dims:
             self.write_t3d(da,z_bed=self.model.edge_depth(self.grid_edge))
         else:
@@ -1259,7 +1548,476 @@ class MultiBC(BC):
             self.sub_bcs.append(sub_bc)
 
 
+# HYCOM
+class HycomMultiBC(MultiBC):
+    """
+    Common machinery for pulling spatially variable fields from hycom
+    """
+    # according to website, hycom runs for download are non-tidal, so
+    # don't worry about filtering
+    # Data is only daily, so go a bit longer than a usual tidal filter
+    lp_hours=0
+    pad=np.timedelta64(4,'D')
+    cache_dir=None
+
+    def __init__(self,cls,ll_box=None,**kw):
+        self.ll_box=ll_box
+        self.data_files=None
+        super(HycomMultiBC,self).__init__(cls,**kw)
+        if self.cache_dir is None:
+            self.log.warning("You probably want to pass cache_dir for hycom download")
+
+    def enumerate_sub_bcs(self):
+        if self.ll_box is None:
+            # grid=self.model.grid ...
+            raise Exception("Not implemented: auto-calculating ll_box")
+        self.populate_files()
+        super(HycomMultiBC,self).enumerate_sub_bcs()
+    
+        # adjust fluxes...
+        self.populate_values()
+
+    def populate_files(self):
+        self.data_files=hycom.fetch_range(self.ll_box[:2],self.ll_box[2:],
+                                          [self.data_start,self.data_stop],
+                                          cache_dir=self.cache_dir)
+
+    def init_bathy(self):
+        """
+        populate self.bathy, an XYZField in native coordinates, with
+        values as hycom's positive down bathymetry.
+        """
+        # TODO: download hycom bathy on demand.
+        hy_bathy=self.hy_bathy=xr.open_dataset( os.path.join(self.cache_dir,'depth_GLBa0.08_09.nc') )
+        lon_min,lon_max,lat_min,lat_max=self.ll_box
+
+        sel=((hy_bathy.Latitude.values>=lat_min) &
+             (hy_bathy.Latitude.values<=lat_max) &
+             (hy_bathy.Longitude.values>=lon_min) &
+             (hy_bathy.Longitude.values<=lon_max))
+
+        bathy_xyz=np.c_[ hy_bathy.Longitude.values[sel],
+                         hy_bathy.Latitude.values[sel],
+                         hy_bathy.bathymetry.isel(MT=0).values[sel] ]
+        bathy_xyz[:,:2]=self.model.ll_to_native(bathy_xyz[:,:2])
+
+        from ...spatial import field
+        self.bathy=field.XYZField(X=bathy_xyz[:,:2],F=bathy_xyz[:,2])
+
+
+
+class HycomMultiScalarBC(HycomMultiBC):
+    """
+    Extract 3D salt, temp from Hycom
+    """
+    scalar=None
+
+    def __init__(self,**kw):
+        super(HycomMultiScalarBC,self).__init__(self.ScalarProfileBC,**kw)
+
+    class ScalarProfileBC(ScalarBC):
+        cache_dir=None # unused now, but makes parameter-setting logic cleaner
+        _dataset=None # supplied by factory
+        def dataset(self):
+            self._dataset.attrs['mode']=self.mode
+            return self._dataset
+        def src_data(self):# was dataarray()
+            da=self.dataset()[self.scalar]
+            da.attrs['mode']=self.mode
+            return da
+
+    def populate_values(self):
+        """ Do the actual work of iterating over sub-edges and hycom files,
+        interpolating in the vertical.
+
+        Desperately wants some refactoring with the velocity code.
+        """
+        sun_var=self.scalar
+        if sun_var=='salinity':
+            hy_scalar='salinity'
+        elif sun_var=='temperature':
+            hy_scalar='water_temp'
+
+        # Get spatial information about hycom files
+        hy_ds0=xr.open_dataset(self.data_files[0])
+        if 'time' in hy_ds0.water_u.dims:
+            hy_ds0=hy_ds0.isel(time=0)
+        # makes sure lon,lat are compatible with water velocity
+        _,Lon,Lat=xr.broadcast(hy_ds0.water_u.isel(depth=0),hy_ds0.lon,hy_ds0.lat)
+        hy_xy=self.model.ll_to_native(Lon.values,Lat.values)
+
+        self.init_bathy()
+
+        # Initialize per-edge details
+        self.model.grid._edge_depth=self.model.grid.edges['edge_depth']
+        layers=self.model.layer_data(with_offset=True)
+
+        # In order to get valid data even when the hydro model has a cell
+        # that lines up with somewhere dry in hycom land, limit the search below
+        # to wet cells
+        hy_wet=np.isfinite(hy_ds0[hy_scalar].isel(depth=0).values)
+
+        for i,sub_bc in enumerate(self.sub_bcs):
+            sub_bc.edge_center=np.array(sub_bc.geom.centroid)
+            hyc_dists=utils.dist( sub_bc.edge_center, hy_xy )
+            # lazy way to skip over dry cells.  Note that velocity differs
+            # here, since it's safe to just use 0 velocity, but a zero
+            # salinity can creep in and wreak havoc.  
+            hyc_dists[~hy_wet]=np.inf
+            row,col=np.nonzero( hyc_dists==hyc_dists.min() )
+            row=row[0] ; col=col[0]
+            sub_bc.hy_row_col=(row,col) # tuple, so it can be used directly in []
+
+            # initialize the datasets
+            sub_bc._dataset=sub_ds=xr.Dataset()
+            # assumes that from each file we use only one timestep
+            sub_ds['time']=('time',), np.ones(len(self.data_files),'M8[m]')
+
+            sub_ds[sun_var]=('time','layer'), np.zeros((sub_ds.dims['time'],layers.dims['Nk']),
+                                                       np.float64)
+            sub_bc.edge_depth=edge_depth=self.model.grid.edge_depths()[sub_bc.grid_edge] # positive up
+
+            # First, establish the geometry on the suntans side, in terms of z_interface values
+            # for all wet layers.  below-bed layers have zero vertical span.  positive up, but
+            # shift back to real, non-offset, vertical coordinate
+            sun_z_interface=(-self.model.z_offset)+layers.z_interface.values.clip(edge_depth,np.inf)
+            sub_bc.sun_z_interfaces=sun_z_interface
+            # And the pointwise data from hycom:
+            hy_layers=hy_ds0.depth.values.copy()
+            sub_bc.hy_valid=valid=np.isfinite(hy_ds0[hy_scalar].isel(lat=row,lon=col).values)
+            hycom_depths=hy_ds0.depth.values[valid]
+            # possible that hy_bed_depth is not quite correct, and hycom has data
+            # even deeper.  in that case just pad out the depth a bit so there
+            # is at least a place to put the bed velocity.
+            if len(hycom_depths)!=0:
+                sub_bc.hy_bed_depth=max(hycom_depths[-1]+1.0,self.bathy(hy_xy[sub_bc.hy_row_col]))
+                sub_bc.hycom_depths=np.concatenate( [hycom_depths, [sub_bc.hy_bed_depth]])
+            else:
+                # edge is dry in HYCOM -- be careful to check and skip below.
+                sub_bc.hycom_depths=hycom_depths
+                # for scalars, pray this never gets used...
+                # don't use nan in case it participates in a summation with 0, but
+                # make it yuge to make it easier to spot if it is ever used
+                print("Hmm - got a dry hycom edge, even though should be skipping those now")
+                sub_bc._dataset[sun_var].values[:]=100000000.
+
+        # Populate the scalar data, outer loop is over hycom files, since
+        # that's most expensive
+        for ti,fn in enumerate(self.data_files):
+            hy_ds=xr.open_dataset(fn)
+            if 'time' in hy_ds.dims:
+                # again, assuming that we only care about the first time step in each file
+                hy_ds=hy_ds.isel(time=0)
+            print(hy_ds.time.values)
+
+            scalar_val=hy_ds[hy_scalar].values
+            scalar_val_bottom=hy_ds[hy_scalar+'_bottom'].values
+
+            for i,sub_bc in enumerate(self.sub_bcs):
+                hy_depths=sub_bc.hycom_depths
+                sub_bc._dataset.time.values[ti]=hy_ds.time.values
+                if len(hy_depths)==0:
+                    continue # already zero'd out above.
+                row,col=sub_bc.hy_row_col
+                z_sel=sub_bc.hy_valid
+
+                sun_dz=np.diff(-sub_bc.sun_z_interfaces)
+                sun_valid=sun_dz>0
+
+                sub_scalar_val=np.concatenate([ scalar_val[z_sel,row,col],
+                                                scalar_val_bottom[None,row,col] ])
+
+                # integrate -- there isn't a super clean way to do this that I see.
+                # but averaging each interval is probably good enough, just loses some vertical
+                # accuracy.
+                interval_mean_val=0.5*(sub_scalar_val[:-1]+sub_scalar_val[1:])
+                valdz=np.concatenate( ([0],np.cumsum(np.diff(hy_depths)*interval_mean_val)) )
+                sun_valdz=np.interp(-sub_bc.sun_z_interfaces, hy_depths, valdz)
+                sun_d_veldz=np.diff(sun_valdz)
+
+                sub_bc._dataset[sun_var].values[ti,sun_valid]=sun_d_veldz[sun_valid]/sun_dz[sun_valid]
+            hy_ds.close() # free up netcdf resources
+
+
+class HycomMultiVelocityBC(HycomMultiBC):
+    """
+    Special handling of multiple hycom boundary segments to
+    enforce specific net flux requirements.
+    Otherwise small errors, including quantization and discretization,
+    lead to a net flux.
+    """
+    def __init__(self,**kw):
+        super(HycomMultiVelocityBC,self).__init__(self.VelocityProfileBC,**kw)
+
+    class VelocityProfileBC(VelocityBC):
+        cache_dir=None # unused now, but makes parameter-setting logic cleaner
+        _dataset=None # supplied by factory
+        def dataset(self):
+            self._dataset.attrs['mode']=self.mode
+            return self._dataset
+        def update_Q_in(self):
+            """calculate time series flux~m3/s from self._dataset,
+            updating Q_in field therein.
+            Assumes populate_velocity has already been run, so 
+            additional attributes are available.
+            """
+            ds=self.dataset()
+            sun_dz=np.diff(-self.sun_z_interfaces)
+            # u ~ [time,layer]
+            Uint=(ds['u'].values[:,:]*sun_dz[None,:]).sum(axis=1)
+            Vint=(ds['v'].values[:,:]*sun_dz[None,:]).sum(axis=1)
+                                
+            Q_in=self.edge_length*(self.inward_normal[0]*Uint +
+                                   self.inward_normal[1]*Vint)
+            ds['Q_in'].values[:]=Q_in
+            ds['Uint'].values[:]=Uint
+            ds['Vint'].values[:]=Vint
+
+    def populate_values(self):
+        """ Do the actual work of iterating over sub-edges and hycom files,
+        interpolating in the vertical, projecting as needed, and adjust the overall
+        fluxes
+        """
+        # The net inward flux in m3/s over the whole BC that we will adjust to.
+        target_Q=np.zeros(len(self.data_files)) # assumes one time step per file
+
+        # Get spatial information about hycom files
+        hy_ds0=xr.open_dataset(self.data_files[0])
+        if 'time' in hy_ds0.water_u.dims:
+            hy_ds0=hy_ds0.isel(time=0)
+        # makes sure lon,lat are compatible with water velocity
+        _,Lon,Lat=xr.broadcast(hy_ds0.water_u.isel(depth=0),hy_ds0.lon,hy_ds0.lat)
+        hy_xy=self.model.ll_to_native(Lon.values,Lat.values)
+
+        self.init_bathy()
+
+        # Initialize per-edge details
+        self.model.grid._edge_depth=self.model.grid.edges['edge_depth']
+        layers=self.model.layer_data(with_offset=True)
+
+        for i,sub_bc in enumerate(self.sub_bcs):
+            sub_bc.inward_normal=sub_bc.get_inward_normal()
+            sub_bc.edge_length=sub_bc.geom.length
+            sub_bc.edge_center=np.array(sub_bc.geom.centroid)
+
+            # skip the transforms...
+            hyc_dists=utils.dist( sub_bc.edge_center, hy_xy )
+            row,col=np.nonzero( hyc_dists==hyc_dists.min() )
+            row=row[0] ; col=col[0]
+            sub_bc.hy_row_col=(row,col) # tuple, so it can be used directly in []
+
+            # initialize the datasets
+            sub_bc._dataset=sub_ds=xr.Dataset()
+            # assumes that from each file we use only one timestep
+            sub_ds['time']=('time',), np.ones(len(self.data_files),'M8[m]')
+            # getting tricky here - do more work here rather than trying to push ad hoc interface
+            # into the model class
+            # velocity components in UTM x/y coordinate system
+            sub_ds['u']=('time','layer'), np.zeros((sub_ds.dims['time'],layers.dims['Nk']),
+                                                   np.float64)
+            sub_ds['v']=('time','layer'), np.zeros((sub_ds.dims['time'],layers.dims['Nk']),
+                                                   np.float64)
+            # depth-integrated transport on suntans layers, in m2/s
+            sub_ds['Uint']=('time',), np.nan*np.ones(sub_ds.dims['time'],np.float64)
+            sub_ds['Vint']=('time',), np.nan*np.ones(sub_ds.dims['time'],np.float64)
+            # project transport to edge normal * edge_length to get m3/s
+            sub_ds['Q_in']=('time',), np.nan*np.ones(sub_ds.dims['time'],np.float64)
+
+            sub_bc.edge_depth=edge_depth=self.model.grid.edge_depths()[sub_bc.grid_edge] # positive up
+
+            # First, establish the geometry on the suntans side, in terms of z_interface values
+            # for all wet layers.  below-bed layers have zero vertical span.  positive up, but
+            # shift back to real, non-offset, vertical coordinate
+            sun_z_interface=(-self.model.z_offset)+layers.z_interface.values.clip(edge_depth,np.inf)
+            sub_bc.sun_z_interfaces=sun_z_interface
+            # And the pointwise data from hycom:
+            hy_layers=hy_ds0.depth.values.copy()
+            sub_bc.hy_valid=valid=np.isfinite(hy_ds0.water_u.isel(lat=row,lon=col).values)
+            hycom_depths=hy_ds0.depth.values[valid]
+            # possible that hy_bed_depth is not quite correct, and hycom has data
+            # even deeper.  in that case just pad out the depth a bit so there
+            # is at least a place to put the bed velocity.
+            if len(hycom_depths)!=0:
+                sub_bc.hy_bed_depth=max(hycom_depths[-1]+1.0,self.bathy(hy_xy[sub_bc.hy_row_col]))
+                sub_bc.hycom_depths=np.concatenate( [hycom_depths, [sub_bc.hy_bed_depth]])
+            else:
+                # edge is dry in HYCOM -- be careful to check and skip below.
+                sub_bc.hycom_depths=hycom_depths
+                sub_bc._dataset['u'].values[:]=0.0
+                sub_bc._dataset['v'].values[:]=0.0
+                sub_bc._dataset['Uint'].values[:]=0.0
+                sub_bc._dataset['Vint'].values[:]=0.0
+
+        # Populate the velocity data, outer loop is over hycom files, since
+        # that's most expensive
+        for ti,fn in enumerate(self.data_files):
+            hy_ds=xr.open_dataset(fn)
+            if 'time' in hy_ds.dims:
+                # again, assuming that we only care about the first time step in each file
+                hy_ds=hy_ds.isel(time=0)
+            print(hy_ds.time.values)
+
+            water_u=hy_ds.water_u.values
+            water_v=hy_ds.water_v.values
+            water_u_bottom=hy_ds.water_u_bottom.values
+            water_v_bottom=hy_ds.water_v_bottom.values
+
+            for i,sub_bc in enumerate(self.sub_bcs):
+                hy_depths=sub_bc.hycom_depths
+                sub_bc._dataset.time.values[ti]=hy_ds.time.values
+                if len(hy_depths)==0:
+                    continue # already zero'd out above.
+                row,col=sub_bc.hy_row_col
+                z_sel=sub_bc.hy_valid
+
+                sun_dz=np.diff(-sub_bc.sun_z_interfaces)
+                sun_valid=sun_dz>0
+                for water_vel,water_vel_bottom,sun_var,trans_var in [ (water_u,water_u_bottom,'u','Uint'),
+                                                                      (water_v,water_v_bottom,'v','Vint') ]:
+                    sub_water_vel=np.concatenate([ water_vel[z_sel,row,col],
+                                                   water_vel_bottom[None,row,col] ])
+
+                    # integrate -- there isn't a super clean way to do this that I see.
+                    # but averaging each interval is probably good enough, just loses some vertical
+                    # accuracy.
+                    interval_mean_vel=0.5*(sub_water_vel[:-1]+sub_water_vel[1:])
+                    veldz=np.concatenate( ([0],np.cumsum(np.diff(hy_depths)*interval_mean_vel)) )
+                    sun_veldz=np.interp(-sub_bc.sun_z_interfaces, hy_depths, veldz)
+                    sun_d_veldz=np.diff(sun_veldz)
+
+                    sub_bc._dataset[sun_var].values[ti,sun_valid]=sun_d_veldz[sun_valid]/sun_dz[sun_valid]
+                    # might as well calculate flux while we are here
+                    # explicit flux:
+                    # sub_bc._dataset[trans_var].values[ti]=(sub_bc._dataset[sun_var]*sun_dz).sum()
+                    # but we've already done the integration
+                    sub_bc._dataset[trans_var].values[ti]=sun_veldz[-1]
+            hy_ds.close() # free up netcdf resources
+
+        # project transport onto edges to get fluxes
+        total_Q=0.0
+        total_flux_A=0.0
+        for i,sub_bc in enumerate(self.sub_bcs):
+            Q_in=sub_bc.edge_length*(sub_bc.inward_normal[0]*sub_bc._dataset['Uint'].values +
+                                     sub_bc.inward_normal[1]*sub_bc._dataset['Vint'].values)
+            sub_bc._dataset['Q_in'].values[:]=Q_in
+            total_Q=total_Q+Q_in
+            # edge_depth here reflects the expected water column depth.  it is the bed elevation, with
+            # the z_offset removed (I hope), under the assumption that a typical eta is close to 0.0,
+            # but may be offset as much as -10.
+            # edge_depth is positive up.  here assume typical eta=0
+            total_flux_A+=sub_bc.edge_length*(-sub_bc.edge_depth).clip(0,np.inf)
+
+        Q_error=total_Q-target_Q
+        vel_error=Q_error/total_flux_A
+        print("Velocity error: %.6f -- %.6f m/s"%(vel_error.min(),vel_error.max()))
+        print("total_flux_A: %.3e"%total_flux_A)
+
+        # And apply the adjustment, and update integrated quantities
+        adj_total_Q=0.0
+        for i,sub_bc in enumerate(self.sub_bcs):
+            # seems like we should be subtracting vel_error, but that results in a doubling
+            # of the error?
+            sub_bc._dataset['u'].values[:,:] -= vel_error[:,None]*sub_bc.inward_normal[0]
+            sub_bc._dataset['v'].values[:,:] -= vel_error[:,None]*sub_bc.inward_normal[1]
+            sub_bc.update_Q_in()
+            adj_total_Q=adj_total_Q+sub_bc._dataset['Q_in']
+        adj_Q_error=adj_total_Q-target_Q
+        adj_vel_error=adj_Q_error/total_flux_A
+        print("Post-adjustment velocity error: %.6f -- %.6f m/s"%(adj_vel_error.min(),adj_vel_error.max()))
+
+
+class NOAAStageBC(StageBC):
+    station=None # integer station
+    product='water_level' # or 'predictions'
+    cache_dir=None
+    def src_data(self):
+        ds=self.fetch_for_period(self.data_start,self.data_stop)
+        return ds['z']
+    def write_bokeh(self,**kw):
+        defaults=dict(title="Stage: %s (%s)"%(self.name,self.station))
+        defaults.update(kw)
+        super(NOAAStageBC,self).write_bokeh(**defaults)
+    def fetch_for_period(self,period_start,period_stop):
+        """
+        Download or load from cache, take care of any filtering, unit conversion, etc.
+        Returns a dataset with a 'z' variable, and with time as UTC
+        """
+        ds=noaa_coops.coops_dataset(station=self.station,
+                                    start_date=period_start,
+                                    end_date=period_stop,
+                                    products=[self.product],
+                                    days_per_request='M',cache_dir=self.cache_dir)
+        ds=ds.isel(station=0)
+        ds['z']=ds[self.product]
+        ds['z'].attrs['units']='m'
+        return ds
+
+class NwisBC(object):
+    cache_dir=None
+    product_id="set_in_subclass"
+
+    def __init__(self,station,**kw):
+        """
+        station: int or string station id, e.g. 11455478
+        """
+        self.station=str(station)
+        super(NwisBC,self).__init__(**kw)
+
+class NwisStageBC(NwisBC,StageBC):
+    product_id=65 # gage height
+    def src_data(self):
+        ds=self.fetch_for_period(self.data_start,self.data_stop)
+        return ds['z']
+    def write_bokeh(self,**kw):
+        defaults=dict(title="Stage: %s (%s)"%(self.name,self.station))
+        defaults.update(kw)
+        super(NwisStageBC,self).write_bokeh(**defaults)
+    def fetch_for_period(self,period_start,period_stop):
+        """
+        Download or load from cache, take care of any filtering, unit conversion, etc.
+        Returns a dataset with a 'z' variable, and with time as UTC
+        """
+        from ...io.local import usgs_nwis
+        ds=usgs_nwis.nwis_dataset(station=self.station,start_date=period_start,
+                                  end_date=period_stop,
+                                  products=[self.product_id],
+                                  cache_dir=self.cache_dir)
+        ds['z']=('time',), 0.3048*ds['height_gage']
+        ds['z'].attrs['units']='m'
+        return ds
+
+class NwisFlowBC(NwisBC,FlowBC):
+    product_id=60 # discharge
+    def src_data(self):
+        ds=self.fetch_for_period(self.data_start,self.data_stop)
+        return ds['Q']
+    def write_bokeh(self,**kw):
+        defaults=dict(title="Flow: %s (%s)"%(self.name,self.station))
+        defaults.update(kw)
+        super(NwisFlowBC,self).write_bokeh(**defaults)
+    def fetch_for_period(self,period_start,period_stop):
+        """
+        Download or load from cache, take care of any filtering, unit conversion, etc.
+        Returns a dataset with a 'z' variable, and with time as UTC
+        """
+        from ...io.local import usgs_nwis
+        
+        ds=usgs_nwis.nwis_dataset(station=self.station,start_date=period_start,
+                                  end_date=period_stop,
+                                  products=[self.product_id],
+                                  cache_dir=self.cache_dir)
+        ds['Q']=('time',), 0.028316847*ds['stream_flow_mean_daily']
+        ds['Q'].attrs['units']='m3 s-1'
+        return ds
+
+
+
 class DFlowModel(HydroModel):
+    # If these are the empty string, then assumes that the executables are
+    # found in existing $PATH
+    dfm_bin_dir="" # .../bin  giving directory containing dflowfm
+    dfm_bin_exe='dflowfm'
+
     # flow and source/sink BCs will get the adjacent nodes dredged
     # down to this depth in order to ensure the impose flow doesn't
     # get blocked by a dry edge. Set to None to disable.
@@ -1275,6 +2033,23 @@ class DFlowModel(HydroModel):
             os.unlink(bc_fn)
         super(DFlowModel,self).write_forcing()
 
+    default_grid_target_filename='grid_net.nc'
+    def grid_target_filename(self):
+        """
+        The filename, relative to self.run_dir, of the grid.  Not guaranteed
+        to exist, and if no grid has been set, or the grid has no filename information,
+        this will default to self.default_grid_target_filename
+        """
+        if self.grid is None or self.grid.filename is None:
+            return self.default_grid_target_filename
+        else:
+            grid_fn=self.grid.filename
+            if not grid_fn.endswith('_net.nc'):
+                if grid_fn.endswith('.nc'):
+                    grid_fn=grid_fn.replace('.nc','_net.nc')
+                else:
+                    grid_fn=grid_fn+"_net.nc"
+            return os.path.basename(grid_fn)
     def write_grid(self):
         """
         Write self.grid to the run directory.
@@ -1469,7 +2244,7 @@ class DFlowModel(HydroModel):
             fp.write("\n".join(lines))
 
         #self.write_data()
-        da=bc.dataarray()
+        da=bc.data()
         assert len(da.dims)<=1,"Only ready for dimensions of time or none"
         tim_path=os.path.join(self.run_dir,bc_id+"_0001.tim")
         self.write_tim(da,tim_path)
@@ -1490,8 +2265,7 @@ class DFlowModel(HydroModel):
                    "\n"]
             fp.write("\n".join(lines))
 
-        # write_data()
-        self.write_tim(bc.dataarray(),tim_path)
+        self.write_tim(bc.data(),tim_path)
 
     def write_roughness_bc(self,bc):
         # write_config()
@@ -1509,7 +2283,11 @@ class DFlowModel(HydroModel):
             fp.write("\n".join(lines))
 
         # write_data()
-        np.savetxt(xyz_path,bc.data())
+        da=bc.data()
+        xyz=np.c_[ da.x.values,
+                   da.y.values,
+                   da.values ]
+        np.savetxt(xyz_path,xyz)
 
     def initial_water_level(self):
         """
@@ -1517,3 +2295,10 @@ class DFlowModel(HydroModel):
         elevation, and the initial water level is as good a guess as any.
         """
         return float(self.mdu['geometry','WaterLevIni'])
+
+
+import sys
+if sys.platform=='win32':
+    cls=HydroModel
+    cls.dfm_bin_exe="dflowfm-cli.exe"
+    cls.mpi_bin_exe="mpiexec.exe"
