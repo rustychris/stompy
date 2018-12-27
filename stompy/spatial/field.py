@@ -2292,7 +2292,7 @@ class SimpleGrid(QuadrilateralGrid):
         # and turn the missing values back to nan's
         self.F[~valid] = np.nan
 
-    def polygon_mask(self,poly,crop=True):
+    def polygon_mask(self,poly,crop=True,return_values=False):
         """ similar to mask_outside, but:
         much faster due to outsourcing tests to GDAL
         returns a boolean array same size as self.F, with True for 
@@ -2300,6 +2300,11 @@ class SimpleGrid(QuadrilateralGrid):
 
         crop: if True, optimize by cropping the source raster first.  should
         provide identical results, but may not be identical due to roundoff.
+
+        return_vales: if True, rather than returning a bitmask the same size
+         as self.F, return just the values of F that fall inside poly. This
+         can save space and time when just extracting a small set of values 
+         from large raster
         """
         # could be made even simpler, by creating OGR features directly from the
         # polygon, rather than create a full-on datasource.
@@ -2309,7 +2314,12 @@ class SimpleGrid(QuadrilateralGrid):
             xyxy=poly.bounds
             xxyy=[xyxy[0], xyxy[2], xyxy[1], xyxy[3]]
             indexes=self.rect_to_indexes(xxyy)
-            mask_crop=self.crop(indexes=indexes).polygon_mask(poly,crop=False)
+            cropped=self.crop(indexes=indexes)
+            ret=cropped.polygon_mask(poly,crop=False,return_values=return_values)
+            if return_values:
+                return ret # done!
+            else:
+                mask_crop=ret
             full_mask=np.zeros(self.F.shape,np.bool)
             min_row,max_row,min_col,max_col = indexes
             full_mask[min_row:max_row+1,min_col:max_col+1]=mask_crop
@@ -2324,7 +2334,12 @@ class SimpleGrid(QuadrilateralGrid):
         # write 1000 into the array where the polygon falls.
         gdal.RasterizeLayer(target_ds,[1],poly_ds.GetLayer(0),None,None,[1000],[])
         new_raster=GdalGrid(target_ds)
-        return new_raster.F>0
+
+        ret=new_raster.F>0
+        if return_values:
+            return self.F[ret]
+        else:
+            return ret
 
     def mask_outside(self,poly,value=np.nan,invert=False,straddle=None):
         """ Set the values that fall outside the given polygon to the
@@ -3187,7 +3202,7 @@ class CompositeField(Field):
 
         # allocate the blank starting canvas
         result_F =np.ones((ny,nx),'f8')
-        result_F[:]=-999
+        result_F[:]=-999 # -999 so we don't get nan contamination
         result_data=SimpleGrid(extents=bounds,F=result_F)
         result_alpha=result_data.copy()
         result_alpha.F[:]=0.0
@@ -3287,9 +3302,20 @@ class CompositeField(Field):
 
             assert np.allclose( result_data.extents, src_data.extents )
             assert np.all( result_data.F.shape==src_data.F.shape )
-            # before getting into fancy modes, just stack it all up:
-            result_data.F   = result_data.F *(1-src_alpha.F) + cleaned*src_alpha.F
-            result_alpha.F  = result_alpha.F*(1-src_alpha.F) + src_alpha.F
+
+            # 2018-12-06: this is how it used to work, but this is problematic
+            #  when result_alpha is < 1.
+            # result_data.F   = result_data.F *(1-src_alpha.F) + cleaned*src_alpha.F
+
+            # where result_alpha=1.0, then we want to blend with src_alpha and 1-src_alpha.
+            # if result_alpha=0.0, then we take src wholesale, and carry its alpha through.
+            # 
+            total_alpha=result_alpha.F*(1-src_alpha.F) + src_alpha.F
+            result_data.F   = result_data.F * result_alpha.F *(1-src_alpha.F) + cleaned*src_alpha.F
+            # to avoid contracting data towards zero, have to normalize data by the total alpha.
+            valid=total_alpha>1e-10 # avoid #DIVZERO
+            result_data.F[valid] /= total_alpha[valid]
+            result_alpha.F  = total_alpha
 
         # fudge it a bit, and allow semi-transparent data back out, but
         # at least nan out the totally transparent stuff.

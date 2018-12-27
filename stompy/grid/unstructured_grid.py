@@ -776,6 +776,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         if var_depth in nc.variables: # have depth at nodes
             g.nodes['depth']=nc[var_depth].values.copy()
 
+        if 'NetLinkType' in nc.variables:
+            # typ: 0: 2D closed, 1: 2D open, 2: 1D open
+            g.add_edge_field('NetLinkType',nc['NetLinkType'].values)
+            
         if cleanup:
             # defined below
             cleanup_dfm_multidomains(g)
@@ -2062,7 +2066,11 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
             for na in range(N):
                 nb=(na+1)%N
-                e.append( self.nodes_to_edge( nodes[na],nodes[nb] ) )
+                this_edge=self.nodes_to_edge( nodes[na],nodes[nb] )
+                if this_edge is None:
+                    self.log.warning("cell %d was missing its edges"%c)
+                    this_edge=-1
+                e.append(this_edge)
             if pad and N<self.max_sides:
                 e.extend([-1]*(self.max_sides-N))
             return np.array(e,np.int32)
@@ -2371,7 +2379,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         jnew=self.add_edge(**edge_data)
         return jnew,nB
 
-    def split_edge(self,j=None,x=None,split_cells=True,**node_args):
+    def split_edge(self,j=None,x=None,split_cells=True,merge_thresh=-1,**node_args):
         """
         Split an edge, optionally with cells, too.
 
@@ -2380,6 +2388,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         False: just insert the new node into cells
           Note that this may be ignore if self.max_sides
           is not large enough!
+
+        merge_thresh: if non-negative, check new cells for being joined
+        with neighbors to make near-orthogonal quads. a threshold of 0.1
+        is reasonable.
         """
         # This edge will get a point inserted at the midpoint
         if j is None:
@@ -2437,7 +2449,62 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
             for new_cell in new_cells:
                 self.add_cell_and_edges(nodes=new_cell)
+
+        if merge_thresh>=0:
+            self.automerge_cells(n_new,thresh=merge_thresh)
+            
         return j_new,n_new
+
+    def automerge_cells(self,n,thresh=0.1):
+        """
+        Check cells around n for potential tri+tri=>quad 
+        merges opposite n. 
+        This will not merge two cells adjacent to n
+        """
+        # get half edge from n_new along j_new
+        n_nbrs=self.node_to_nodes(n)
+        if len(n_nbrs)==0: return 
+        
+        cc=self.cells_center()
+        A=self.cells_area()
+
+        j_to_merge=[]
+
+        # which cells are about to get merged. with 'realistic'
+        # values of thresh, this wouldn't be necessary, but this
+        # way avoid outright failure if thresh is so loose as to allow
+        # multiple merges on the same cell.
+        dirty_cells={}
+        
+        for i,n_nbr in enumerate(n_nbrs):
+            he=self.nodes_to_halfedge(n,n_nbr)
+
+            c=he.cell()
+            if c<0 or c in dirty_cells: continue 
+            if len(self.cell_to_nodes(c))!=3: continue
+
+            # check both cell opposite n, and successive cells adjacent
+            # to n
+            for he_check in [he,he.fwd()]:
+                c_nbr=he_check.cell_opp()
+                if c_nbr<0 or c_nbr in dirty_cells: continue
+                if len(self.cell_to_nodes(c_nbr))!=3: continue
+                
+                ccA=cc[c]
+                ccB=cc[c_nbr]
+                coinc=mag(ccA-ccB) / np.sqrt( A[c] + A[c_nbr] )
+                if coinc<thresh:
+                    j=he_check.j
+                    j_to_merge.append(j)
+                    # record that these cells will be modified to avoid
+                    # conflicts
+                    dirty_cells[c]=j
+                    dirty_cells[c_nbr]=j
+                    break #no need to check other he option
+
+        for j in j_to_merge:
+            self.log.info("auto-merging j=%d"%j)
+            self.merge_cells(j)
 
     def merge_cells(self,j=None,x=None):
         """
@@ -3515,15 +3582,23 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         else:
             return polys[0]
 
-    def boundary_polygon_by_union(self):
+    def boundary_polygon_by_union(self,cells=None):
         """ Compute a polygon encompassing the full domain by unioning all
         cell polygons.
+        cells: optionally a sequence or bitmask of cell ids to be used, otherwise
+        all non-deleted cells.
         """
-        cell_geoms = [None]*self.Ncells()
+        if cells is None:
+            cell_geoms = [None]*self.Ncells()
+            cells=self.valid_cell_iter()
+        else:
+            if np.issubdtype(cells.dtype, np.bool_):
+                cells=np.nonzero(cells)[0]
+            cell_geoms = [None]*len(cells)
 
-        for i in self.valid_cell_iter():
+        for idx,i in enumerate(cells):
             xy = self.nodes['x'][self.cell_to_nodes(i)]
-            cell_geoms[i] = geometry.Polygon(xy)
+            cell_geoms[idx] = geometry.Polygon(xy)
         return ops.cascaded_union(cell_geoms) 
 
     def boundary_polygon(self):
@@ -4026,24 +4101,26 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         """
         # further constrain to edges which are not on the boundary
+        self.edge_to_cells()
         edge_mask=edge_mask & np.all( self.edges['cells']>=0,axis=1)
 
         cell_pairs = self.edges['cells'][edge_mask]
 
         # use scipy graph algorithms to find the connections
         from scipy import sparse
+        from scipy.sparse import csgraph
 
         graph=sparse.csr_matrix( (np.ones(len(cell_pairs)), 
                                   (cell_pairs[:,0],cell_pairs[:,1])),
                                  shape=(self.Ncells(),self.Ncells()) )
 
-        n_comps,labels=sparse.csgraph.connected_components(graph,directed=False)
+        n_comps,labels=csgraph.connected_components(graph,directed=False)
 
         if cell_mask is None:
-            cell_mask=slice(None)
+            cell_mask=np.ones(self.Ncells(), np.bool8)
 
-        unique_labels=np.unique( labels[cell_mask] ) 
         labels[~cell_mask]=-1 # mark dry cells as -1
+        unique_labels=np.unique( labels[cell_mask] ) 
 
         # create an array which takes the original label, maps it to small, sequential
         # label.
@@ -5300,6 +5377,8 @@ class UnTRIM08Grid(UnstructuredGrid):
         elif hdr == self.hdr_old:
             print( "Will read old UnTRIM grid format" )
             n_parms = 10
+        else:
+            raise Exception("hdr '%s' not recognized"%hdr)
 
         for i in range(n_parms):  # ignore TNE and TNS in new format files
             l = self.fp.readline()

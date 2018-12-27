@@ -857,6 +857,8 @@ def principal_theta(vec,eta=None,positive='flood',detrend=False,
         else:
             if ambiguous=='warn':
                 log.warning("principal_theta: flood direction still ambiguous")
+            elif ambiguous=='silent':
+                pass
             elif ambiguous=='error':
                 raise principal_theta.Exception("u_h: %f  u_dh: %f"%(u_h,u_dh))
             elif ambiguous=='nan':
@@ -1948,6 +1950,7 @@ def remove_repeated(A):
     A: numpy 1D array
     return A, without repeated element values.
     """
+    A=np.asarray(A)
     return np.concatenate( ( A[:1], A[1:][ np.diff(A)!=0 ] ) )
 
 
@@ -2017,12 +2020,20 @@ def call_with_path(cmd,path):
 
 
 def progress(a,interval_s=5.0,msg="%s"):
-    L=len(a) # may fail?
+    try:
+        L=len(a) # may fail?
+    except TypeError: # may be a generated
+        L=0
+        
     t0=time.time()
     for i,elt in enumerate(a):
         t=time.time()
         if t-t0>interval_s:
-            log.info( msg%("%d/%d"%(i,L)) )
+            if L:
+                txt=msg%("%d/%d"%(i,L))
+            else:
+                txt=msg%("%d"%i)
+            log.info(txt)
             t0=t
         yield elt
 

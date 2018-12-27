@@ -21,6 +21,7 @@ from stompy.io.local import noaa_coops, hycom
 from stompy import utils, filters, memoize
 from stompy.spatial import wkb2shp, proj_utils
 from stompy.model.delft import dfm_grid
+import stompy.grid.unstructured_grid as ugrid
 
 from . import io as dio
 
@@ -524,6 +525,7 @@ class Transform(BCFilter):
 
 class RoughnessBC(BC):
     shapefile=None
+    data_array=None # xr.DataArray
     def __init__(self,shapefile=None,**kw):
         if 'name' not in kw:
             kw['name']='roughness'
@@ -545,14 +547,16 @@ class RoughnessBC(BC):
         return self.filename_base()+".xyz"
 
     def src_data(self):
-        assert self.shapefile is not None,"Currently only support shapefile input for roughness"
-        shp_data=wkb2shp.shp2geom(self.shapefile)
-        coords=np.array( [np.array(pnt) for pnt in shp_data['geom'] ] )
-        n=shp_data['n']
-        da=xr.DataArray(n,dims=['location'],name='n')
-        da=da.assign_coords(x=xr.DataArray(coords[:,0],dims='location'))
-        da=da.assign_coords(y=xr.DataArray(coords[:,1],dims='location'))
-        da.attrs['long_name']='Manning n'
+        if self.shapefile is not None:
+            shp_data=wkb2shp.shp2geom(self.shapefile)
+            coords=np.array( [np.array(pnt) for pnt in shp_data['geom'] ] )
+            n=shp_data['n']
+            da=xr.DataArray(n,dims=['location'],name='n')
+            da=da.assign_coords(x=xr.DataArray(coords[:,0],dims='location'))
+            da=da.assign_coords(y=xr.DataArray(coords[:,1],dims='location'))
+            da.attrs['long_name']='Manning n'
+        elif self.data_array is not None:
+            da=self.data_array
                 
         return da
 
@@ -1005,6 +1009,7 @@ class HydroModel(object):
     def write(self):
         # Make sure instance data has been pushed to the MDUFile, this
         # is used by write_forcing() and write_grid()
+        assert self.grid is not None,"Must call set_grid(...) before writing"
         self.update_config()
         log.info("Writing MDU to %s"%self.mdu.filename)
         self.write_config()
@@ -2066,6 +2071,84 @@ class DFlowModel(HydroModel):
     def load_mdu(self,fn):
         self.mdu=dio.MDUFile(fn)
 
+    @classmethod
+    def load(cls,fn):
+        """
+        Populate Model instance from an existing run
+        """
+        fn=cls.to_mdu_fn(fn) # in case fn was a directory
+        if fn is None:
+            # no mdu was found
+            return None
+        model=DFlowModel()
+        model.load_mdu(fn)
+        model.grid = ugrid.UnstructuredGrid.read_dfm(model.mdu.filepath( ('geometry','NetFile') ))
+        model.set_run_dir(os.path.dirname(fn),mode='existing')
+        # infer number of processors based on mdu files
+        # Not terribly robust if there are other files around..
+        sub_mdu=glob.glob( fn.replace('.mdu','_*.mdu') )
+        if len(sub_mdu)>0:
+            model.num_procs=len(sub_mdu)
+        else:
+            # probably better to test whether it has even been processed
+            model.num_procs=1
+
+        ref,start,stop=model.mdu.time_range()
+        model.run_start=start
+        model.run_stop=stop
+        return model
+
+    @classmethod
+    def to_mdu_fn(cls,path):
+        """
+        coerce path that is possibly a directory to a best guess
+        of the MDU path.  file paths are left unchanged. returns None
+        if path is a directory but no mdu files is there.
+        """
+        # all mdu files, regardless of case
+        if not os.path.isdir(path):
+            return path
+        fns=[os.path.join(path,f) for f in os.listdir(path) if f.lower().endswith('.mdu')]
+        # assume shortest is the one that hasn't been partitioned
+        if len(fns)==0:
+            return None
+        
+        unpartitioned=np.argmin([len(f) for f in fns])
+        return fns[unpartitioned]
+        
+    @classmethod
+    def run_completed(cls,fn):
+        """
+        fn: path to mdu file.  will attempt to guess the right mdu if a directory
+        is provided, but no guarantees.
+
+        returns: True if the file exists and the folder contains a run which
+          ran to completion. Otherwise False.
+        """
+        if not os.path.exists(fn):
+            return False
+        model=cls.load(fn)
+        return (model is not None) and model.is_completed()
+    def is_completed(self):
+        root_fn=self.mdu.filename[:-4] # drop .mdu suffix
+        if self.num_procs>1:
+            dia_fn=root_fn+'_0000.dia'
+        else:
+            dia_fn=root_fn+'.dia'
+            
+        assert dia_fn!=self.mdu.filename,"Probably case issues with %s"%dia_fn
+                                          
+        if not os.path.exists(dia_fn):
+            return False
+        # Read the last 1000 bytes
+        with open(dia_fn,'rb') as fp:
+            fp.seek(0,os.SEEK_END)
+            tail_size=min(fp.tell(),1000)
+            fp.seek(-tail_size,os.SEEK_CUR)
+            # This may not be py2 compatible!
+            tail=fp.read().decode(errors='ignore')
+        return "Computation finished" in tail
+    
     def update_config(self):
         """
         Update fields in the mdu object with data from self.
@@ -2172,12 +2255,19 @@ class DFlowModel(HydroModel):
         file_path is relative to the working directory of the script, not
         the run_dir.
         """
-        if len(da.dims)==0:
-            raise Exception("Not implemented for constant waterlevel...")
         ref_date,start,stop = self.mdu.time_range()
         dt=np.timedelta64(60,'s') # always minutes
-        elapsed_time=(da.time.values - ref_date)/dt 
-        data=np.c_[elapsed_time,da.values]
+        
+        if len(da.dims)==0:
+            # raise Exception("Not implemented for constant waterlevel...")
+            pad=np.timedelta64(86400,'s')
+            times=np.array([start-pad,stop+pad])
+            values=np.array([da.values.item(),da.values.item()])
+        else:
+            times=da.time.values
+            values=da.values
+        elapsed_time=(times - ref_date)/dt 
+        data=np.c_[elapsed_time,values]
 
         np.savetxt(file_path,data)
 
@@ -2296,6 +2386,24 @@ class DFlowModel(HydroModel):
         """
         return float(self.mdu['geometry','WaterLevIni'])
 
+    def map_outputs(self):
+        """
+        return a list of map output files
+        """
+        output_dir=self.mdu.output_dir()
+        fns=glob.glob(os.path.join(output_dir,'*_map.nc'))
+        fns.sort()
+        return fns
+    def his_output(self):
+        """
+        return path to history file output
+        """
+        output_dir=self.mdu.output_dir()
+        fns=glob.glob(os.path.join(output_dir,'*_his.nc'))
+        assert len(fns)==1
+        return fns[0]
+        
+    
 
 import sys
 if sys.platform=='win32':
