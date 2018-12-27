@@ -6745,8 +6745,8 @@ class ParameterSpatioTemporal(Parameter):
         start_i=max(0,start_i-1)
         stop_i =min(stop_i+1,len(tidxs))
         tidxs=tidxs[start_i:stop_i]
-        msg="write_supporting: only writing %d of %d timesteps. what a savings!"%(len(tidxs),
-                                                                                  len(self.times))
+        msg="write_supporting: writing %d of %d timesteps."%(len(tidxs),
+                                                             len(self.times))
         self.scenario.log.info(msg)
 
         # This is split out so that the parallel implementation can jump in just at this
