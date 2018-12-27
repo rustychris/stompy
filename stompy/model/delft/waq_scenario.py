@@ -1014,7 +1014,11 @@ class Hydro(object):
                         exchs=np.nonzero(-self.pointers[:,0] == bdry0+1)[0]
                         assert len(exchs)==1 # may be relaxable.
                         exch=exchs[0]
-                        bdefs['type'][bdry0] = bc_lgroups['name'][self.exch_to_2d_link['link'][exch]]
+                        # 2018-11-29: getting some '0' types.
+                        # this is because exch_link is mapping to a non-boundary
+                        # link.
+                        exch_link=self.exch_to_2d_link['link'][exch]
+                        bdefs['type'][bdry0] = bc_lgroups['name'][exch_link]
                     self.log.info("Done setting boundary info")
             else:
                 raise ValueError("Boundary scheme is bad: %s"%self.boundary_scheme)
@@ -1202,21 +1206,43 @@ class Hydro(object):
             # so here they will get lumped together, but the datastructure should
             # allow for them to be distinct.
 
+            seg_bc_count=defaultdict(int)
+            
             for exch_i,(a,b,_,_) in enumerate(poi0[:self.n_exch_x+self.n_exch_y]):
-                if a>=0:
-                    a2d=self.seg_to_2d_element[a]
-                else:
-                    a2d=-1 # ??
-                if b>=0:
-                    b2d=self.seg_to_2d_element[b]
-                else:
-                    b2d=-1 # ??
-
-                if a2d<0 and b2d<0:
+                if a<0 and b<0:
                     # probably DFM writing dense exchanges information for segment
                     # which don't exist.  I think it's safest to just not include these
                     # at all.
                     continue
+                
+                if a>=0:
+                    a2d=self.seg_to_2d_element[a]
+                else:
+                    # this is a source of the problem mentioned above, since
+                    # we throw away an unique identity of distinct boundary
+                    # exchanges here.
+                    # a2d=-1 # ??
+                    # instead, count up how many bc exchanges hit this segment
+                    # first one will be -1, but we can see distinct additional
+                    # exchanges as -2, -3, etc.
+                    # the 'b' here is because we are labeling boundary a values
+                    # with the count of bcs entering b.
+                    seg_bc_count[b]+=1
+                    a2d=-seg_bc_count[b]
+                if b>=0:
+                    b2d=self.seg_to_2d_element[b]
+                else:
+                    #b2d=-1 # ??
+                    # see above comments for a
+                    seg_bc_count[a]+=1
+                    b2d=-seg_bc_count[a]
+
+                # cruft -- just a reminder, now tested with a,b above.
+                #if a2d<0 and b2d<0:
+                #    # probably DFM writing dense exchanges information for segment
+                #    # which don't exist.  I think it's safest to just not include these
+                #    # at all.
+                #    continue
                 
                 if (b2d,a2d) in mapped:
                     exch_to_2d_link['link'][exch_i] = mapped[(b2d,a2d)]
@@ -2203,6 +2229,8 @@ class HydroFiles(Hydro):
 
                 # This is a 0-based link index
                 link0=self.exch_to_2d_link['link'][exch_i]
+                if gbl['id'][link0]>=0:
+                    print("WARNING: multiple id values map to the same link (%s)"%bnd[0])
                 gbl['id'][link0]=rec_i
                 gbl['name'][link0]=bnd[0]
 
@@ -2471,13 +2499,19 @@ class DwaqAggregator(Hydro):
         self.n_agg_elements_2d=len(box_polys)
 
         agg_elts_2d=[]
+        # used to work, but appears to be broken with newer python
+        #    for agg_i in range(self.n_agg_elements_2d):
+        #        elem=np.zeros((),dtype=self.agg_elt_2d_dtype)
+        #        elem['name']=box_names[agg_i]
+        #        elem['poly']=box_polys[agg_i]
+        #        agg_elts_2d.append(elem)
+        #    # per http://stackoverflow.com/questions/15673155/keep-getting-valueerror-with-numpy-while-trying-to-create-array
+        #    self.elements=rfn.stack_arrays(agg_elts_2d)
+        # 2018-10-01 RH: try different approach.  should be faster, better anyway.
+        self.elements=np.zeros(self.n_agg_elements_2d,dtype=self.agg_elt_2d_dtype)
         for agg_i in range(self.n_agg_elements_2d):
-            elem=np.zeros((),dtype=self.agg_elt_2d_dtype)
-            elem['name']=box_names[agg_i]
-            elem['poly']=box_polys[agg_i]
-            agg_elts_2d.append(elem)
-        # per http://stackoverflow.com/questions/15673155/keep-getting-valueerror-with-numpy-while-trying-to-create-array
-        self.elements=rfn.stack_arrays(agg_elts_2d)
+            self.elements['name'][agg_i]=box_names[agg_i]
+            self.elements['poly'][agg_i]=box_polys[agg_i]
 
     def find_maxima(self):
         """
@@ -4751,9 +4785,17 @@ class HydroAggregator(DwaqAggregator):
             # Maybe this should move out to a more general purpose location??
             link_global_to_agg=np.zeros(self.hydro_in.n_2d_links,'i4')-1
 
+            # build hash table to accelerate the lookup below
+            agg_exch_to_locals=defaultdict(list)
+            # iterate over the local exchanges, here just proc 0
+            for unagg_exch,agg in enumerate(self.exch_local['agg'][0]):
+                agg_exch_to_locals[ agg ].append(unagg_exch)
+                
             for exch_i,(a,b,_,_) in enumerate(poi0[:self.n_exch_x+self.n_exch_y]):
                 # probably have to speed this up with some hashing
-                my_unagg_exchs=np.nonzero(self.exch_local['agg'][0,:]==exch_i)[0]
+                # my_unagg_exchs=np.nonzero(self.exch_local['agg'][0,:]==exch_i)[0]
+                my_unagg_exchs=np.array(agg_exch_to_locals[exch_i])
+                
                 # this is [ (link, sgn), ... ]
                 my_unagg_links=self.hydro_in.exch_to_2d_link[my_unagg_exchs]
                 if a>=0:
