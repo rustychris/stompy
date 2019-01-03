@@ -739,7 +739,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             kwargs['extra_node_fields']=[ ('depth','f4') ]
 
         if cells_from_edges: # True or 'auto'
-            self.max_sides=max_sides
+            kwargs['max_sides']=max_sides
 
         # Partition handling - at least the output of map_merge
         # does *not* remap indices in edges and cells
@@ -3355,10 +3355,25 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         return D.tocsr()
         
-    def edge_clip_mask(self,xxyy):
-        centers=self.edges_center()
-        return (centers[:,0] > xxyy[0]) & (centers[:,0]<xxyy[1]) & \
-            (centers[:,1] > xxyy[2]) & (centers[:,1]<xxyy[3])
+    def edge_clip_mask(self,xxyy,ends=False):
+        """
+        return a bitmask over edges falling in the boundiny box.
+        if ends is True, test against the bbox of the edge, not
+        just its center.
+        """
+        if not ends:
+            centers=self.edges_center()
+            xmin=xmax=centers[:,0]
+            ymin=ymax=centers[:,1]
+        else:
+            nxy=self.nodes['x'][self.edges['nodes']]
+            xmin=nxy[:,:,0].min(axis=1)
+            xmax=nxy[:,:,0].max(axis=1)
+            ymin=nxy[:,:,1].min(axis=1)
+            ymax=nxy[:,:,1].max(axis=1)
+
+        return (xmax>xxyy[0]) & (xmin<xxyy[1]) & \
+            (ymax > xxyy[2]) & (ymin<xxyy[3])
         
     def cell_clip_mask(self,xxyy):
         centers=self.cells_center()
@@ -3496,14 +3511,17 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         edge_hits=boundary_edges[hits]
         return edge_hits
 
-    def select_edges_intersecting(self,geom,invert=False):
+    def select_edges_intersecting(self,geom,invert=False,mask=None):
         """
         geom: a shapely geometry
         returns: bitmask overcells, with non-deleted, selected edges set and others False.
         if invert is True, select edges which do not intersect the the given geometry.
+        mask: bitmask or index array to limit the selection to a subset of edges.
+        note that the return value is still a bitmask over the whole set of edges, not just
+        those in the mask
         """
         sel = np.zeros(self.Nedges(),np.bool8) # initialized to False
-        for j in range(self.Nedges()):
+        for j in np.arange(self.Nedges())[mask]:
             if self.edges['deleted'][j]:
                 continue
             edge_line = geometry.LineString(self.nodes['x'][self.edges['nodes'][j]])
@@ -3988,7 +4006,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             self.renumber()
 
     def create_dual(self,center='centroid',create_cells=False,
-                    remove_disconnected=True,remove_1d=True):
+                    remove_disconnected=False,remove_1d=True):
         """
         Return a new grid which is the dual of this grid. This
         is currently only robust for triangle->'hex' grids.  other
@@ -3998,6 +4016,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
           cell.  This happens when an input cell has all of its nodes
           on the boundary.
         """
+        if remove_disconnected and not create_cells:
+            # anecdotal, but remove_disconnected calls boundary_linestrings,
+            # which in turn needs cells.
+            raise Exception("Creating the dual without cells is not compatible with removing disconnected")
         gd=UnstructuredGrid()
 
         if center=='centroid':
@@ -4032,7 +4054,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         for j in self.valid_edge_iter():
             if e2c[j].min() < 0:
                 continue # boundary
-            if np.all(boundary_node_mask[self.edges['nodes'][j]]):
+            if remove_1d and np.all(boundary_node_mask[self.edges['nodes'][j]]):
                 continue # would create a 1D link
 
             dn1=cell_to_dual_node[e2c[j,0]]
