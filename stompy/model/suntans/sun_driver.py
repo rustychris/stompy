@@ -431,6 +431,12 @@ class SuntansModel(dfm.HydroModel):
     # <float>: use that as the coriolis parameter
     coriolis_f='auto'
 
+    # experimental -- not yet working.
+    # the suntans code does not yet remap edge data from the original
+    # order to the -g ordering (which is different, even when running
+    # single-core). 
+    use_edge_depths=False # write depth data per-edge in a separate file.
+
     @property
     def time0(self):
         self.config['starttime']
@@ -756,6 +762,11 @@ class SuntansModel(dfm.HydroModel):
         # and a corresponding entry in here:
         self.bc_type2_segments=defaultdict(lambda: defaultdict(list)) # [<segment name>][<variable>]=>[DataArray,...]
 
+        # point sources.
+        # indexed by a tuple of (cell,k)
+        # [(cell,k][<variable>] => [DataArray]
+        self.bc_point_sources=defaultdict(lambda: defaultdict(list))
+
         super(SuntansModel,self).write_forcing()
 
         # Get a time series that's the superset of all given timeseries
@@ -794,16 +805,8 @@ class SuntansModel(dfm.HydroModel):
         # the current time.
         assert len(common_time)>2
 
-        # with the above loop, I don't think is needed anymore
-        # if len(common_time)==2:
-        #     # cast to seconds to be sure it doesn't get rounded to 0 days.
-        #     delta=(common_time[1]-common_time[0]).astype('<m8[s]')/2
-        #     common_time=np.array( [ common_time[0],common_time[0]+delta,
-        #                             common_time[1]] )
-
         self.bc_time=common_time
         self.bc_ds=self.compile_bcs()
-
 
         self.write_bc_ds()
         self.met_ds=self.zero_met()
@@ -1065,6 +1068,9 @@ class SuntansModel(dfm.HydroModel):
             assert j>=0,"Some edge pointers did not get set"
             self.grid.edges['mark'][j]=2
 
+        # HERE: return to include processing of bc_point_sources
+        # self.bc_point_sources
+            
         return ds
 
     def write_bc(self,bc):
@@ -1076,6 +1082,8 @@ class SuntansModel(dfm.HydroModel):
             self.write_velocity_bc(bc)
         elif isinstance(bc,dfm.ScalarBC):
             self.write_scalar_bc(bc)
+        elif isinstance(bc,dfm.SourceSinkBC):
+            self.write_source_sink_bc(bc)
         else:
             super(SuntansModel,self).write_bc(bc)
 
@@ -1130,6 +1138,18 @@ class SuntansModel(dfm.HydroModel):
         for j in edges:
             self.bc_type2[j]['Q'].append(bc.name)
 
+    def write_source_sink_bc(self,bc):
+        da=bc.data()
+        
+        c=self.bc_geom_to_interior_cell(bc.geom)
+        print("Punting on k for source")
+        # can come back later and map bc.z to a proper layer k
+        k=0 
+        
+        self.bc_point_sources[(c,k)]['Q'].append(da)
+        
+        assert len(da.dims)<=1,"Flow must have dims either time, or none"
+            
     def bc_geom_to_cells(self,geom):
         """ geom: a LineString geometry. Return the list of cells interior
         to the linestring
@@ -1141,7 +1161,19 @@ class SuntansModel(dfm.HydroModel):
             assert j_cells.max()>=0
             cells.append(j_cells.max())
         return cells
-
+    
+    def bc_geom_to_interior_cell(self,geom):
+        """ geom: a Point or LineString geometry. In the case of a LineString,
+        only the first point is used.
+        return the index of the cell that the point or linestring node fall in
+        """
+        coords=np.array(geom)
+        if coords.ndim==2:
+            coords=coords[0]
+        c=self.grid.select_cells_nearest(coords,inside=True)
+        assert c is not None,"%s did not match any cells. LineString may be reversed?"%str(coords)
+        return c
+    
     def bc_geom_to_edges(self,geom):
         """
         geom: LineString geometry
@@ -1258,15 +1290,16 @@ class SuntansModel(dfm.HydroModel):
         cell_xyz=np.c_[cell_xy,z]
         np.savetxt(cell_depth_fn,cell_xyz) # space separated
 
-        # And edges, preparing for edge-based bathy
-        edge_depth_fn=os.path.join(self.run_dir,"depths.dat-edge")
+        if self.use_edge_depths:
+            # And edges, preparing for edge-based bathy
+            edge_depth_fn=os.path.join(self.run_dir,"depths.dat-edge")
 
-        edge_xy=self.grid.edges_center()
+            edge_xy=self.grid.edges_center()
 
-        # make depth positive down
-        z=-(self.grid.edges['edge_depth'] + self.z_offset)
-        edge_xyz=np.c_[edge_xy,z]
-        np.savetxt(edge_depth_fn,edge_xyz) # space separated
+            # make depth positive down
+            z=-(self.grid.edges['edge_depth'] + self.z_offset)
+            edge_xyz=np.c_[edge_xy,z]
+            np.savetxt(edge_depth_fn,edge_xyz) # space separated
 
     def grid_as_dataset(self):
         """

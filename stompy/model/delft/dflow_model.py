@@ -709,6 +709,7 @@ class SourceSinkBC(BC):
     # could allow this to come in as a point, though it is probably not
     # supported in the code below at this point.
     geom_type=None
+    z='bed'
 
     dredge_depth=-1.0
     def __init__(self,Q=None,**kw):
