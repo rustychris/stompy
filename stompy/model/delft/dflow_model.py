@@ -490,7 +490,7 @@ class Lowpass(BCFilter):
         from ... import filters
         assert self.cutoff_hours is not None,"Must specify lowpass threshold cutoff_hors"
         dt_h=24*np.median(np.diff(utils.to_dnum(da.time.values)))
-        log.info("Lowpass: data time step is %.2fh"%dt_h)
+        log.debug("Lowpass: data time step is %.2fh"%dt_h)
         data_in=da.values
 
         if np.any(~np.isfinite(data_in)):

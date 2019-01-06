@@ -1258,7 +1258,7 @@ class SuntansModel(dfm.HydroModel):
 
         max_faces=self.grid.max_sides
         if int(self.config['maxFaces']) < max_faces:
-            log.info("Increasing maxFaces to %d"%max_faces)
+            log.debug("Increasing maxFaces to %d"%max_faces)
             self.config['maxFaces']=max_faces
 
         if self.coriolis_f=='auto':
@@ -1269,7 +1269,7 @@ class SuntansModel(dfm.HydroModel):
             Omega=7.2921e-5 # rad/s
             f=2*Omega*np.sin(lat*np.pi/180.)
             self.config['Coriolis_f']="%.5e"%f
-            log.info("Using %.2f as latitude for Coriolis => f=%s"%(lat,self.config['Coriolis_f']))
+            log.debug("Using %.2f as latitude for Coriolis => f=%s"%(lat,self.config['Coriolis_f']))
         elif self.coriolis_f is not None:
             self.config['Coriolis_f']=self.coriolis_f
 
