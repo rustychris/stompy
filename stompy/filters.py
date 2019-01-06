@@ -11,6 +11,7 @@ from scipy.signal.filter_design import butter
 import scipy.signal
 
 from scipy.signal import filtfilt, lfilter
+import warnings
 
 def lowpass(data,in_t=None,cutoff=None,order=4,dt=None,axis=-1,causal=False):
     """
@@ -31,7 +32,11 @@ def lowpass(data,in_t=None,cutoff=None,order=4,dt=None,axis=-1,causal=False):
     B,A = butter(order, Wn)
 
     if not causal:
-        data_filtered = filtfilt(B,A,data,axis=axis)
+        # scipy filtfilt triggers some warning message about tuple
+        # indices.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            data_filtered = filtfilt(B,A,data,axis=axis)
     else:
         data_filtered = lfilter(B,A,data,axis=axis)
 
