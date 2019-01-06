@@ -1068,9 +1068,38 @@ class SuntansModel(dfm.HydroModel):
             assert j>=0,"Some edge pointers did not get set"
             self.grid.edges['mark'][j]=2
 
-        # HERE: return to include processing of bc_point_sources
-        # self.bc_point_sources
-            
+        # --- Point source code ---
+        Npoint=len(self.bc_point_sources)
+        ds['point_cell']=('Npoint',), np.zeros(Npoint,np.int32) # point_cell
+        ds['point_layer']=('Npoint',), np.zeros(Npoint,np.int32) # point_layer
+        ds['point_Q']=('Nt','Npoint'), np.zeros( (Nt,Npoint), np.float64) # np.stack(point_Q,axis=-1)
+        ds['point_S']=('Nt','Npoint'), np.zeros( (Nt,Npoint), np.float64) # np.stack(point_S,axis=-1)
+        ds['point_T']=('Nt','Npoint'), np.zeros( (Nt,Npoint), np.float64) # np.stack(point_T,axis=-1)
+
+        for pnt_idx,key in enumerate(self.bc_point_sources.keys()):
+            (c,k)=key
+            print("Point source for cell=%d, k=%d"%(c,k))
+            assert 'Q' in self.bc_point_sources[key]
+
+            combine_items(ds['point_Q'].isel(Npoint=pnt_idx).values,
+                          das)
+
+            assert 'time' not in da.dims,"wait for that"
+            data=da.values * np.ones( (Nt,)+da.values.shape )
+            ds['point_cell'].values[pnt_idx]=c
+            ds['point_layer'].values[pnt_idx]=k
+
+            print("punting on point source salinity and temp")
+            # really shaky ground here..
+            if 'temperature' in self.bc_point_sources[key]:
+                combine_items( ds['point_T'].isel(Npoint=pnt_idx).values,
+                               self.bc_point_sources[key]['temperature'] )
+            if 'salinity' in self.bc_point_sources[key]:
+                combine_items( ds['point_S'].isel(Npoint=pnt_idx).values,
+                               self.bc_point_sources[key]['salinity'] )
+                               
+        # End new point source code
+        
         return ds
 
     def write_bc(self,bc):

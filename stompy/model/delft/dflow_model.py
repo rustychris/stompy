@@ -2083,7 +2083,11 @@ class DFlowModel(HydroModel):
             return None
         model=DFlowModel()
         model.load_mdu(fn)
-        model.grid = ugrid.UnstructuredGrid.read_dfm(model.mdu.filepath( ('geometry','NetFile') ))
+        try:
+            model.grid = ugrid.UnstructuredGrid.read_dfm(model.mdu.filepath( ('geometry','NetFile') ))
+        except FileNotFoundError:
+            log.warning("Loading model from %s, no grid could be loaded"%fn)
+            model.grid=None
         model.set_run_dir(os.path.dirname(fn),mode='existing')
         # infer number of processors based on mdu files
         # Not terribly robust if there are other files around..
@@ -2131,6 +2135,12 @@ class DFlowModel(HydroModel):
         model=cls.load(fn)
         return (model is not None) and model.is_completed()
     def is_completed(self):
+        """
+        return true if the model has been run.
+        this can be tricky to define -- here completed is based on
+        a report in a diagnostic that the run finished.
+        this doesn't mean that all output files are present.
+        """
         root_fn=self.mdu.filename[:-4] # drop .mdu suffix
         if self.num_procs>1:
             dia_fn=root_fn+'_0000.dia'
