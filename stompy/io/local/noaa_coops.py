@@ -201,9 +201,13 @@ def coops_dataset_product(station,product,
                         log.warning("Likely server error retrieving JSON data from tidesandcurrents.noaa.gov")
                         data=dict(error=dict(message="Likely server error"))
                         break
-                    if ('error' in data) and ("datum" in data['error']['message'].lower()):
+                    if (('error' in data)
+                        and (("datum" in data['error']['message'].lower())
+                             or (product=='predictions'))):
                         # Actual message like 'The supported Datum values are: MHHW, MHW, MTL, MSL, MLW, MLLW, LWI, HWI'
-                        log.info(data['error']['message'])
+                        # Predictions sometimes silently fail, as if there is no data, but really just need
+                        # to try MSL.
+                        log.debug(data['error']['message'])
                         datums.pop(0) # move on to next datum
                         continue # assume it's because the datum is missing
                     break
@@ -216,7 +220,12 @@ def coops_dataset_product(station,product,
                 if "No data was found" in msg:
                     # station does not have this data for this time.
                     log.warning("No data found for this period")
-                # Regardless, if there was an error we got no data.
+                else:
+                    # Regardless, if there was an error we got no data.
+                    log.warning("Unknown error - got no data back.")
+                    log.debug(data)
+                    
+                log.debug("URL was %s"%(req.url))
                 continue
 
             ds=coops_json_to_ds(data,params)
