@@ -603,7 +603,7 @@ class SuntansModel(dfm.HydroModel):
             else:
                 log.info("Restart file %s is not a link"%start_path)
         else:
-            log.info("Does not look like a restart based on %s"%start_path)
+            log.debug("Does not look like a restart based on %s"%start_path)
             self.restart=None
 
     def chain_restarts(self,count=None):
