@@ -1111,8 +1111,13 @@ class SuntansModel(dfm.HydroModel):
         dst: destination.
         will either symlink or copy src to dst, based on self.restart_symlink
         setting
+        In order to avoid a limit on chained symlinks, symlinks will point to
+        the original file.
         """
         if self.restart_symlink:
+            # this ensures that we don't build up long chains of
+            # symlinks
+            src=os.path.realpath(src)
             src_rel=os.path.relpath(src,self.run_dir)
             os.symlink(src_rel,dst)
         else:
