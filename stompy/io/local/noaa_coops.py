@@ -119,7 +119,7 @@ def coops_dataset(station,start_date,end_date,products,
 
 def coops_dataset_product(station,product,
                           start_date,end_date,days_per_request=None,
-                          cache_dir=None):
+                          cache_dir=None,refetch_incomplete=True):
     """
     Retrieve a single data product from a single station.
     station: string or numeric identifier for COOPS station
@@ -139,6 +139,11 @@ def coops_dataset_product(station,product,
       exist.
 
     returns an xarray dataset, or None if no data could be fetched
+
+    refetch_incomplete: if True, if a dataset is pulled from cache but appears incomplete
+      with respect to the start_date and end_date, attempt to fetch it again.  Not that incomplete
+      here is meant for realtime data which has not yet been recorded, so the test is only
+      between end_date and the last time stamp of retrieved data.
     """
     fmt_date=lambda d: utils.to_datetime(d).strftime("%Y%m%d %H:%M")
     base_url="https://tidesandcurrents.noaa.gov/api/datagetter"
@@ -149,8 +154,6 @@ def coops_dataset_product(station,product,
     datasets=[]
 
     for interval_start,interval_end in periods(start_date,end_date,days_per_request):
-        log.info("Fetching %s -- %s"%(interval_start,interval_end))
-
         if cache_dir is not None:
             begin_str=utils.to_datetime(interval_start).strftime('%Y-%m-%d')
             end_str  =utils.to_datetime(interval_end).strftime('%Y-%m-%d')
@@ -162,10 +165,22 @@ def coops_dataset_product(station,product,
                                                     end_str))
         else:
             cache_fn=None
+
+        ds=None
         if (cache_fn is not None) and os.path.exists(cache_fn):
             log.info("Cached   %s -- %s"%(interval_start,interval_end))
             ds=xr.open_dataset(cache_fn)
-        else:
+            if refetch_incomplete:
+                # This will fetch a bit more than absolutely necessary
+                # In the case that this file is up to date, but the sensor was down,
+                # we might be able to discern that if this was originally fetched
+                # after another request which found valid data from a later time.
+                if ds.time.values[-1]<min(utils.to_dt64(interval_end),
+                                          end_date):
+                    log.warning("   but that was incomplete -- will re-fetch")
+                    ds=None
+        if ds is None:
+            log.info("Fetching %s -- %s"%(interval_start,interval_end))
 
             params=dict(begin_date=fmt_date(interval_start),
                         end_date=fmt_date(interval_end),
@@ -186,9 +201,13 @@ def coops_dataset_product(station,product,
                         log.warning("Likely server error retrieving JSON data from tidesandcurrents.noaa.gov")
                         data=dict(error=dict(message="Likely server error"))
                         break
-                    if ('error' in data) and ("datum" in data['error']['message'].lower()):
+                    if (('error' in data)
+                        and (("datum" in data['error']['message'].lower())
+                             or (product=='predictions'))):
                         # Actual message like 'The supported Datum values are: MHHW, MHW, MTL, MSL, MLW, MLLW, LWI, HWI'
-                        log.info(data['error']['message'])
+                        # Predictions sometimes silently fail, as if there is no data, but really just need
+                        # to try MSL.
+                        log.debug(data['error']['message'])
                         datums.pop(0) # move on to next datum
                         continue # assume it's because the datum is missing
                     break
@@ -201,7 +220,12 @@ def coops_dataset_product(station,product,
                 if "No data was found" in msg:
                     # station does not have this data for this time.
                     log.warning("No data found for this period")
-                # Regardless, if there was an error we got no data.
+                else:
+                    # Regardless, if there was an error we got no data.
+                    log.warning("Unknown error - got no data back.")
+                    log.debug(data)
+                    
+                log.debug("URL was %s"%(req.url))
                 continue
 
             ds=coops_json_to_ds(data,params)
@@ -221,5 +245,9 @@ def coops_dataset_product(station,product,
     if len(datasets)>1:
         dataset=xr.concat( datasets, dim='time')
     else:
-        dataset=datasets[0]
+        dataset=datasets[0].copy(deep=True)
+    # better not to leave these lying around open
+    for d in datasets:
+        d.close()
+        
     return dataset

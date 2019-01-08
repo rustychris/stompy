@@ -3,9 +3,6 @@ Automate parts of setting up a DFlow hydro model.
 
 TODO:
   allow for setting grid bathy from the model instance
-  consider a procedural approach to BCs:
-    add_bc_shp(...)
-    add_bc_match(FlowBC(...), name="SJ_upstream")
 """
 import os,shutil,glob,inspect
 import six
@@ -24,6 +21,7 @@ from stompy.io.local import noaa_coops, hycom
 from stompy import utils, filters, memoize
 from stompy.spatial import wkb2shp, proj_utils
 from stompy.model.delft import dfm_grid
+import stompy.grid.unstructured_grid as ugrid
 
 from . import io as dio
 
@@ -39,6 +37,13 @@ class BC(object):
     grid_edge=None
     grid_cell=None
 
+    # some BCs allow 'add', which just applies a delta to a previously
+    # set BC.
+    mode='overwrite'
+
+    # extend the data before/after the model period by this much
+    pad=np.timedelta64(24,'h')
+
     def __init__(self,name,model=None,**kw):
         """
         Create boundary condition object.  Note that no work should be done
@@ -50,29 +55,40 @@ class BC(object):
         """
         self.model=model # may be None!
         self.name=name
-        if 'geom' in kw:
-            kw['_geom']=kw['geom']
+        self.filters=[]
 
-        for k in kw:
-            try:
-                getattr(self,k)
-            except AttributeError:
-                raise Exception("Setting attribute %s failed because it doesn't exist on %s"%(k,self))
-            self.__dict__[k]=kw[k]
+        utils.set_keywords(self,kw)
+        # above line should replace this stanza:
+        #   for k in kw:
+        #       try:
+        #           getattr(self,k)
+        #       except AttributeError:
+        #           raise Exception("Setting attribute %s failed because it doesn't exist on %s"%(k,self))
+        #       self.__dict__[k]=kw[k]
+
+        for f in self.filters:
+            f.setup(self)
 
     # A little goofy - the goal is to make geometry lazily
     # fetched against the model gazetteer, but it makes
     # get/set operations awkward
     @property
     def geom(self):
-        if (self._geom is None):
+        if (self._geom is None) and (self.model is not None):
             kw={}
             if self.geom_type is not None:
                 kw['geom_type']=self.geom_type
             self._geom=self.model.get_geometry(name=self.name,**kw)
         return self._geom
     @geom.setter
-    def set_geom(self,g):
+    def geom(self,g):
+        if isinstance(g,np.ndarray):
+            if g.ndim==1:
+                g=geometry.Point(g)
+            elif g.ndim==2:
+                g=geometry.LineString(g)
+            else:
+                raise Exception("Not sure how to convert %s to a shapely geometry"%g)
         self._geom=g
 
     # Utilities for specific types of BCs which need more information
@@ -269,32 +285,247 @@ class BC(object):
 
     def as_data_array(self,data,quantity='value'):
         """
-        Convert several types into a consistent DataArray ready to be written
-        data:
+        Convert several types into a consistent DataArray ready to be
+        post-processed and then written out.
+
+        Conversion rules:
         dataarray => no change
         dataset => pull just the data variable, either based on quantity, or if there
           is a single data variable that is not a coordinate, use that.
-        constant => create a two-point timeseries
+        constant => wrap in a DataArray with no time dimension.
+          used to create a two-point timeseries, but if that is needed it should be moved
+          to model specific code.
         """
         if isinstance(data,xr.DataArray):
+            data.attrs['mode']=self.mode
             return data
         elif isinstance(data,xr.Dataset):
             if len(data.data_vars)==1:
-                return data[data.data_vars[0]]
+                da=data[data.data_vars[0]]
+                da.attrs['mode']=self.mode
+                return da
             else:
                 raise Exception("Dataset has multiple data variables -- not sure which to use: %s"%( str(data.data_vars) ))
         elif isinstance(data,(np.integer,np.floating,int,float)):
-            # handles expanding a constant to the length of the run
-            ds=xr.Dataset()
-            pad=np.timedelta64(24,'h')
-            ds['time']=('time',),np.array( [self.model.run_start-pad,self.model.run_stop+pad] )
-            ds[quantity]=('time',),np.array( [data,data] )
-            return ds[quantity]
+            # # handles expanding a constant to the length of the run
+            # ds=xr.Dataset()
+            # ds['time']=('time',),np.array( [self.data_start,self.data_stop] )
+            # ds[quantity]=('time',),np.array( [data,data] )
+            # da=ds[quantity]
+            da=xr.DataArray(data)
+            da.attrs['mode']=self.mode
+            return da
         else:
             raise Exception("Not sure how to cast %s to be a DataArray"%data)
 
+    # Not all BCs have a time dimension, but enough do that we have some general utility
+    # getters/setters at this level
+    # Note that data_start, data_stop are from the point of view of the data source,
+    # e.g. a model starting on 2015-01-01 could have a 31 day lag, such that
+    # data_start is actually 2014-12-01.
+    _data_start=None
+    _data_stop =None
+    @property
+    def data_start(self):
+        if self._data_start is None:
+            return self.transform_time_input(self.model.run_start-self.pad)
+        else:
+            return self._data_start
+    @data_start.setter
+    def data_start(self,v):
+        self._data_start=v
+
+    @property
+    def data_stop(self):
+        if self._data_stop is None:
+            return self.transform_time_input(self.model.run_stop+self.pad)
+        else:
+            return self._data_stop
+    @data_stop.setter
+    def data_stop(self,v):
+        self._data_stop=v
+
+    def transform_time_input(self,t):
+        for filt in self.filters:
+            t=filt.transform_time_input(t)
+        return t
+    def transform_output(self,da):
+        """
+        Apply filter stack to da, including model-based time zone
+        correction of model is set.
+        """
+        for filt in self.filters[::-1]:
+            da=filt.transform_output(da)
+        da=self.to_model_timezone(da)
+        return da
+    def to_model_timezone(self,da):
+        if 'time' in da.dims and self.model is not None:
+            da.time.values[:]=self.model.utc_to_native(da.time.values)
+        return da
+
+    def src_data(self):
+        raise Exception("src_data must be set in subclass")
+
+    def data(self):
+        da=self.src_data()
+        da=self.as_data_array(da)
+        da=self.transform_output(da)
+        return da
+
+    # if True, bokeh plot will include time series for intermediate
+    # data as filters are applied
+    bokeh_show_intermediate=True
+    def write_bokeh(self,filename=None,path=".",title=None,mode='cdn'):
+        """
+        Write a bokeh html plot for this dataset.
+        path: folder in which to place the plot.
+        filename: relative or absolute filename.  defaults to path/{self.name}.html
+        mode: this is passed to bokeh, 'cdn' yields small files but requires an internet
+         connection to view them.  'inline' yields self-contained, larger (~800k) files.
+        """
+        import bokeh.io as bio # output_notebook, show, output_file
+        import bokeh.plotting as bplt
+
+        bplt.reset_output()
+
+        if title is None:
+            title="Name: %s"%self.name
+
+        p = bplt.figure(plot_width=750, plot_height=350,
+                        title=title,
+                        active_scroll='wheel_zoom',
+                        x_axis_type="datetime")
+
+        if self.bokeh_show_intermediate:
+            da=self.src_data()
+            self.plot_bokeh(da,p,label="src")
+            for filt in self.filters[::-1]:
+                da=filt.transform_output(da)
+                self.plot_bokeh(da,p,label=filt.label())
+            da=self.to_model_timezone(da)
+            self.plot_bokeh(da,p)
+        else:
+            da=self.data()
+            self.plot_bokeh(da,p)
+        if filename is None:
+            filename="bc_%s.html"%self.name
+        output_fn=os.path.join(path,filename)
+        bio.output_file(output_fn,
+                        title=title,
+                        mode=mode)
+        bio.save(p) # show the results
+
+    #annoying, but bokeh not cycle colors automatically
+    _colors=None
+    def get_color(self):
+        if self._colors is None:
+            from bokeh.palettes import Dark2_5 as palette
+            import itertools
+            self._colors=itertools.cycle(palette)
+        return six.next(self._colors)
+    def plot_bokeh(self,da,plot,label=None):
+        """
+        Generic plotting implementation -- will have to override for complicated
+        datatypes
+        """
+        plot.yaxis.axis_label = da.attrs.get('units','n/a')
+        if label is None:
+            label=self.name
+        if 'time' in da.dims:
+            plot.line( da.time.values.copy(), da.values.copy(), legend=label,
+                       color=self.get_color())
+        else:
+            from bokeh.models import Label
+            label=Label(x=70, y=70, x_units='screen', y_units='screen',
+                        text="No plotting for %s (%s)"%(label,self.__class__.__name__))
+            plot.add_layout(label)
+
+class BCFilter(object):
+    """
+    Transformation/translations that can be applied to
+    a BC
+    """
+    def __init__(self,**kw):
+        utils.set_keywords(self,kw)
+    def setup(self,bc):
+        """
+        This is where you might increase the pad
+        """
+        self.bc=bc
+    def transform_time_input(self,t):
+        """
+        Transform the externally requested time to what the data source
+        should provide
+        """
+        return t
+    def transform_output(self,da):
+        """
+        Whatever dataarray comes back from the source, apply the necessary
+        transformations (including the inverse of the time_input transform)
+        """
+        return da
+    def label(self):
+        return self.__class__.__name__
+
+class LowpassGodin(BCFilter):
+    min_pad=np.timedelta64(5*24,'h')
+    def setup(self,bc):
+        super(LowpassGodin,self).setup(bc)
+        if self.bc.pad<self.min_pad:
+            self.bc.pad=self.min_pad
+    def transform_output(self,da):
+        assert da.ndim==1,"Only ready for simple time series"
+        from ... import filters
+        da.values[:]=filters.lowpass_godin(da.values,
+                                           utils.to_dnum(da.time))
+        return da
+
+class Lowpass(BCFilter):
+    cutoff_hours=None
+    # if true, replace any nans by linear interpolation, or
+    # constant extrapolation at ends
+    fill_nan=True
+    def transform_output(self,da):
+        assert da.ndim==1,"Only ready for simple time series"
+        from ... import filters
+        assert self.cutoff_hours is not None,"Must specify lowpass threshold cutoff_hors"
+        dt_h=24*np.median(np.diff(utils.to_dnum(da.time.values)))
+        log.debug("Lowpass: data time step is %.2fh"%dt_h)
+        data_in=da.values
+
+        if np.any(~np.isfinite(data_in)):
+            if self.fill_nan:
+                log.info("Lowpass: %d of %d data values will be filled"%( np.sum(~np.isfinite(data_in)),
+                                                                          len(data_in) ))
+                data_in=utils.fill_invalid(data_in,ends='constant')
+            else:
+                log.error("Lowpass: %d of %d data values are not finite"%( np.sum(~np.isfinite(data_in)),
+                                                                           len(data_in) ))
+        da.values[:]=filters.lowpass(data_in,cutoff=self.cutoff_hours,dt=dt_h)
+
+        assert np.all(np.isfinite(da.values)),("Lowpass: %d of %d output data values are not finite"%
+                                               ( np.sum(~np.isfinite(da.values)),
+                                                 len(da.values) ))
+        return da
+
+class Lag(BCFilter):
+    def __init__(self,lag):
+        self.lag=lag
+    def transform_time_input(self,t):
+        return t+self.lag
+    def transform_output(self,da):
+        da.time.values[:]=da.time.values-self.lag
+        return da
+class Transform(BCFilter):
+    def __init__(self,fn):
+        self.fn=fn
+    def transform_output(self,da):
+        da.values[:]=self.fn(da.values)
+        return da
+
 class RoughnessBC(BC):
     shapefile=None
+    data_array=None # xr.DataArray
     def __init__(self,shapefile=None,**kw):
         if 'name' not in kw:
             kw['name']='roughness'
@@ -315,18 +546,82 @@ class RoughnessBC(BC):
     def xyz_filename(self):
         return self.filename_base()+".xyz"
 
-    def data(self):
-        assert self.shapefile is not None,"Currently only support shapefile input for roughness"
-        shp_data=wkb2shp.shp2geom(self.shapefile)
-        coords=np.array( [np.array(pnt) for pnt in shp_data['geom'] ] )
-        n=shp_data['n']
-        xyz=np.c_[coords,n]
-        return xyz
+    def src_data(self):
+        if self.shapefile is not None:
+            shp_data=wkb2shp.shp2geom(self.shapefile)
+            coords=np.array( [np.array(pnt) for pnt in shp_data['geom'] ] )
+            n=shp_data['n']
+            da=xr.DataArray(n,dims=['location'],name='n')
+            da=da.assign_coords(x=xr.DataArray(coords[:,0],dims='location'))
+            da=da.assign_coords(y=xr.DataArray(coords[:,1],dims='location'))
+            da.attrs['long_name']='Manning n'
+        elif self.data_array is not None:
+            da=self.data_array
+                
+        return da
 
     def write_data(self):
         data_fn=os.path.join(self.model.run_dir,self.xyz_filename())
         xyz=self.data()
         np.savetxt(data_fn,xyz)
+
+    def write_bokeh(self,filename=None,path=".",title=None,mode='cdn'):
+        """
+        Write a bokeh html plot for this dataset.  RoughnessBC has specific
+        needs here.
+        path: folder in which to place the plot.
+        filename: relative or absolute filename.  defaults to path/{self.name}.html
+        mode: this is passed to bokeh, 'cdn' yields small files but requires an internet
+         connection to view them.  'inline' yields self-contained, larger (~800k) files.
+        """
+        import bokeh.io as bio # output_notebook, show, output_file
+        import bokeh.plotting as bplt
+
+        bplt.reset_output()
+
+        if title is None:
+            title="Name: %s"%self.name
+
+        p = bplt.figure(plot_width=750, plot_height=750,
+                        title=title,
+                        active_scroll='wheel_zoom')
+        p.match_aspect=True # aiming for analog to axis('equal')
+
+        da=self.data()
+        self.plot_bokeh(da,p)
+        if filename is None:
+            filename="bc_%s.html"%self.name
+        output_fn=os.path.join(path,filename)
+        bio.output_file(output_fn,
+                        title=title,
+                        mode=mode)
+        bio.save(p) # save the results
+
+    def plot_bokeh(self,da,plot,label=None):
+        if label is None:
+            label=self.name
+        rough=da.values
+
+        from bokeh.models import LinearColorMapper,ColorBar
+
+        color_mapper=LinearColorMapper(palette="Viridis256",
+                                       low=rough.min(), high=rough.max())
+        from matplotlib import cm
+        cmap=cm.viridis
+        norm_rough=(rough-rough.min())/(rough.max()-rough.min())
+        mapped=[cmap(v) for v in norm_rough]
+        colors = [
+            "#%02x%02x%02x" % (int(m[0]*255),
+                               int(m[1]*255),
+                               int(m[2]*255))
+            for m in mapped ]
+
+        plot.scatter(da.x.values.copy(), da.y.values.copy(), radius=3,
+                     fill_color=colors, line_color=None,legend=label)
+
+        color_bar = ColorBar(color_mapper=color_mapper, 
+                             label_standoff=12, border_line_color=None, location=(0,0))
+        plot.add_layout(color_bar, 'right')
 
 class StageBC(BC):
     # If other than None, can compare to make sure it's the same as the model
@@ -356,12 +651,12 @@ class StageBC(BC):
         """
         return super(StageBC,self).filename_base()+"_ssh"
 
-    def dataarray(self):
-        return self.as_data_array(self.z)
+    def src_data(self):
+        return self.z
 
     def write_data(self):
         # just write a single node
-        self.write_tim(self.dataarray())
+        self.write_tim(self.data())
 
 class FlowBC(BC):
     dredge_depth=-1.0
@@ -400,14 +695,12 @@ class FlowBC(BC):
         else:
             log.info("Dredging disabled")
 
-    def dataarray(self):
+    def src_data(self):
         # probably need some refactoring here...
-        return self.as_data_array(self.Q)
+        return self.Q
 
     def write_data(self):
-        self.write_tim(self.dataarray())
-
-
+        self.write_tim(self.data())
 
 class SourceSinkBC(BC):
     # The grid, at the entry point, will be taken down to this elevation
@@ -416,6 +709,7 @@ class SourceSinkBC(BC):
     # could allow this to come in as a point, though it is probably not
     # supported in the code below at this point.
     geom_type=None
+    z='bed'
 
     dredge_depth=-1.0
     def __init__(self,Q=None,**kw):
@@ -458,14 +752,15 @@ class SourceSinkBC(BC):
             log.info("dredging disabled")
 
     def write_data(self):
+        self.write_tim(self.data())
+    def src_data(self):
         assert self.Q is not None
-
-        da=self.as_data_array(self.Q)
-        self.write_tim(da)
-    def dataarray(self):
-        return self.as_data_array(self.Q)
+        return self.Q
 
 class WindBC(BC):
+    """
+    Not yet fully updated
+    """
     wind=None
     def __init__(self,**kw):
         if 'name' not in kw:
@@ -492,11 +787,21 @@ class WindBC(BC):
                    "\n"]
             fp.write("\n".join(lines))
     def write_data(self):
+        self.write_tim(self.data())
+    def src_data(self):
         assert self.wind is not None
-        da=self.as_data_array(self.wind)
-        self.write_tim(da)
-    def dataarray(self):
-        return self.as_data_array(self.wind)
+        return self.wind
+    def plot_bokeh(self,da,plot,label=None):
+        # this will have to get smarter time...
+        # da will almost certainly have an xy dimension for the two components.
+        # for now, we assume no spatial variation, and plot two time series
+        if label is None:
+            label=self.name
+        for xy in [0,1]:
+            plot.line( da.time.values.copy(),
+                       da.isel(xy=xy).values.copy(),
+                       legend=label+"-"+"xy"[xy],
+                       color=self.get_color())
 
 class ScalarBC(BC):
     scalar=None
@@ -509,66 +814,9 @@ class ScalarBC(BC):
         value: floating point
         """
         super(ScalarBC,self).__init__(**kw)
-    def dataarray(self):
+    def src_data(self):
         # Base implementation does nothing
         return self.value
-
-#class NoaaTides(BC):
-#    datum=None
-#    def __init__(self,station,datum=None,z_offset=0.0):
-#        self.station=station
-#        self.datum=datum
-#        self.z_offset=z_offset
-#    def write(self,mdu,feature,grid):
-#        print("Writing feature: %s"%(feature['name']))
-#
-#        name=feature['name']
-#        old_bc_fn=mdu.filepath( ['external forcing','ExtForceFile'] )
-#
-#        for var_name in self.var_names:
-#            if feature['geom'].type=='LineString':
-#                pli_data=[ (name, np.array(feature['geom'].coords)) ]
-#                base_fn=os.path.join(mdu.base_path,"%s_%s"%(name,var_name))
-#                pli_fn=base_fn+'.pli'
-#                dio.write_pli(pli_fn,pli_data)
-#
-#                if var_name=='ssh':
-#                    quant='waterlevelbnd'
-#                else:
-#                    assert False
-#
-#                with open(old_bc_fn,'at') as fp:
-#                    lines=["QUANTITY=%s"%quant,
-#                           "FILENAME=%s_%s.pli"%(name,var_name),
-#                           "FILETYPE=9",
-#                           "METHOD=3",
-#                           "OPERAND=O",
-#                           ""]
-#                    fp.write("\n".join(lines))
-#
-#                self.write_data(mdu,feature,var_name,base_fn)
-#            else:
-#                assert False
-#
-#    def write_data(self,mdu,feature,var_name,base_fn):
-#        tides=noaa_coops.coops_dataset_product(self.station,'water_level',
-#                                               mdu.time_range()[1],mdu.time_range()[2],
-#                                               days_per_request='M',cache_dir=cache_dir)
-#        tide=tides.isel(station=0)
-#        water_level=utils.fill_tidal_data(tide.water_level) + self.z_offset
-#        # IIR butterworth.  Nicer than FIR, with minor artifacts at ends
-#        # 3 hours, defaults to 4th order.
-#        water_level[:] = filters.lowpass(water_level[:].values,
-#                                         utils.to_dnum(water_level.time),
-#                                         cutoff=3./24)
-#
-#        ref_date=mdu.time_range()[0]
-#        elapsed_minutes=(tide.time.values - ref_date)/BADnp.timedelta64(60,'s')BAD
-#
-#        # just write a single node
-#        tim_fn=base_fn + "_0001.tim"
-#        data=np.c_[elapsed_minutes,water_level]
-#        np.savetxt(tim_fn,data)
 
 class VerticalCoord(object):
     """
@@ -582,10 +830,8 @@ class SigmaCoord(VerticalCoord):
 
 
 class HydroModel(object):
-    # If these are the empty string, then assumes that the executables are
-    # found in existing $PATH
-    dfm_bin_dir="" # .../bin  giving directory containing dflowfm
     mpi_bin_dir=None # same, but for mpiexec.  None means use dfm_bin_dir
+    mpi_bin_exe='mpiexec'
     num_procs=1
     run_dir="." # working directory when running dflowfm
     cache_dir=None
@@ -598,8 +844,11 @@ class HydroModel(object):
     mdu=None
     grid=None
 
-    projection=None
+    projection=None # string like "EPSG:26910"
     z_datum=None
+
+    # this is only used for setting utc_to_native, and native_to_utc
+    utc_offset=np.timedelta64(0,'h') # -8 for PST
 
     def __init__(self):
         self.log=log
@@ -670,6 +919,17 @@ class HydroModel(object):
         elif mode=='noclobber':
             assert not os.path.exists(path),"Directory %s exists, but mode is noclobber"%path
             os.makedirs(path)
+        elif mode=='askclobber':
+            if os.path.exists(path):
+                import sys
+                sys.stdout.write("Directory %s exists.  overwrite? [y/n] "%path)
+                sys.stdout.flush()
+                resp=six.moves.input()
+                if resp.lower()!='y':
+                    raise Exception("Directory %s exists -- failing out"%path)
+                return self.create_with_mode(path,'pristine')
+            else:
+                os.makedirs(path)
         elif mode=='existing':
             assert os.path.exists(path),"Directory %s does not exist"%path
 
@@ -750,6 +1010,7 @@ class HydroModel(object):
     def write(self):
         # Make sure instance data has been pushed to the MDUFile, this
         # is used by write_forcing() and write_grid()
+        assert self.grid is not None,"Must call set_grid(...) before writing"
         self.update_config()
         log.info("Writing MDU to %s"%self.mdu.filename)
         self.write_config()
@@ -784,6 +1045,17 @@ class HydroModel(object):
         cmd="%s %s %d 6"%(gen_parallel,os.path.basename(self.mdu.filename),self.num_procs)
         utils.call_with_path(cmd,self.run_dir)
 
+    _dflowfm_exe=None
+    @property
+    def dflowfm_exe(self):
+        if self._dflowfm_exe is None:
+            return os.path.join(self.dfm_bin_dir,self.dfm_bin_exe)
+        else:
+            return self._dflowfm_exe
+    @dflowfm_exe.setter
+    def dflowfm_exe(self,v):
+        self._dflowfm_exe=v
+        
     def run_dflowfm(self,cmd):
         # Names of the executables
         dflowfm=os.path.join(self.dfm_bin_dir,"dflowfm")
@@ -918,6 +1190,11 @@ class HydroModel(object):
             bc.model=self
         self.bcs.extend(bcs)
 
+    def utc_to_native(self,t):
+        return t+self.utc_offset
+    def native_to_utc(self,t):
+        return t-self.utc_offset
+
     @property
     @memoize.member_thunk
     def ll_to_native(self):
@@ -1049,6 +1326,9 @@ class OTPSHelper(object):
     min_h=5.0
 
     otps_model=None
+    # slightly larger than default pad. probably unnecessary
+    pad=2*np.timedelta64(24,'h')
+
     def __init__(self,otps_model,**kw):
         self.otps_model=otps_model # something like OhS
     def dataset(self):
@@ -1063,10 +1343,9 @@ class OTPSHelper(object):
         """
         from stompy.model.otps import read_otps
 
-        pad=2*np.timedelta64(24,'h')
         ds=xr.Dataset()
-        times=np.arange( self.model.run_start-pad,
-                         self.model.run_stop+pad,
+        times=np.arange( self.data_start,
+                         self.data_stop,
                          15*np.timedelta64(60,'s') )
         log.debug("Will generate tidal prediction for %d time steps"%len(times))
         ds['time']=('time',),times
@@ -1098,6 +1377,7 @@ class OTPSHelper(object):
         ds['u']=ds.U/edge_depth
         ds['v']=ds.V/edge_depth
         ds['unorm']=ds.Q/(L*edge_depth)
+        ds.attrs['mode']=self.mode
         return ds
 
 class OTPSStageBC(StageBC,OTPSHelper):
@@ -1107,11 +1387,11 @@ class OTPSStageBC(StageBC,OTPSHelper):
     # write_config same as superclass
     # filename_base same as superclass
 
-    def dataarray(self):
+    def src_data(self):
         return self.dataset()['water_level']
 
     def write_data(self): # DFM IMPLEMENTATION!
-        self.write_tim(self.dataarray())
+        self.write_tim(self.data())
 
 
 
@@ -1122,11 +1402,11 @@ class OTPSFlowBC(FlowBC,OTPSHelper):
     # write_config same as superclass
     # filename_base same as superclass
 
-    def dataarray(self):
+    def src_data(self):
         return self.dataset()['Q']
 
     def write_data(self): # DFM IMPLEMENTATION!
-        self.write_tim(self.dataarray())
+        self.write_tim(self.data())
 
 class VelocityBC(BC):
     """
@@ -1164,11 +1444,11 @@ class OTPSVelocityBC(VelocityBC,OTPSHelper):
     def __init__(self,**kw):
         super(OTPSVelocityBC,self).__init__(**kw)
 
-    def dataarray(self):
+    def src_data(self):
         return self.dataset()['unorm']
 
     def write_data(self):
-        da=self.dataarray()
+        da=self.data()
         if 'z' in da.dims:
             self.write_t3d(da,z_bed=self.model.edge_depth(self.grid_edge))
         else:
@@ -1304,10 +1584,8 @@ class HycomMultiBC(MultiBC):
         self.populate_values()
 
     def populate_files(self):
-        data_start=self.model.run_start-self.pad
-        data_stop =self.model.run_stop+self.pad
         self.data_files=hycom.fetch_range(self.ll_box[:2],self.ll_box[2:],
-                                          [data_start,data_stop],
+                                          [self.data_start,self.data_stop],
                                           cache_dir=self.cache_dir)
 
     def init_bathy(self):
@@ -1347,9 +1625,12 @@ class HycomMultiScalarBC(HycomMultiBC):
         cache_dir=None # unused now, but makes parameter-setting logic cleaner
         _dataset=None # supplied by factory
         def dataset(self):
+            self._dataset.attrs['mode']=self.mode
             return self._dataset
-        def dataarray(self):
-            return self.dataset()[self.scalar]
+        def src_data(self):# was dataarray()
+            da=self.dataset()[self.scalar]
+            da.attrs['mode']=self.mode
+            return da
 
     def populate_values(self):
         """ Do the actual work of iterating over sub-edges and hycom files,
@@ -1478,6 +1759,7 @@ class HycomMultiVelocityBC(HycomMultiBC):
         cache_dir=None # unused now, but makes parameter-setting logic cleaner
         _dataset=None # supplied by factory
         def dataset(self):
+            self._dataset.attrs['mode']=self.mode
             return self._dataset
         def update_Q_in(self):
             """calculate time series flux~m3/s from self._dataset,
@@ -1650,7 +1932,98 @@ class HycomMultiVelocityBC(HycomMultiBC):
         print("Post-adjustment velocity error: %.6f -- %.6f m/s"%(adj_vel_error.min(),adj_vel_error.max()))
 
 
+class NOAAStageBC(StageBC):
+    station=None # integer station
+    product='water_level' # or 'predictions'
+    cache_dir=None
+    def src_data(self):
+        ds=self.fetch_for_period(self.data_start,self.data_stop)
+        return ds['z']
+    def write_bokeh(self,**kw):
+        defaults=dict(title="Stage: %s (%s)"%(self.name,self.station))
+        defaults.update(kw)
+        super(NOAAStageBC,self).write_bokeh(**defaults)
+    def fetch_for_period(self,period_start,period_stop):
+        """
+        Download or load from cache, take care of any filtering, unit conversion, etc.
+        Returns a dataset with a 'z' variable, and with time as UTC
+        """
+        ds=noaa_coops.coops_dataset(station=self.station,
+                                    start_date=period_start,
+                                    end_date=period_stop,
+                                    products=[self.product],
+                                    days_per_request='M',cache_dir=self.cache_dir)
+        ds=ds.isel(station=0)
+        ds['z']=ds[self.product]
+        ds['z'].attrs['units']='m'
+        return ds
+
+class NwisBC(object):
+    cache_dir=None
+    product_id="set_in_subclass"
+
+    def __init__(self,station,**kw):
+        """
+        station: int or string station id, e.g. 11455478
+        """
+        self.station=str(station)
+        super(NwisBC,self).__init__(**kw)
+
+class NwisStageBC(NwisBC,StageBC):
+    product_id=65 # gage height
+    def src_data(self):
+        ds=self.fetch_for_period(self.data_start,self.data_stop)
+        return ds['z']
+    def write_bokeh(self,**kw):
+        defaults=dict(title="Stage: %s (%s)"%(self.name,self.station))
+        defaults.update(kw)
+        super(NwisStageBC,self).write_bokeh(**defaults)
+    def fetch_for_period(self,period_start,period_stop):
+        """
+        Download or load from cache, take care of any filtering, unit conversion, etc.
+        Returns a dataset with a 'z' variable, and with time as UTC
+        """
+        from ...io.local import usgs_nwis
+        ds=usgs_nwis.nwis_dataset(station=self.station,start_date=period_start,
+                                  end_date=period_stop,
+                                  products=[self.product_id],
+                                  cache_dir=self.cache_dir)
+        ds['z']=('time',), 0.3048*ds['height_gage']
+        ds['z'].attrs['units']='m'
+        return ds
+
+class NwisFlowBC(NwisBC,FlowBC):
+    product_id=60 # discharge
+    def src_data(self):
+        ds=self.fetch_for_period(self.data_start,self.data_stop)
+        return ds['Q']
+    def write_bokeh(self,**kw):
+        defaults=dict(title="Flow: %s (%s)"%(self.name,self.station))
+        defaults.update(kw)
+        super(NwisFlowBC,self).write_bokeh(**defaults)
+    def fetch_for_period(self,period_start,period_stop):
+        """
+        Download or load from cache, take care of any filtering, unit conversion, etc.
+        Returns a dataset with a 'z' variable, and with time as UTC
+        """
+        from ...io.local import usgs_nwis
+        
+        ds=usgs_nwis.nwis_dataset(station=self.station,start_date=period_start,
+                                  end_date=period_stop,
+                                  products=[self.product_id],
+                                  cache_dir=self.cache_dir)
+        ds['Q']=('time',), 0.028316847*ds['stream_flow_mean_daily']
+        ds['Q'].attrs['units']='m3 s-1'
+        return ds
+
+
+
 class DFlowModel(HydroModel):
+    # If these are the empty string, then assumes that the executables are
+    # found in existing $PATH
+    dfm_bin_dir="" # .../bin  giving directory containing dflowfm
+    dfm_bin_exe='dflowfm'
+
     # flow and source/sink BCs will get the adjacent nodes dredged
     # down to this depth in order to ensure the impose flow doesn't
     # get blocked by a dry edge. Set to None to disable.
@@ -1666,6 +2039,23 @@ class DFlowModel(HydroModel):
             os.unlink(bc_fn)
         super(DFlowModel,self).write_forcing()
 
+    default_grid_target_filename='grid_net.nc'
+    def grid_target_filename(self):
+        """
+        The filename, relative to self.run_dir, of the grid.  Not guaranteed
+        to exist, and if no grid has been set, or the grid has no filename information,
+        this will default to self.default_grid_target_filename
+        """
+        if self.grid is None or self.grid.filename is None:
+            return self.default_grid_target_filename
+        else:
+            grid_fn=self.grid.filename
+            if not grid_fn.endswith('_net.nc'):
+                if grid_fn.endswith('.nc'):
+                    grid_fn=grid_fn.replace('.nc','_net.nc')
+                else:
+                    grid_fn=grid_fn+"_net.nc"
+            return os.path.basename(grid_fn)
     def write_grid(self):
         """
         Write self.grid to the run directory.
@@ -1682,6 +2072,94 @@ class DFlowModel(HydroModel):
     def load_mdu(self,fn):
         self.mdu=dio.MDUFile(fn)
 
+    @classmethod
+    def load(cls,fn):
+        """
+        Populate Model instance from an existing run
+        """
+        fn=cls.to_mdu_fn(fn) # in case fn was a directory
+        if fn is None:
+            # no mdu was found
+            return None
+        model=DFlowModel()
+        model.load_mdu(fn)
+        try:
+            model.grid = ugrid.UnstructuredGrid.read_dfm(model.mdu.filepath( ('geometry','NetFile') ))
+        except FileNotFoundError:
+            log.warning("Loading model from %s, no grid could be loaded"%fn)
+            model.grid=None
+        model.set_run_dir(os.path.dirname(fn),mode='existing')
+        # infer number of processors based on mdu files
+        # Not terribly robust if there are other files around..
+        sub_mdu=glob.glob( fn.replace('.mdu','_*.mdu') )
+        if len(sub_mdu)>0:
+            model.num_procs=len(sub_mdu)
+        else:
+            # probably better to test whether it has even been processed
+            model.num_procs=1
+
+        ref,start,stop=model.mdu.time_range()
+        model.run_start=start
+        model.run_stop=stop
+        return model
+
+    @classmethod
+    def to_mdu_fn(cls,path):
+        """
+        coerce path that is possibly a directory to a best guess
+        of the MDU path.  file paths are left unchanged. returns None
+        if path is a directory but no mdu files is there.
+        """
+        # all mdu files, regardless of case
+        if not os.path.isdir(path):
+            return path
+        fns=[os.path.join(path,f) for f in os.listdir(path) if f.lower().endswith('.mdu')]
+        # assume shortest is the one that hasn't been partitioned
+        if len(fns)==0:
+            return None
+        
+        unpartitioned=np.argmin([len(f) for f in fns])
+        return fns[unpartitioned]
+        
+    @classmethod
+    def run_completed(cls,fn):
+        """
+        fn: path to mdu file.  will attempt to guess the right mdu if a directory
+        is provided, but no guarantees.
+
+        returns: True if the file exists and the folder contains a run which
+          ran to completion. Otherwise False.
+        """
+        if not os.path.exists(fn):
+            return False
+        model=cls.load(fn)
+        return (model is not None) and model.is_completed()
+    def is_completed(self):
+        """
+        return true if the model has been run.
+        this can be tricky to define -- here completed is based on
+        a report in a diagnostic that the run finished.
+        this doesn't mean that all output files are present.
+        """
+        root_fn=self.mdu.filename[:-4] # drop .mdu suffix
+        if self.num_procs>1:
+            dia_fn=root_fn+'_0000.dia'
+        else:
+            dia_fn=root_fn+'.dia'
+            
+        assert dia_fn!=self.mdu.filename,"Probably case issues with %s"%dia_fn
+                                          
+        if not os.path.exists(dia_fn):
+            return False
+        # Read the last 1000 bytes
+        with open(dia_fn,'rb') as fp:
+            fp.seek(0,os.SEEK_END)
+            tail_size=min(fp.tell(),1000)
+            fp.seek(-tail_size,os.SEEK_CUR)
+            # This may not be py2 compatible!
+            tail=fp.read().decode(errors='ignore')
+        return "Computation finished" in tail
+    
     def update_config(self):
         """
         Update fields in the mdu object with data from self.
@@ -1788,12 +2266,19 @@ class DFlowModel(HydroModel):
         file_path is relative to the working directory of the script, not
         the run_dir.
         """
-        if len(da.dims)==0:
-            raise Exception("Not implemented for constant waterlevel...")
         ref_date,start,stop = self.mdu.time_range()
         dt=np.timedelta64(60,'s') # always minutes
-        elapsed_time=(da.time.values - ref_date)/dt 
-        data=np.c_[elapsed_time,da.values]
+        
+        if len(da.dims)==0:
+            # raise Exception("Not implemented for constant waterlevel...")
+            pad=np.timedelta64(86400,'s')
+            times=np.array([start-pad,stop+pad])
+            values=np.array([da.values.item(),da.values.item()])
+        else:
+            times=da.time.values
+            values=da.values
+        elapsed_time=(times - ref_date)/dt 
+        data=np.c_[elapsed_time,values]
 
         np.savetxt(file_path,data)
 
@@ -1860,7 +2345,7 @@ class DFlowModel(HydroModel):
             fp.write("\n".join(lines))
 
         #self.write_data()
-        da=bc.dataarray()
+        da=bc.data()
         assert len(da.dims)<=1,"Only ready for dimensions of time or none"
         tim_path=os.path.join(self.run_dir,bc_id+"_0001.tim")
         self.write_tim(da,tim_path)
@@ -1881,8 +2366,7 @@ class DFlowModel(HydroModel):
                    "\n"]
             fp.write("\n".join(lines))
 
-        # write_data()
-        self.write_tim(bc.dataarray(),tim_path)
+        self.write_tim(bc.data(),tim_path)
 
     def write_roughness_bc(self,bc):
         # write_config()
@@ -1900,7 +2384,11 @@ class DFlowModel(HydroModel):
             fp.write("\n".join(lines))
 
         # write_data()
-        np.savetxt(xyz_path,bc.data())
+        da=bc.data()
+        xyz=np.c_[ da.x.values,
+                   da.y.values,
+                   da.values ]
+        np.savetxt(xyz_path,xyz)
 
     def initial_water_level(self):
         """
@@ -1908,3 +2396,28 @@ class DFlowModel(HydroModel):
         elevation, and the initial water level is as good a guess as any.
         """
         return float(self.mdu['geometry','WaterLevIni'])
+
+    def map_outputs(self):
+        """
+        return a list of map output files
+        """
+        output_dir=self.mdu.output_dir()
+        fns=glob.glob(os.path.join(output_dir,'*_map.nc'))
+        fns.sort()
+        return fns
+    def his_output(self):
+        """
+        return path to history file output
+        """
+        output_dir=self.mdu.output_dir()
+        fns=glob.glob(os.path.join(output_dir,'*_his.nc'))
+        assert len(fns)==1
+        return fns[0]
+        
+    
+
+import sys
+if sys.platform=='win32':
+    cls=HydroModel
+    cls.dfm_bin_exe="dflowfm-cli.exe"
+    cls.mpi_bin_exe="mpiexec.exe"

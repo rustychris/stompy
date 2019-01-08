@@ -2292,7 +2292,7 @@ class SimpleGrid(QuadrilateralGrid):
         # and turn the missing values back to nan's
         self.F[~valid] = np.nan
 
-    def polygon_mask(self,poly,crop=True):
+    def polygon_mask(self,poly,crop=True,return_values=False):
         """ similar to mask_outside, but:
         much faster due to outsourcing tests to GDAL
         returns a boolean array same size as self.F, with True for 
@@ -2300,6 +2300,11 @@ class SimpleGrid(QuadrilateralGrid):
 
         crop: if True, optimize by cropping the source raster first.  should
         provide identical results, but may not be identical due to roundoff.
+
+        return_vales: if True, rather than returning a bitmask the same size
+         as self.F, return just the values of F that fall inside poly. This
+         can save space and time when just extracting a small set of values 
+         from large raster
         """
         # could be made even simpler, by creating OGR features directly from the
         # polygon, rather than create a full-on datasource.
@@ -2309,7 +2314,12 @@ class SimpleGrid(QuadrilateralGrid):
             xyxy=poly.bounds
             xxyy=[xyxy[0], xyxy[2], xyxy[1], xyxy[3]]
             indexes=self.rect_to_indexes(xxyy)
-            mask_crop=self.crop(indexes=indexes).polygon_mask(poly,crop=False)
+            cropped=self.crop(indexes=indexes)
+            ret=cropped.polygon_mask(poly,crop=False,return_values=return_values)
+            if return_values:
+                return ret # done!
+            else:
+                mask_crop=ret
             full_mask=np.zeros(self.F.shape,np.bool)
             min_row,max_row,min_col,max_col = indexes
             full_mask[min_row:max_row+1,min_col:max_col+1]=mask_crop
@@ -2324,7 +2334,12 @@ class SimpleGrid(QuadrilateralGrid):
         # write 1000 into the array where the polygon falls.
         gdal.RasterizeLayer(target_ds,[1],poly_ds.GetLayer(0),None,None,[1000],[])
         new_raster=GdalGrid(target_ds)
-        return new_raster.F>0
+
+        ret=new_raster.F>0
+        if return_values:
+            return self.F[ret]
+        else:
+            return ret
 
     def mask_outside(self,poly,value=np.nan,invert=False,straddle=None):
         """ Set the values that fall outside the given polygon to the
@@ -3069,6 +3084,54 @@ class CompositeField(Field):
     artifacts.  Should push these cases to nan.
     TODO: currently holes must be filled manually or after the fact.  Is there a clean
     way to handle that?  Maybe a fill data mode?
+
+    Guide
+    -----
+
+    Create a polygon shapefile, with fields:
+     +------------+-----------+
+     + priority   | numeric   |
+     +------------+-----------+
+     + data_mode  | string    |
+     +------------+-----------+
+     + alpha_mode | string    |
+     +------------+-----------+
+
+    These names match the defaults to the constructor.  Note that there is no
+    reprojection support -- the code assumes that the shapefile and all source
+    data are already in the target projection.  Some code also assumes that it
+    is a square projection.
+
+    .. image:: images/composite-shp-table.png
+
+    Each polygon in the shapefile refers to a source dataset and defines where
+    that dataset will be used.
+
+    .. image:: images/composite-shp.png
+    .. image:: images/composite-shp-zoom.png
+
+    Datasets are processed as layers, building up from the lowest priority
+    to the highest priority.  Higher priority sources generally overwrite
+    lower priority source, but that can be controlled by specifying
+    `data_mode`.  The default is `overlay()`, which simple overwrites
+    the lower priority data.  Other common modes are
+     * `min()`: use the minimum value between this source and lower
+       priority data.  This layer will only *deepen* areas.
+     * `max()`: use the maximum value between this source and lower
+       priority data.  This layer will only *raise* areas.
+     * `fill(dist)`: fill in holes up to `dist` wide in this datasets
+       before proceeding.
+
+    Multiple steps can be chained with commas, as in `fill(5.0),min()`, which
+    would fill in holes smaller than 5 spatial units (e.g. m), and then take
+    the minimum of this dataset and the existing data from previous (lower
+    priority) layers.
+
+    Another example:
+
+    .. image:: images/dcc-original.png
+    .. image:: images/dcc-dredged.png
+
     """
     def __init__(self,shp_fn=None,factory=None,
                  priority_field='priority',
@@ -3139,7 +3202,7 @@ class CompositeField(Field):
 
         # allocate the blank starting canvas
         result_F =np.ones((ny,nx),'f8')
-        result_F[:]=-999
+        result_F[:]=-999 # -999 so we don't get nan contamination
         result_data=SimpleGrid(extents=bounds,F=result_F)
         result_alpha=result_data.copy()
         result_alpha.F[:]=0.0
@@ -3201,10 +3264,10 @@ class CompositeField(Field):
                 pixels=int(round(float(dist)/dx))
                 niters=np.maximum( pixels//3, 2 )
                 src_data.fill_by_convolution(iterations=niters)
-            # def blur(dist):
-            #     "smooth data channel with gaussian filter - this allows spreading beyond original poly!"
-            #     pixels=int(round(float(dist)/dx))
-            #     src_data.F=ndimage.gaussian_filter(src_alpha.F,pixels)
+            #def blur(dist):
+            #    "smooth data channel with gaussian filter - this allows spreading beyond original poly!"
+            #    pixels=int(round(float(dist)/dx))
+            #    src_data.F=ndimage.gaussian_filter(src_data.F,pixels)
 
             def overlay():
                 pass
@@ -3213,15 +3276,20 @@ class CompositeField(Field):
                 # updates alpha channel to be zero where source data is missing.
                 data_missing=np.isnan(src_data.F)
                 src_alpha.F[data_missing]=0.0
-            # def blur_alpha(dist):
-            #     "smooth alpha channel with gaussian filter - this allows spreading beyond original poly!"
-            #     pixels=int(round(float(dist)/dx))
-            #     src_alpha.F=ndimage.gaussian_filter(src_alpha.F,pixels)
-            def feather(dist):
+            def blur_alpha(dist):
+                "smooth alpha channel with gaussian filter - this allows spreading beyond original poly!"
+                pixels=int(round(float(dist)/dx))
+                src_alpha.F=ndimage.gaussian_filter(src_alpha.F,pixels)
+            def feather_in(dist):
                 "linear feathering within original poly"
                 pixels=int(round(float(dist)/dx))
                 Fsoft=ndimage.distance_transform_bf(src_alpha.F)
                 src_alpha.F = (Fsoft/pixels).clip(0,1)
+            feather=feather_in
+            def feather_out(dist):
+                pixels=int(round(float(dist)/dx))
+                Fsoft=ndimage.distance_transform_bf(1-src_alpha.F)
+                src_alpha.F = (1-Fsoft/pixels).clip(0,1)
 
             # dangerous! executing code from a shapefile!
             eval(self.data_mode[src_i])
@@ -3234,9 +3302,20 @@ class CompositeField(Field):
 
             assert np.allclose( result_data.extents, src_data.extents )
             assert np.all( result_data.F.shape==src_data.F.shape )
-            # before getting into fancy modes, just stack it all up:
-            result_data.F   = result_data.F *(1-src_alpha.F) + cleaned*src_alpha.F
-            result_alpha.F  = result_alpha.F*(1-src_alpha.F) + src_alpha.F
+
+            # 2018-12-06: this is how it used to work, but this is problematic
+            #  when result_alpha is < 1.
+            # result_data.F   = result_data.F *(1-src_alpha.F) + cleaned*src_alpha.F
+
+            # where result_alpha=1.0, then we want to blend with src_alpha and 1-src_alpha.
+            # if result_alpha=0.0, then we take src wholesale, and carry its alpha through.
+            # 
+            total_alpha=result_alpha.F*(1-src_alpha.F) + src_alpha.F
+            result_data.F   = result_data.F * result_alpha.F *(1-src_alpha.F) + cleaned*src_alpha.F
+            # to avoid contracting data towards zero, have to normalize data by the total alpha.
+            valid=total_alpha>1e-10 # avoid #DIVZERO
+            result_data.F[valid] /= total_alpha[valid]
+            result_alpha.F  = total_alpha
 
         # fudge it a bit, and allow semi-transparent data back out, but
         # at least nan out the totally transparent stuff.

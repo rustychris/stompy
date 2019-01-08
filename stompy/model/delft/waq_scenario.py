@@ -235,7 +235,12 @@ class Hydro(object):
     # tested, leave this flag in place so it's easier to find where
     # the change is
     omit_inactive_exchanges=True
-    
+
+    # if True, allow symlinking to original files where possible.
+    # not directly relevant for some Hydro instances, but this will be
+    # used as the default for parameters, too.
+    enable_write_symlink=True
+
     @property
     def fn_base(self): # base filename for output. typically com-<scenario name>
         return 'com-{}'.format(self.scenario.name)
@@ -247,7 +252,6 @@ class Hydro(object):
     # constants:
     CLOSED=CLOSED
     BOUNDARY=BOUNDARY
-
 
     def __init__(self, **kws):
         self.log=logging.getLogger(self.__class__.__name__)
@@ -332,7 +336,8 @@ class Hydro(object):
         Write are file
         """
         with open(self.are_filename, 'wb') as fp:
-            for t_sec in self.scen_t_secs.astype('i4'):
+            for t_sec in utils.progress(self.scen_t_secs.astype('i4'),
+                                        msg="writing area: %s"):
                 fp.write(t_sec.tobytes()) # write timestamp
                 fp.write(self.areas(t_sec).astype('f4').tobytes())
 
@@ -345,7 +350,8 @@ class Hydro(object):
         Write flo file
         """
         with open(self.flo_filename, 'wb') as fp:
-            for t_sec in self.scen_t_secs.astype('i4'):
+            for t_sec in utils.progress(self.scen_t_secs.astype('i4'),
+                                        msg="writing flo: %s"):
                 fp.write(t_sec.tobytes()) # write timestamp
                 fp.write(self.flows(t_sec).astype('f4').tobytes())
 
@@ -450,7 +456,8 @@ class Hydro(object):
         """ write vol file
         """
         with open(self.vol_filename, 'wb') as fp:
-            for t_sec in self.scen_t_secs.astype('i4'):
+            for t_sec in utils.progress(self.scen_t_secs.astype('i4'),
+                                        msg="writing vol: %s"):
                 fp.write(t_sec.tobytes()) # write timestamp
                 fp.write(self.volumes(t_sec).astype('f4').tobytes())
 
@@ -1010,7 +1017,11 @@ class Hydro(object):
                         exchs=np.nonzero(-self.pointers[:,0] == bdry0+1)[0]
                         assert len(exchs)==1 # may be relaxable.
                         exch=exchs[0]
-                        bdefs['type'][bdry0] = bc_lgroups['name'][self.exch_to_2d_link['link'][exch]]
+                        # 2018-11-29: getting some '0' types.
+                        # this is because exch_link is mapping to a non-boundary
+                        # link.
+                        exch_link=self.exch_to_2d_link['link'][exch]
+                        bdefs['type'][bdry0] = bc_lgroups['name'][exch_link]
                     self.log.info("Done setting boundary info")
             else:
                 raise ValueError("Boundary scheme is bad: %s"%self.boundary_scheme)
@@ -1198,21 +1209,43 @@ class Hydro(object):
             # so here they will get lumped together, but the datastructure should
             # allow for them to be distinct.
 
+            seg_bc_count=defaultdict(int)
+            
             for exch_i,(a,b,_,_) in enumerate(poi0[:self.n_exch_x+self.n_exch_y]):
-                if a>=0:
-                    a2d=self.seg_to_2d_element[a]
-                else:
-                    a2d=-1 # ??
-                if b>=0:
-                    b2d=self.seg_to_2d_element[b]
-                else:
-                    b2d=-1 # ??
-
-                if a2d<0 and b2d<0:
+                if a<0 and b<0:
                     # probably DFM writing dense exchanges information for segment
                     # which don't exist.  I think it's safest to just not include these
                     # at all.
                     continue
+                
+                if a>=0:
+                    a2d=self.seg_to_2d_element[a]
+                else:
+                    # this is a source of the problem mentioned above, since
+                    # we throw away an unique identity of distinct boundary
+                    # exchanges here.
+                    # a2d=-1 # ??
+                    # instead, count up how many bc exchanges hit this segment
+                    # first one will be -1, but we can see distinct additional
+                    # exchanges as -2, -3, etc.
+                    # the 'b' here is because we are labeling boundary a values
+                    # with the count of bcs entering b.
+                    seg_bc_count[b]+=1
+                    a2d=-seg_bc_count[b]
+                if b>=0:
+                    b2d=self.seg_to_2d_element[b]
+                else:
+                    #b2d=-1 # ??
+                    # see above comments for a
+                    seg_bc_count[a]+=1
+                    b2d=-seg_bc_count[a]
+
+                # cruft -- just a reminder, now tested with a,b above.
+                #if a2d<0 and b2d<0:
+                #    # probably DFM writing dense exchanges information for segment
+                #    # which don't exist.  I think it's safest to just not include these
+                #    # at all.
+                #    continue
                 
                 if (b2d,a2d) in mapped:
                     exch_to_2d_link['link'][exch_i] = mapped[(b2d,a2d)]
@@ -1504,9 +1537,6 @@ class HydroFiles(Hydro):
     DWAQ hydro data read from existing files, by parsing
     .hyd file.
     """
-    # if True, allow symlinking to original files where possible.
-    enable_write_symlink=True
-
     def __init__(self,hyd_path,**kw):
         self.hyd_path=hyd_path
         self.parse_hyd()
@@ -2202,6 +2232,8 @@ class HydroFiles(Hydro):
 
                 # This is a 0-based link index
                 link0=self.exch_to_2d_link['link'][exch_i]
+                if gbl['id'][link0]>=0:
+                    print("WARNING: multiple id values map to the same link (%s)"%bnd[0])
                 gbl['id'][link0]=rec_i
                 gbl['name'][link0]=bnd[0]
 
@@ -2211,6 +2243,13 @@ class HydroFiles(Hydro):
                 other['geom']=other['wkt'] # follow previous interface, leaving geom
                 # as text wkt.
                 gbl['attrs'][link0]=other
+        # 2018-12-12: losing some boundary links on re-reading aggregated
+        # output.  at least warn if boundary links did not get labeled
+        n_bc_links=(self.links[:,0]<0).sum()
+        n_grouped_links=(gbl['id']>=0).sum()
+        if n_bc_links!=n_grouped_links:
+            self.log.warning("labeling boundary links: %d expected bc links != %d that got names from bnd"%
+                             (n_bc_links,n_grouped_links))
         return gbl
     
     def read_bnd(self):
@@ -2470,13 +2509,19 @@ class DwaqAggregator(Hydro):
         self.n_agg_elements_2d=len(box_polys)
 
         agg_elts_2d=[]
+        # used to work, but appears to be broken with newer python
+        #    for agg_i in range(self.n_agg_elements_2d):
+        #        elem=np.zeros((),dtype=self.agg_elt_2d_dtype)
+        #        elem['name']=box_names[agg_i]
+        #        elem['poly']=box_polys[agg_i]
+        #        agg_elts_2d.append(elem)
+        #    # per http://stackoverflow.com/questions/15673155/keep-getting-valueerror-with-numpy-while-trying-to-create-array
+        #    self.elements=rfn.stack_arrays(agg_elts_2d)
+        # 2018-10-01 RH: try different approach.  should be faster, better anyway.
+        self.elements=np.zeros(self.n_agg_elements_2d,dtype=self.agg_elt_2d_dtype)
         for agg_i in range(self.n_agg_elements_2d):
-            elem=np.zeros((),dtype=self.agg_elt_2d_dtype)
-            elem['name']=box_names[agg_i]
-            elem['poly']=box_polys[agg_i]
-            agg_elts_2d.append(elem)
-        # per http://stackoverflow.com/questions/15673155/keep-getting-valueerror-with-numpy-while-trying-to-create-array
-        self.elements=rfn.stack_arrays(agg_elts_2d)
+            self.elements['name'][agg_i]=box_names[agg_i]
+            self.elements['poly'][agg_i]=box_polys[agg_i]
 
     def find_maxima(self):
         """
@@ -4439,14 +4484,6 @@ class DwaqAggregator(Hydro):
             ds[layers]=xr.DataArray(sub[layers].values,
                                     dims=[layers],
                                     attrs=attrs)
-            # maybe some kind of xarray bug?  the data array appears fine, but when it
-            # makes it to the dataset, it's all nan.
-            # changing the name of the ending variable makes no difference
-            # changing the name of the dimension does fix it.
-            # work around is to give it a different dimension name.  kludge. FIX.
-            #ds['nFlowMesh_layers_bnds']=xr.DataArray(sub.nFlowMesh_layers_bnds[:].copy(),
-            #                                         dims=['nFlowMesh_layers2','d2'])
-
             # this syntax works better:
             if layer_bnds in sub:
                 ds[layer_bnds]=( [layers,'d2'],
@@ -4474,11 +4511,9 @@ class DwaqAggregator(Hydro):
         """
         populate self.bnd, same format as read_bnd()
         but based on pulling the names from the subdomains.
-
         Note that this was originally developed in MultiAggregator, but is now
         being adapted for more general use.  The original MultiAggregator
         implementation is included in that class
-
         Note that if BCs are *not* aggregated, the data returned here can have
         multiple boundary entries for the same x coordinate / coordinates
         """
@@ -4501,6 +4536,8 @@ class DwaqAggregator(Hydro):
         bc_links= flow_link_outside>nFlowElem
         flow_link_outside[bc_links] = nFlowElem - flow_link_outside[bc_links]
 
+        self.infer_2d_links()
+        
         # iterate over bnds from each subdomain
         for proc in range(self.nprocs):
             sub_hyd=self.open_hyd(proc)
@@ -4531,7 +4568,7 @@ class DwaqAggregator(Hydro):
                     # Can we now get back to the local link this belongs to?
                     # Then go from that local link to an aggregated link
                     if np.all( x[0] == x[1] ):
-                        # print("Vertical/source entry")
+                        self.log.warning("Vertical/source entry - this is probably outdated code")
                         # Would like figure out which entry in FlowLink to point to
                         # the aggregated output includes these source links in FlowLink
                         # but the source domains do not
@@ -4570,22 +4607,57 @@ class DwaqAggregator(Hydro):
                     # this element is within the aggregation
 
                     # elt_agg is 0-based
+                    # This is probably a source of problems -- we match too broadly here, ignoring
+                    # the value of flow_link_outside, and lumping together all links that are
+                    # boundary and match on interior element -- and then below we disregard
+                    # additional matches.
                     bc_flow_links=np.nonzero( (flow_link_inside==elt_agg+1) & (flow_link_outside<0) )[0]
+
+                    # to solve this multiple mapping problem, go through the exchanges
+                    if 1: # trying
+                        # This is a sanity check
+                        assert sub_hyd.links[link1,1-fromto]==elt_inside,"links in flowgeom may not be same as sub_hyd.links"
+                        assert not self.agg_boundaries,"This code only makes sense with unaggregated boundaries"
+                        # which exchanges are involved in the unaggregated grid?
+                        sub_link_exchs=np.nonzero( sub_hyd.exch_to_2d_link['link']==link1 )[0]
+                        # just trace the first one:
+                        sub_link_exch=sub_link_exchs[0] 
+                        # what aggregated exchange does it map to?
+                        agg_link_exch=self.exch_local['agg'][proc,sub_link_exch]
+                        agg_link=self.exch_to_2d_link[agg_link_exch]
+                        assert agg_link['sgn']==1,"Expecting no sign flips for bc links"
+                        bc_flow_link=agg_link['link']
+                        assert bc_flow_link in bc_flow_links,"Validation against old approach failed"
+                        bc_flow_links=np.array([bc_flow_link])
+                    
                     # Used to assert this was a unique match
-                    if 0:
+                    if 1: # this is probably better -- at least when not aggregating boundaries
                         assert len(bc_flow_links)==1
                         bc_id=flow_link_outside[bc_flow_links[0]]
                         bc_names[bc_id]=name
                         bc_x[bc_id].append(x)
                     else:
+                        if len(bc_flow_links)!=1:
+                            #import pdb
+                            #pdb.set_trace()
+                            print("Matching bc links expected 1 match, but elt_agg=%d, name=%s matched %s"%
+                                  (elt_agg,name,bc_flow_links))
+
                         # Now allow multiple -- may cause problems with writing them out, though.
                         for bc_flow_link in bc_flow_links:
                             bc_id=flow_link_outside[bc_flow_links[0]]
                             if bc_id in bc_names:
+                                # 2018-12-12: increase verbosity during test
+                                print("bc_id %d already mapped to %s, would have mapped to %s"%
+                                      (bc_id,bc_names[bc_id],name))
+                                #import pdb
+                                #pdb.set_trace()
                                 continue
                             bc_names[bc_id]=name
                             bc_x[bc_id].append(x) # Will have to deal with this x not being unique!
-                            break
+                            # break # 2018-12-12 makes me nervous
+                            # this seems wrong -- if we match multiple flow links, that probably means
+                            # that the matching code above is too broad.
 
         # Reverse that mapping
         bc_ids_for_name=defaultdict(list)
@@ -4750,9 +4822,17 @@ class HydroAggregator(DwaqAggregator):
             # Maybe this should move out to a more general purpose location??
             link_global_to_agg=np.zeros(self.hydro_in.n_2d_links,'i4')-1
 
+            # build hash table to accelerate the lookup below
+            agg_exch_to_locals=defaultdict(list)
+            # iterate over the local exchanges, here just proc 0
+            for unagg_exch,agg in enumerate(self.exch_local['agg'][0]):
+                agg_exch_to_locals[ agg ].append(unagg_exch)
+                
             for exch_i,(a,b,_,_) in enumerate(poi0[:self.n_exch_x+self.n_exch_y]):
                 # probably have to speed this up with some hashing
-                my_unagg_exchs=np.nonzero(self.exch_local['agg'][0,:]==exch_i)[0]
+                # my_unagg_exchs=np.nonzero(self.exch_local['agg'][0,:]==exch_i)[0]
+                my_unagg_exchs=np.array(agg_exch_to_locals[exch_i])
+                
                 # this is [ (link, sgn), ... ]
                 my_unagg_links=self.hydro_in.exch_to_2d_link[my_unagg_exchs]
                 if a>=0:
@@ -6665,19 +6745,19 @@ class ParameterSpatioTemporal(Parameter):
         start_i=max(0,start_i-1)
         stop_i =min(stop_i+1,len(tidxs))
         tidxs=tidxs[start_i:stop_i]
-        msg="write_supporting: only writing %d of %d timesteps. what a savings!"%(len(tidxs),
-                                                                                  len(self.times))
+        msg="write_supporting: writing %d of %d timesteps."%(len(tidxs),
+                                                             len(self.times))
         self.scenario.log.info(msg)
 
         # This is split out so that the parallel implementation can jump in just at this
         # point
         with open(target,'wb') as fp:
-            self.write_supporting_loop(tidxs,fp)
+            self.write_supporting_loop(tidxs,fp,name=target)
 
-    def write_supporting_loop(self,tidxs,fp):
+    def write_supporting_loop(self,tidxs,fp,name='n/a'):
         t_secs=self.times.astype('i4')
         
-        for tidx in tidxs:
+        for tidx in utils.progress(tidxs,msg=name+": %s"):
             t=t_secs[tidx]
             fp.write(t_secs[tidx].tobytes())
             if self.values is not None:

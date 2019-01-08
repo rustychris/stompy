@@ -1319,3 +1319,80 @@ def fat_quiver(X,Y,U,V,ax=None,**kwargs):
 
     ax.add_collection(coll)
     return coll
+
+
+def reduce_text_overlap(ax,max_iter=200):
+    """
+    Try to shift the texts in an axes to avoid overlaps.
+    """
+    texts=ax.texts
+
+    # in scripts window extents may not be available until a draw
+    # is forced
+    try:
+        texts[0].get_window_extent()
+    except RuntimeError:
+        # so force it.
+        ax.get_figure().canvas.draw()
+        
+    bboxes=[]
+    for txt in texts:
+        ext=txt.get_window_extent()
+        bboxes.append( [ [ext.xmin,ext.ymin],
+                         [ext.xmax,ext.ymax] ] )
+    bboxes=np.array(bboxes)
+
+    # each iteration move overlapping texts by about this
+    # much
+    dx=2.0
+    # come up with pixel offsets for each label.
+    pix_offsets=np.zeros( (len(texts),1,2),np.float64 )
+    for _ in range(max_iter):
+        changed=False
+
+        new_bboxes=bboxes+pix_offsets
+        for a in range(len(texts)):
+            for b in range(a+1,len(texts)):
+                # is there any force between these two labels?
+                # check overlap
+
+                int_min=np.maximum(new_bboxes[a,0,:], new_bboxes[b,0,:])
+                int_max=np.minimum(new_bboxes[a,1,:], new_bboxes[b,1,:])
+
+                if np.all(int_min<int_max):
+                    #print("Collision %s - %s"%(texts[a].get_text(),
+                    #                           texts[b].get_text()))
+
+                    # This could probably be faster and less verbose.
+                    # separate axis is taken from the overlapping region
+                    # and direction
+                    
+                    # choose the direction that most quickly eliminates the overlap
+                    # area. could also just choose the least overlapping direction
+                    opt=utils.to_unit( np.array( [int_max[1]-int_min[1],
+                                                  int_max[0]-int_min[0]]) )
+                    
+                    ab=new_bboxes[b].mean(axis=0) - new_bboxes[a].mean(axis=0)
+                    if np.dot(opt,ab)<0:
+                        opt*=-1
+
+                    pix_offsets[a,0,:] -= dx*opt/2
+                    pix_offsets[b,0,:] += dx*opt/2
+
+                    changed=True
+        if not changed:
+            break
+
+    # Update positions of the texts:
+    deltas=np.zeros((len(texts),2),np.float64)
+    for i in range(len(texts)):
+        txt=texts[i]
+        xform=txt.get_transform()
+        ixform=xform.inverted()
+        p=bboxes[i,0,:]
+        pos0=ixform.transform_point(p)
+        pos_new=ixform.transform_point(p+pix_offsets[i,0,:])
+        deltas[i]=delta=pos_new-pos0
+        txt.set_position( np.array(txt.get_position()) + delta)
+    return deltas
+

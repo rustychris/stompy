@@ -11,6 +11,7 @@ import re
 import xarray as xr
 import six
 from collections import defaultdict
+from shapely import geometry
 
 import logging
 
@@ -366,6 +367,21 @@ def parse_boundary_conditions(inp_file):
 
     return bcs,bc_items
 
+def pli_to_shp(pli_fn,shp_fn,overwrite=False):
+    from shapely import geometry
+    from ...spatial import wkb2shp
+
+    feats=read_pli(pli_fn)
+    def clean_pnts(pnts):
+        if pnts.shape[0]==1:
+            pnts=np.concatenate( [pnts,pnts])
+        return pnts
+    geoms=[ geometry.LineString(clean_pnts(feat[1]))
+            for feat in feats ]
+    names=[ feat[0] for feat in feats ]
+    wkb2shp.wkb2shp(shp_fn,geoms,fields=dict(name=names),
+                    overwrite=overwrite)
+
 def read_pli(fn,one_per_line=True):
     """
     Parse a polyline file a la DFM inputs.
@@ -505,6 +521,84 @@ def add_suffix_to_feature(feat,suffix):
     if len(feat)==3: # includes names for nodes
         feat_suffix.append( [suffize(s) for s in feat[2]] )
     return feat_suffix
+
+
+def pli_to_grid_edges(g,levees):
+    """
+    g: UnstructuredGrid
+    levees: polylines in the format returned by stompy.model.delft.io.read_pli,
+    i.e. a list of features
+    [ 
+      [ 'name', 
+        [ [x,y,z,...],...], 
+        ['node0',...]
+      ], ... 
+    ]
+
+    returns an array of length g.Nedges(), with z values from those features
+    mapped onto edges. when multiple z values map to the same grid edge, the 
+    minimum value is used.
+    grid edges which do not have a levee edge get nan.
+    """
+    poly=g.boundary_polygon()
+
+    # The dual additionally allows picking out edges 
+    gd=g.create_dual(center='centroid',create_cells=False,remove_disconnected=False,
+                     remove_1d=False)
+
+    levee_de=np.nan*np.zeros(g.Nedges())
+
+    for levee in utils.progress(levees,msg="Levees: %s"):
+        # levee: [name, Nx{x,y,z,l,r}, {labels}]
+        xyz=levee[1][:,:3]
+        # having shapely check the intersection is 100x
+        # faster than using select_cells_nearest(inside=True)
+        ls=geometry.LineString(xyz[:,:2])
+        if not poly.intersects(ls): continue
+
+        # clip the edges to get some speedup
+        xxyy=[xyz[:,0].min(),
+              xyz[:,0].max(),
+              xyz[:,1].min(),
+              xyz[:,1].max()]
+        edge_mask=gd.edge_clip_mask(xxyy,ends=True)
+
+        # edges that make up the snapped line
+        gde=gd.select_edges_intersecting(ls,mask=edge_mask)
+        gde=np.nonzero(gde)[0]
+        if len(gde)==0:
+            continue
+        # map the dual edge indexes back to the original grid
+        ge=gd.edges['dual_edge'][gde]
+
+        # print("Got a live one!")
+
+        # check for closed ring:
+        closed=np.all( xyz[-1,:2]==xyz[0,:2] )
+        dists=utils.dist_along(xyz[:,:2])
+
+        for j in ge:
+            n1,n2=g.edges['nodes'][j]
+            l1=np.argmin( utils.dist(g.nodes['x'][n1] - xyz[:,:2] ) )
+            l2=np.argmin( utils.dist(g.nodes['x'][n2] - xyz[:,:2] ) )
+            if l1>l2:
+                l1,l2=l2,l1
+            zs=xyz[l1:l2+1,2]
+
+            if closed:
+                # allow for possibility that the levee is a closed ring
+                # and this grid edge actually straddles the end,
+                dist_fwd=dists[l2]-dists[l1]
+                dist_rev=dists[-1] - dist_fwd
+                if dist_rev<dist_fwd:
+                    print("wraparound")
+                    zs=np.concatenate( [xyz[l2:,2],
+                                        xyz[:l1,2]] )
+
+            z=zs.min() 
+            levee_de[j]=z
+    return levee_de
+
 
 
 

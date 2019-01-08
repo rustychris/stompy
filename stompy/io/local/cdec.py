@@ -26,10 +26,15 @@ def cdec_df_to_ds(df):
     ds=xr.Dataset()
 
     times=[datetime.datetime.strptime(s,"%Y%m%d %H%M") for s in df['DATE TIME']]
-    
     ds['time']=('time',),times
+    if not times:
+        # force type, which for empty list defaults to float64
+        ds['time']=ds.time.values.astype('<M8')
+
     # make the adjustment to UTC, even though this is daily data...
     ds.time.values[:] += np.timedelta64(8,'h')
+    # not convention, but a nice reminder
+    ds.time.attrs['timezone']='UTC'
 
     sensor_num=df['SENSOR_NUMBER'][0]
     vname='sensor%04d'%sensor_num
@@ -40,7 +45,7 @@ def cdec_df_to_ds(df):
 
 
 def cdec_dataset(station,start_date,end_date,sensor,
-                 days_per_request='M',
+                 days_per_request='M',duration='E',
                  cache_dir=None,clip=True,cache_only=False):
     """
     Retrieval script for CDEC csv
@@ -59,6 +64,9 @@ def cdec_dataset(station,start_date,end_date,sensor,
       if this is a string, it is interpreted as the frequency argument to pandas.PeriodIndex.
     so 'M' will request month-aligned chunks.  this has the advantage that requests for different
     start dates will still be aligned to integer periods, and can reuse cached data.
+
+    duration: CDEC duration codes. H: hourly, E: event (I think this means the frequency
+      of the original observations.).  D: daily.
 
     cache_dir: if specified, save each chunk as a netcdf file in this directory,
       with filenames that include the gage, period and products.  The directory must already
@@ -81,7 +89,7 @@ def cdec_dataset(station,start_date,end_date,sensor,
 
     params=dict(Stations=station,
                 SensorNums=str(sensor),
-                dur_code='D')
+                dur_code=duration)
 
     # Only for small requests of recent data:
     base_url="http://cdec.water.ca.gov/dynamicapp/req/CSVDataServlet"
@@ -96,8 +104,8 @@ def cdec_dataset(station,start_date,end_date,sensor,
 
         if cache_dir is not None:
             cache_fn=os.path.join(cache_dir,
-                                  "%s_%s_%s_%s.nc"%(station,
-                                                    str(sensor), 
+                                  "%s_%s%s_%s_%s.nc"%(station,
+                                                    str(sensor), duration,
                                                     params['Start'],
                                                     params['End']))
         else:
@@ -112,7 +120,15 @@ def cdec_dataset(station,start_date,end_date,sensor,
         else:
             log.info("Fetching %s -- %s"%(interval_start,interval_end))
             req=requests.get(base_url,params=params)
-            df=pd.read_csv(StringIO(req.text))
+            df=pd.read_csv(StringIO(req.text),na_values=['---'])
+            if len(df)==0:
+                continue
+
+            # debugging a parsing problem
+            if not (np.issubdtype(df['VALUE'].dtype,np.integer) or
+                    np.issubdtype(df['VALUE'].dtype,np.floating)):
+                # in case they change their nan string
+                log.warning("Some VALUE items may not have been parsed")
             ds=cdec_df_to_ds(df)
             ds.attrs['url']=req.url
 
