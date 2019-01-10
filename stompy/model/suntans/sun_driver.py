@@ -77,6 +77,7 @@ StageBC=dfm.StageBC
 FlowBC=dfm.FlowBC
 VelocityBC=dfm.VelocityBC
 ScalarBC=dfm.ScalarBC
+SourceSinkBC=dfm.SourceSinkBC
 OTPSStageBC=dfm.OTPSStageBC
 OTPSFlowBC=dfm.OTPSFlowBC
 OTPSVelocityBC=dfm.OTPSVelocityBC
@@ -1082,21 +1083,19 @@ class SuntansModel(dfm.HydroModel):
             assert 'Q' in self.bc_point_sources[key]
 
             combine_items(ds['point_Q'].isel(Npoint=pnt_idx).values,
-                          das)
+                          self.bc_point_sources[key]['Q'])
 
-            assert 'time' not in da.dims,"wait for that"
-            data=da.values * np.ones( (Nt,)+da.values.shape )
             ds['point_cell'].values[pnt_idx]=c
             ds['point_layer'].values[pnt_idx]=k
 
             print("punting on point source salinity and temp")
             # really shaky ground here..
-            if 'temperature' in self.bc_point_sources[key]:
+            if 'T' in self.bc_point_sources[key]:
                 combine_items( ds['point_T'].isel(Npoint=pnt_idx).values,
-                               self.bc_point_sources[key]['temperature'] )
-            if 'salinity' in self.bc_point_sources[key]:
+                               self.bc_point_sources[key]['T'] )
+            if 'S' in self.bc_point_sources[key]:
                 combine_items( ds['point_S'].isel(Npoint=pnt_idx).values,
-                               self.bc_point_sources[key]['salinity'] )
+                               self.bc_point_sources[key]['S'] )
                                
         # End new point source code
         
@@ -1151,11 +1150,20 @@ class SuntansModel(dfm.HydroModel):
         else:
             self.log.warning("Scalar %s is not S or T or similar"%scalar_name)
 
-        # scalars could be set on edges or cells
-        for j in self.bc_geom_to_edges(bc.geom):
-            self.bc_type2[j][scalar_name].append(da)
-        for cell in self.bc_geom_to_cells(bc.geom):
-            self.bc_type3[cell][scalar_name].append(da)
+        # scalars could be set on edges or cells, or points in cells
+        # this should be expanded to make more use of the information in bc.parent
+        # if that is set
+        if bc.geom.type=='Point':
+            self.log.info("Assuming that Point geometry on a scalar bc implies point source")
+            ck=self.bc_to_interior_cell_layer(bc) # (cell,layer) tuple
+            self.bc_point_sources[ck][scalar_name].append(da)
+        else:
+            # info is duplicated on type2 (flow) and type3 (stage) BCs, which
+            # is sorted out later.
+            for j in self.bc_geom_to_edges(bc.geom):
+                self.bc_type2[j][scalar_name].append(da)
+            for cell in self.bc_geom_to_cells(bc.geom):
+                self.bc_type3[cell][scalar_name].append(da)
 
     def write_flow_bc(self,bc):
         da=bc.data()
@@ -1190,6 +1198,15 @@ class SuntansModel(dfm.HydroModel):
             assert j_cells.max()>=0
             cells.append(j_cells.max())
         return cells
+
+    def bc_to_interior_cell_layer(self,bc):
+        """
+        Determine the cell and layer for a source/sink BC.
+        """
+        c=self.bc_geom_to_interior_cell(bc.geom)
+        self.log.warning("Assuming source/sink is at bed")
+        k=int(self.config['Nkmax'])-1
+        return (c,k)
     
     def bc_geom_to_interior_cell(self,geom):
         """ geom: a Point or LineString geometry. In the case of a LineString,

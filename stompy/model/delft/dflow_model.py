@@ -806,13 +806,23 @@ class WindBC(BC):
 class ScalarBC(BC):
     scalar=None
     value=None
+    parent=None
     def __init__(self,**kw):
         """
         name: feature name
         model: HydroModel instance
         scalar: 'salinity','temperature', other
         value: floating point
+        parent: [optional] a BC, typ. flow but doesn't have to be
         """
+        if 'parent' in kw:
+            self.parent=kw.pop('parent')
+            # make a new kw dictionary with some defaults from the parent
+            # but they can be overridden by specified arguments
+            new_kw=dict(name=self.parent.name,
+                        geom=self.parent.geom)
+            new_kw.update(kw)
+            kw=new_kw
         super(ScalarBC,self).__init__(**kw)
     def src_data(self):
         # Base implementation does nothing
