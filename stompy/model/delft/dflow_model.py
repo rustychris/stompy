@@ -1000,6 +1000,73 @@ class HydroModel(object):
         else:
             return os.path.basename(self.grid.filename)
 
+    def dredge_boundary(self,linestring,dredge_depth,node_field=None,edge_field=None,cell_field=None):
+        """
+        Lower bathymetry in the vicinity of external boundary, defined
+        by a linestring.
+
+        linestring: [N,2] array of coordinates
+        dredge_depth: positive-up bed-level for dredged areas
+
+        Modifies depth information in-place.
+        """
+        if not (node_field or edge_field or cell_field):
+            raise Exception("dredge_boundary: must specify at least one depth field")
+        
+        # Carve out bathymetry near sources:
+        cells_to_dredge=[]
+
+        linestring=np.asarray(linestring)
+        assert linestring.ndim==2,"dredge_boundary requires [N,2] array of points"
+
+        g=self.grid
+        
+        feat_edges=g.select_edges_by_polyline(linestring,rrtol=3.0)
+        
+        if len(feat_edges)==0:
+            raise Exception("No boundary edges matched by %s"%(str(linestring)))
+
+        cells_to_dredge=g.edges['cells'][feat_edges].max(axis=1)
+
+        nodes_to_dredge=np.concatenate( [g.cell_to_nodes(c)
+                                         for c in cells_to_dredge] )
+        nodes_to_dredge=np.unique(nodes_to_dredge)
+
+        if edge_field:
+            g.edges[edge_field][feat_edges] = np.minimum(g.edges[edge_field][feat_edges],
+                                                         dredge_depth)
+        if node_field:
+            g.nodes[node_field][nodes_to_dredge] = np.minimum(g.nodes[node_field][nodes_to_dredge],
+                                                              dredge_depth)
+        if cell_field:
+            g.cells[cell_field][cells_to_dredge] = np.minimum(g.cells[cell_field][cells_to_dredge],
+                                                              dredge_depth)
+
+    def dredge_discharge(self,point,dredge_depth,
+                         node_field=None,edge_field=None,cell_field=None):
+        if not (node_field or edge_field or cell_field):
+            raise Exception("dredge_boundary: must specify at least one depth field")
+        
+        point=np.asarray(point)
+        if point.ndim>1:
+            # for DFM-style discharges, a line segment starting outside the domain
+            # and ending at the discharge point
+            point=point[-1,:]
+        g=self.grid
+        cell=g.select_cells_nearest(point,inside=True)
+        assert cell is not None,"Discharge at %s failed to find a cell"%pnt
+
+        if cell_field:
+            g.cells[cell_field][cell] = min(g.cells[cell_field][cell],dredge_depth)
+        if edge_field:
+            edges=g.cell_to_edges(cell)
+            g.edges[edge_field][edges] = np.minimum(g.edges[edge_field][edges],
+                                                    dredge_depth)
+        if node_field:
+            nodes=g.cell_to_nodes(cell)
+            g.nodes[node_field][nodes] = np.minimum(g.nodes[node_field][nodes],
+                                                    dredge_depth)
+        
     def add_monitor_sections(self,sections):
         """
         sections: list or array of features.  each feature
@@ -2066,6 +2133,15 @@ class DFlowModel(HydroModel):
                 else:
                     grid_fn=grid_fn+"_net.nc"
             return os.path.basename(grid_fn)
+        
+    def dredge_boundary(self,linestring,dredge_depth):
+        super(DFlowModel,self).dredge_boundary(linestring,dredge_depth,node_field='depth',
+                                               edge_field=None,cell_field=None)
+        
+    def dredge_discharge(self,point,dredge_depth):
+        super(DFlowModel,self).dredge_discharge(point,dredge_depth,node_field='depth',
+                                                edge_field=None,cell_field=None)
+        
     def write_grid(self):
         """
         Write self.grid to the run directory.
@@ -2302,9 +2378,8 @@ class DFlowModel(HydroModel):
             # Additionally modify the grid to make sure there is a place for inflow to
             # come in.
             log.info("Dredging grid for source/sink BC %s"%bc.name)
-            dfm_grid.dredge_boundary(self.grid,
-                                     np.array(bc.geom.coords),
-                                     self.dredge_depth)
+            self_grid.dredge_boundary(np.array(bc.geom.coords),
+                                      self.dredge_depth)
         else:
             log.info("dredging disabled")
 
@@ -2315,9 +2390,10 @@ class DFlowModel(HydroModel):
             # Additionally modify the grid to make sure there is a place for inflow to
             # come in.
             log.info("Dredging grid for source/sink BC %s"%bc.name)
-            dfm_grid.dredge_discharge(self.grid,
-                                      np.array(bc.geom.coords),
-                                      self.dredge_depth)
+            # These are now class methods using a generic implementation in HydroModel
+            # may need some tlc
+            self.dredge_discharge(np.array(bc.geom.coords),
+                                  self.dredge_depth)
         else:
             log.info("dredging disabled")
 

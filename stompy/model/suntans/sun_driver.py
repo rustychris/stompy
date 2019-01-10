@@ -1088,7 +1088,6 @@ class SuntansModel(dfm.HydroModel):
             ds['point_cell'].values[pnt_idx]=c
             ds['point_layer'].values[pnt_idx]=k
 
-            print("punting on point source salinity and temp")
             # really shaky ground here..
             if 'T' in self.bc_point_sources[key]:
                 combine_items( ds['point_T'].isel(Npoint=pnt_idx).values,
@@ -1165,19 +1164,41 @@ class SuntansModel(dfm.HydroModel):
             for cell in self.bc_geom_to_cells(bc.geom):
                 self.bc_type3[cell][scalar_name].append(da)
 
+    def dredge_boundary(self,linestring,dredge_depth):
+        super(SuntansModel,self).dredge_boundary(linestring,dredge_depth,
+                                                 edge_field='edge_depth',
+                                                 cell_field='depth')
+    def dredge_discharge(self,point,dredge_depth):
+        super(SuntansModel,self).dredge_discharge(point,dredge_depth,
+                                                  edge_field='edge_depth',
+                                                  cell_field='depth')
+        
     def write_flow_bc(self,bc):
         da=bc.data()
         self.bc_type2_segments[bc.name]['Q'].append(da)
 
         assert len(da.dims)<=1,"Flow must have dims either time, or none"
 
+        if self.dredge_depth is not None:
+            log.info("Dredging grid for flow boundary %s"%bc.name)
+            self.dredge_boundary(np.array(bc.geom.coords),
+                                 self.dredge_depth)
+
         edges=self.bc_geom_to_edges(bc.geom)
         for j in edges:
             self.bc_type2[j]['Q'].append(bc.name)
 
+
     def write_source_sink_bc(self,bc):
         da=bc.data()
-        
+
+        if self.dredge_depth is not None:
+            # Additionally modify the grid to make sure there is a place for inflow to
+            # come in.
+            log.info("Dredging grid for source/sink BC %s"%bc.name)
+            self.dredge_discharge(np.array(bc.geom.coords),
+                                  self.dredge_depth)
+
         c=self.bc_geom_to_interior_cell(bc.geom)
         print("Punting on k for source")
         # can come back later and map bc.z to a proper layer k
