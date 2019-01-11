@@ -317,11 +317,12 @@ class DFlowToPTMHydro(object):
         self.edge_2d_data_dims=('nMesh2_edge','nMesh2_data_time')
 
         # Scalar-ish variables
-        if 'mesh2d_sa1' in self.mod_map_ds:
-            self.salt_var=self.out_nc.createVariable('Mesh2_salinity_3d',
-                                                     np.float64, self.cell_3d_data_dims)
-        else:
-            self.salt_var=None
+        if 'mesh2d_sa1' not in self.mod_map_ds:
+            print("Will fabricate salinity=0")
+        # seems that PTM wants this to exist regardless, so better
+        # to fabricate salinity.
+        self.salt_var=self.out_nc.createVariable('Mesh2_salinity_3d',
+                                                 np.float64, self.cell_3d_data_dims)
 
         self.nut_var=self.out_nc.createVariable('Mesh2_vertical_diffusivity_3d',
                                                 np.float64, self.cell_3d_data_dims)
@@ -491,8 +492,11 @@ class DFlowToPTMHydro(object):
                 else:
                     dst[:,:,ti]=src_data
 
-            if self.salt_var is not None:
+            if 'mesh2d_sa1' in self.mod_map_ds:
                 copy_3d_cell('mesh2d_sa1',self.salt_var)
+            else:
+                self.salt_var[:,:,ti]=0.0
+
             if self.nkmax>1:
                 copy_3d_cell('mesh2d_viw',self.nut_var)
             else:
@@ -626,4 +630,3 @@ elif __name__=='__main__':
         kwargs['write_nc']=False
 
     converter=DFlowToPTMHydro(args.mdu,args.output,**kwargs)
-
