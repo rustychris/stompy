@@ -490,7 +490,7 @@ class Lowpass(BCFilter):
         from ... import filters
         assert self.cutoff_hours is not None,"Must specify lowpass threshold cutoff_hors"
         dt_h=24*np.median(np.diff(utils.to_dnum(da.time.values)))
-        log.info("Lowpass: data time step is %.2fh"%dt_h)
+        log.debug("Lowpass: data time step is %.2fh"%dt_h)
         data_in=da.values
 
         if np.any(~np.isfinite(data_in)):
@@ -806,13 +806,23 @@ class WindBC(BC):
 class ScalarBC(BC):
     scalar=None
     value=None
+    parent=None
     def __init__(self,**kw):
         """
         name: feature name
         model: HydroModel instance
         scalar: 'salinity','temperature', other
         value: floating point
+        parent: [optional] a BC, typ. flow but doesn't have to be
         """
+        if 'parent' in kw:
+            self.parent=kw.pop('parent')
+            # make a new kw dictionary with some defaults from the parent
+            # but they can be overridden by specified arguments
+            new_kw=dict(name=self.parent.name,
+                        geom=self.parent.geom)
+            new_kw.update(kw)
+            kw=new_kw
         super(ScalarBC,self).__init__(**kw)
     def src_data(self):
         # Base implementation does nothing
@@ -2114,7 +2124,11 @@ class DFlowModel(HydroModel):
             return None
         model=DFlowModel()
         model.load_mdu(fn)
-        model.grid = ugrid.UnstructuredGrid.read_dfm(model.mdu.filepath( ('geometry','NetFile') ))
+        try:
+            model.grid = ugrid.UnstructuredGrid.read_dfm(model.mdu.filepath( ('geometry','NetFile') ))
+        except FileNotFoundError:
+            log.warning("Loading model from %s, no grid could be loaded"%fn)
+            model.grid=None
         model.set_run_dir(os.path.dirname(fn),mode='existing')
         # infer number of processors based on mdu files
         # Not terribly robust if there are other files around..
@@ -2171,6 +2185,12 @@ class DFlowModel(HydroModel):
         model.close()
         return result
     def is_completed(self):
+        """
+        return true if the model has been run.
+        this can be tricky to define -- here completed is based on
+        a report in a diagnostic that the run finished.
+        this doesn't mean that all output files are present.
+        """
         root_fn=self.mdu.filename[:-4] # drop .mdu suffix
         if self.num_procs>1:
             dia_fn=root_fn+'_0000.dia'

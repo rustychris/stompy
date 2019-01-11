@@ -77,6 +77,7 @@ StageBC=dfm.StageBC
 FlowBC=dfm.FlowBC
 VelocityBC=dfm.VelocityBC
 ScalarBC=dfm.ScalarBC
+SourceSinkBC=dfm.SourceSinkBC
 OTPSStageBC=dfm.OTPSStageBC
 OTPSFlowBC=dfm.OTPSFlowBC
 OTPSVelocityBC=dfm.OTPSVelocityBC
@@ -603,7 +604,7 @@ class SuntansModel(dfm.HydroModel):
             else:
                 log.info("Restart file %s is not a link"%start_path)
         else:
-            log.info("Does not look like a restart based on %s"%start_path)
+            log.debug("Does not look like a restart based on %s"%start_path)
             self.restart=None
 
     def chain_restarts(self,count=None):
@@ -1068,9 +1069,36 @@ class SuntansModel(dfm.HydroModel):
             assert j>=0,"Some edge pointers did not get set"
             self.grid.edges['mark'][j]=2
 
-        # HERE: return to include processing of bc_point_sources
-        # self.bc_point_sources
-            
+        # --- Point source code ---
+        Npoint=len(self.bc_point_sources)
+        ds['point_cell']=('Npoint',), np.zeros(Npoint,np.int32) # point_cell
+        ds['point_layer']=('Npoint',), np.zeros(Npoint,np.int32) # point_layer
+        ds['point_Q']=('Nt','Npoint'), np.zeros( (Nt,Npoint), np.float64) # np.stack(point_Q,axis=-1)
+        ds['point_S']=('Nt','Npoint'), np.zeros( (Nt,Npoint), np.float64) # np.stack(point_S,axis=-1)
+        ds['point_T']=('Nt','Npoint'), np.zeros( (Nt,Npoint), np.float64) # np.stack(point_T,axis=-1)
+
+        for pnt_idx,key in enumerate(self.bc_point_sources.keys()):
+            (c,k)=key
+            print("Point source for cell=%d, k=%d"%(c,k))
+            assert 'Q' in self.bc_point_sources[key]
+
+            combine_items(ds['point_Q'].isel(Npoint=pnt_idx).values,
+                          self.bc_point_sources[key]['Q'])
+
+            ds['point_cell'].values[pnt_idx]=c
+            ds['point_layer'].values[pnt_idx]=k
+
+            print("punting on point source salinity and temp")
+            # really shaky ground here..
+            if 'T' in self.bc_point_sources[key]:
+                combine_items( ds['point_T'].isel(Npoint=pnt_idx).values,
+                               self.bc_point_sources[key]['T'] )
+            if 'S' in self.bc_point_sources[key]:
+                combine_items( ds['point_S'].isel(Npoint=pnt_idx).values,
+                               self.bc_point_sources[key]['S'] )
+                               
+        # End new point source code
+        
         return ds
 
     def write_bc(self,bc):
@@ -1122,11 +1150,20 @@ class SuntansModel(dfm.HydroModel):
         else:
             self.log.warning("Scalar %s is not S or T or similar"%scalar_name)
 
-        # scalars could be set on edges or cells
-        for j in self.bc_geom_to_edges(bc.geom):
-            self.bc_type2[j][scalar_name].append(da)
-        for cell in self.bc_geom_to_cells(bc.geom):
-            self.bc_type3[cell][scalar_name].append(da)
+        # scalars could be set on edges or cells, or points in cells
+        # this should be expanded to make more use of the information in bc.parent
+        # if that is set
+        if bc.geom.type=='Point':
+            self.log.info("Assuming that Point geometry on a scalar bc implies point source")
+            ck=self.bc_to_interior_cell_layer(bc) # (cell,layer) tuple
+            self.bc_point_sources[ck][scalar_name].append(da)
+        else:
+            # info is duplicated on type2 (flow) and type3 (stage) BCs, which
+            # is sorted out later.
+            for j in self.bc_geom_to_edges(bc.geom):
+                self.bc_type2[j][scalar_name].append(da)
+            for cell in self.bc_geom_to_cells(bc.geom):
+                self.bc_type3[cell][scalar_name].append(da)
 
     def write_flow_bc(self,bc):
         da=bc.data()
@@ -1161,6 +1198,15 @@ class SuntansModel(dfm.HydroModel):
             assert j_cells.max()>=0
             cells.append(j_cells.max())
         return cells
+
+    def bc_to_interior_cell_layer(self,bc):
+        """
+        Determine the cell and layer for a source/sink BC.
+        """
+        c=self.bc_geom_to_interior_cell(bc.geom)
+        self.log.warning("Assuming source/sink is at bed")
+        k=int(self.config['Nkmax'])-1
+        return (c,k)
     
     def bc_geom_to_interior_cell(self,geom):
         """ geom: a Point or LineString geometry. In the case of a LineString,
@@ -1229,7 +1275,7 @@ class SuntansModel(dfm.HydroModel):
 
         max_faces=self.grid.max_sides
         if int(self.config['maxFaces']) < max_faces:
-            log.info("Increasing maxFaces to %d"%max_faces)
+            log.debug("Increasing maxFaces to %d"%max_faces)
             self.config['maxFaces']=max_faces
 
         if self.coriolis_f=='auto':
@@ -1240,7 +1286,7 @@ class SuntansModel(dfm.HydroModel):
             Omega=7.2921e-5 # rad/s
             f=2*Omega*np.sin(lat*np.pi/180.)
             self.config['Coriolis_f']="%.5e"%f
-            log.info("Using %.2f as latitude for Coriolis => f=%s"%(lat,self.config['Coriolis_f']))
+            log.debug("Using %.2f as latitude for Coriolis => f=%s"%(lat,self.config['Coriolis_f']))
         elif self.coriolis_f is not None:
             self.config['Coriolis_f']=self.coriolis_f
 
@@ -1250,8 +1296,13 @@ class SuntansModel(dfm.HydroModel):
         dst: destination.
         will either symlink or copy src to dst, based on self.restart_symlink
         setting
+        In order to avoid a limit on chained symlinks, symlinks will point to
+        the original file.
         """
         if self.restart_symlink:
+            # this ensures that we don't build up long chains of
+            # symlinks
+            src=os.path.realpath(src)
             src_rel=os.path.relpath(src,self.run_dir)
             os.symlink(src_rel,dst)
         else:
