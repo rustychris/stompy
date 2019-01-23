@@ -4802,6 +4802,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
             # write side info
             fp.write(side_hdr+"\n")
+            # likewise, ptm expects edge depths to be positive down.
             edge_depths = self.edge_depths()
             edge_write_str = " %10d %16.7f %10d %10d %10d %10d %10d\n"
             for s in range(self.Nedges()):
@@ -4809,8 +4810,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 edges[edges<0] = -1
                 nodes = self.edges['nodes'][s,:]
                 nodes[nodes<0] = -1
+                # RH 2019-01-14: flip sign on edge depth.
                 fp.write(edge_write_str%(s+1,
-                                          edge_depths[s],
+                                          -edge_depths[s],
                                           nodes[0]+1,
                                           nodes[1]+1,
                                           edges[0]+1,
@@ -4834,6 +4836,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         """
         Return an array of cell-centered depths.  This *should* be
         a positive:up quantity.
+        TODO: make naming consistent so that this is elevation, indicating
+        the sign convention.
 
         Returns all zeros if no edge depth data is found
         """
