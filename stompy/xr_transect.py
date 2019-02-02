@@ -683,7 +683,7 @@ def lplt():
     import matplotlib.pyplot as plt
     return plt
 
-def plot_scalar_pcolormesh(tran,v,ax=None,**kw):
+def plot_scalar_pcolormesh(tran,v,ax=None,xform=None,**kw):
     """
     This approximates a sigma coordinate grid in the slice.
     Since that's not the natural staggering for a transect,
@@ -737,14 +737,17 @@ def plot_scalar_pcolormesh(tran,v,ax=None,**kw):
                               safe_midpnt(Yexpand[:-1],Yexpand[1:]),
                               Yexpand[-1:,:]), axis=0)
 
+    if xform:
+        Xexpand2,Yexpand2=xform(Xexpand2,Yexpand2)
     coll=ax.pcolor(Xexpand2,Yexpand2,scal.values,**kw)
 
     return coll
 
-def plot_scalar_polys(tran,v,ax=None,**kw):
+def plot_scalar_polys(tran,v,ax=None,xform=None,**kw):
     """
     A more literal interpretation of how to plot a transect, with no
     interpolation of vertical coordinates
+    xform: func(X,Y) applies a transformation to coordinates before plotting
     """
     plt=lplt()
 
@@ -785,6 +788,9 @@ def plot_scalar_polys(tran,v,ax=None,**kw):
     dx=utils.center_to_interval(X[:,0])
     Xexpand2=np.concatenate( (Xexpand-0.5*dx[:,None], Xexpand[-1:,:]+0.5*dx[-1:,None]), axis=0)
 
+    if xform:
+        Xexpand2,Yexpand2=xform(Xexpand2,Yexpand2)
+    
     polys=[]
     values=[]
 
