@@ -176,7 +176,7 @@ class BC(object):
         ref_date,start,stop = self.model.mdu.time_range()
         dt=np.timedelta64(60,'s') # always minutes
         # self.model.mdu.t_unit_td64()
-        elapsed_time=(da.time.values - ref_date)/dt 
+        elapsed_time=(da.time.values - ref_date)/dt
 
         data=np.c_[elapsed_time,da.values]
         if fn is None:
@@ -596,7 +596,7 @@ class RoughnessBC(BC):
             da.attrs['long_name']='Manning n'
         elif self.data_array is not None:
             da=self.data_array
-                
+
         return da
 
     def write_data(self):
@@ -658,7 +658,7 @@ class RoughnessBC(BC):
         plot.scatter(da.x.values.copy(), da.y.values.copy(), radius=3,
                      fill_color=colors, line_color=None,legend=label)
 
-        color_bar = ColorBar(color_mapper=color_mapper, 
+        color_bar = ColorBar(color_mapper=color_mapper,
                              label_standoff=12, border_line_color=None, location=(0,0))
         plot.add_layout(color_bar, 'right')
 
@@ -882,6 +882,7 @@ class SigmaCoord(VerticalCoord):
 class HydroModel(object):
     mpi_bin_dir=None # same, but for mpiexec.  None means use dfm_bin_dir
     mpi_bin_exe='mpiexec'
+    mpi_args=() # tuple to avoid mutation
     num_procs=1
     run_dir="." # working directory when running dflowfm
     cache_dir=None
@@ -1156,42 +1157,72 @@ class HydroModel(object):
     def partition(self):
         if self.num_procs<=1:
             return
-
-        cmd="--partition:ndomains=%d %s"%(self.num_procs,self.mdu['geometry','NetFile'])
-        self.run_dflowfm(cmd)
-
         # similar, but for the mdu:
-        gen_parallel=os.path.join(self.dfm_bin_dir,"generate_parallel_mdu.sh")
-        cmd="%s %s %d 6"%(gen_parallel,os.path.basename(self.mdu.filename),self.num_procs)
-        utils.call_with_path(cmd,self.run_dir)
+        if sys.platform=='win32':
+            # use cli to partition the mdu
+            cmd=["--partition:ndomains=%d:icgsolver=6"%self.num_procs,
+                 self.mdu.filename]
+            self.run_dflowfm(cmd,mpi=False)
+        else:
+            # some of the older linux compiles don't seem to
+            # handle the mdu well, so use the shell script.
+            cmd=["--partition:ndomains=%d"%self.num_procs,
+                 self.mdu['geometry','NetFile']]
+            self.run_dflowfm(cmd,mpi=False)
+
+            gen_parallel=os.path.join(self.dfm_bin_dir,"generate_parallel_mdu.sh")
+            cmd=[gen_parallel,os.path.basename(self.mdu.filename),"%d"%self.num_procs]
+            utils.call_with_path(cmd,self.run_dir)
 
     _dflowfm_exe=None
     @property
     def dflowfm_exe(self):
         if self._dflowfm_exe is None:
-            return os.path.join(self.dfm_bin_dir,self.dfm_bin_exe)
+            p=os.path.join(self.dfm_bin_dir,self.dfm_bin_exe)
+            if os.path.sep!="/":
+                p=p.replace("/",os.path.sep)
+            return p
         else:
             return self._dflowfm_exe
     @dflowfm_exe.setter
     def dflowfm_exe(self,v):
         self._dflowfm_exe=v
-        
-    def run_dflowfm(self,cmd):
-        # Names of the executables
-        dflowfm=os.path.join(self.dfm_bin_dir,"dflowfm")
 
-        if self.num_procs>1:
+    def run_dflowfm(self,cmd,mpi='auto'):
+        """
+        Invoke the dflowfm executable with the list of
+        arguments given in cmd=[arg1,arg2, ...]
+        mpi: generally if self.num_procs>1, mpi will be used. this
+          can be set to False or 0, in which case mpi will not be used
+          even when num_procs is >1. This is useful for partition which
+          runs single-core.
+        """
+        # Names of the executables
+        dflowfm=self.dflowfm_exe #os.path.join(self.dfm_bin_dir,"dflowfm")
+
+        if mpi=='auto':
+            num_procs=self.num_procs
+        else:
+            num_procs=1
+
+        if num_procs>1:
             mpi_bin_dir=self.mpi_bin_dir or self.dfm_bin_dir
             mpiexec=os.path.join(mpi_bin_dir,"mpiexec")
-            real_cmd="%s -n %d %s %s"%(mpiexec,self.num_procs,dflowfm,cmd)
+            real_cmd=( [mpiexec,"-n","%d"%self.num_procs]
+                        +list(self.mpi_args)
+                        +[self.dflowfm_exe]
+                        +cmd )
+            # "%s -n %d %s %s"%(mpiexec,self.num_procs,dflowfm,cmd)
         else:
-            real_cmd="%s %s"%(dflowfm,cmd)
+            real_cmd=[dflowfm]+cmd
+            # real_cmd="%s %s"%(dflowfm,cmd)
 
-        self.log.info("Running command: %s"%real_cmd)
+        self.log.info("Running command: %s"%(" ".join(real_cmd)))
         utils.call_with_path(real_cmd,self.run_dir)
 
     def run_model(self):
-        self.run_dflowfm(cmd="-t 1 --autostartstop %s"%os.path.basename(self.mdu.filename))
+        self.run_dflowfm(cmd=["-t","1","--autostartstop",
+                              os.path.basename(self.mdu.filename)])
 
     def add_gazetteer(self,shp_fn):
         """
@@ -1699,7 +1730,7 @@ class HycomMultiBC(MultiBC):
             raise Exception("Not implemented: auto-calculating ll_box")
         self.populate_files()
         super(HycomMultiBC,self).enumerate_sub_bcs()
-    
+
         # adjust fluxes...
         self.populate_values()
 
@@ -1788,7 +1819,7 @@ class HycomMultiScalarBC(HycomMultiBC):
             hyc_dists=utils.dist( sub_bc.edge_center, hy_xy )
             # lazy way to skip over dry cells.  Note that velocity differs
             # here, since it's safe to just use 0 velocity, but a zero
-            # salinity can creep in and wreak havoc.  
+            # salinity can creep in and wreak havoc.
             hyc_dists[~hy_wet]=np.inf
             row,col=np.nonzero( hyc_dists==hyc_dists.min() )
             row=row[0] ; col=col[0]
@@ -1884,7 +1915,7 @@ class HycomMultiVelocityBC(HycomMultiBC):
         def update_Q_in(self):
             """calculate time series flux~m3/s from self._dataset,
             updating Q_in field therein.
-            Assumes populate_velocity has already been run, so 
+            Assumes populate_velocity has already been run, so
             additional attributes are available.
             """
             ds=self.dataset()
@@ -1892,7 +1923,7 @@ class HycomMultiVelocityBC(HycomMultiBC):
             # u ~ [time,layer]
             Uint=(ds['u'].values[:,:]*sun_dz[None,:]).sum(axis=1)
             Vint=(ds['v'].values[:,:]*sun_dz[None,:]).sum(axis=1)
-                                
+
             Q_in=self.edge_length*(self.inward_normal[0]*Uint +
                                    self.inward_normal[1]*Vint)
             ds['Q_in'].values[:]=Q_in
@@ -2175,7 +2206,7 @@ class NwisFlowBC(NwisBC,FlowBC):
         Returns a dataset with a 'z' variable, and with time as UTC
         """
         from ...io.local import usgs_nwis
-        
+
         ds=usgs_nwis.nwis_dataset(station=self.station,start_date=period_start,
                                   end_date=period_stop,
                                   products=[self.product_id],
@@ -2296,10 +2327,17 @@ class DFlowModel(HydroModel):
         # assume shortest is the one that hasn't been partitioned
         if len(fns)==0:
             return None
-        
+
         unpartitioned=np.argmin([len(f) for f in fns])
         return fns[unpartitioned]
-        
+
+    def close(self):
+        """
+        Close open file handles -- this can help on windows where
+        having a file open prevents it from being deleted.
+        """
+        # nothing right now
+        pass
     @classmethod
     def run_completed(cls,fn):
         """
@@ -2312,7 +2350,9 @@ class DFlowModel(HydroModel):
         if not os.path.exists(fn):
             return False
         model=cls.load(fn)
-        return (model is not None) and model.is_completed()
+        result=(model is not None) and model.is_completed()
+        model.close()
+        return result
     def is_completed(self):
         """
         return true if the model has been run.
@@ -2325,9 +2365,9 @@ class DFlowModel(HydroModel):
             dia_fn=root_fn+'_0000.dia'
         else:
             dia_fn=root_fn+'.dia'
-            
+
         assert dia_fn!=self.mdu.filename,"Probably case issues with %s"%dia_fn
-                                          
+
         if not os.path.exists(dia_fn):
             return False
         # Read the last 1000 bytes
@@ -2338,7 +2378,7 @@ class DFlowModel(HydroModel):
             # This may not be py2 compatible!
             tail=fp.read().decode(errors='ignore')
         return "Computation finished" in tail
-    
+
     def update_config(self):
         """
         Update fields in the mdu object with data from self.
@@ -2447,7 +2487,7 @@ class DFlowModel(HydroModel):
         """
         ref_date,start,stop = self.mdu.time_range()
         dt=np.timedelta64(60,'s') # always minutes
-        
+
         if len(da.dims)==0:
             # raise Exception("Not implemented for constant waterlevel...")
             pad=np.timedelta64(86400,'s')
@@ -2456,7 +2496,7 @@ class DFlowModel(HydroModel):
         else:
             times=da.time.values
             values=da.values
-        elapsed_time=(times - ref_date)/dt 
+        elapsed_time=(times - ref_date)/dt
         data=np.c_[elapsed_time,values]
 
         np.savetxt(file_path,data)
@@ -2590,8 +2630,8 @@ class DFlowModel(HydroModel):
         fns=glob.glob(os.path.join(output_dir,'*_his.nc'))
         assert len(fns)==1
         return fns[0]
-        
-    
+
+
 
 import sys
 if sys.platform=='win32':
