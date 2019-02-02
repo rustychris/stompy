@@ -102,12 +102,12 @@ def cdec_dataset(station,start_date,end_date,sensor,
         params['Start']=utils.to_datetime(interval_start).strftime('%Y-%m-%d')
         params['End']  =utils.to_datetime(interval_end).strftime('%Y-%m-%d')
 
+        base_fn="%s_%s%s_%s_%s.nc"%(station,
+                                    str(sensor), duration,
+                                    params['Start'],
+                                    params['End'])
         if cache_dir is not None:
-            cache_fn=os.path.join(cache_dir,
-                                  "%s_%s%s_%s_%s.nc"%(station,
-                                                    str(sensor), duration,
-                                                    params['Start'],
-                                                    params['End']))
+            cache_fn=os.path.join(cache_dir,base_fn)
         else:
             cache_fn=None
 
@@ -118,7 +118,7 @@ def cdec_dataset(station,start_date,end_date,sensor,
             log.info("Cache only - no data for %s -- %s"%(interval_start,interval_end))
             continue
         else:
-            log.info("Fetching %s -- %s"%(interval_start,interval_end))
+            log.info("Fetching %s"%(base_fn))
             req=requests.get(base_url,params=params)
             df=pd.read_csv(StringIO(req.text),na_values=['---'])
             if len(df)==0:

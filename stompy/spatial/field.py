@@ -1881,6 +1881,10 @@ class SimpleGrid(QuadrilateralGrid):
 
         self.dx,self.dy = self.delta()
 
+    @property
+    def shape(self):
+        return self.F.shape
+    
     def copy(self):
         return SimpleGrid(extents=list(self.extents),F=self.F.copy(),projection=self.projection())
 
@@ -2052,6 +2056,8 @@ class SimpleGrid(QuadrilateralGrid):
     def interpolate(self,X,interpolation=None,fallback=True):
         """ interpolation can be nearest or linear
         """
+        X=np.asanyarray(X)
+        
         if interpolation is None:
             interpolation = self.default_interpolation
 
@@ -2880,6 +2886,7 @@ if ogr:
             self.delegate_list[i] = d
 
         def value(self,X):
+            X=np.asanyarray(X)
             print("Calculating weights")
             weights = self.ic.calc_weights(X)
             total_weights = weights.sum(axis=-1)
@@ -2978,6 +2985,7 @@ if ogr:
 
         # def to_grid(self,dx,dy,bounds):
         def value(self,X):
+            X=np.asanyarray(X)
             shape_orig=X.shape
             Xlin=X.reshape( [-1,2] )
             V=np.nan*np.ones( len(Xlin), 'f8' )
@@ -3654,6 +3662,7 @@ class FunctionField(Field):
     def __init__(self,func):
         self.func = func
     def value(self,X):
+        X=np.asanyarray(X)
         return self.func(X)
 
 # used to be in its own file

@@ -417,8 +417,8 @@ def fill_tidal_data(da,fill_time=True):
         data_hp=data - data_lp
     else:
         # not long enough, punt with the mean.
-        data_hp=data - data.mean()
-        data_lp=0*data
+        data_lp=np.nanmean(data)*np.ones_like(data)
+        data_hp=data - data_lp
 
     valid=np.isfinite(data_hp)
     
@@ -437,6 +437,8 @@ def fill_tidal_data(da,fill_time=True):
     data_filled[missing] = data_recon[missing]
 
     fda=xr.DataArray(data_filled,coords=[da.time],dims=['time'],name=da.name)
+
+    fda.attrs.update(da.attrs)
     return fda
 
 def select_increasing(x):
@@ -1190,6 +1192,10 @@ def to_unix(t):
         dt0=datetime.datetime(1970, 1, 1)
         return (dt - dt0).total_seconds()
 
+# numpy refuses to calculate date means - so workaround
+def mean_dt64(vec):
+    return to_dt64(np.mean(to_dnum(vec)))
+    
 def to_jdate(t):
     """
     Convert a time-like scalar t to integer julian date, e.g. 2016291

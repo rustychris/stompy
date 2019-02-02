@@ -516,13 +516,52 @@ class Lag(BCFilter):
     def transform_output(self,da):
         da.time.values[:]=da.time.values-self.lag
         return da
+    
 class Transform(BCFilter):
-    def __init__(self,fn):
+    def __init__(self,fn=None, fn_da=None):
+        """
+        fn: a function which takes the data values and returns
+        transformed data values.
+        fn_da: a function which takes the data array, and
+        returns a transformed data array.
+        this will apply both, but either can be omitted from 
+        the parameters.  fn_da is applied first.
+        """
         self.fn=fn
+        self.fn_da=fn_da
     def transform_output(self,da):
-        da.values[:]=self.fn(da.values)
+        if self.fn_da:
+            da=self.fn_da(da)
+        if self.fn:
+            da.values[:]=self.fn(da.values)
         return da
 
+class FillGaps(BCFilter):
+    """
+    Attempt to fill small gaps of missing data.  
+    Not currently complete.
+
+    This will probably only handle the basic case of short 
+    periods of missing data which can be linearly interpolated.
+    Anything more complicated needs a special case filter, like
+    filling with tidal data, or detecting periods of zero.
+    """
+    max_gap_interp_s=2*60*60
+    large_gap_value=0.0
+    
+    def transform_output(self,da):
+        # have self.bc, self.bc.model
+        # self.bc.data_start, self.bc.data_stop
+        if len(da)==0:
+            log.warning("FillGaps called with no input data")
+            da=xr.DataArray(self.large_gap_value)
+            return da
+        log.warning("FillGaps code incomplete")
+
+        raise Exception("Not yet implemented")
+        # probably do something with utils.fill_invalid.
+        return da
+    
 class RoughnessBC(BC):
     shapefile=None
     data_array=None # xr.DataArray
@@ -682,18 +721,18 @@ class FlowBC(BC):
                    "\n"]
             fp.write("\n".join(lines))
 
-    def write_pli(self):
-        super(FlowBC,self).write_pli()
-
-        if self.dredge_depth is not None:
-            # Additionally modify the grid to make sure there is a place for inflow to
-            # come in.
-            log.info("Dredging grid for flow BC %s"%self.name)
-            dfm_grid.dredge_boundary(self.model.grid,
-                                     np.array(self.geom.coords),
-                                     self.dredge_depth)
-        else:
-            log.info("Dredging disabled")
+    # Dredging now handled by model driver, not within the BC
+    # def write_pli(self):
+    #     super(FlowBC,self).write_pli()
+    # 
+    #     if self.dredge_depth is not None:
+    #         # Additionally modify the grid to make sure there is a place for inflow to
+    #         # come in.
+    #         log.info("Dredging grid for flow BC %s"%self.name)
+    #         self.model.dredge_boundary(np.array(self.geom.coords),
+    #                                    self.dredge_depth)
+    #     else:
+    #         log.info("Dredging disabled")
 
     def src_data(self):
         # probably need some refactoring here...
@@ -738,18 +777,19 @@ class SourceSinkBC(BC):
                    "\n"]
             fp.write("\n".join(lines))
 
-    def write_pli(self):
-        super(SourceSinkBC,self).write_pli()
-
-        if self.dredge_depth is not None:
-            # Additionally modify the grid to make sure there is a place for inflow to
-            # come in.
-            log.info("Dredging grid for flow BC %s"%self.name)
-            dfm_grid.dredge_discharge(self.model.grid,
-                                      np.array(self.geom.coords),
-                                      self.dredge_depth)
-        else:
-            log.info("dredging disabled")
+    # Dredging now handled by the model driver.
+    # def write_pli(self):
+    #     super(SourceSinkBC,self).write_pli()
+    # 
+    #     if self.dredge_depth is not None:
+    #         # Additionally modify the grid to make sure there is a place for inflow to
+    #         # come in.
+    #         log.info("Dredging grid for flow BC %s"%self.name)
+    #         dfm_grid.dredge_discharge(self.model.grid,
+    #                                   np.array(self.geom.coords),
+    #                                   self.dredge_depth)
+    #     else:
+    #         log.info("dredging disabled")
 
     def write_data(self):
         self.write_tim(self.data())
@@ -979,7 +1019,10 @@ class HydroModel(object):
     def set_cache_dir(self,path,mode='create'):
         """
         Set the cache directory, mainly for BC data.
-        See create_with_mode for details on 'mode' parameter
+        See create_with_mode for details on 'mode' parameter.
+
+        Doesn't currently interact with much -- may be removed 
+        in the future
         """
         self.create_with_mode(path,mode)
 
@@ -2035,6 +2078,53 @@ class NOAAStageBC(StageBC):
         ds['z'].attrs['units']='m'
         return ds
 
+class CdecBC(object):
+    cache_dir=None # set this to enable caching
+    station=None # generally three letter string, all caps
+    sensor=None # integer - default values set in subclasses.
+    pad=np.timedelta64(24,'h')
+
+class CdecFlowBC(CdecBC,FlowBC):
+    sensor=20 # flow at event frequency
+    def src_data(self):
+        ds=self.fetch_for_period(self.data_start,self.data_stop)
+        return ds['Q']
+    def write_bokeh(self,**kw):
+        defaults=dict(title="CDEC Flow: %s (%s)"%(self.name,self.station))
+        defaults.update(kw)
+        super(CdecFlowBC,self).write_bokeh(**defaults)
+    def fetch_for_period(self,period_start,period_stop):    
+        from stompy.io.local import cdec
+        
+        ds=cdec.cdec_dataset(station=self.station,
+                             start_date=period_start-self.pad,end_date=period_stop+self.pad,
+                             sensor=self.sensor, cache_dir=self.cache_dir)
+        # to m3/s
+        ds['Q']=ds['sensor%04d'%self.sensor] * 0.028316847
+        ds['Q'].attrs['units']='m3 s-1'
+        return ds
+    
+class CdecStageBC(CdecBC,StageBC):
+    sensor=1 # stage at event frequency
+    def src_data(self):
+        ds=self.fetch_for_period(self.data_start,self.data_stop)
+        return ds['z']
+    def write_bokeh(self,**kw):
+        defaults=dict(title="CDEC Stage: %s (%s)"%(self.name,self.station))
+        defaults.update(kw)
+        super(CdecFlowBC,self).write_bokeh(**defaults)
+    def fetch_for_period(self,period_start,period_stop):    
+        from stompy.io.local import cdec
+        pad=np.timedelta64(24,'h')
+        
+        ds=cdec.cdec_dataset(station=self.station,
+                             start_date=period_start-pad,end_date=period_stop+pad,
+                             sensor=self.sensor, cache_dir=self.cache_dir)
+        # to m
+        ds['z']=ds['sensor%04d'%self.sensor] * 0.3048
+        ds['z'].attrs['units']='m'
+        return ds
+    
 class NwisBC(object):
     cache_dir=None
     product_id="set_in_subclass"
@@ -2068,6 +2158,7 @@ class NwisStageBC(NwisBC,StageBC):
         ds['z']=('time',), 0.3048*ds['height_gage']
         ds['z'].attrs['units']='m'
         return ds
+
 
 class NwisFlowBC(NwisBC,FlowBC):
     product_id=60 # discharge
@@ -2104,7 +2195,9 @@ class DFlowModel(HydroModel):
     # flow and source/sink BCs will get the adjacent nodes dredged
     # down to this depth in order to ensure the impose flow doesn't
     # get blocked by a dry edge. Set to None to disable.
-    dredge_depth=-1.0
+    # This has moved to just the BC objects, and removed here to avoid
+    # confusion.
+    # dredge_depth=-1.0
 
     def __init__(self,*a,**kw):
         super(DFlowModel,self).__init__(*a,**kw)
@@ -2374,26 +2467,24 @@ class DFlowModel(HydroModel):
     def write_flow_bc(self,bc):
         self.write_gen_bc(bc,quantity='flow')
 
-        if self.dredge_depth is not None:
+        if bc.dredge_depth is not None:
             # Additionally modify the grid to make sure there is a place for inflow to
             # come in.
             log.info("Dredging grid for source/sink BC %s"%bc.name)
-            self_grid.dredge_boundary(np.array(bc.geom.coords),
-                                      self.dredge_depth)
+            self.dredge_boundary(np.array(bc.geom.coords),bc.dredge_depth)
         else:
             log.info("dredging disabled")
 
     def write_source_bc(self,bc):
         self.write_gen_bc(bc,quantity='source')
 
-        if self.dredge_depth is not None:
+        if bc.dredge_depth is not None:
             # Additionally modify the grid to make sure there is a place for inflow to
             # come in.
             log.info("Dredging grid for source/sink BC %s"%bc.name)
             # These are now class methods using a generic implementation in HydroModel
             # may need some tlc
-            self.dredge_discharge(np.array(bc.geom.coords),
-                                  self.dredge_depth)
+            self.dredge_discharge(np.array(bc.geom.coords),bc.dredge_depth)
         else:
             log.info("dredging disabled")
 

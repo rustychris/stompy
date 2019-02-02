@@ -534,7 +534,7 @@ def resample_d(tran,new_xy,save_original=None):
                 continue # manually supplied above
             else:
                 v_dest=save_original+v
-                print("Beware - trying to save original location info to %s"%v_dest)
+                # print("Beware - trying to save original location info to %s"%v_dest)
 
         dims=var.dims # dimension names don't change
         # any new dimensions we need to copy?
