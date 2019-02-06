@@ -1726,8 +1726,8 @@ class SuntansModel(dfm.HydroModel):
     def extract_station(self,xy=None,ll=None,chain_count=1):
         """
         Return a dataset for a single point in the model
-        xy: native model coordinates, [...,2]
-        ll: lon/lat coordinates, [...,2]
+        xy: native model coordinates, [Nstation,2]
+        ll: lon/lat coordinates, [Nstation,2]
         chain_count: max number of restarts to go back.
           1=>no chaining just this model.  None or 0:
           chain all runs possible.  Otherwise, go back max
@@ -1736,41 +1736,48 @@ class SuntansModel(dfm.HydroModel):
         # For the moment, just use map output
         if xy is None:
             xy=self.ll_to_native(ll)
+            
         map_fns=self.map_outputs()
 
         # First, map request locations to processor and cell
         
-        # Find which subdomain to use:
         xy=np.asarray(xy)
-        num_stations=xy.size//2
-        stn_shape=xy.shape[:-1]
-        stn_dims=['stndim%d'%i for i in range(len(stn_shape))]
+        orig_ndim=xy.ndim
+        if orig_ndim==1:
+            xy=xy[None,:]
+        elif orig_ndim>2:
+            raise Exception("Can only handle single coordinates or an list of coordinates")
+            
+        num_stations=len(xy)
 
         # allocate, [proc,cell,distance] per point
         matches=[[None,None,np.inf] for i in range(num_stations)]
 
-        hot_procs={} # dictionary tracking which processors are useful
         # outer loop on proc
         for proc,map_fn in enumerate(map_fns):
             map_ds=xr.open_dataset(map_fn)
             g=unstructured_grid.UnstructuredGrid.from_ugrid(map_ds)
+            cc=g.cells_center()
             # inner loop on station
-            for lin_idx,arr_idx in enumerate(np.ndindex(stn_shape)):
-                c=g.select_cells_nearest(xy[arr_idx],inside=False)
-                d=utils.dist(g.cells_center()[c],xy[arr_idx])
-                if d<matches[lin_idx][2]:
-                    hot_procs[proc]=1
-                    matches[lin_idx]=[proc,c,d]
-            map_ds.close()
+            for station in range(num_stations):
+                c=g.select_cells_nearest(xy[station],inside=False)
+                d=utils.dist(cc[c],xy[station])
+                if d<matches[station][2]:
+                    matches[station]=[proc,c,d]
+        # Now we know exactly which procs are useful, and can close
+        # the others
+        hot_procs={} # dictionary tracking which processors are useful
+        for station,(proc,c,d) in enumerate(matches):
+            hot_procs[proc]=(station,c,d)
+        for proc,map_fn in enumerate(map_fns):
+            if proc not in hot_procs:
+                xr.open_dataset(map_fn).close()
+            # otherwise close later
+            
         if chain_count==1:
             runs=[self]
         else:
             runs=self.chain_restarts(count=chain_count)
-
-        #if match[1] is None:
-        #    raise Exception("Could not find model output at %.0f,%.0f"%(xy[0],xy[1]))
-
-        # proc,cell,distance=match
 
         dss=[] # per-restart datasets
 
@@ -1797,27 +1804,48 @@ class SuntansModel(dfm.HydroModel):
                     # allocate output variables:
                     for d in map_ds.data_vars:
                         if 'Nc' in map_ds[d].dims:
-                            new_dims=[]
-                            new_shape=[]
+                            # put station first
+                            new_dims=['station']
+                            new_shape=[num_stations]
                             for d_dim in map_ds[d].dims:
                                 if d_dim=='Nc':
-                                    new_dims.extend(stn_dims)
-                                    new_shape.extend(stn_shape)
+                                    continue # replaced by station above
                                 else:
                                     new_dims.append(d_dim)
                                     new_shape.append(map_ds.dims[d_dim])
                             model_out[d]=tuple(new_dims), np.zeros(new_shape, map_ds[d].dtype )
 
+                # For vectorized indexing, pulls the stations we want want from this
+                # processor, but only gets as far as ordering them densely on this
+                # proc
+                Nc_indexer=xr.DataArray( [m[1] for m in matches if m[0]==proc ],
+                                         dims=['proc_station'] )
+                assert len(Nc_indexer),"Somehow this proc has no hits"
+                
+                # and the station indexes in model_out to assign to.
+                # this can't use vectorized indexing because you can't assign to the
+                # result of vectorized indexing.
+                proc_stations=np.array( [i for i,m in enumerate(matches) if m[0]==proc] )
+                                        
                 for d in map_ds.data_vars:
-                    if 'Nc' not in map_ds[d].dims: continue
+                    if d not in model_out: continue
+
+                    # potentially gets one isel out of the tight loop
+                    # this appears to work.
+                    extracted=map_ds[d].isel(Nc=Nc_indexer)
+                    # extracted will have 'station' in the wrong place. transpose
+                    dims=['proc_station'] + [d for d in extracted.dims if d!='proc_station']
+                    extractedT=extracted.transpose(*dims)
+                    model_out[d].values[proc_stations,...] = extractedT.values
                     
-                    for lin_idx,arr_idx in enumerate(np.ndindex(stn_shape)):
-                        if matches[lin_idx][0]!=proc: continue
-                        # seems like voodoo -- construct an index into the output,
-                        # which will let us point to the desired station.
-                        sel=dict(zip(stn_dims,arr_idx))
-                        model_out[d].isel(sel).values[...]=map_ds[d].isel(Nc=matches[lin_idx][1])
-                            
+                    #for station in lin_idx,arr_idx in enumerate(np.ndindex(stn_shape)):
+                    #    if matches[lin_idx][0]!=proc: continue
+                    #    
+                    #    extracted=map_ds[d].isel(Nc=matches[lin_idx][1])
+                    #    # seems like voodoo -- construct an index into the output,
+                    #    # which will let us point to the desired station.
+                    #    sel=dict(zip(stn_dims,arr_idx))
+                    #    model_out[d].isel(sel).values[...]=extracted
             if dss:
                 # limit to non-overlapping
                 time_sel=model_out.time.values>dss[-1].time.values[-1]
@@ -1832,17 +1860,19 @@ class SuntansModel(dfm.HydroModel):
         combined_ds=xr.concat(dss,dim='time',data_vars='minimal',coords='minimal')
 
         # copy from matches
-        combined_ds['distance_from_target']=tuple(stn_dims), np.zeros(stn_shape,np.float64)
-        combined_ds['subdomain']=tuple(stn_dims), np.zeros(stn_shape,np.int32)
-        combined_ds['station_cell']=tuple(stn_dims), np.zeros(stn_shape,np.int32)
+        combined_ds['distance_from_target']=('station',), np.zeros(num_stations, np.float64)
+        combined_ds['subdomain']=('station',), np.zeros(num_stations,np.int32)
+        combined_ds['station_cell']=('station',), np.zeros(num_stations,np.int32)
         combined_ds['station_cell'].attrs['description']="Cell index in subdomain grid"
-        combined_ds['station_x']=tuple(stn_dims), xy[...,0]
-        combined_ds['station_y']=tuple(stn_dims), xy[...,1]
+        combined_ds['station_x']=('station',), xy[...,0]
+        combined_ds['station_y']=('station',), xy[...,1]
         
-        for lin_idx,arr_idx in enumerate(np.ndindex(stn_shape)):
-            # sel=dict(zip(stn_dims,arr_idx))
+        for station in range(num_stations):
             # here we know the order and can go straight to values
-            combined_ds['distance_from_target'].values[arr_idx]=matches[lin_idx][2]
-            combined_ds['subdomain'].values[arr_idx]=matches[lin_idx][0]
+            combined_ds['distance_from_target'].values[station]=matches[station][2]
+            combined_ds['subdomain'].values[station]=matches[station][0]
 
+        if orig_ndim==1:
+            combined_ds=combined_ds.isel(station=0)
+            
         return combined_ds

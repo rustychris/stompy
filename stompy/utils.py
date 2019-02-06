@@ -686,7 +686,15 @@ def find_slack(jd,u,leave_mean=False,which='both'):
     return jd_slack,start
 
 
-def hour_tide(jd,u,jd_new=None,leave_mean=False):
+def hour_tide(jd,u=None,h=None,jd_new=None,leave_mean=False):
+    assert (u is None) != (h is None),"Must specify one of u,h"
+    if h is not None:
+        # abuse cdiff to avoid concatenate code here
+        dh_dt=cdiff(h) / cdiff(jd)
+        dh_dt[-1]=dh_dt[-2]
+        dh_dt=np.roll(dh_dt,1) # better staggering to get low tide at h=0
+        u=dh_dt
+        
     fn=hour_tide_fn(jd,u,leave_mean=leave_mean)
 
     if jd_new is None:
@@ -1127,7 +1135,7 @@ def to_dnum(x):
     else:
         if pd is not None and isinstance(x,pd.DataFrame) or isinstance(x,pd.Series):
             x=x.index.values
-
+        x=np.asanyarray(x) # to accept lists.
         if np.issubdtype(x.dtype,np.floating): # used to be np.float, but that is deprecated
             return x
         if isinstance(x[0],datetime.datetime) or isinstance(x[0],datetime.date):

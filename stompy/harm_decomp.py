@@ -114,7 +114,7 @@ def decompose_noaa37(t,h):
 
 def select_omegas(T,omegas=None,factor=0.25):
     """
-    T: timedelta64 giving duration of a timeseries
+    T: duration of a timeseries in seconds
     omegas: an array of angular frequencies in rad/s, defaults to
     the 37 constituents used in NOAA predictions.
 
