@@ -417,8 +417,8 @@ def fill_tidal_data(da,fill_time=True):
         data_hp=data - data_lp
     else:
         # not long enough, punt with the mean.
-        data_hp=data - data.mean()
-        data_lp=0*data
+        data_lp=np.nanmean(data)*np.ones_like(data)
+        data_hp=data - data_lp
 
     valid=np.isfinite(data_hp)
 
@@ -437,6 +437,8 @@ def fill_tidal_data(da,fill_time=True):
     data_filled[missing] = data_recon[missing]
 
     fda=xr.DataArray(data_filled,coords=[da.time],dims=['time'],name=da.name)
+
+    fda.attrs.update(da.attrs)
     return fda
 
 def select_increasing(x):
@@ -684,7 +686,15 @@ def find_slack(jd,u,leave_mean=False,which='both'):
     return jd_slack,start
 
 
-def hour_tide(jd,u,jd_new=None,leave_mean=False):
+def hour_tide(jd,u=None,h=None,jd_new=None,leave_mean=False):
+    assert (u is None) != (h is None),"Must specify one of u,h"
+    if h is not None:
+        # abuse cdiff to avoid concatenate code here
+        dh_dt=cdiff(h) / cdiff(jd)
+        dh_dt[-1]=dh_dt[-2]
+        dh_dt=np.roll(dh_dt,1) # better staggering to get low tide at h=0
+        u=dh_dt
+        
     fn=hour_tide_fn(jd,u,leave_mean=leave_mean)
 
     if jd_new is None:
@@ -1125,7 +1135,7 @@ def to_dnum(x):
     else:
         if pd is not None and isinstance(x,pd.DataFrame) or isinstance(x,pd.Series):
             x=x.index.values
-
+        x=np.asanyarray(x) # to accept lists.
         if np.issubdtype(x.dtype,np.floating): # used to be np.float, but that is deprecated
             return x
         if isinstance(x[0],datetime.datetime) or isinstance(x[0],datetime.date):
@@ -1190,6 +1200,10 @@ def to_unix(t):
         dt0=datetime.datetime(1970, 1, 1)
         return (dt - dt0).total_seconds()
 
+# numpy refuses to calculate date means - so workaround
+def mean_dt64(vec):
+    return to_dt64(np.mean(to_dnum(vec)))
+    
 def to_jdate(t):
     """
     Convert a time-like scalar t to integer julian date, e.g. 2016291

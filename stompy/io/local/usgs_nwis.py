@@ -114,16 +114,19 @@ def nwis_dataset(station,start_date,end_date,products,
     last_url=None
 
     for interval_start,interval_end in periods(start_date,end_date,days_per_request):
-
         params['begin_date']=utils.to_datetime(interval_start).strftime('%Y-%m-%d')
         params['end_date']  =utils.to_datetime(interval_end).strftime('%Y-%m-%d')
 
+        # This is the base name for caching, but also a shorthand for reporting
+        # issues with the user, since it already encapsulates most of the
+        # relevant info in a single tidy string.
+        base_fn="%s_%s_%s_%s.nc"%(station,
+                                  "-".join(["%d"%p for p in products]),
+                                  params['begin_date'],
+                                  params['end_date'])
+
         if cache_dir is not None:
-            cache_fn=os.path.join(cache_dir,
-                                  "%s_%s_%s_%s.nc"%(station,
-                                                    "-".join(["%d"%p for p in products]),
-                                                    params['begin_date'],
-                                                    params['end_date']))
+            cache_fn=os.path.join(cache_dir,base_fn)
         else:
             cache_fn=None
 
@@ -134,12 +137,12 @@ def nwis_dataset(station,start_date,end_date,products,
             log.info("Cache only - no data for %s -- %s"%(interval_start,interval_end))
             continue
         else:
-            log.info("Fetching %s -- %s"%(interval_start,interval_end))
+            log.info("Fetching %s"%(base_fn))
             req=requests.get(base_url,params=params)
             data=req.text
             ds=rdb.rdb_to_dataset(text=data)
             if ds is None: # There was no data there
-                log.warning("    no data found for this period")
+                log.warning("    %s: no data found for this period"%base_fn)
                 continue
             ds.attrs['url']=req.url
 

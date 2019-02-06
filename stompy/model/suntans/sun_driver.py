@@ -86,6 +86,8 @@ HycomMultiScalarBC=dfm.HycomMultiScalarBC
 NOAAStageBC=dfm.NOAAStageBC
 NwisFlowBC=dfm.NwisFlowBC
 NwisStageBC=dfm.NwisStageBC
+CdecFlowBC=dfm.CdecFlowBC
+CdecStageBC=dfm.CdecStageBC
 
 class GenericConfig(object):
     """ Handles reading and writing of suntans.dat formatted files.
@@ -412,6 +414,14 @@ class SunConfig(GenericConfig):
 class SuntansModel(dfm.HydroModel):
     # Annoying, but suntans doesn't like signed elevations
     # this offset will be applied to grid depths and freesurface boundary conditions.
+    # This is error prone, though, and makes it difficult to "round-trip"
+    # grid information.  In particular, if a new run is created by loading an old
+    # run, there will be an issue where the grid may get z_offset applied twice.
+    # This should be reimplemented as a z_datum.  So no behind-the-scenes offsets,
+    # just have a standardized place for saying that my model's z=0 is z_offset
+    # from z_datum, e.g. z_datum='NAVD88' and z_offset.
+    # maybe the appropriate thing is a dictionary, mapping datum names to offsets.
+    # like z_datum['NAVD88']=-5.
     z_offset=0.0
     ic_ds=None
 
@@ -558,7 +568,7 @@ class SuntansModel(dfm.HydroModel):
 
         
     @staticmethod
-    def load(fn):
+    def load(fn,load_grid=True):
         """
         Open an existing model setup, from path to its suntans.dat
         """
@@ -576,8 +586,18 @@ class SuntansModel(dfm.HydroModel):
             model.num_procs=1
         model.infer_restart()
         model.set_times_from_config()
+        # This will need some tweaking to fail gracefully
+        if load_grid:
+            model.load_grid()
         return model
-
+    def load_grid(self):
+        """
+        Set self.grid from existing suntans-format grid in self.run_dir.
+        """
+        g=unstructured_grid.UnstructuredGrid.read_suntans(self.run_dir)
+        self.set_grid(g)
+        return g
+    
     def infer_restart(self):
         """
         See if this run is a restart.
@@ -607,10 +627,11 @@ class SuntansModel(dfm.HydroModel):
             log.debug("Does not look like a restart based on %s"%start_path)
             self.restart=None
 
-    def chain_restarts(self,count=None):
+    def chain_restarts(self,count=None,load_grid=False):
         """
         return a list of up to count (None: unlimited) Model instances
         in forward chronological order of consecutive restarts.
+        load_grid: defaults to *not* loading the grid of the earlier runs.
         """
         runs=[self]
         run=self
@@ -619,7 +640,7 @@ class SuntansModel(dfm.HydroModel):
                 break
             run.infer_restart()
             if run.restart and run.restart is not True:
-                run=SuntansModel.load(run.restart)
+                run=SuntansModel.load(run.restart,load_grid=load_grid)
                 runs.insert(0,run)
             else:
                 break
@@ -1088,7 +1109,6 @@ class SuntansModel(dfm.HydroModel):
             ds['point_cell'].values[pnt_idx]=c
             ds['point_layer'].values[pnt_idx]=k
 
-            print("punting on point source salinity and temp")
             # really shaky ground here..
             if 'T' in self.bc_point_sources[key]:
                 combine_items( ds['point_T'].isel(Npoint=pnt_idx).values,
@@ -1165,20 +1185,42 @@ class SuntansModel(dfm.HydroModel):
             for cell in self.bc_geom_to_cells(bc.geom):
                 self.bc_type3[cell][scalar_name].append(da)
 
+    def dredge_boundary(self,linestring,dredge_depth):
+        super(SuntansModel,self).dredge_boundary(linestring,dredge_depth,
+                                                 edge_field='edge_depth',
+                                                 cell_field='depth')
+    def dredge_discharge(self,point,dredge_depth):
+        super(SuntansModel,self).dredge_discharge(point,dredge_depth,
+                                                  edge_field='edge_depth',
+                                                  cell_field='depth')
+        
     def write_flow_bc(self,bc):
         da=bc.data()
         self.bc_type2_segments[bc.name]['Q'].append(da)
 
         assert len(da.dims)<=1,"Flow must have dims either time, or none"
 
+        if bc.dredge_depth is not None:
+            log.info("Dredging grid for flow boundary %s"%bc.name)
+            self.dredge_boundary(np.array(bc.geom.coords),
+                                 bc.dredge_depth)
+
         edges=self.bc_geom_to_edges(bc.geom)
         for j in edges:
             self.bc_type2[j]['Q'].append(bc.name)
 
+
     def write_source_sink_bc(self,bc):
         da=bc.data()
-        
-        ck=self.bc_to_interior_cell_layer(bc)
+
+        if bc.dredge_depth is not None:
+            # Additionally modify the grid to make sure there is a place for inflow to
+            # come in.
+            log.info("Dredging grid for source/sink BC %s"%bc.name)
+            self.dredge_discharge(np.array(bc.geom.coords),
+                                  bc.dredge_depth)
+        ck=self.bc_to_interior_cell_layer(bc) # (cell,layer) tuple
+
         self.bc_point_sources[ck]['Q'].append(da)
         
         assert len(da.dims)<=1,"Flow must have dims either time, or none"
@@ -1221,7 +1263,9 @@ class SuntansModel(dfm.HydroModel):
         geom: LineString geometry
         return list of boundary edges adjacent to geom.
         """
-        return dfm_grid.polyline_to_boundary_edges(self.grid,np.array(geom.coords))
+        # return dfm_grid.polyline_to_boundary_edges(self.grid,np.array(geom.coords))
+        # now part of UnstructuredGrid
+        return self.grid.select_edges_by_polyline(geom)
 
     def set_times_from_config(self):
         """
@@ -1548,6 +1592,14 @@ class SuntansModel(dfm.HydroModel):
         fns.sort()
         return fns
 
+    def avg_outputs(self):
+        if int(self.config['calcaverage']):
+            fns=glob.glob(os.path.join(self.run_dir,self.config['averageNetcdfFile']+"*"))
+            fns.sort()
+            return fns
+        else:
+            return []
+        
     def map_outputs(self):
         """
         return a list of map output files -- if netcdf output is enabled,
@@ -1674,8 +1726,8 @@ class SuntansModel(dfm.HydroModel):
     def extract_station(self,xy=None,ll=None,chain_count=1):
         """
         Return a dataset for a single point in the model
-        xy: native model coordinates
-        ll: lon/lat coordinates
+        xy: native model coordinates, [Nstation,2]
+        ll: lon/lat coordinates, [Nstation,2]
         chain_count: max number of restarts to go back.
           1=>no chaining just this model.  None or 0:
           chain all runs possible.  Otherwise, go back max
@@ -1684,53 +1736,143 @@ class SuntansModel(dfm.HydroModel):
         # For the moment, just use map output
         if xy is None:
             xy=self.ll_to_native(ll)
+            
         map_fns=self.map_outputs()
 
-        # Find which subdomain to use:
-        match=[None,None,np.inf,None] # proc,cell,distance,ds
+        # First, map request locations to processor and cell
+        
+        xy=np.asarray(xy)
+        orig_ndim=xy.ndim
+        if orig_ndim==1:
+            xy=xy[None,:]
+        elif orig_ndim>2:
+            raise Exception("Can only handle single coordinates or an list of coordinates")
+            
+        num_stations=len(xy)
+
+        # allocate, [proc,cell,distance] per point
+        matches=[[None,None,np.inf] for i in range(num_stations)]
+
+        # outer loop on proc
         for proc,map_fn in enumerate(map_fns):
             map_ds=xr.open_dataset(map_fn)
             g=unstructured_grid.UnstructuredGrid.from_ugrid(map_ds)
-            c=g.select_cells_nearest(xy,inside=False)
-            d=utils.dist(g.cells_center()[c],xy)
-            if d<match[2]:
-                match=[proc,c,d,map_fn]
-            map_ds.close()
-        if match[1] is None:
-            raise Exception("Could not find model output at %.0f,%.0f"%(xy[0],xy[1]))
-        # print("Matched to cell center %.0fm away"%(match[2]))
-
+            cc=g.cells_center()
+            # inner loop on station
+            for station in range(num_stations):
+                c=g.select_cells_nearest(xy[station],inside=False)
+                d=utils.dist(cc[c],xy[station])
+                if d<matches[station][2]:
+                    matches[station]=[proc,c,d]
+        # Now we know exactly which procs are useful, and can close
+        # the others
+        hot_procs={} # dictionary tracking which processors are useful
+        for station,(proc,c,d) in enumerate(matches):
+            hot_procs[proc]=(station,c,d)
+        for proc,map_fn in enumerate(map_fns):
+            if proc not in hot_procs:
+                xr.open_dataset(map_fn).close()
+            # otherwise close later
+            
         if chain_count==1:
             runs=[self]
         else:
             runs=self.chain_restarts(count=chain_count)
 
-        proc,cell,distance,map_fn=match
-
         dss=[] # per-restart datasets
 
+        # workaround for cases where numsides was not held constant
+        max_numsides=0
+        min_numsides=1000000
+        
         for run in runs:
-            map_ds=xr.open_dataset(run.map_outputs()[proc])
+            model_out=None
+            for proc,map_fn in enumerate(run.map_outputs()):
+                if proc not in hot_procs: continue # doesn't have any hits
+                
+                map_ds=xr.open_dataset(run.map_outputs()[proc])
 
-            # Work around bad naming of dimensions
-            map_ds['Nk_c']=map_ds['Nk']
-            del map_ds['Nk']
+                # Work around bad naming of dimensions
+                map_ds['Nk_c']=map_ds['Nk']
+                del map_ds['Nk']
 
-            # Extract time series there:
-            model_out=xr.Dataset() # not middle out
-            model_out['time']=map_ds.time
-            model_out['distance_from_target']=(),match[2]
+                # wait until we've loaded one to initialize the dataset for this run
+                if model_out is None:
+                    model_out=xr.Dataset() # not middle out
+                    model_out['time']=map_ds.time
 
-            for d in map_ds.data_vars:
-                if 'Nc' in map_ds[d].dims:
-                    model_out[d]=map_ds[d].isel(Nc=match[1])
+                    # allocate output variables:
+                    for d in map_ds.data_vars:
+                        if 'Nc' in map_ds[d].dims:
+                            # put station first
+                            new_dims=['station']
+                            new_shape=[num_stations]
+                            for d_dim in map_ds[d].dims:
+                                if d_dim=='Nc':
+                                    continue # replaced by station above
+                                else:
+                                    new_dims.append(d_dim)
+                                    new_shape.append(map_ds.dims[d_dim])
+                            model_out[d]=tuple(new_dims), np.zeros(new_shape, map_ds[d].dtype )
 
+                # For vectorized indexing, pulls the stations we want want from this
+                # processor, but only gets as far as ordering them densely on this
+                # proc
+                Nc_indexer=xr.DataArray( [m[1] for m in matches if m[0]==proc ],
+                                         dims=['proc_station'] )
+                assert len(Nc_indexer),"Somehow this proc has no hits"
+                
+                # and the station indexes in model_out to assign to.
+                # this can't use vectorized indexing because you can't assign to the
+                # result of vectorized indexing.
+                proc_stations=np.array( [i for i,m in enumerate(matches) if m[0]==proc] )
+                                        
+                for d in map_ds.data_vars:
+                    if d not in model_out: continue
+
+                    # potentially gets one isel out of the tight loop
+                    # this appears to work.
+                    extracted=map_ds[d].isel(Nc=Nc_indexer)
+                    # extracted will have 'station' in the wrong place. transpose
+                    dims=['proc_station'] + [d for d in extracted.dims if d!='proc_station']
+                    extractedT=extracted.transpose(*dims)
+                    model_out[d].values[proc_stations,...] = extractedT.values
+                    
+                    #for station in lin_idx,arr_idx in enumerate(np.ndindex(stn_shape)):
+                    #    if matches[lin_idx][0]!=proc: continue
+                    #    
+                    #    extracted=map_ds[d].isel(Nc=matches[lin_idx][1])
+                    #    # seems like voodoo -- construct an index into the output,
+                    #    # which will let us point to the desired station.
+                    #    sel=dict(zip(stn_dims,arr_idx))
+                    #    model_out[d].isel(sel).values[...]=extracted
             if dss:
                 # limit to non-overlapping
                 time_sel=model_out.time.values>dss[-1].time.values[-1]
                 model_out=model_out.isel(time=time_sel)
+            max_numsides=max(max_numsides,model_out.dims['numsides'])
+            min_numsides=min(min_numsides,model_out.dims['numsides'])
             dss.append(model_out)
+            
+        if max_numsides!=min_numsides:
+            log.warning("numsides varies %d to %d over restarts.  Kludge around"%(min_numsides,max_numsides))
+            dss=[ ds.isel(numsides=slice(0,min_numsides)) for ds in dss]
+        combined_ds=xr.concat(dss,dim='time',data_vars='minimal',coords='minimal')
 
-        combined_ds=xr.concat(dss,dim='time',data_vars='minimal')
+        # copy from matches
+        combined_ds['distance_from_target']=('station',), np.zeros(num_stations, np.float64)
+        combined_ds['subdomain']=('station',), np.zeros(num_stations,np.int32)
+        combined_ds['station_cell']=('station',), np.zeros(num_stations,np.int32)
+        combined_ds['station_cell'].attrs['description']="Cell index in subdomain grid"
+        combined_ds['station_x']=('station',), xy[...,0]
+        combined_ds['station_y']=('station',), xy[...,1]
+        
+        for station in range(num_stations):
+            # here we know the order and can go straight to values
+            combined_ds['distance_from_target'].values[station]=matches[station][2]
+            combined_ds['subdomain'].values[station]=matches[station][0]
 
+        if orig_ndim==1:
+            combined_ds=combined_ds.isel(station=0)
+            
         return combined_ds

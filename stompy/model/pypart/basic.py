@@ -255,7 +255,14 @@ class UgridParticles(object):
                     part_t=t_max_edge
 
                 # Take the step
-                self.P['x'][i] += self.P['u'][i]*dt
+                delta=self.P['u'][i]*dt
+                # see if we're stuck
+                if utils.mag(delta) / (utils.mag(delta) + utils.mag(self.P['x'][i])) < 1e-14:
+                    print("Steps are too small")
+                    part_t=stop_t
+                    continue
+
+                self.P['x'][i] += delta
 
                 if j_cross is not None:
                     # cross edge j, update time.  careful that j isn't boundary

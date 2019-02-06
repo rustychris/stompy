@@ -1056,6 +1056,141 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     ds[out_field] = (dim_name,),src_data[field]
         ds.to_netcdf(fn)
 
+    def write_dfm(self,nc_fn,overwrite=False):
+        # use outdated netcdf wrapper
+        # TODO: migrate the xarray or netCDF4
+        from ..io import qnc
+        nc=qnc.empty(fn=nc_fn,overwrite=overwrite,format='NETCDF3_CLASSIC')
+
+        # schema copied from r17b_net.nc as written by rgfgrid
+        nc.createDimension('nNetNode',ug.Nnodes())
+        nc.createDimension('nNetLink',ug.Nedges())
+        nc.createDimension('nNetLinkPts',2)
+
+        node_x=nc.createVariable('NetNode_x','f8',('nNetNode'))
+        node_x[:] = ug.nodes['x'][:,0]
+        node_x.units='m'
+        node_x.standard_name = "projection_x_coordinate"
+        node_x.long_name="x-coordinate of net nodes"
+        node_x.grid_mapping = "projected_coordinate_system"
+
+        node_y=nc.createVariable('NetNode_y','f8',('nNetNode'))
+        node_y[:] = ug.nodes['x'][:,1]
+        node_y.units = "m"
+        node_y.standard_name = "projection_y_coordinate"
+        node_y.long_name = "y-coordinate of net nodes"
+        node_y.grid_mapping = "projected_coordinate_system"
+
+        if 1:
+            # apparently this doesn't have to be correct -
+            proj=nc.createVariable('projected_coordinate_system',
+                              'i4',())
+            proj.setncattr('name',"Unknown projected")
+            proj.epsg = 28992
+            proj.grid_mapping_name = "Unknown projected"
+            proj.longitude_of_prime_meridian = 0.
+            proj.semi_major_axis = 6378137.
+            proj.semi_minor_axis = 6356752.314245
+            proj.inverse_flattening = 298.257223563
+            proj.proj4_params = ""
+            proj.EPSG_code = "EPGS:28992"
+            proj.projection_name = ""
+            proj.wkt = ""
+            proj.comment = ""
+            proj.value = "value is equal to EPSG code"
+            proj[...]=28992
+
+        if ('lon' in ug.nodes.dtype.names) and ('lat' in ug.nodes.dtype.names):
+            print("Will include longitude & latitude")
+            node_lon=nc.createVariable('NetNode_lon','f8',('nNetNode'))
+            node_lon[:]=ug.nodes['lon'][:]
+            node_lon.units = "degrees_east" 
+            node_lon.standard_name = "longitude" 
+            node_lon.long_name = "longitude" 
+            node_lon.grid_mapping = "wgs84" 
+
+            node_lat=nc.createVariable('NetNode_lat','f8',('nNetNode'))
+            node_lat.units = "degrees_north" 
+            node_lat.standard_name = "latitude" 
+            node_lat.long_name = "latitude" 
+            node_lat.grid_mapping = "wgs84"
+
+        if 1:
+            wgs=nc.createVariable('wgs84','i4',())
+            wgs.setncattr('name',"WGS84")
+            wgs.epsg = 4326
+            wgs.grid_mapping_name = "latitude_longitude"
+            wgs.longitude_of_prime_meridian = 0.
+            wgs.semi_major_axis = 6378137.
+            wgs.semi_minor_axis = 6356752.314245
+            wgs.inverse_flattening = 298.257223563
+            wgs.proj4_params = ""
+            wgs.EPSG_code = "EPGS:4326"
+            wgs.projection_name = ""
+            wgs.wkt = ""
+            wgs.comment = ""
+            wgs.value = "value is equal to EPSG code"
+
+        if 'depth' in ug.nodes.dtype.names:
+            node_z = nc.createVariable('NetNode_z','f8',('nNetNode'))
+            node_z[:] = ug.nodes['depth'][:]
+            node_z.units = "m"
+            node_z.positive = "up"
+            node_z.standard_name = "sea_floor_depth"
+            node_z.long_name = "Bottom level at net nodes (flow element\'s corners)"
+            node_z.coordinates = "NetNode_x NetNode_y"
+            node_z.grid_mapping = "projected_coordinate_system"
+
+        links = nc.createVariable('NetLink','i4',('nNetLink','nNetLinkPts'))
+        links[:,:]=ug.edges['nodes'] + 1 # to 1-based!
+        links.standard_name = "netlink"
+        links.long_name = "link between two netnodes"
+
+        link_types=nc.createVariable('NetLinkType','i4',('nNetLink'))
+        link_types[:] = 2 # always seems to be 2 for these grids
+        link_types.long_name = "type of netlink"
+        link_types.valid_range = [0, 2]
+        link_types.flag_values = [0, 1, 2]
+        link_types.flag_meanings = "closed_link_between_2D_nodes link_between_1D_nodes link_between_2D_nodes"
+
+        # global attributes - probably ought to allow passing in values for these...
+        nc.institution = "stompy"
+        nc.references = "http://github.com/rustychris/stompy"
+        nc.history = "stompy unstructured_grid"
+
+        nc.source = "Deltares, D-Flow FM Version 1.1.135.38878MS, Feb 26 2015, 17:00:33, model"
+        nc.Conventions = "CF-1.5:Deltares-0.1"
+
+        if 1:
+            # add the complines to encode islands
+            lines=ug.boundary_linestrings()
+            nc.createDimension('nNetCompLines',len(lines))
+
+            # And add the cells:
+            nc.createDimension('nNetElemMaxNode',ug.max_sides)
+            nc.createDimension('nNetElem',ug.Ncells())
+            missing=-2147483647 # DFM's preferred missing value
+
+            cell_var=nc.createVariable('NetElemNode','i4',('nNetElem','nNetElemMaxNode'),
+                                       fill_value=missing)
+            # what to do about missing nodes?
+            cell_nodes=ug.cells['nodes'] + 1 #make it 1-based
+            cell_nodes[ cell_nodes<1 ] = missing
+            cell_var[:,:] =cell_nodes
+
+            # Write the complines
+            for i,line in enumerate(lines):
+                dimname='nNetCompLineNode_%d'%(i+1)
+                nc.createDimension(dimname,len(line))
+
+                compline_x=nc.createVariable('NetCompLine_x_%d'%i,'f8',(dimname,))
+                compline_y=nc.createVariable('NetCompLine_y_%d'%i,'f8',(dimname,))
+
+                compline_x[:] = line[:,0]
+                compline_y[:] = line[:,1]
+
+        nc.close()
+        
     @staticmethod
     def from_shp(shp_fn):
         # bit of extra work to find the number of nodes required
@@ -2866,7 +3001,6 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 self.add_edge(nodes=[a,b])
         return self.add_cell(nodes=nodes,**kws)
 
-
     @listenable
     def modify_cell(self,c,**kws):
         """ largely incomplete.  This will need to
@@ -3095,7 +3229,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         return coll
 
     def plot_edges(self,ax=None,mask=None,values=None,clip=None,labeler=None,
-                   **kwargs):
+                   lw=0.8,**kwargs):
         """
         plot edges as a LineCollection.
         optionally select a subset of edges with boolean array mask.
@@ -3105,6 +3239,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
          - values can have size either Nedges, or sum(mask)
         labeler: function(id,rec) => string for adding text labels.  Specify 'id'
           for the common case of labeling edges by id.
+        lw: defaults to a thin line, usually more useful with grids, instead of 
+          modern matplotlib default which is thick for data plots.
         """
         ax = ax or plt.gca()
 
@@ -3129,7 +3265,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         if values is not None:
             kwargs['array'] = values
 
-        lcoll = LineCollection(segs,**kwargs)
+        lcoll = LineCollection(segs,lw=lw,**kwargs)
 
         if labeler is not None:
             if labeler=='id':
@@ -3277,23 +3413,43 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         return ecoll
 
-    def make_triangular(self):
+    def make_triangular(self,record_original=True):
+        """
+        Adds edges, splits cells, to make the grid only
+        triangles.
+        record_original: original cell and edge indices are stored
+        on the new cells and edges
+        """
+        if record_original:
+            self.add_cell_field('orig_cell',np.arange(self.Ncells()),
+                                on_exists='overwrite')
+            self.add_edge_field('orig_edge',np.arange(self.Nedges()),
+                                on_exists='overwrite')
         if self.max_sides==3:
             return # nothing to do
 
+        splits=[]
+        # like self.add_cell_and_edges, but careful to set
+        # orig_edge to -1
+        def record_add_cell_and_edges(nodes,**kws):
+            for a,b in circular_pairs(nodes):
+                j=self.nodes_to_edge(a,b)
+                if j is None:
+                    self.add_edge(nodes=[a,b],orig_edge=-1)
+            return self.add_cell(nodes=nodes,**kws)
+        
         for c in self.valid_cell_iter():
             nodes=np.array(self.cell_to_nodes(c))
 
             if len(nodes)==3:
                 continue
             self.delete_cell(c)
-            self.add_cell_and_edges(nodes=nodes[ [0,1,2] ] )
+            record_add_cell_and_edges(nodes=nodes[ [0,1,2] ], orig_cell=c)
             if len(nodes)>=4:
-                self.add_cell_and_edges(nodes=nodes[ [0,2,3] ] )
+                record_add_cell_and_edges(nodes=nodes[ [0,2,3] ],orig_cell=c )
             if len(nodes)>=5: # a few of these...
-                self.add_cell_and_edges(nodes=nodes[ [0,3,4] ] )
-            # too lazy to be generic about it...
-            # also note that the above only work for convex cells.
+                record_add_cell_and_edges(nodes=nodes[ [0,3,4] ],orig_cell=c )
+            assert len(nodes)<6,"was lazy about making this generic"
 
         self.renumber()
 
@@ -3397,6 +3553,13 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         if mask is None:
             mask=~self.cells['deleted']
+        else:
+            # force to a bitmask, even though could be inefficient
+            mask=np.asarray(mask)
+            if np.issubdtype(mask.dtype,np.integer):
+                bitmask=np.zeros(self.Ncells(),np.bool)
+                bitmask[mask]=True
+                mask=bitmask
 
         if clip is not None: # convert clip to mask
             mask=mask & self.cell_clip_mask(clip)
@@ -5017,6 +5180,7 @@ class UGrid(UnstructuredGrid):
         grid: initialize from existing UnstructuredGrid (though not necessarily an untrim grid)
         *** currently hardwired to use 1st mesh found
         """
+        logging.warning("UGrid will be deprecated.  Use UnstructuredGrid.from_ugrid")
         super(UGrid,self).__init__()
         if nc is not None:
             if isinstance(nc,str):
@@ -5914,7 +6078,7 @@ class PtmGrid(UnstructuredGrid):
 
         for i in range(self.Nnodes()):
             line = self.fp.readline().split()
-            self.nodes['x'][i,:] = map(float,line[1:])
+            self.nodes['x'][i,:] = [float(s) for s in line[1:]]
 
     def read_polygons(self,polygon_data_offset):
         print( "Reading polygons" )
@@ -5931,7 +6095,8 @@ class PtmGrid(UnstructuredGrid):
 
         for i in range(self.Ncells()):
             line = self.fp.readline().split()
-            # polygon_number, number_of_sides,center_x, center_y, center_depth, side_indices(number_of_sides), marker(0=internal,1=open boundary)
+            # polygon_number, number_of_sides,center_x, center_y, center_depth,
+            #   side_indices(number_of_sides), marker(0=internal,1=open boundary)
             poly_id = int(line[0])
             nsides_this_poly = int(line[1])
             self.cells['depth'][i] = float(line[4])
@@ -5941,7 +6106,8 @@ class PtmGrid(UnstructuredGrid):
 
     def read_sides(self,side_data_offset):
         print( "Reading sides" )
-        # Side Data: side_number, side_depth, node_indices(2), cell_indices(2), marker(0=internal,1=external,2=flow boundary,3=open boundary)
+        # Side Data: side_number, side_depth, node_indices(2), cell_indices(2),
+        #    marker(0=internal,1=external,2=flow boundary,3=open boundary)
 
         self.fp.seek(side_data_offset)
 
