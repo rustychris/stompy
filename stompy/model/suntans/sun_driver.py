@@ -1178,12 +1178,8 @@ class SuntansModel(dfm.HydroModel):
     def write_source_sink_bc(self,bc):
         da=bc.data()
         
-        c=self.bc_geom_to_interior_cell(bc.geom)
-        print("Punting on k for source")
-        # can come back later and map bc.z to a proper layer k
-        k=0 
-        
-        self.bc_point_sources[(c,k)]['Q'].append(da)
+        ck=self.bc_to_interior_cell_layer(bc)
+        self.bc_point_sources[ck]['Q'].append(da)
         
         assert len(da.dims)<=1,"Flow must have dims either time, or none"
             
