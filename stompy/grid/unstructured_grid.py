@@ -4224,7 +4224,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             dn1=cell_to_dual_node[e2c[j,0]]
             dn2=cell_to_dual_node[e2c[j,1]]
 
-            dj_exist=gd.nodes_to_edge(e2c[j])
+            dj_exist=gd.nodes_to_edge([dn1,dn2]) 
             if dj_exist is None:
                 dj=gd.add_edge(nodes=[dn1,dn2],dual_edge=j)
 
