@@ -1,7 +1,7 @@
 from __future__ import print_function
 
 import numpy as np
-import os
+import os, shutil
 import nose
 from nose.tools import assert_raises
 
@@ -57,6 +57,48 @@ def test_delete_undelete():
     ug.revert(chk)
     ug.delete_node_cascade(nodes[0])
 
+##
+
+def test_write_formats():
+    g=unstructured_grid.UnstructuredGrid.read_dfm(os.path.join(sample_data,"lsb_combined_v14_net.nc"))
+
+    def check_similar(gA,gB):
+        assert gA.Ncells()==gB.Ncells()
+        assert gA.Nnodes()==gB.Nnodes()
+        assert gA.Nedges()==gB.Nedges()
+        
+    dfm_fn="test-write_net.nc"
+    g.write_dfm(dfm_fn)
+    g2=unstructured_grid.UnstructuredGrid.read_dfm(dfm_fn)
+    check_similar(g,g2)
+    os.unlink(dfm_fn)
+    
+    sun_dir="sun_test_out"
+    os.path.exists(sun_dir) or os.makedirs(sun_dir)
+    # g.write_suntans only works for triangular grids
+    g.write_suntans_hybrid(sun_dir)
+    g2=unstructured_grid.UnstructuredGrid.read_suntans(sun_dir)
+    check_similar(g,g2)
+    shutil.rmtree(sun_dir)
+    
+    _=g.write_to_xarray()
+    g.write_ugrid("test-write.nc")
+    os.unlink("test-write.nc")
+    g.write_pickle("test-write.pkl")
+    os.unlink("test-write.pkl")
+
+    # Quad/tri only: fudge it and create a quad/tri grid by just deleting the
+    # pents and hexes (of which there are only 6)
+    large_cells=[i for i in g.valid_cell_iter() if len(g.cell_to_nodes(i))>4]
+    for c in large_cells:
+        g.delete_cell(c)
+    g.renumber()
+        
+    g.write_untrim08("test-write-untrim.grd")
+    os.unlink("test-write-untrim.grd")
+    g.write_ptm_gridfile("test-write-ptm.grd")
+    os.unlink("test-write-ptm.grd")
+    
 
 ## 
 
@@ -128,7 +170,7 @@ def test_merge_nodes():
     gt.merge_nodes(4,8)
 
 def test_mass_delete():
-    g=dfm_grid.DFMGrid(os.path.join(sample_data,"lsb_combined_v14_net.nc"))
+    g=unstructured_grid.UnstructuredGrid.read_dfm(os.path.join(sample_data,"lsb_combined_v14_net.nc"))
 
     g.edge_to_cells()
 
@@ -154,8 +196,10 @@ def test_pickle():
 
     j1=ug.add_edge(nodes=[n1,n2])
 
-    ug.write_pickle('blah.pkl')
-    ug2=unstructured_grid.UnstructuredGrid.from_pickle('blah.pkl')
+    pkl_fn='blah.pkl'
+    ug.write_pickle(pkl_fn)
+    ug2=unstructured_grid.UnstructuredGrid.from_pickle(pkl_fn)
+    os.unlink(pkl_fn)
 
 
 ## 

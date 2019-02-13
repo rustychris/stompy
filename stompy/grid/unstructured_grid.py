@@ -373,9 +373,14 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
     def copy_from_grid(self,grid):
         # this takes care of allocation, and setting the most basic topology
+        cell_nodes=grid.cells['nodes']
+        if self.max_sides < grid.max_sides:
+            assert np.all(cell_nodes[:,self.max_sides:]<0),"Trying to copy from grid with greater max_sides"
+            cell_nodes=cell_nodes[:,:self.max_sides]
+        
         self.from_simple_data(points=grid.nodes['x'],
                               edges=grid.edges['nodes'],
-                              cells=grid.cells['nodes'])
+                              cells=cell_nodes)
         for field in ['cells','mark','deleted']:
             self.edges[field] = grid.edges[field]
         for field in ['mark','_center','_area','deleted']:
@@ -1063,19 +1068,19 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         nc=qnc.empty(fn=nc_fn,overwrite=overwrite,format='NETCDF3_CLASSIC')
 
         # schema copied from r17b_net.nc as written by rgfgrid
-        nc.createDimension('nNetNode',ug.Nnodes())
-        nc.createDimension('nNetLink',ug.Nedges())
+        nc.createDimension('nNetNode',self.Nnodes())
+        nc.createDimension('nNetLink',self.Nedges())
         nc.createDimension('nNetLinkPts',2)
 
         node_x=nc.createVariable('NetNode_x','f8',('nNetNode'))
-        node_x[:] = ug.nodes['x'][:,0]
+        node_x[:] = self.nodes['x'][:,0]
         node_x.units='m'
         node_x.standard_name = "projection_x_coordinate"
         node_x.long_name="x-coordinate of net nodes"
         node_x.grid_mapping = "projected_coordinate_system"
 
         node_y=nc.createVariable('NetNode_y','f8',('nNetNode'))
-        node_y[:] = ug.nodes['x'][:,1]
+        node_y[:] = self.nodes['x'][:,1]
         node_y.units = "m"
         node_y.standard_name = "projection_y_coordinate"
         node_y.long_name = "y-coordinate of net nodes"
@@ -1100,10 +1105,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             proj.value = "value is equal to EPSG code"
             proj[...]=28992
 
-        if ('lon' in ug.nodes.dtype.names) and ('lat' in ug.nodes.dtype.names):
+        if ('lon' in self.nodes.dtype.names) and ('lat' in self.nodes.dtype.names):
             print("Will include longitude & latitude")
             node_lon=nc.createVariable('NetNode_lon','f8',('nNetNode'))
-            node_lon[:]=ug.nodes['lon'][:]
+            node_lon[:]=self.nodes['lon'][:]
             node_lon.units = "degrees_east" 
             node_lon.standard_name = "longitude" 
             node_lon.long_name = "longitude" 
@@ -1131,9 +1136,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             wgs.comment = ""
             wgs.value = "value is equal to EPSG code"
 
-        if 'depth' in ug.nodes.dtype.names:
+        if 'depth' in self.nodes.dtype.names:
             node_z = nc.createVariable('NetNode_z','f8',('nNetNode'))
-            node_z[:] = ug.nodes['depth'][:]
+            node_z[:] = self.nodes['depth'][:]
             node_z.units = "m"
             node_z.positive = "up"
             node_z.standard_name = "sea_floor_depth"
@@ -1142,7 +1147,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             node_z.grid_mapping = "projected_coordinate_system"
 
         links = nc.createVariable('NetLink','i4',('nNetLink','nNetLinkPts'))
-        links[:,:]=ug.edges['nodes'] + 1 # to 1-based!
+        links[:,:]=self.edges['nodes'] + 1 # to 1-based!
         links.standard_name = "netlink"
         links.long_name = "link between two netnodes"
 
@@ -1163,18 +1168,18 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         if 1:
             # add the complines to encode islands
-            lines=ug.boundary_linestrings()
+            lines=self.boundary_linestrings()
             nc.createDimension('nNetCompLines',len(lines))
 
             # And add the cells:
-            nc.createDimension('nNetElemMaxNode',ug.max_sides)
-            nc.createDimension('nNetElem',ug.Ncells())
+            nc.createDimension('nNetElemMaxNode',self.max_sides)
+            nc.createDimension('nNetElem',self.Ncells())
             missing=-2147483647 # DFM's preferred missing value
 
             cell_var=nc.createVariable('NetElemNode','i4',('nNetElem','nNetElemMaxNode'),
                                        fill_value=missing)
             # what to do about missing nodes?
-            cell_nodes=ug.cells['nodes'] + 1 #make it 1-based
+            cell_nodes=self.cells['nodes'] + 1 #make it 1-based
             cell_nodes[ cell_nodes<1 ] = missing
             cell_var[:,:] =cell_nodes
 
