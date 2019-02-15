@@ -58,6 +58,7 @@ class Tom(object):
     plot_interval = None
     checkpoint_interval = None
     smooth = 1
+    simplify_tolerance=1.0 # length scale for geometry simplification before smoothing
     resume_checkpoint_fn = None
     verbosity=1
     dry_run=0
@@ -104,6 +105,7 @@ class Tom(object):
         print("         -p N                 # output interval for plots   ")
         print("         -c N                 # checkpoint interval         ")
         print("         -d                   # disable smoothing ")
+        print("         -D N.NN              # simplification length scale before smoothing")
         print("         -o                   # enable optimization ")
         print("         -O path              # set output path")
         print("         -r checkpoint.pav    # resume from a checkpoint    ")
@@ -142,7 +144,7 @@ class Tom(object):
         
     def run(self,argv):
         try:
-            opts,rest = getopt.getopt(argv[1:],'hb:s:a:t:i:c:r:dv:np:om:i:f:g:C:O:',
+            opts,rest = getopt.getopt(argv[1:],'hb:s:a:t:i:c:r:dv:np:om:i:f:g:C:O:D:',
                                       ['slide-interior',
                                        'rigid-interior'])
         except getopt.GetoptError as e:
@@ -163,6 +165,8 @@ class Tom(object):
                 self.effective_tele_rate = float(val)
             elif opt == '-f':
                 self.scale_factor = float(val)
+            elif opt == '-D':
+                self.simplify_tolerance=float(val)
             elif opt == '-b':
                 self.boundary_shp = val
             elif opt == '-p':
@@ -359,7 +363,16 @@ class Tom(object):
 
         self.original_boundary_geo = original_geometries
 
-        return {'shp':self.boundary_poly_shp}
+        # RH: 2019-02-14: In an effort to be robust against very small stepsizes,
+        # try to coarsen such that the input does not contain any edges
+        # shorter than min_edge_length
+        # Old code:
+        # return {'shp':self.boundary_poly_shp}
+        # New code:
+        geom=wkb2shp.shp2geom(self.boundary_poly_shp)['geom'][0]
+        if self.simplify_tolerance>0:
+            geom=geom.simplify(self.simplify_tolerance)
+        return {'geom':geom}
     
     def prepare_interiors(self):
         if self.interior_shps is None or len(self.interior_shps)==0:
