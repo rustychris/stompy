@@ -58,7 +58,7 @@ class Tom(object):
     plot_interval = None
     checkpoint_interval = None
     smooth = 1
-    simplify_tolerance=1.0 # length scale for geometry simplification before smoothing
+    simplify_tolerance=0.0 # length scale for geometry simplification before smoothing
     resume_checkpoint_fn = None
     verbosity=1
     dry_run=0
