@@ -11,7 +11,7 @@ from . import basic
 from stompy import utils
 
 class ParticlesKGS(basic.UgridParticles):
-    """ 
+    """
     Extension of basic particle tracking to (1) use the method
     of Ketefian, Gross and Stelling for interpolation within cells, 
     and (2) apply some awkward corrections and back-calculations on
@@ -19,7 +19,9 @@ class ParticlesKGS(basic.UgridParticles):
     fluxes.
     """
     dt_s=None
-    
+    dz_edge_eps=0.001 # kludge to avoid singular matrix
+    dz_cell_eps=0.001 # and division by zero
+
     def load_grid(self,grid=None):
         super(ParticlesKGS,self).load_grid(grid=grid)
 
@@ -60,10 +62,10 @@ class ParticlesKGS(basic.UgridParticles):
         # time invariant part of the KSG interpolation
         self.set_invM14()
 
-        # factors for the forward interpolation - used during 
+        # factors for the forward interpolation - used during
         # the translation from suntans cell-centered to edge-centered
         # must be updated by calls to set_dz_edge - time variant!
-        
+
         #self.mAs = [None]*self.g.Ncells()
         self.mAs=np.zeros( (self.g.Ncells(),3,3), 'f8' )
 
@@ -129,19 +131,19 @@ class ParticlesKGS(basic.UgridParticles):
             # which is true probably only for boffinator inputs.
             assert len(self.current_nc.nMeshGlobal_layers)==1
 
-            new_dz_edge=(edge_eta+self.edepths).clip(0,np.inf)
+            new_dz_edge=(edge_eta+self.edepths).clip(self.dz_edge_eps,np.inf)
             # enforce zero flux face area for boundary edges
             # note that this is incorrect for flow boundaries.
             new_dz_edge[self.bndry]=0.0
             self.set_dz_edge(new_dz_edge)
 
-            dz_cell=eta+self.cdepths
+            dz_cell=(eta+self.cdepths).clip(self.dz_cell_eps,np.inf)
             self.dz_cell=dz_cell
 
             # SLOW :-(
             self.update_fluxes()
             self.set_coeffs()
-    
+
     def set_dz_edge(self,dz_edge):
         self.dz_edge=dz_edge
 
@@ -175,14 +177,12 @@ class ParticlesKGS(basic.UgridParticles):
         same way.  When edge-depths are accounted for, the flux at an edge is
         well-defined, but the height and the velocity are discontinuous.
         """
-        # u_norms=np.nan*np.zeros( (self.g.Nedges(),2), 'f8')
         u_norms=np.zeros( self.g.Nedges(), 'f8')
         u_norm_count=np.zeros(self.g.Nedges(),'i4')
 
-
         if 0: # old, nonvectorized way
             B=np.zeros(3,'f8')
-        
+
             #for c in self.g.valid_cell_iter():
             for c in range(self.g.Ncells()):
                 if c%10000==0:
@@ -199,7 +199,7 @@ class ParticlesKGS(basic.UgridParticles):
                 #     solve=lambda A,B: np.linalg.lstsq(A,B)[0]
                 #     while len(B)<mA.shape[0]:
                 #         B.append(0)
-                # 
+                #
                 # B=np.array(B)
 
                 u_j = np.linalg.solve(self.mAs[c],B)
@@ -215,6 +215,10 @@ class ParticlesKGS(basic.UgridParticles):
             Bs=np.zeros((self.g.Ncells(),3),'f8')
             Bs[:,:2]=Uc
             Bs[:,2]=self.d_eta_dt
+            # mAs: (251760, 3, 3)
+            # Bs: (251760, 3) That's failing at 754, where the
+            # 3rd row and entry of mA/B are zero.
+            # this is maybe solved by clipping dz_edge
             u_js=np.linalg.solve(self.mAs,Bs)
 
             js=self.cell_edges.ravel()
@@ -468,7 +472,7 @@ class ParticlesKGS(basic.UgridParticles):
 
         # subdivide time intervals until we find the moment
         # the trajectory leaves this cell.
-        x_delta=1e-5 * np.sqrt(self.g.cells_area()[cell])
+        x_delta=1e-5 * np.sqrt(self.Ac[cell])
 
         low=(t_start,part_xy)
         high=(t_stop,xy_max)

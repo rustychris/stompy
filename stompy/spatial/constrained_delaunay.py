@@ -34,7 +34,7 @@ class ConstrainedXYZField(field.XYZField):
 
     Edges can be specified directly, or read from a linestring shapefile.
     """
-    
+
     def __init__(self,X,F,projection=None,from_file=None,edges=None):
         """
         X: [N,2] ndarray of node locations
@@ -48,7 +48,7 @@ class ConstrainedXYZField(field.XYZField):
 
     # Pickle support, since the DT can't be pickled
     def __getstate__(self):
-        d = self.__dict__.copy()
+        d = super(ConstrainedXYZField,self).__getstate__()
         d['DT'] = None
         d['_tri'] = None
         d['vh_info'] = None
@@ -56,7 +56,7 @@ class ConstrainedXYZField(field.XYZField):
 
     def __setstate__(self,d):
         self.__dict__.update(d)
-    
+
     # nearest neighbor doesn't play nice with the constrained triangulation.
     default_interpolation='linear'
     @staticmethod 

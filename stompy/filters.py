@@ -11,6 +11,7 @@ from scipy.signal.filter_design import butter
 import scipy.signal
 
 from scipy.signal import filtfilt, lfilter
+import warnings
 
 def lowpass(data,in_t=None,cutoff=None,order=4,dt=None,axis=-1,causal=False):
     """
@@ -31,7 +32,11 @@ def lowpass(data,in_t=None,cutoff=None,order=4,dt=None,axis=-1,causal=False):
     B,A = butter(order, Wn)
 
     if not causal:
-        data_filtered = filtfilt(B,A,data,axis=axis)
+        # scipy filtfilt triggers some warning message about tuple
+        # indices.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            data_filtered = filtfilt(B,A,data,axis=axis)
     else:
         data_filtered = lfilter(B,A,data,axis=axis)
 
@@ -42,10 +47,23 @@ def lowpass_gotin(data,in_t_days,*args,**kwargs):
     print("Use lowpass_godin() instead of lowpass_gotin()")
     return lowpass_godin(data,in_t_days,*args,**kwargs)
 
-def lowpass_godin(data,in_t_days,*args,**kwargs):
+def lowpass_godin(data,in_t_days,ends='pass',*args,**kwargs):
     """ Approximate Gotin's tidal filter
     Note that in preserving the length of the dataset, the ends aren't really
     valid
+
+    data: array suitable to pass to np.convolve
+    in_t_days: timestamps in decimal days.  This is only used to establish
+    the time step, which is assumed to be constant.
+
+    ends:
+    'pass' no special treatment at the ends.  The first and last ~37
+      hours will be contaminated by end-effects.
+    'nan' will replace potentially contaminated end samples with nan
+
+    *args,**kwargs are allowed but ignored.  They are present to make it
+    easier to slip this method in to replace others without having to change
+    the call signature
     """
     mean_dt_h = 24*np.mean(np.diff(in_t_days))
 
@@ -57,15 +75,22 @@ def lowpass_godin(data,in_t_days,*args,**kwargs):
     A24 = np.ones(N24) / float(N24)
     A25 = np.ones(N25) / float(N25)
 
+    if ends=='nan':
+        # Add nan at start/end, which will carry through
+        # the convolution to mark any samples affected
+        # by the ends
+        data=np.concatenate( ( [np.nan],data,[np.nan] ) )
     data = np.convolve(data,A24,'same')
     data = np.convolve(data,A24,'same')
     data = np.convolve(data,A25,'same')
 
+    if ends=='nan':
+        data=data[1:-1]
+
     return data
-    
 
 def lowpass_fir(x,winsize,ignore_nan=True,axis=-1,mode='same',use_fft=False,
-                nan_weight_threshold=0.5):
+                nan_weight_threshold=0.49):
     """
     In the absence of exact filtering needs, choose the window 
     size to match the cutoff period.  Signals with a frequency corresponding to
@@ -83,6 +108,8 @@ def lowpass_fir(x,winsize,ignore_nan=True,axis=-1,mode='same',use_fft=False,
     mode: same as for scipy.signal convolve operations
     use_fft: using the fft is faster, but sometimes less robust
     nan_weight_threshold: items with a weight less than this will be marked nan
+      the default value is slightly less than half, to avoid numerical roundoff
+      issues with 0.49999999 < 0.5
     """
     # hanning windows have first/last elements==0.
     # but it's counter-intuitive - so force a window with nonzero

@@ -1,9 +1,8 @@
 """
 Bundle up common projection operations
 """
-from __future__ import division
 from __future__ import print_function
-from past.utils import old_div
+
 from osgeo import osr
 from numpy import *
 import numpy as np
@@ -28,7 +27,9 @@ def mapper(src,dest):
 
     """
     trans = xform(src,dest)
-    def process(X):
+    def process(X,Y=None):
+        if Y is not None:
+            X=np.stack([X,Y],axis=-1)
         X = asarray(X,float64)
         out = zeros(X.shape,float64)
         inx = X[...,0]

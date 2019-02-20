@@ -5,14 +5,19 @@ bits of code.
 """
 from __future__ import print_function
 
+import six
 import numpy as np
 import netCDF4
 from . import trigrid
 from . import unstructured_grid
+import logging
+log=logging.getLogger('ugrid')
 from matplotlib.dates import date2num
 import datetime
 import pytz
 from ..io import qnc
+import xarray as xr
+from .. import utils
 
 def ncslice(ncvar,**kwargs):
     """
@@ -86,7 +91,7 @@ class Ugrid(object):
         
         for vname in self.nc.variables.keys():
             var=self.nc.variables[vname]
-            for k,v in kwargs.iteritems():
+            for k,v in six.iteritems(kwargs):
                 if k in var.ncattrs() and is_match(getattr(var,k),v):
                     pass
                 else:
@@ -187,10 +192,9 @@ class Ugrid(object):
 
     def get_cell_scalar(self,label,time_step,mesh_name=None):
         mesh_name = mesh_name or self.mesh_name
-        
         # totally untested!
         return self.nc.variables[mesh_name + '_' + label][:,:,time_step]
-    
+
     def to_trigrid(self,mesh_name=None,skip_edges=False):
         nc = self.nc
         mesh_name = mesh_name or self.mesh_name
@@ -310,19 +314,23 @@ class Ugrid(object):
 
         # 
         layers = self.nc.variables[self.layer_var_name()]
-        layer_bounds = self.nc.variables[ layers.bounds ][...]
-
-        # hmm - some discrepancies over the dimensionality of layer_interfaces
-        # assumption is probably that the dimensions are [layer,{top,bottom}]
-        if layer_bounds.ndim==2 and layer_bounds.shape[1]==2:
-            # same layer interfaces for all cells, all time.
-            layer_interfaces = np.concatenate( (layer_bounds[:,0],layer_bounds[-1:,1]) )
-            # this is a bit trickier, because there could be lumping.  for now, it should work okay
-            # with 2-d, but won't be good for 3-d
-            Nk = np.searchsorted(-layer_interfaces,-bed)
+        if 'bounds' in layers.attrs:
+            layer_bounds = self.nc.variables[ layers.bounds ][...]
+            # hmm - some discrepancies over the dimensionality of layer_interfaces
+            # assumption is probably that the dimensions are [layer,{top,bottom}]
+            if layer_bounds.ndim==2 and layer_bounds.shape[1]==2:
+                # same layer interfaces for all cells, all time.
+                layer_interfaces = np.concatenate( (layer_bounds[:,0],layer_bounds[-1:,1]) )
+                # this is a bit trickier, because there could be lumping.  for now, it should work okay
+                # with 2-d, but won't be good for 3-d
+                Nk = np.searchsorted(-layer_interfaces,-bed)
+            else:
+                raise Exception("Not smart enough about layer_bounds to do this")
         else:
-            raise Exception("Not smart enough about layer_bounds to do this")
-        
+            import pdb
+            pdb.set_trace()
+
+
         one_dz = -np.diff(layer_interfaces)
         # all_dz = one_dz[None,:].repeat(Ncells,axis=0)
         all_dz=np.ones(h.shape+one_dz.shape)*one_dz
@@ -398,4 +406,350 @@ class Ugrid(object):
         """ return datenums, referenced to UTC
         """
         return cf_to_datenums(self.nc.variables['time'])
+
+class UgridXr(object):
+    """
+    Transition to xarray instead of qnc.
+    """
+    surface_dzmin = 2*0.001 # common value, but no guarantee that this matches suntans code.
+
+    # These are set at instantiation
+    time_dim='time'
+    time_vname='time'
+    face_dim=None
+    edge_dim=None
+    layer_dim=None
+
+    # These are figured out on the fly if not specified
+    face_u_vname=None
+    face_v_vname=None
+    face_eta_vname=None
+    face_depth_vname=None
+
+    def __init__(self,nc,mesh_name=None,**kw):
+        """
+        nc: path to netcdf dataset, or open dataset
+        mesh_name: which mesh to use if the file contains multiple.
+        """
+        self.__dict__.update(kw)
+        if isinstance(nc,str):
+            self.nc_filename = nc
+            self.nc = xr.open_dataset(self.nc_filename)
+        else:
+            self.nc_filename = None
+            self.nc = nc
+
+        # for operations which require a mesh to be specified, this is the default:
+        if mesh_name is not None:
+            self.mesh_name = mesh_name
+        else:
+            assert len(self.mesh_names())==1
+            self.mesh_name=self.mesh_names()[0]
+        self.find_dims()
+
+    def find_dims(self):
+        if self.face_dim is None:
+            self.face_dim=self.find_face_dim()
+        if self.edge_dim is None:
+            self.edge_dim=self.find_edge_dim()
+        if self.layer_dim is None:
+            # bit of a punt, makes assumptions
+            self.layer_dim=self.nc[self.layer_var_name()].dims[0]
+
+    def find_var(self,**kwargs):
+        """ find a variable name based on attributes (and other details, as
+        added)
+        """
+        def is_match(attr,pattern):
+            # eventually allow wildcards, negation, etc.
+            if isinstance(pattern,list):
+                return attr in pattern
+            else:
+                return attr==pattern
+        
+        for vname in self.nc.variables:
+            var=self.nc[vname]
+            for k,v in six.iteritems(kwargs):
+                if k in var.attrs and is_match(var.attrs[k],v):
+                    pass
+                else:
+                    break # skips else clause below
+            else:
+                # completed all iterations - we found it!
+                return vname
+    def data_variable_names(self):
+        """ return list of variables which appear to have real data (i.e. not just mesh
+        geometry / topology)
+        """
+        data_names = []
+
+        # this is a bit more general/lenient than the Qnc version
+        for vname in self.nc.data_vars:
+            if vname in self.nc.dims:
+                continue
+            if 'cf_role' in self.nc[vname].attrs:
+                continue
+            data_names.append( vname )
+        return data_names
+
+    def mesh_names(self):
+        """
+        Find the meshes in the file, based on cf_role == 'mesh_topology'
+        """
+        meshes = []
+        for vname in self.nc.variables:
+            if self.nc[vname].attrs.get('cf_role') == 'mesh_topology':
+                meshes.append(vname)
+        return meshes
+
+    def get_node_array(self,*a,**k):
+        assert False,"Use grid.nodes instead"
+
+    def Nkmax(self):
+        # This will need to be generalized
+        for dim_name in 'n%s_layers'%self.mesh_name, 'nMeshGlobal_layers':
+            try:
+                return self.nc.dims[dim_name]
+            except KeyError:
+                pass
+        raise Exception("Failed to find vertical dimension")
+
+    def get_cell_velocity(self,time_slice,face_slice=slice(None)):
+        """ Return 2-vector valued velocity.
+        OLD: ordering of dimensions is same as in the netcdf variables, with
+             velocity component at the end
+        NEW: force ordering to be time,face,layer,component
+
+        (which at least with the local suntans nc code is (face,layer,time) )
+        """ 
+        # time_slice used to be time_step
+        mesh_name = self.mesh_name
+
+        slices={self.time_dim:time_slice,
+                self.face_dim:face_slice}
+
+        u_slc=self.nc[self.face_u_vname].isel(**slices)
+        v_slc=self.nc[self.face_v_vname].isel(**slices)
+        # depending on the slices, some dimensions may have disappeared,
+        # but force an ordering on whatever is left.
+        new_dims=[d for d in [self.time_dim,self.face_dim,self.layer_dim]
+                  if d in u_slc.dims]
+        u_comp=u_slc.transpose(*new_dims).values
+        v_comp=v_slc.transpose(*new_dims).values
+
+        U=np.concatenate( (u_comp[...,None],
+                           v_comp[...,None]),
+                          axis=-1 )
+            
+        return U
+
+    def get_cell_scalar(self,label,time_step):
+        # totally untested!  and not much of a savings
+        return self.nc[label].isel({self.time_dim:time_step}).values
+
+    _grid=None
+    @property
+    def grid(self):
+        """ return an UnstructuredGrid object
+        """
+        if self._grid is None:
+            self._grid=unstructured_grid.UnstructuredGrid.from_ugrid(self.nc,mesh_name=self.mesh_name)
+        return self._grid
+
+    def layer_var_name(self):
+        # this had been searching in dimensions, but that doesn't seem quite 
+        # right
+        for name in self.nc.variables: # but also try looking for it.
+            if self.nc[name].attrs.get('standard_name') in ['ocean_zlevel_coordinate',
+                                                            'ocean_z_coordinate',
+                                                            'ocean_sigma_coordinate']:
+                return name
+        else:
+            return 'nMeshGlobal_layers' # total punt
+    
+    def find_face_dim(self):
+        mesh_var=self.nc[self.mesh_name]
+        if 'face_dimension' in mesh_var.attrs:
+            return mesh_var.attrs['face_dimension']
+        else:
+            face_node=mesh_var.attrs['face_node_connectivity']
+            return self.nc[face_node].dims[0]
+    def find_edge_dim(self):
+        mesh_var=self.nc[self.mesh_name]
+        if 'edge_dimension' in mesh_var.attrs:
+            return mesh_var.attrs['edge_dimension']
+        else:
+            edge_node=mesh_var.attrs['edge_node_connectivity']
+            return self.nc[edge_node].dims[0]
+
+    def vertical_averaging_weights(self,time_slice=slice(None),
+                                   ztop=None,zbottom=None,dz=None,
+                                   face_slice=slice(None)):
+        """
+        reimplementation of sunreader.Sunreader::averaging_weights
+        
+        Returns weights as array [Nk] to average over a cell-centered quantity
+        for the range specified by ztop,zbottom, and dz.
+
+        range is specified by 2 of the 3 of ztop, zbottom, dz, all non-negative.
+        ztop: distance from freesurface
+        zbottom: distance from bed
+        dz: thickness
+
+        if the result would be an empty region, return nans.
+
+        cell_select: an object which can be used to index into the cell dimension
+          defaults to all cells.
+          
+        this thing is slow! - lots of time in adjusting all_dz
+
+        order of dimensions has been altered to match local suntans netcdf code,
+         i.e. face,level,time
+        """
+        mesh = self.nc[self.mesh_name]
+
+        face_dim=self.face_dim
+
+        if self.face_eta_vname is None:
+            self.face_eta_vname=self.find_var(standard_name='sea_surface_height_above_geoid')
+        surface=self.face_eta_vname
+
+        face_select={face_dim:face_slice}
+        h = self.nc[self.face_eta_vname].isel({self.time_dim:time_slice,
+                                               face_dim:face_slice})
+
+        if self.face_depth_vname is None:
+            self.face_depth_vname=self.find_var(standard_name=["sea_floor_depth_below_geoid",
+                                                               "sea_floor_depth"],
+                                                location='face') # ala 'Mesh_depth'
+        if self.face_depth_vname is None:
+            # c'mon people -- should be fixed in source now,
+            self.face_depth_vname=self.find_var(stanford_name=["sea_floor_depth_below_geoid",
+                                                               "sea_floor_depth"],
+                                                location='face') # ala 'Mesh_depth'
+
+        depth=self.face_depth_vname
+        bed = self.nc[depth].isel(**face_select).values
+        if self.nc[depth].attrs.get('positive')=='down':
+            log.debug("Cell depth is positive-down")
+            bed=-bed
+        else:
+            log.debug("Cell depth is positive-up, or at least that is the assumption")
+
+        # expand bed to include a time dimension so that in the code below
+        # h and bed have the same form, even though bed is not changing in time
+        # but h is.
+        if h.ndim>bed.ndim:
+            bed=bed[...,None] * np.ones_like(h)
+        
+        # for now, can only handle an array of cells - i.e. if you want
+        # a single face, it's still going to process an array, just with
+        # length 1.
+        Ncells = len(bed)
+
+        layers = self.nc[self.layer_var_name()]
+        layer_vals=layers.values
+        if layers.attrs.get('positive')=='down':
+            layer_vals=-layer_vals
+            
+        if 'bounds' in layers.attrs:
+            layer_bounds = self.nc[ layers.attrs['bounds'] ].values
+
+            # hmm - some discrepancies over the dimensionality of layer_interfaces
+            # assumption is probably that the dimensions are [layer,{top,bottom}]
+            if layer_bounds.ndim==2 and layer_bounds.shape[1]==2:
+                # same layer interfaces for all cells, all time.
+                layer_interfaces = np.concatenate( (layer_bounds[:,0],layer_bounds[-1:,1]) )
+                if layers.attrs.get('positive')=='down':
+                    layer_interfaces=-layer_interfaces
+            else:
+                raise Exception("Not smart enough about layer_bounds to do this")
+        else:
+            dz_single=0-bed.min() # assumes typ eta of 0.  only matters for 2D
+            layer_interfaces=utils.center_to_edge(layer_vals,dx_single=dz_single)
+            layer_bounds=np.concatenate( (layer_interfaces[:-1, None],
+                                          layer_interfaces[1:, None]),
+                                         axis=1)
+
+        # this is a bit trickier, because there could be lumping.  for now, it should work okay
+        # with 2-d, but won't be good for 3-d
+        Nk = np.searchsorted(-layer_interfaces,-bed)
+
+        one_dz = -np.diff(layer_interfaces)
+        all_dz=np.ones(h.shape+one_dz.shape)*one_dz
+        all_k = np.ones(h.shape+one_dz.shape)*np.arange(len(one_dz))
+
+        # adjust bed and 
+        # 3 choices here..
+        # try to clip to reasonable values at the same time:
+        if ztop is not None:
+            if ztop != 0:
+                h = h - ztop # don't modify h
+                # don't allow h to go below the bed
+                h[ h<bed ] = bed[ h<bed ]
+            if dz is not None:
+                # don't allow bed to be below the real bed.
+                bed = np.maximum( h - dz, bed)
+        if zbottom is not None:
+            # no clipping checks for zbottom yet.
+            if zbottom != 0:
+                bed = bed + zbottom # don't modify bed!
+            if dz is not None:
+                h = bed + dz
+
+        # so now h and bed are elevations bounding the integration region
+        z = layer_bounds.min(axis=1) # bottom of each cell
+        ctops = np.searchsorted(-z - self.surface_dzmin, -h)
+
+        # default h_to_ctop will use the dzmin appropriate for the surface,
+        # but at the bed, it goes the other way - safest just to say dzmin=0,
+        # and also clamp to known Nk
+        cbeds = np.searchsorted(-z,-bed) + 1 # it's an exclusive index
+
+        # dimension problems here - Nk has dimensions like face_slice or face_slice,time_slice
+        # cbeds has dimensions like face_slice,time_slice
+        # how to conditionally add dimensions to Nk?
+        # for now, ASSUME that time is after face, and use shape of h to
+        # figure out how to pad it
+        while h.ndim > Nk.ndim:
+            Nk=Nk[...,None]
+        # also have to expand Nk so that the boolean indexing works
+        cbeds[ cbeds>Nk ] = (Nk*np.ones_like(cbeds))[ cbeds>Nk ]
+
+        # seems that there is a problem with how dry cells are handled -
+        # for the exploratorium display this ending up with a number of cells with
+        # salinity close to 1e6.
+        # in the case of a dry cell, ctop==cbed==Nk[i]
+        drymask = (all_k < ctops[...,None]) | (all_k>=cbeds[...,None])
+        all_dz[drymask] = 0.0
+
+        ii = tuple(np.indices( h.shape ) )
+        all_dz[ii+(ctops[ii],)] = h-z[ctops]
+        all_dz[ii+(cbeds[ii]-1,)] -= bed - z[cbeds-1]
+        
+        # ctops has indices into the z dimension, and it has
+        #   cell,time shape
+        #  h also has cell,time shape
+        # old code:
+        # all_dz[ii,ctops] = h - z[ctops]
+        # all_dz[ii,cbeds-1] -= bed - z[cbeds-1]
+
+        # make those weighted averages
+        # have to add extra axis to get broadcasting correct
+        all_dz = all_dz / np.sum(all_dz,axis=-1)[...,None]
+
+        if all_dz.ndim==3:
+            # we have both time and level
+            # transpose to match the shape of velocity data -
+            all_dz = all_dz.transpose([0,2,1])
+        return all_dz
+
+    def datenums(self):
+        """ return datenums, referenced to UTC
+        """
+        return utils.to_dnum(self.times())
+    def times(self):
+        """ return time steps as datetime64, referenced to UTC
+        """
+        return self.nc['time'].values
 

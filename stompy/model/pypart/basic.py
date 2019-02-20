@@ -21,10 +21,10 @@ from stompy.plot import (plot_utils, cmap, plot_wkb)
 from stompy.grid import unstructured_grid
 from stompy.spatial import (wkb2shp,field)
 
-## 
+##
 class UgridParticles(object):
     """
-    time: all timestamps are stored as 64-bit double, in seconds 
+    time: all timestamps are stored as 64-bit double, in seconds
     since the epoch.
 
     This is to hedge between the various desires on time - data is
@@ -39,13 +39,14 @@ class UgridParticles(object):
                    ('u',(np.float64,2)),
                    ('j_last',np.int32) ]
 
-    def __init__(self,ncs,grid=None):
+    def __init__(self,ncs,grid=None,**kw):
+        self.__dict__.update(kw)
         self.log=logging.getLogger(self.__class__.__name__)
         self.ncs=ncs
         self.scan_ncs()
 
         self.load_grid(grid=grid)
-        
+
         self.init_particles()
         self.t_unix=None
         self.current_nc_idx=-1
@@ -115,7 +116,7 @@ class UgridParticles(object):
         v=self.current_nc.cell_north_velocity.values[:,0,self.nc_time_i]
 
         self.U=np.array( [u,v] ).T # again assume 2D
-        
+
         # A little dicey - this overwrites any memory of convergent edges.
         # so every input interval, it's going to forget
         self.P['u']=self.U[ self.P['c'] ]
@@ -154,7 +155,7 @@ class UgridParticles(object):
     def integrate(self,output_times_unix):
         next_out_idx=0
         next_out_time=output_times_unix[next_out_idx]
-        
+
         self.output=[]
         self.append_state(self.output)
         if self.record_dense:
@@ -177,7 +178,7 @@ class UgridParticles(object):
             t_next=min(next_out_time,next_vel_time)
 
             self.move_particles(t_next)
-            
+
             self.t_unix=t_next
             if t_next==next_out_time:
                 self.log.info('Output %d / %d'%(next_out_idx,len(output_times_unix)))
@@ -207,14 +208,13 @@ class UgridParticles(object):
         g=self.g
 
         for i,p in enumerate(self.P):
-
             # advance each particle to the correct state at stop_t
             part_t=self.t_unix
-            
+
             if np.isnan( p['u'][0] ):
                 # probably first time this particle has been moved.
                 self.P['u'][i]=self.U[ self.P['c'][i] ]
-            
+
             while part_t<stop_t:
                 dt_max_edge=np.inf
                 j_cross=None
@@ -228,7 +228,7 @@ class UgridParticles(object):
                         normal=-normal
                     # vector from xy to a point on the edge
                     d_xy_n = g.nodes['x'][g.edges['nodes'][j,0]] - p['x']
-                    # perpendicular distance 
+                    # perpendicular distance
                     dp_xy_n=d_xy_n[0] * normal[0] + d_xy_n[1]*normal[1]
                     assert dp_xy_n>=0 #otherwise sgn probably wrong above
 
@@ -237,13 +237,13 @@ class UgridParticles(object):
 
                     if closing<0: 
                         continue
-                    else:                        
+                    else:
                         dt_j=dp_xy_n/closing
                         if dt_j>0 and dt_j<dt_max_edge:
                             j_cross=j
                             dt_max_edge=dt_j
                             j_cross_normal=normal
-                        
+
                 t_max_edge=part_t+dt_max_edge
                 if t_max_edge>stop_t:
                     # don't make it to the edge
@@ -255,7 +255,14 @@ class UgridParticles(object):
                     part_t=t_max_edge
 
                 # Take the step
-                self.P['x'][i] += self.P['u'][i]*dt
+                delta=self.P['u'][i]*dt
+                # see if we're stuck
+                if utils.mag(delta) / (utils.mag(delta) + utils.mag(self.P['x'][i])) < 1e-14:
+                    print("Steps are too small")
+                    part_t=stop_t
+                    continue
+
+                self.P['x'][i] += delta
 
                 if j_cross is not None:
                     # cross edge j, update time.  careful that j isn't boundary
@@ -295,19 +302,18 @@ class UgridParticles(object):
                         self.P['c'][i]=new_c
                         self.P['j_last'][i]=j_cross
                         self.P['u'][i] = self.U[new_c]
-                        # HERE: need to check whether the new cell's 
+                        # HERE: need to check whether the new cell's
                         # velocity is going to push us back, in which case
-                        # we should instead scoot along the tangent and 
+                        # we should instead scoot along the tangent and
                         # hide our faces.
                         # actually, better solution is to handle *before*
                         # the particle hits the edge.  If we handle it after,
-                        # two particles converging on this edge will cross 
+                        # two particles converging on this edge will cross
                         # paths, and that really doesn't pass the sniff test.
                         # this is not good, but will let the sim complete
-                        
 
-                if self.record_dense:
-                    self.append_state(self.dense)
+                    if self.record_dense:
+                        self.append_state(self.dense)
 
     def save_tracks(self,fn,overwrite=True):
         if os.path.exists(fn):
@@ -337,13 +343,13 @@ class UgridParticles(object):
 
 #    Edges and incompatible velocities
 #    ---------------------------------
-#    
+#
 #    With a discontinuous velocity field, sooner or later there
-#    is a particle which is one cell, pushed to the edge, and 
+#    is a particle which is one cell, pushed to the edge, and
 #    enters a new cell which also wants to push the particle to
 #    the edge.
-#    
-#    Solutions: 
+#
+#    Solutions:
 #     1. Fix the velocity field.  The 0th order in space (constant
 #        velocity within a cell) approach cannot be fixed in this way.
 #        Going to a reconstruction like in Gerard's paper would be a

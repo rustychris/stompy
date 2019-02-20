@@ -24,8 +24,12 @@ try:
 except ImportError:
     xr="XARRAY NOT AVAILABLE"
 
-# convenience function for getting coordinates from the plot:
 def pick_points(n):
+    """
+    convenience function for getting coordinates from the plot:
+    this is not much better than plt.ginput().  you should 
+    probably just use that.
+    """
     count = [0]
     pick_points.results = np.zeros( (n,2), float64)
 
@@ -229,11 +233,15 @@ def plot_tri(tri,**kwargs):
 
 
 def scalebar(xy,L=None,aspect=0.05,unit_factor=1,fmt="%.0f",label_txt=None,fractions=[0,0.5,1.0],
-             ax=None,xy_transform=None,dy=None,
+             divisions=None,
+             ax=None,xy_transform=None,dy=None,lw=0.5,
              style='altboxes'):
     """ Draw a simple scale bar with labels - bottom left
-    is given by xy.  
+    is given by xy.
     xy_transform: units for interpreting xy.  If not given
+
+    The divisions are either inferred from the max length L and fractions of it, or
+    by specify a list of lengths in divisions
     """
     ax = ax or plt.gca()
 
@@ -245,12 +253,19 @@ def scalebar(xy,L=None,aspect=0.05,unit_factor=1,fmt="%.0f",label_txt=None,fract
                                 ax.transData,xoffset=xy[0])
         txt_trans=xy_transform
         xy=[0,xy[1]] # x offset now rolled into xy_transform
-    
-    if L is None:
-        xmin,xmax,ymin,ymax = ax.axis()
-        L = 0.2 * (xmax - xmin)
+
+    if divisions is not None:
+        L=divisions[-1]
+    else:
+        if L is None:
+            xmin,xmax,ymin,ymax = ax.axis()
+            L = 0.2 * (xmax - xmin)
+        divisions=[f*L for f in fractions]
+
     xmin,ymin = xy
     dx = L
+    # This is dangerous, as L is in data coordinates, but y may be in data or
+    # axes coordinates depending on what xy_transform was passed in.
     dy = dy or (aspect*L)
     # xmax = xmin + L
     ymax = ymin + dy
@@ -262,10 +277,10 @@ def scalebar(xy,L=None,aspect=0.05,unit_factor=1,fmt="%.0f",label_txt=None,fract
         # one filled black box:
         objs.append( ax.fill([xmin,xmin+dx,xmin+dx,xmin],
                              [ymin,ymin,ymax,ymax],
-                             'k', edgecolor='k',transform=xy_transform) )
-        for i in range(len(fractions)-1):
-            xleft=xmin+dx*fractions[i]
-            xright=xmin+dx*fractions[i+1]
+                             'k', edgecolor='k',transform=xy_transform,lw=lw) )
+        for i in range(len(divisions)-1):
+            xleft=xmin+divisions[i]
+            xright=xmin+divisions[i+1]
             xlist=[xleft,xright,xright,xleft]
 
             if style=='altboxes':
@@ -274,28 +289,27 @@ def scalebar(xy,L=None,aspect=0.05,unit_factor=1,fmt="%.0f",label_txt=None,fract
                 # print ybot,ytop
                 objs.append( ax.fill(xlist,
                                      [ybot,ybot,ytop,ytop],
-                                     'w', edgecolor='k',transform=xy_transform) )
+                                     'w', edgecolor='k',transform=xy_transform,lw=lw) )
             else:
                 if y%2==0:
                     objs.append( ax.fill(xlist,
                                          [ymin,ymin,ymax,ymax],
-                                         'w', edgecolor='k',transform=xy_transform) )
+                                         'w', edgecolor='k',lw=lw,transform=xy_transform) )
     baseline=ymax + 0.25*dy
-    for frac in fractions:
-        frac_txt=fmt%(unit_factor* frac*L)
-        txts.append( ax.text(xmin+frac*dx,baseline,
-                             frac_txt,
+    for div in divisions:
+        div_txt=fmt%(unit_factor* div)
+        txts.append( ax.text(xmin+div,baseline,
+                             div_txt,
                              ha='center',
                              transform=txt_trans)
                  )
-    # annotate(fmt%(unit_factor*L), [xmin+dx,ymax+0.25*dy], ha='center')
 
     # Really would like for the label to be on the same baseline
     # as the fraction texts, and typeset along with the last
     # label, but allowing the number of the last label to be
     # centered on its mark
     if label_txt:
-        txts.append( ax.text(xmin+frac*dx,baseline," "*len(frac_txt) + label_txt,ha='left',
+        txts.append( ax.text(xmin+div,baseline," "*len(div_txt) + label_txt,ha='left',
                              transform=txt_trans) )
     return objs,txts
         
@@ -401,7 +415,7 @@ def enable_picker(coll,ax=None,cb=None,points=5):
      
     returns an object which when called always returns the most recent index chosen
     """
-    ax = ax or coll.get_axes() # was plt.gca()
+    ax = ax or coll.axes # was plt.gca(), then coll.get_axes().  modern is just .axes
     coll.set_picker(points) # should be 5 points
 
     class dummy(object):
@@ -551,17 +565,21 @@ def period_scale(xaxis,base_unit='h'):
     xaxis.set_major_formatter(fmter)
 
 
-def pad_pcolormesh(X,Y,Z,ax=None,dx_single=None,dy_single=None,**kwargs):
+def pad_pcolormesh(X,Y,Z,ax=None,dx_single=None,dy_single=None,
+                   fallback=True,**kwargs):
     """ Rough expansion of X and Y to be the bounds of
     cells, rather than the middles. Reduces the shift error
     in the plot.
     dx_single: if there is only one sample in x, use this for width
     dy_single: if there is only one sample in y, use this for height
+    fallback: if there are nan's in the coordinate data use pcolor instead.
     """
     Xpad,Ypad=utils.center_to_edge_2d(X,Y,dx_single=dx_single,dy_single=dy_single)
     ax=ax or plt.gca()
-    return ax.pcolormesh(Xpad,Ypad,Z,**kwargs)
-
+    if fallback and (np.any(np.isnan(Xpad)) or np.any(np.isnan(Ypad))):
+        return ax.pcolor(Xpad,Ypad,Z,**kwargs)
+    else:
+        return ax.pcolormesh(Xpad,Ypad,Z,**kwargs)
 
 def show_slopes(ax=None,slopes=[-5./3,-1],xfac=5,yfac=3):
     ax = ax or plt.gca()
@@ -848,11 +866,12 @@ def right_align(axs):
 
 def cbar(*args,**kws):
     extras=kws.pop('extras',[])
+    symmetric=kws.pop('sym',False)
     cbar=plt.colorbar(*args,**kws)
-    cbar_interactive(cbar,extras=extras)
+    cbar_interactive(cbar,extras=extras,symmetric=symmetric)
     return cbar
 
-def cbar_interactive(cbar,extras=[]):
+def cbar_interactive(cbar,extras=[],symmetric=False):
     """ click in the upper or lower end of the colorbar to
     adjust the respective limit.
     left click to increase, right click to decrease
@@ -898,12 +917,15 @@ def cbar_interactive(cbar,extras=[]):
                 rel=0.1
             elif event.button==3:
                 rel=-0.1
-            if coord<0.4:
-                mod_norm(rel_min=rel)
-            elif coord>0.6:
-                mod_norm(rel_max=rel)
+            if symmetric:
+                mod_norm(rel_min=rel,rel_max=-rel)
             else:
-                mod_norm(reset=True)
+                if coord<0.4:
+                    mod_norm(rel_min=rel)
+                elif coord>0.6:
+                    mod_norm(rel_max=rel)
+                else:
+                    mod_norm(reset=True)
     fig=cbar.ax.figure
     cid=fig.canvas.mpl_connect('button_press_event',cb_u_cbar)
     return cb_u_cbar
@@ -977,7 +999,7 @@ def savefig_geo(fig,fn,*args,**kws):
     # Add annotations for the frontal zones:
     from PIL import Image
 
-    fig.savefig(fn) # *args,**kws)
+    fig.savefig(fn,*args,**kws)
     # get the image resolution:
     img_size=Image.open(fn).size 
 
@@ -1301,3 +1323,80 @@ def fat_quiver(X,Y,U,V,ax=None,**kwargs):
 
     ax.add_collection(coll)
     return coll
+
+
+def reduce_text_overlap(ax,max_iter=200):
+    """
+    Try to shift the texts in an axes to avoid overlaps.
+    """
+    texts=ax.texts
+
+    # in scripts window extents may not be available until a draw
+    # is forced
+    try:
+        texts[0].get_window_extent()
+    except RuntimeError:
+        # so force it.
+        ax.get_figure().canvas.draw()
+        
+    bboxes=[]
+    for txt in texts:
+        ext=txt.get_window_extent()
+        bboxes.append( [ [ext.xmin,ext.ymin],
+                         [ext.xmax,ext.ymax] ] )
+    bboxes=np.array(bboxes)
+
+    # each iteration move overlapping texts by about this
+    # much
+    dx=2.0
+    # come up with pixel offsets for each label.
+    pix_offsets=np.zeros( (len(texts),1,2),np.float64 )
+    for _ in range(max_iter):
+        changed=False
+
+        new_bboxes=bboxes+pix_offsets
+        for a in range(len(texts)):
+            for b in range(a+1,len(texts)):
+                # is there any force between these two labels?
+                # check overlap
+
+                int_min=np.maximum(new_bboxes[a,0,:], new_bboxes[b,0,:])
+                int_max=np.minimum(new_bboxes[a,1,:], new_bboxes[b,1,:])
+
+                if np.all(int_min<int_max):
+                    #print("Collision %s - %s"%(texts[a].get_text(),
+                    #                           texts[b].get_text()))
+
+                    # This could probably be faster and less verbose.
+                    # separate axis is taken from the overlapping region
+                    # and direction
+                    
+                    # choose the direction that most quickly eliminates the overlap
+                    # area. could also just choose the least overlapping direction
+                    opt=utils.to_unit( np.array( [int_max[1]-int_min[1],
+                                                  int_max[0]-int_min[0]]) )
+                    
+                    ab=new_bboxes[b].mean(axis=0) - new_bboxes[a].mean(axis=0)
+                    if np.dot(opt,ab)<0:
+                        opt*=-1
+
+                    pix_offsets[a,0,:] -= dx*opt/2
+                    pix_offsets[b,0,:] += dx*opt/2
+
+                    changed=True
+        if not changed:
+            break
+
+    # Update positions of the texts:
+    deltas=np.zeros((len(texts),2),np.float64)
+    for i in range(len(texts)):
+        txt=texts[i]
+        xform=txt.get_transform()
+        ixform=xform.inverted()
+        p=bboxes[i,0,:]
+        pos0=ixform.transform_point(p)
+        pos_new=ixform.transform_point(p+pix_offsets[i,0,:])
+        deltas[i]=delta=pos_new-pos0
+        txt.set_position( np.array(txt.get_position()) + delta)
+    return deltas
+

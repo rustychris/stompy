@@ -1,5 +1,6 @@
-from __future__ import print_function 
+from __future__ import print_function
 import six
+import time
 import os
 import logging
 log=logging.getLogger('utils')
@@ -7,7 +8,8 @@ log=logging.getLogger('utils')
 try:
     import xlrd
 except ImportError:
-    log.info('xlrd unavailable')
+    # rarely used, so log at debug
+    log.debug('xlrd unavailable')
     xlrd=None
 
 import functools
@@ -27,7 +29,7 @@ except ImportError:
 from collections import OrderedDict,Iterable
 import sys
 from scipy.interpolate import RectBivariateSpline,interp1d
-from scipy import optimize 
+from scipy import optimize
 from . import filters, harm_decomp
 import re
 
@@ -43,13 +45,19 @@ except ImportError:
 def path(append):
     if append not in sys.path:
         sys.path.append(append)
-        
+
 def add_to(instance):
-    def decorator(f):
-        import types
-        f = types.MethodType(f, instance, instance.__class__)
-        setattr(instance, f.func_name, f)
-        return f
+    if six.PY2:
+        def decorator(f):
+            import types
+            f = types.MethodType(f, instance, instance.__class__)
+            setattr(instance, f.func_name, f)
+            return f
+    else:
+        def decorator(f):
+            f=f.__get__(instance,type(instance))
+            setattr(instance,f.__name__,f)
+
     return decorator
 
 class Bucket(object):
@@ -62,7 +70,7 @@ def records_to_array(records):
     rectype = []
     if len(records) == 0:
         recarray = np.zeros(0)
-    else:        
+    else:
         for k in records[0].keys():
             if k=='date':
                 t=object
@@ -85,7 +93,7 @@ def hashes_to_array(records,float_fill=np.nan,int_fill=-99,uint_fill=0):
     L=len(records)
     if L == 0:
         return np.zeros(0)
-    
+
     def dtype_fill_value(t):
         if t in (np.dtype('f4'),np.dtype('f8')):
             return float_fill
@@ -122,7 +130,7 @@ def hashes_to_array(records,float_fill=np.nan,int_fill=-99,uint_fill=0):
                         new_coldata[:]=dtype_fill_value(t)
                     else:
                         # straight ahead numeric arrays
-                        new_coldata=np.ones(L,dtype=t) 
+                        new_coldata=np.ones(L,dtype=t)
                         new_coldata[:]=dtype_fill_value(t)
 
                 coldata.append(new_coldata)
@@ -143,17 +151,17 @@ def hashes_to_array(records,float_fill=np.nan,int_fill=-99,uint_fill=0):
 
 
 def bounds(pnts):
-    """ 
+    """
     returns array [{lower,upper},pnts.shape[-1]]
     """
     lower=pnts
     upper=pnts
-                   
+
     while lower.ndim> 1:
         lower=lower.min(axis=0)
         upper=upper.max(axis=0)
     return np.array([lower,upper])
-        
+
 def center_to_interval(c):
     """
     c: coordinates of centers,
@@ -188,6 +196,15 @@ def center_to_edge(c,dx_single=None,axis=0):
     return d
 
 def center_to_edge_2d(X,Y,dx_single=None,dy_single=None):
+    # xarray DataArrays will cause this to fail because
+    # the indexing tries to keep everything lined up.
+    if xr is not None:
+        if isinstance(X,xr.DataArray):
+            X=X.values
+        if isinstance(Y,xr.DataArray):
+            Y=Y.values
+    if np.any(np.isnan(X)) or np.any(np.isnan(Y)):
+        log.warning('center_to_edge2d() does not cope well with nan')
     if X.ndim==Y.ndim==1:
         Xpad=center_to_edge(X,dx_single=dx_single)
         Ypad=center_to_edge(Y,dx_single=dy_single)
@@ -212,8 +229,8 @@ def center_to_edge_2d(X,Y,dx_single=None,dy_single=None):
     else:
         raise Exception("Not ready for mixed 1d 2d dimensions")
     return Xpad,Ypad
-    
-    
+
+
 class BruteKDE(object):
     def __init__(self,values,weights,bw):
         self.values=values
@@ -245,9 +262,9 @@ def within(item,ends,as_slice=False,fmt='auto'):
     """
     if as_slice:
         fmt='slice'
-    
+
     if fmt=='auto':
-        if all(np.diff(item) > 0): 
+        if all(np.diff(item) > 0):
             fmt='slice'
         else:
             fmt='mask'
@@ -265,27 +282,35 @@ def within_2d(vecs,xxyy):
     return within(vecs[:,0],xxyy[:2],fmt='mask') & within(vecs[:,1],xxyy[2:],fmt='mask')
 
 
+def expand_xyxy(xyxy,factor):
+    dx=xyxy[2] - xyxy[0]
+    dy=xyxy[3] - xyxy[1]
+    return [ xyxy[0] - dx*factor,
+             xyxy[1] - dy*factor,
+             xyxy[2] + dx*factor,
+             xyxy[3] + dy*factor]
+
 def expand_xxyy(xxyy,factor):
     dx=xxyy[1] - xxyy[0]
     dy=xxyy[3] - xxyy[2]
     return [ xxyy[0] - dx*factor,
              xxyy[1] + dx*factor,
              xxyy[2] - dy*factor,
-             xxyy[3] + dy*factor] 
+             xxyy[3] + dy*factor]
 
 def dice_interval(subinterval,overlap_fraction,start,end=None):
-    """ 
+    """
     subinterval gives a duration, say 90 [s]
     overlap_fraction=0 means end of one interval is start of the next,
     overlap_fraction=0.5 means middle of one interval is start of next.
     start is either a scalar, or a pair of scalars
     if start is a scalar, end must be specified also as a scalar
 
-    yields [substart,subend] pairs 
+    yields [substart,subend] pairs
     """
     if end is None:
         start,end=start
-        
+
     if subinterval is None:
         yield [start,end]
     else:
@@ -296,17 +321,19 @@ def dice_interval(subinterval,overlap_fraction,start,end=None):
         # find a subinterval that gives exactly this number of subwindows
         subinterval=(end-start)/((Nsubs-1)*(1-overlap_fraction)+1.0)
         advance = (1-overlap_fraction)*subinterval
-        
+
         for n in range(Nsubs):
             p_start = start + n*advance
             yield (p_start,p_start+subinterval)
 
 
 def fill_invalid(A,axis=0,ends='constant'):
-    """ 
+    """
     ends:
     'constant'  missing values at the ends will take nearest valid value
     'linear' missing values will be extrapolated with a linear fit through the first/last valid values
+
+    returns new array, though currently this is just a view on the original data.
     """
     # rotate the operational index to be first:
     new_order=(np.arange(A.ndim)+axis)%A.ndim
@@ -319,7 +346,7 @@ def fill_invalid(A,axis=0,ends='constant'):
         kwargs={}
     else:
         kwargs=dict(left=np.nan,right=np.nan)
-        
+
     # iterates over indices into the non-fill axes
     for idx in np.ndindex(Atrans.shape[1:]):
         Aslice=Atrans[(slice(None),)+idx]
@@ -332,7 +359,7 @@ def fill_invalid(A,axis=0,ends='constant'):
                                  Aslice[valid][ [0,-1] ], 1)
                 missing=np.isnan(Aslice)
                 Aslice[missing]=np.polyval(mb,i[missing])
-            
+
     return Atrans.transpose(revert_order)
 
 
@@ -343,14 +370,14 @@ def fill_tidal_data(da,fill_time=True):
 
     Uses all 37 of the standard NOAA harmonics, may not be stable
     with short time series.
-    
+
     A 5-day lowpass is removed from the harmonic decomposition, and added
     back in afterwards.
 
     Assumes that the DataArray has a 'time' coordinate with datetime64 values.
 
     The time dimension must be dense enough to extract an exact time step
-    
+
     If fill_time is True, holes in the time coordinate will be filled, too.
     """
     diffs=np.diff(da.time)
@@ -378,7 +405,7 @@ def fill_tidal_data(da,fill_time=True):
                         dims=['time'],coords=[dense_times],
                         name=da.name)
     else:
-        pass 
+        pass
 
     dnums=to_dnum(da.time)
     data=da.values
@@ -390,11 +417,11 @@ def fill_tidal_data(da,fill_time=True):
         data_hp=data - data_lp
     else:
         # not long enough, punt with the mean.
-        data_hp=data - data.mean()
-        data_lp=0*data
+        data_lp=np.nanmean(data)*np.ones_like(data)
+        data_hp=data - data_lp
 
     valid=np.isfinite(data_hp)
-    
+
     # omegas=harm_decomp.noaa_37_omegas() # as rad/sec
     T_s=(da.time[-1]-da.time[0]).values / np.timedelta64(1,'s')
     omegas=harm_decomp.select_omegas(T_s,factor=0.25)
@@ -410,10 +437,12 @@ def fill_tidal_data(da,fill_time=True):
     data_filled[missing] = data_recon[missing]
 
     fda=xr.DataArray(data_filled,coords=[da.time],dims=['time'],name=da.name)
+
+    fda.attrs.update(da.attrs)
     return fda
 
 def select_increasing(x):
-    """ 
+    """
     Return a bitmask over x removing any samples which are
     less than or equal to the largest preceding sample
     """
@@ -440,12 +469,12 @@ def interp_bilinear(x,y,z):
     z=z.copy()
     invalid=~np.isfinite(z)
     z[invalid]=0
-    
+
     z_interper=RectBivariateSpline(x,y,z,kx=1,ky=1)
     invalid_interper=RectBivariateSpline(x,y,invalid,kx=1,ky=1)
 
     def interper(xx,yy):
-        # slight change in behavior - 
+        # slight change in behavior -
         # if xx,yy are vectors, iterate over pairs
         # otherwise, assume they are as the output of meshgrid
         if xx.ndim==1:
@@ -479,7 +508,7 @@ def interp_near(x,sx,sy,max_dx=None):
     return y_at_x
 
 def nearest(A,x,max_dx=None):
-    """ 
+    """
     like searchsorted, but return the index of the nearest value,
     not just the first value greater than x.
     if max_dx is given, then return -1 for items where the nearest
@@ -490,7 +519,7 @@ def nearest(A,x,max_dx=None):
     xi_left=(xi_right-1).clip(0,N-1)
     dx_right=np.abs(x-A[xi_right])
     dx_left=np.abs(x-A[xi_left])
-    
+
     xi=xi_right
     sel_left=dx_left < dx_right
     if xi.ndim:
@@ -518,7 +547,7 @@ def to_unit(vecs):
 
 def dist(a,b=None):
     if b is not None:
-        a=a-b
+        a=np.asarray(a)-np.asarray(b)
     return mag(a)
 
 def haversine(a,b):
@@ -528,7 +557,7 @@ def haversine(a,b):
 
     a,b: longitude/latitude in degrees.
 
-    Credit to ballsatballs.dotballs, 
+    Credit to ballsatballs.dotballs,
     https://stackoverflow.com/questions/29545704/fast-haversine-approximation-python-pandas
 
     returns distance in km.
@@ -603,7 +632,7 @@ def rot_fn(angle):
         if pnts.ndim>1:
             orig_shape=pnts.shape
             pnts=pnts.reshape([-1,2])
-            pnts=np.tensordot(R,pnts,axes=(1,-1) ).transpose() 
+            pnts=np.tensordot(R,pnts,axes=(1,-1) ).transpose()
             pnts=pnts.reshape(orig_shape)
         else:
             # This isn't very tested...
@@ -647,7 +676,7 @@ def find_slack(jd,u,leave_mean=False,which='both'):
         sel=sel_low
     else:
         assert(False)
-    
+
     b=np.nonzero(sel)[0]
     jd_slack=jd[b]-u[b]/(u[b+1]-u[b])*dt
     if u[0]<0:
@@ -655,9 +684,17 @@ def find_slack(jd,u,leave_mean=False,which='both'):
     else:
         start='flood'
     return jd_slack,start
-    
 
-def hour_tide(jd,u,jd_new=None,leave_mean=False):
+
+def hour_tide(jd,u=None,h=None,jd_new=None,leave_mean=False):
+    assert (u is None) != (h is None),"Must specify one of u,h"
+    if h is not None:
+        # abuse cdiff to avoid concatenate code here
+        dh_dt=cdiff(h) / cdiff(jd)
+        dh_dt[-1]=dh_dt[-2]
+        dh_dt=np.roll(dh_dt,1) # better staggering to get low tide at h=0
+        u=dh_dt
+        
     fn=hour_tide_fn(jd,u,leave_mean=leave_mean)
 
     if jd_new is None:
@@ -665,20 +702,20 @@ def hour_tide(jd,u,jd_new=None,leave_mean=False):
     return fn(jd_new)
 
 def hour_tide_fn(jd,u,leave_mean=False):
-    """ Return a function for extracting tidal hour 
+    """ Return a function for extracting tidal hour
     from the time/velocity given.
     Use the _fn version if making repeated calls with different jd_new,
     but the same jd,u
     """
     #function hr_tide=hour_tide(jd,u,[jd_new],[leave_mean]);
     #  translated from rocky's m-files
-    #   generates tidal hours starting at slack water, based on 
+    #   generates tidal hours starting at slack water, based on
     #   u is a vector, positive is flood-directed velocity
     #   finds time of "slack" water
     #   unless leave_mean=True, removes low-pass velocity from record
-    
+
     jd_slack,start=find_slack(jd,u,leave_mean=leave_mean,which='both')
-    # left/right here allow for one more slack crossing 
+    # left/right here allow for one more slack crossing
     hr_tide=np.interp(jd,
                       jd_slack,np.arange(len(jd_slack))*6,
                       left=-0.01,right=len(jd_slack)-0.99)
@@ -707,7 +744,7 @@ def find_phase(jd,u,which='ebb',**kwargs):
 
 
 def quadmesh_interp_one(X,Z,V,x,z):
-    # assumes that x is independent of z, but not the other way 
+    # assumes that x is independent of z, but not the other way
     mesh_x=X[0,:]
     col=np.interp(x,
                   mesh_x,np.arange(len(mesh_x)),left=np.nan,right=np.nan)
@@ -719,9 +756,9 @@ def quadmesh_interp_one(X,Z,V,x,z):
     z_right=Z[:,col_i+1]
     mesh_z=(1-alpha)*z_left + alpha*z_right
     if mesh_z[0] > mesh_z[-1]:
-        row=np.searchsorted(-mesh_z,-z)-1 
+        row=np.searchsorted(-mesh_z,-z)-1
     else:
-        row=np.searchsorted(mesh_z,z)-1 
+        row=np.searchsorted(mesh_z,z)-1
     if row<0 or row>len(mesh_z)-2:
         return np.nan
     return V[row,col]
@@ -738,7 +775,7 @@ def resample_to_common(A,Z,
                        dz=None,n_samples=None,
                        max_z=None,min_z=None,
                        left=None,right=None):
-    """ given data in A, with the coordinates of one axis dependent on 
+    """ given data in A, with the coordinates of one axis dependent on
     the other, resample, so that all elements of that axis have the
     same coordinates.
     in other words, A~[time,depth]
@@ -786,7 +823,7 @@ def principal_theta(vec,eta=None,positive='flood',detrend=False,
       the assumption is that the tides are between standing and progressive,
       such that u*h and u*dh/dt are both positive for flood-positive u.
 
-    if positive is a number, it is taken as the preferential theta, and 
+    if positive is a number, it is taken as the preferential theta, and
       ambiguity will be resolved by choosing the angle close to positive
 
     ambiguous: 'warn','error','standing','progressive','nan' see code.
@@ -799,7 +836,7 @@ def principal_theta(vec,eta=None,positive='flood',detrend=False,
     else:
         valid=slice(None)
     vec=vec[valid,:]
-    
+
     if detrend:
         vbar=vec.mean(axis=0)
         vec=vec-vbar[None,:]
@@ -830,16 +867,18 @@ def principal_theta(vec,eta=None,positive='flood',detrend=False,
         else:
             if ambiguous=='warn':
                 log.warning("principal_theta: flood direction still ambiguous")
+            elif ambiguous=='silent':
+                pass
             elif ambiguous=='error':
                 raise principal_theta.Exception("u_h: %f  u_dh: %f"%(u_h,u_dh))
             elif ambiguous=='nan':
                 return np.nan
     else:
-        try: 
+        try:
             err=theta - positive # is it a number?
         except TypeError:
             err=0 # no flip
-        # circular error 
+        # circular error
         err = np.abs( (err + np.pi)%(2*np.pi) - np.pi )
         if err>np.pi/2:
             theta = (theta+np.pi) % (2*np.pi)
@@ -861,12 +900,12 @@ def rotate_to_principal(vec,eta=None,positive='flood',detrend=False,
     return rot(-theta,vec)
 
 def bootstrap_resample(X, n=None):
-    """ 
+    """
     Bootstrap resample an array_like
     credits to http://nbviewer.ipython.org/gist/aflaxman/6871948
 
     Parameters:
-    
+
     X : array_like
       data to resample
     n : int, optional
@@ -878,7 +917,7 @@ def bootstrap_resample(X, n=None):
     """
     if n == None:
         n = len(X)
-        
+
     resample_i = np.floor(np.random.rand(n)*len(X)).astype(int)
     X_resample = X[resample_i]
     return X_resample
@@ -891,14 +930,14 @@ def bootstrap_stat(X,n_pop=10000,n_elements=None,pop_stat=np.mean,
     pop_stats=[None]*n_pop
     for i in range(n_pop):
         res=bootstrap_resample(X,n=n_elements)
-        pop_stats[i] = pop_stat(res) 
+        pop_stats[i] = pop_stat(res)
     return bootstrap_stat( np.array(pop_stats) )
 
 def model_skill(xmodel,xobs,ignore_nan=True):
-    """ 
+    """
     Wilmott 1981 model skill metric
     """
-    # Weird - random data gets a score of 0.43 or so - 
+    # Weird - random data gets a score of 0.43 or so -
     #  if the prediction is too small by a factor of 10, the skill is still about
     #  the same.  In fact if the prediction is 0, it will still get a score of 0.43.
     # but if the predictions are too large, or have a markedly different mean, then
@@ -911,7 +950,7 @@ def model_skill(xmodel,xobs,ignore_nan=True):
 
     num = np.sum( (xmodel - xobs)[sel]**2 )
     den = np.sum( (np.abs(xmodel[sel] - xobs[sel].mean()) + np.abs(xobs[sel] - xobs[sel].mean()))**2 )
-    
+
     skill = 1 - num / den
     return skill
 
@@ -935,13 +974,13 @@ def find_lag(t,x,t_ref,x_ref):
     If times are already numeric, they are left as is and the lag is
     reported in the same units.
 
-    If times are not numeric, they are converted to date nums via 
+    If times are not numeric, they are converted to date nums via
     utils.to_dnum.  If they are np.datetime64, lag is reported as timedelta64.
     If the inputs are datetimes, lag is reported as timedelta.
     Otherwise, lag is kept as a floating point number
     """
     t_orig=t
-    # convert times if they aren't numeric: 
+    # convert times if they aren't numeric:
     t=to_dnum(t)
     t_ref=to_dnum(t_ref)
 
@@ -949,7 +988,7 @@ def find_lag(t,x,t_ref,x_ref):
     dt_ref=np.median(np.diff(t_ref))
 
     # goal is to interpolate the finer time scale onto the coarser.
-    # simplify code below by making sure that the reference is the 
+    # simplify code below by making sure that the reference is the
     # finer time scale
     if dt<dt_ref:
         lag_opt=-find_lag(t_ref,x_ref,t,x)
@@ -966,9 +1005,9 @@ def find_lag(t,x,t_ref,x_ref):
     if isinstance(t_orig[0],datetime.datetime):
         lag_opt = datetime.timedelta(days,lag_opt)
     elif isinstance(t_orig[0],np.datetime64):
-        # goofy, but assume that lags are adequately represented 
+        # goofy, but assume that lags are adequately represented
         # by 64 bits of microseconds.  That means the range of
-        # lags is +-1us to 2.9e5 years.  Good enough, unless you're a 
+        # lags is +-1us to 2.9e5 years.  Good enough, unless you're a
         # a physicist or geologist.
         lag_opt = np.timedelta64( int(lag_opt*86400*1e6), 'us')
     return lag_opt
@@ -976,7 +1015,7 @@ def find_lag(t,x,t_ref,x_ref):
 
 
 def break_track(xy,waypoints,radius_min=400,radius_max=800,min_samples=10):
-    """ 
+    """
     xy: coordinate sequence of trackline
     waypoints: collection of waypoints
 
@@ -1091,12 +1130,12 @@ def to_dnum(x):
 
         if isinstance(x,np.datetime64):
             return dt64_to_dnum(x)
-        
+
         assert False
     else:
         if pd is not None and isinstance(x,pd.DataFrame) or isinstance(x,pd.Series):
             x=x.index.values
-
+        x=np.asanyarray(x) # to accept lists.
         if np.issubdtype(x.dtype,np.floating): # used to be np.float, but that is deprecated
             return x
         if isinstance(x[0],datetime.datetime) or isinstance(x[0],datetime.date):
@@ -1129,20 +1168,20 @@ def to_dt64(x):
     elif isinstance(x,pd.Timestamp):
         return x.to_datetime64()
     else:
-        if np.issubdtype(x.dtype, np.float):
+        if np.issubdtype(x.dtype, np.floating):
             x=num2date(x)
 
         x=np.asarray(x)
         if isinstance( x.flat[0], datetime.datetime ) or isinstance(x.flat[0],datetime.date):
             x=np.array(x,'M8[ns]')
-        
+
         if np.issubdtype(x.dtype,np.datetime64):
             return x
 
         assert False
 
 def to_unix(t):
-    """ 
+    """
     Convert t to unix epoch time, defined as the number of seconds
     since 1970-01-01 00:00:00.  The result is a float or int, and is *not*
     distinguishable a priori from datenums.  For that reason, numerical values
@@ -1161,23 +1200,40 @@ def to_unix(t):
         dt0=datetime.datetime(1970, 1, 1)
         return (dt - dt0).total_seconds()
 
+# numpy refuses to calculate date means - so workaround
+def mean_dt64(vec):
+    return to_dt64(np.mean(to_dnum(vec)))
+    
+def to_jdate(t):
+    """
+    Convert a time-like scalar t to integer julian date, e.g. 2016291
+    (year and day of year concatenated)
+    The first of the year is 000, so add 1 if you want 2016-01-01 to be
+    2016001.
+    """
+    dt=to_datetime(t)
+    dt0=dt.replace(day=1,month=1,hour=0,minute=0,second=0)
+    doy=dt.toordinal() - dt0.toordinal()
+    return dt0.year * 1000 + doy
+
+
 def unix_to_dt64(t):
     """
-    Convert a floating point unix timestamp to numpy datetime64 
+    Convert a floating point unix timestamp to numpy datetime64
     """
     unix0=np.datetime64('1970-01-01 00:00:00')
     return unix0 + t*np.timedelta64(1,'s')
-    
+
 def cf_string_to_dt64(x):
-    """ return a seconds-based numpy datetime 
-    from something like 
+    """ return a seconds-based numpy datetime
+    from something like
     ``1000 seconds since 1983-01-09T12:43:10``
 
     This is conditionally called from to_datetime(), too.
 
     A timezone, either as a trailing 'Z' or -0:00 is allowed,
-    but other timezones are not (since that would introduce an 
-    ambiguity as to whether to adjust to UTC, or leave in 
+    but other timezones are not (since that would introduce an
+    ambiguity as to whether to adjust to UTC, or leave in
     another timezone)
     """
     duration,origin = x.split(" since ")
@@ -1219,7 +1275,7 @@ def to_datetime(x):
     # Unwrap xarray data
     if xr is not None and isinstance(x,xr.DataArray):
         x=x.values
-    
+
     if isinstance(x,float):
         return num2date(x)
     if isinstance(x,datetime.datetime):
@@ -1233,7 +1289,7 @@ def to_datetime(x):
             # at the moment we're trying to avoid a pandas dependency
             # here.
             x=np.datetime64(x)
-    
+
     # isscalar is not so general - it does *not* mean not array, it means
     # the value *is* a numpy scalar.
     if np.isscalar(x):
@@ -1246,13 +1302,20 @@ def to_datetime(x):
         if np.issubdtype(x.dtype,np.datetime64):
             ts = (x - np.datetime64('1970-01-01T00:00:00Z')) / np.timedelta64(1, 's')
             # return datetime.datetime.utcfromtimestamp(ts) # or do we have to vectorize?
-            return [datetime.datetime.utcfromtimestamp(x) 
-                    for x in ts] 
+            return [datetime.datetime.utcfromtimestamp(x)
+                    for x in ts]
         if len(x) and isinstance(x.flatten[0],datetime.datetime):
             return x
 
+def strftime(d,fmt="%Y-%m-%d %H:%M"):
+    """
+    convenience method to convert to python datetime
+    and format to string
+    """
+    return to_datetime(d).strftime(fmt)
+
 # some conversion help for datetime64 and python datenums
-# pandas includes some of this functionality, but trying to 
+# pandas includes some of this functionality, but trying to
 # keep utils.py pandas-free (no offense, pandas)
 
 def dt64_to_dnum(dt64):
@@ -1283,7 +1346,7 @@ def dnum_to_dt64(dnum,units='us'):
     units_per_day=np.timedelta64(1,'D').astype(reftype)
     # datetime for the epoch
     dt_ref=datetime.datetime(1970,1,1,0,0)
-    
+
     offset = ((dnum-dt_ref.toordinal())*units_per_day).astype(reftype)
     return np.datetime64(dt_ref) + offset
 
@@ -1296,19 +1359,19 @@ def dnum_jday0(dnum):
 def invert_permutation(p):
     '''
     Returns an array s, where s[i] gives the index of i in p.
-    The argument p is assumed to be some permutation of 0, 1, ..., len(p)-1. 
+    The argument p is assumed to be some permutation of 0, 1, ..., len(p)-1.
     see http://stackoverflow.com/questions/11649577/how-to-invert-a-permutation-array-in-numpy
-    
+
     this version, using np.arange instead of xrange, is 23% faster than the
     np.put() version on that stackoverflow question.
     '''
     s = np.zeros(p.size, p.dtype) # np.zeros is better than np.empty here, at least on Linux
-    s[p] = np.arange(p.size) 
+    s[p] = np.arange(p.size)
     return s
 
 def circumcenter(p1,p2,p3):
     ref = p1
-    
+
     p1x = p1[...,0] - ref[...,0] # ==0.0
     p1y = p1[...,1] - ref[...,1] # ==0.0
     p2x = p2[...,0] - ref[...,0]
@@ -1317,18 +1380,18 @@ def circumcenter(p1,p2,p3):
     p3y = p3[...,1] - ref[...,1]
 
     vc = np.zeros( p1.shape, np.float64)
-    
+
     # taken from TRANSFORMER_gang.f90
     dd=2.0*((p1x-p2x)*(p1y-p3y) -(p1x-p3x)*(p1y-p2y))
     b1=p1x**2+p1y**2-p2x**2-p2y**2
-    b2=p1x**2+p1y**2-p3x**2-p3y**2 
+    b2=p1x**2+p1y**2-p3x**2-p3y**2
     vc[...,0]=(b1*(p1y-p3y)-b2*(p1y-p2y))/dd + ref[...,0]
     vc[...,1]=(b2*(p1x-p2x)-b1*(p1x-p3x))/dd + ref[...,1]
-    
+
     return vc
 
 def poly_circumcenter(points):
-    """ 
+    """
     unbiased (mostly) estimate of circumcenter, by computing circumcenter
     of consecutive groups of 3 points
     Similar to Janet, though Janet uses two sets of three while this code
@@ -1361,13 +1424,13 @@ def circular_n(iterable,n):
         iters[i]=itertools.cycle(iters[i])
         [next(iters[i],None) for count in range(i)]
     return six.moves.zip( *iters )
-        
+
 
 def cdiff(a,n=1,axis=-1):
-    """ 
+    """
     Like np.diff, but include difference from last element back
     to first.
-    """ 
+    """
     assert n==1 # not ready for higher order
     # assert axis==-1 # also not ready for weird axis
 
@@ -1376,12 +1439,12 @@ def cdiff(a,n=1,axis=-1):
 
     # using [0] instead of 0 means that axis is preserved
     # so the concatenate is easier
-    last=np.take(a,[0],axis=axis) - np.take(a,[-1],axis=axis) 
+    last=np.take(a,[0],axis=axis) - np.take(a,[-1],axis=axis)
 
     # this is the part where we have to assume axis==-1
     #return np.concatenate( [d,last[...,None]] )
 
-    return np.concatenate( [d,last] ) 
+    return np.concatenate( [d,last] )
 
 
 def enumerate_groups(keys):
@@ -1389,14 +1452,14 @@ def enumerate_groups(keys):
     given an array of labels, return, in increasing value of key,
     yield tuples (key,idxs) such that np.all(keys[idxs]==key)
     """
-    order=np.argsort(keys) 
+    order=np.argsort(keys)
     breaks=1+np.nonzero( np.diff( keys[order] ) )[0]
     for group in np.split( order,breaks ):
         group.sort()
         yield keys[group[0]],group
-    
+
 def moving_average_nearest(x,y,n):
-    """ 
+    """
     x,y: 1-D arrays
     n: integer giving size of the averaging window
 
@@ -1409,13 +1472,13 @@ def moving_average_nearest(x,y,n):
     for i in range(len(x)):
         dists=np.abs(x-x[i])
         choose=np.argsort(dists)[:n]
-        out[i]=np.mean(y[choose]) 
+        out[i]=np.mean(y[choose])
     return out
 
 
 def touch(fname, times=None):
-    """ 
-    Like unix touch.  Thanks to 
+    """
+    Like unix touch.  Thanks to
     http://stackoverflow.com/questions/1158076/implement-touch-using-python
     """
     with open(fname, 'a'):
@@ -1423,14 +1486,14 @@ def touch(fname, times=None):
 
 
 def orient_intersection(lsA,lsB,delta=1.0):
-    """ 
+    """
     lsA,lsB: LineString geometries with exactly one intersecting point.
-    returns 
+    returns
     1: if lsA crosses lsB left to right, when looking from the start towards the
     end of lsB.
     -1: the other case.
 
-    delta: current implementation uses a finite difference, and delta specifies 
+    delta: current implementation uses a finite difference, and delta specifies
     the scale of that difference.
     """
     pnt=lsA.intersection(lsB)
@@ -1453,7 +1516,7 @@ def orient_intersection(lsA,lsB,delta=1.0):
         return -1
     else:
         return 1
-        
+
 
 
 # Some XLS-related functions:
@@ -1486,7 +1549,7 @@ def cell_region_to_array(sheet,xl_range,dtype='O',fn=None):
     data=[]
 
     sheet=as_sheet(sheet,fn)
-    
+
     # have to add 1 because these come in as inclusive
     # indices, but range assumes exclusive stop
     for row in range(start[0],stop[0]+1):
@@ -1505,7 +1568,7 @@ def cell_region_to_df(sheet,xl_range,idx_ncols=0,idx_nrows=0,fn=None):
     columns=chunk[:idx_nrows,idx_ncols:].T
     if idx_nrows==1:
         columns=columns[:,0]
-        
+
     df=pd.DataFrame( chunk[idx_nrows:,idx_ncols:],
                      index=chunk[idx_nrows:,:idx_ncols],
                      columns=columns)
@@ -1518,11 +1581,11 @@ def uniquify_paths(fns):
 
     # reverse to make the indexing easier
     splits = [ fn.split('/')[::-1] for fn in fns]
-    
+
 
     # Trying to identify a,b such that splits[a:b] uniquely identify each source
     a=0
-    
+
     # first trim identical prefixes (which were originally suffixes)
     done = 0
     for a in range(len(splits[0])):
@@ -1550,7 +1613,7 @@ def uniquify_paths(fns):
 
 # Used to be in array_append
 def array_append( A, b ):
-    """ 
+    """
     append b to A, where b.shape == A.shape[1:]
     Attempts to make this fast by dynamically resizing the base array of
     A, and returning the appropriate slice.
@@ -1564,7 +1627,7 @@ def array_append( A, b ):
     # the base array isn't big enough, or
     # the layout is different and it would just get confusing, or
     # A is a slice on other dimensions, too, which gets too confusing.
-    
+
     if A.base is None or type(A.base) == str \
            or A.base.size == A.size or A.base.strides != A.strides \
            or A.shape[1:] != A.base.shape[1:]:
@@ -1572,8 +1635,8 @@ def array_append( A, b ):
 
         # make it twice as long as A, and in case the old shape was 0, add 10
         # in for good measure.
-        new_shape[0] = new_shape[0]*2 + 10  
-        
+        new_shape[0] = new_shape[0]*2 + 10
+
         base = np.zeros( new_shape, dtype=A.dtype)
         base[:len(A)] = A
 
@@ -1604,7 +1667,7 @@ def array_concatenate( AB ):
     2 arrays
     """
     A,B = AB
-    
+
     if A.base is None or type(A.base) == str \
            or A.base.size == A.size or A.base.strides != A.strides \
            or len(A) + len(B) > len(A.base) \
@@ -1615,7 +1678,7 @@ def array_concatenate( AB ):
         # in for good measure.
         new_shape[0] = max(new_shape[0]*2 + 10,
                            new_shape[0] + len(B))
-        
+
         base = np.zeros( new_shape, dtype=A.dtype)
         base[:len(A)] = A
     else:
@@ -1624,18 +1687,17 @@ def array_concatenate( AB ):
     lenA = len(A)
     A = base[:lenA+len(B)]
     A[lenA:] = B
-        
+
     return A
-    
-    
+
 def concatenate_safe_dtypes( ab ):
-    """ 
+    """
     Concatenate two arrays, but allow for the dtypes to be different.  The
     fields are taken from the first array - matching fields in subsequent arrays
     are copied, others discarded.
     """
     a,b = ab # for now, force just two arrays
-    
+
     result = np.zeros( len(a)+len(b), a.dtype)
     result[:len(a)] = a
 
@@ -1650,14 +1712,14 @@ def recarray_del_fields(A,old_fields):
                if fld[0] not in old_fields]
 
     new_A=np.zeros( len(A), dtype=new_dtype)
-    
+
     for name in new_A.dtype.names:
         new_A[name]=A[name]
 
     return new_A
-    
+
 def recarray_add_fields(A,new_fields):
-    """ 
+    """
     A: a record array
     new_fields: [ ('name',data), ... ]
     where data must be the same length as A.  So far, no support for
@@ -1672,7 +1734,7 @@ def recarray_add_fields(A,new_fields):
     new_names=[name for name,val in new_fields]
     new_values=[val for name,val in new_fields]
     new_A=np.zeros( len(A), dtype=new_dtype)
-    
+
     for name in new_A.dtype.names:
         try:
             new_A[name]=new_values[new_names.index(name)]
@@ -1683,10 +1745,10 @@ def recarray_add_fields(A,new_fields):
 
 
 def isnat(x):
-    """ 
+    """
     datetime64 analog to isnan.
     doesn't yet exist in numpy - other ways give warnings
-    and are likely to change.  
+    and are likely to change.
     """
     return x.astype('i8') == np.datetime64('NaT').astype('i8')
 
@@ -1694,16 +1756,16 @@ def isnat(x):
 def group_by_sign_hysteresis(Q,Qlow=0,Qhigh=0):
     """
     A seemingly over-complicated way of solving a simple problem.
-    Breaking a time series into windows of positive and negative values 
+    Breaking a time series into windows of positive and negative values
     (e.g. delimiting flood and ebb in a velocity or flux time series).
-    With the complicating factor of the time series sometimes hovering 
+    With the complicating factor of the time series sometimes hovering
     close to zero.
     This function introduces some hysteresis, while preserving the exact
     timing of the original zero-crossing.  Qlow (typ. <0) and Qhigh (typ>0)
-    set the hysteresis band.  Crossings only count when they start below Qlow 
+    set the hysteresis band.  Crossings only count when they start below Qlow
     and end above Qhigh.  Within that period, there could be many small amplitude
     crossings - the last one is used.  This is in contrast to standard hysteresis
-    where the timing would corresponding to crossing Qhigh or Qlow.  
+    where the timing would corresponding to crossing Qhigh or Qlow.
 
     returns two arrays, pos_windows = [Npos,2], neg_windows=[Nneg,2]
     giving the indices in Q for respective windows
@@ -1761,7 +1823,6 @@ def point_in_polygon( pgeom, randomize=False ):
         if env.area/pgeom.area > 1e4:
             print("Sliver! Going to non-random point_in_polygon code")
             return point_in_polygon(pgeom,False)
-        
         env_pnts = np.array(env.exterior.coords)
         minx,miny = env_pnts.min(axis=0)
         maxx,maxy = env_pnts.max(axis=0)
@@ -1839,7 +1900,7 @@ def isolate_downcasts(ds,
     tr = Transect(xy=xy_m,times=times_m,elevations=z_mn.T,scalar=scalar_mn.T)
 
 def nan_cov(m,rowvar=1,demean=False):
-    """ 
+    """
     covariance of the matrix, follows calling conventions of
     numpy's cov function w.r.t. rows/columns
     """
@@ -1847,7 +1908,6 @@ def nan_cov(m,rowvar=1,demean=False):
     #if ~any(isnan(m)):
     #    return cov(m,rowvar=rowvar)
 
-    
     if rowvar:
         m = np.transpose(m)
 
@@ -1861,23 +1921,20 @@ def nan_cov(m,rowvar=1,demean=False):
         c = np.nan*np.ones( (Nstations,Nstations), np.float64 )
 
     # print("nan_cov: output shape is %s"%( str(c.shape) ))
-        
     # precompute data that is per-station:
     valids = ~np.isnan(m)
-    
+
     if demean:
         anoms = np.nan*np.ones_like( m )
-        
         for station in range(Nstations):
             vals = m[:,station]
             anoms[:,station] = vals - np.mean(vals[valids[:,station]])
     else:
         anoms = m
-        
-    
+
     for row in range(Nstations):
         for col in range(row+1):
-            
+
             v1_anom = anoms[:,row]
             v2_anom = anoms[:,col]
 
@@ -1886,7 +1943,7 @@ def nan_cov(m,rowvar=1,demean=False):
             # results and also agrees with matlabs implementation
             if v1_anom.dtype.kind == 'c':
                 v1_anom = np.conj(v1_anom)
-            
+
             valid = valids[:,row] & valids[:,col]
             n_valid = valid.sum()
 
@@ -1907,5 +1964,118 @@ def remove_repeated(A):
     A: numpy 1D array
     return A, without repeated element values.
     """
+    A=np.asarray(A)
     return np.concatenate( ( A[:1], A[1:][ np.diff(A)!=0 ] ) )
-    
+
+
+def download_url(url,local_file,log=None,on_abort='pass',**extra_args):
+    """
+    log: an object or module with info(), warning(), and error()
+    methods ala the logging module.
+    on_abort: if an exception is raised during download, 'pass'
+      leaves partial files in tact, 'remove' deletes partial files
+    extra_args: keyword arguments passed on to requests.get or ftplib.FTP()
+    """
+    parsed=six.moves.urllib_parse.urlparse(url)
+
+    thresh=102400
+    byte_sum=[0]
+    bucket=[0]
+
+    def cb(chunk):
+        byte_sum[0]+=len(chunk)
+        bucket[0]+=len(chunk)
+        if bucket[0]>thresh:
+            if log is not None:
+                log.info("%6.3f Mbytes"%(byte_sum[0]/1.e6))
+            bucket[0]=0
+
+    try:
+        if parsed.scheme in ['http','https']:
+            import requests
+            r=requests.get(url,stream=True,**extra_args)
+
+            with open(local_file,'wb') as fp:
+                for chunk in r.iter_content(chunk_size=1024):
+                    if chunk:
+                        fp.write(chunk)
+                        if log:
+                            cb(chunk)
+        elif parsed.scheme=='ftp':
+            import ftplib
+            ftp = ftplib.FTP(parsed.netloc)
+            ftp.login("anonymous", "anonymous")
+            ftp.cwd(os.path.dirname(parsed.path))
+            ftp_file=os.path.basename(parsed.path)
+
+            with open(local_file,'wb') as fp:
+                if log is not None:
+                    my_cb=lambda b: (fp.write(b),cb(b))
+                else:
+                    my_cb=fp.write
+
+                ftp.retrbinary("RETR " + ftp_file , my_cb)
+        else:
+            raise Exception("Could not figure out the scheme for url %s"%url)
+
+    except Exception as exc:
+        if on_abort=='remove':
+            os.unlink(local_file)
+        raise
+
+def call_with_path(cmd,path):
+    import subprocess
+    pwd=os.getcwd()
+    try:
+        os.chdir(path)
+        shell=(type(cmd) in six.string_types)
+        return subprocess.call(cmd,shell=shell)
+    finally:
+        os.chdir(pwd)
+
+def progress(a,interval_s=5.0,msg="%s"):
+    try:
+        L=len(a) # may fail?
+    except TypeError: # may be a generated
+        L=0
+
+    t0=time.time()
+    for i,elt in enumerate(a):
+        t=time.time()
+        if t-t0>interval_s:
+            if L:
+                txt=msg%("%d/%d"%(i,L))
+            else:
+                txt=msg%("%d"%i)
+            log.info(txt)
+            t0=t
+        yield elt
+
+def is_stale(target,srcs):
+    """
+    Makefile-esque checker --
+    if target does not exist or is older than any of srcs,
+    return true (i.e. stale).
+    if a src does not exist, raise an Exception
+    """
+    if not os.path.exists(target): return True
+    for src in srcs:
+        if not os.path.exists(src):
+            raise Exception("Dependency %s does not exist"%src)
+        if os.stat(src).st_mtime > os.stat(target).st_mtime:
+            return True
+    return False
+
+def set_keywords(obj,kw):
+    """
+    Utility for __init__ methods to update object state with
+    keyword arguments.  Checks that the attributes already
+    exist, to avoid spelling mistakes.  Uses getattr and
+    setattr for compatibility with properties.
+    """
+    for k in kw:
+        try:
+            getattr(obj,k)
+        except AttributeError:
+            raise Exception("Setting attribute %s failed because it doesn't exist on %s"%(k,obj))
+        setattr(obj,k,kw[k])

@@ -42,16 +42,16 @@ except ImportError:
 def greedy_edgemin_to_node(g,orig_node_depth,edge_min_depth):
     """
     A simple approach to moving edge depths to nodes, when the
-    hydro model (i.e. DFM) will use the minimum of the nodes to 
+    hydro model (i.e. DFM) will use the minimum of the nodes to
     set the edge.
-    It sounds roundabout because it is, but there is not a 
+    It sounds roundabout because it is, but there is not a
     supported way to assign edge depth directly.
 
     For each edge, want to enforce a minimum depth in two sense:
     1. one of its nodes is at the minimum depth
     2. neither of the nodes are below the minimum depth
     and..
-    3. the average of the two nodes is close to the average DEM depth 
+    3. the average of the two nodes is close to the average DEM depth
        of the edge
     Not yet sure of how to get all of those.  This method focuses on
     the first point, but in some situations that is still problematic.
@@ -71,7 +71,7 @@ def greedy_edgemin_to_node(g,orig_node_depth,edge_min_depth):
     for j in edge_min_ordering:
         if np.isnan(edge_min_depth[j]):
             break # done with all of the target depths
-        
+
         nodes=g.edges['nodes'][j]
 
         # is this edge is already low enough, based on minimum of
@@ -103,6 +103,88 @@ def greedy_edgemin_to_node(g,orig_node_depth,edge_min_depth):
 
     missing=np.isnan(conn_depth)
     conn_depth[missing]=orig_node_depth[missing]
+    return conn_depth
+
+
+def greedy_edge_mean_to_node(g,orig_node_depth=None,edge_depth=None,n_iter=100):
+    """
+    Return node depths such that the mean of the node depths on each
+    edge approximate the provided edge_mean_depth.
+    The approach is iterative, starting with the largest errors, visiting
+    each edge a max of once.
+
+    Still in development, has not been tested.
+    """
+    from scipy.optimize import fmin
+
+    if edge_depth is None:
+        if 'depth' in g.edges.dtype.names:
+            edge_depth=g.edges['depth']
+
+    assert edge_depth is not None
+
+    if orig_node_depth is None:
+        if 'depth' in g.nodes.dtype.names:
+            orig_node_depth=g.nodes['depth']
+        else:
+            # Rough starting guess:
+            orig_node_depth=np.zeros( g.Nnodes(), 'f8')
+            for n in range(g.Nnodes()):
+                orig_node_depth[n] = edge_depth[g.node_to_edges(n)].mean()
+
+    # The one we'll be updating:
+    conn_depth=orig_node_depth.copy()
+
+    node_mean=conn_depth[g.edges['nodes']].mean(axis=1)
+    errors=node_mean - edge_depth
+    errors[ np.isnan(errors) ] = 0.0
+    
+    potential=np.ones(g.Nedges())
+
+    for loop in range(n_iter):
+        verbose= (loop%100==0)
+
+        # Find an offender
+        j_bad=np.argmax(potential*errors)
+        if potential[j_bad]==0:
+            print("DONE")
+            break
+
+        potential[j_bad]=0 # only visit each edge once.
+
+        # Get the neighborhood of nodes:
+        # nodes=
+        jj_nbrs=np.concatenate( [ g.node_to_edges(n)
+                                  for n in g.edges['nodes'][j_bad] ] )
+        jj_nbrs=np.unique(jj_nbrs)
+        jj_nbrs = jj_nbrs[ np.isfinite(edge_depth[jj_nbrs]) ]
+
+        n_bad=g.edges['nodes'][j_bad]
+
+        def cost(ds):
+            # Cost function over the two depths of the ends of j_bad:
+            conn_depth[n_bad]=ds
+            new_errors=conn_depth[g.edges['nodes'][jj_nbrs]].mean(axis=1) - edge_depth[jj_nbrs]
+            # weight high edges 10x more than low edges:
+            cost=new_errors.clip(0,np.inf).sum() - 0.5 * new_errors.clip(-np.inf,0).sum()
+            return cost
+        ds0=conn_depth[n_bad]
+        cost0=cost(ds0)
+
+        ds=fmin(cost,ds0,disp=False)
+        costn=cost(ds)
+        conn_depth[n_bad]=ds
+
+        if verbose:
+            print("Loop %d: %d/%d edges  starting error: j=%d => %.4f"%(loop,potential.sum(),len(potential),
+                                                                        j_bad,errors[j_bad]))
+
+        node_mean=conn_depth[g.edges['nodes']].mean(axis=1)
+        errors=node_mean - edge_depth
+        errors[ np.isnan(errors) ] = 0.0
+
+        if verbose:
+            print("    ending error: j=%d => %.4f"%(j_bad,errors[j_bad]))
     return conn_depth
 
     

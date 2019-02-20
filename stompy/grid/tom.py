@@ -58,6 +58,7 @@ class Tom(object):
     plot_interval = None
     checkpoint_interval = None
     smooth = 1
+    simplify_tolerance=0.0 # length scale for geometry simplification before smoothing
     resume_checkpoint_fn = None
     verbosity=1
     dry_run=0
@@ -67,6 +68,7 @@ class Tom(object):
     slide_interior = 1
     scale_factor = 1.0
     scale_ratio_for_cutoff = 1.0
+    output_path="."
     
     # These are not currently mutable from the command line
     # but could be.
@@ -78,7 +80,7 @@ class Tom(object):
     scale_shp_field_name='scale'
     density_map = None
 
-
+    
     # non-customizable instance variables
     original_boundary_geo = None
     
@@ -103,7 +105,9 @@ class Tom(object):
         print("         -p N                 # output interval for plots   ")
         print("         -c N                 # checkpoint interval         ")
         print("         -d                   # disable smoothing ")
+        print("         -D N.NN              # simplification length scale before smoothing")
         print("         -o                   # enable optimization ")
+        print("         -O path              # set output path")
         print("         -r checkpoint.pav    # resume from a checkpoint    ")
         print("         -v N                 # set verbosity level N")
         print("         -n                   # ready the shoreline, but don't mesh it")
@@ -140,7 +144,7 @@ class Tom(object):
         
     def run(self,argv):
         try:
-            opts,rest = getopt.getopt(argv[1:],'hb:s:a:t:i:c:r:dv:np:om:i:f:g:C:',
+            opts,rest = getopt.getopt(argv[1:],'hb:s:a:t:i:c:r:dv:np:om:i:f:g:C:O:D:',
                                       ['slide-interior',
                                        'rigid-interior'])
         except getopt.GetoptError as e:
@@ -161,6 +165,8 @@ class Tom(object):
                 self.effective_tele_rate = float(val)
             elif opt == '-f':
                 self.scale_factor = float(val)
+            elif opt == '-D':
+                self.simplify_tolerance=float(val)
             elif opt == '-b':
                 self.boundary_shp = val
             elif opt == '-p':
@@ -179,6 +185,8 @@ class Tom(object):
                 self.dry_run=1
             elif opt == '-o':
                 self.optimize = 1
+            elif opt == '-O':
+                self.output_path=val
             elif opt == '-m':
                 self.density_map = val
             elif opt == '-i':
@@ -191,23 +199,23 @@ class Tom(object):
                 self.slide_interior = 1
             elif opt == '--rigid-interior':
                 self.slide_interior = 0
-        
+
         self.check_parameters()
-        
+
         log_fp = open('tom.log','wt')
         log_fp.write( "TOM log:\n")
         log_fp.write( " ".join(argv) )
         log_fp.close()
-        
+
         if not self.resume_checkpoint_fn:
             bound_args = self.prepare_boundary()
             density_args = self.prepare_density()
-            
+
             args = {}
             args.update(bound_args)
             args.update(density_args)
             args['slide_internal_guides'] = self.slide_interior
-            
+
             # Wait until after smoothing to add degenerate interior lines
             # args.update(self.prepare_interiors())
 
@@ -215,16 +223,16 @@ class Tom(object):
             self.p.verbose = self.verbosity
 
             self.p.scale_ratio_for_cutoff = self.scale_ratio_for_cutoff
-            
+
             if self.smooth:
                 self.p.smooth()
                 # and write out the smoothed shoreline
-                wkb2shp.wkb2shp(self.smoothed_poly_shp,[self.p.poly],
-                                overwrite=True)
+                wkb2shp.wkb2shp(os.path.join(self.output_path,self.smoothed_poly_shp),
+                                [self.p.poly],overwrite=True)
 
             int_args = self.prepare_interiors()
 
-            if int_args.has_key('degenerates'):
+            if 'degenerates' in int_args:
                 for degen in int_args['degenerates']:
                     self.p.clip_and_add_degenerate_ring( degen )
         else:
@@ -243,14 +251,17 @@ class Tom(object):
             starting_step = self.p.step
             self.create_grid()
 
-            if (not os.path.exists('final.pav')) or self.p.step > starting_step:
-                self.p.write_complete('final.pav')
-            if (not os.path.exists('final.pdf')) or self.p.step > starting_step:
-                self.plot_intermediate(fn='final.pdf',color_by_step=False)
+            final_pav_fn=os.path.join( self.output_path,'final.pav')
+            final_pdf_fn=os.path.join( self.output_path,'final.pdf')
+
+            if (not os.path.exists(final_pav_fn)) or self.p.step > starting_step:
+                self.p.write_complete(final_pav_fn)
+            if (not os.path.exists(final_pdf_fn)) or self.p.step > starting_step:
+                self.plot_intermediate(fn=final_pdf_fn,color_by_step=False)
 
             # write grid as shapefile
             if self.output_shp:
-                print("Writing shapefile with %d features (edgse)"%(self.p.Nedges()))
+                print("Writing shapefile with %d features (edges)"%(self.p.Nedges()))
                 self.p.write_shp(self.output_shp,only_boundaries=0,overwrite=1)
                 # by reading the suntans grid output back in, we should get boundary edges
                 # marked as 1 - self.p probably doesn't have these markers
@@ -352,7 +363,16 @@ class Tom(object):
 
         self.original_boundary_geo = original_geometries
 
-        return {'shp':self.boundary_poly_shp}
+        # RH: 2019-02-14: In an effort to be robust against very small stepsizes,
+        # try to coarsen such that the input does not contain any edges
+        # shorter than min_edge_length
+        # Old code:
+        # return {'shp':self.boundary_poly_shp}
+        # New code:
+        geom=wkb2shp.shp2geom(self.boundary_poly_shp)['geom'][0]
+        if self.simplify_tolerance>0:
+            geom=geom.simplify(self.simplify_tolerance)
+        return {'geom':geom}
     
     def prepare_interiors(self):
         if self.interior_shps is None or len(self.interior_shps)==0:
@@ -448,7 +468,7 @@ class Tom(object):
             print("Renumbering:")
             p.renumber()
             print("Writing suntans output")
-            p.write_suntans('.')
+            p.write_suntans(self.output_path)
         except paver.FillFailed:
             print("Paver failed.")
             print("plotting the aftermath")

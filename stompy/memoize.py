@@ -44,7 +44,7 @@ class LRUDict(object):
         return repr(self.data)
     def __contains__(self,k):
         return k in self.data
-    
+
     def check_size_limit(self):
         if self.size_limit is not None:
             while len(self) > self.size_limit:
@@ -52,13 +52,13 @@ class LRUDict(object):
                 self.data.popitem(last=False)
 
 def memoize_key(*args,**kwargs):
-    if 0: # old way
-        return str(args) + str(kwargs)
-    else:
-        # new way - slower, but highly unlikely to get false positives
-        return hashlib.md5(pickle.dumps( (args,kwargs) )).hexdigest()
+    # new way - slower, but highly unlikely to get false positives
+    return hashlib.md5(pickle.dumps( (args,kwargs) )).hexdigest()
 
-def memoize(lru=None,cache_dir=None):
+def memoize_key_str(*args,**kwargs):
+    return str(args) + str(kwargs)
+
+def memoize(lru=None,cache_dir=None,key_method='pickle'):
     """
     add as a decorator to classes, instance methods, regular methods
     to cache results.
@@ -66,11 +66,16 @@ def memoize(lru=None,cache_dir=None):
     results will still be stored in cache
     passing lru as a positive integer will keep only the most recent
     values
+
+    key_method: 'pickle' use the hash of the pickle of the inputs.  overkill,
+      but highly unlikely to get false hits.
+      'str': use the hash of the str-ified parameters
+      callable: pass key_method(*args,**kwargs) will be the key
     """
     if cache_dir is not None:
         cache_dir=os.path.abspath( cache_dir )
 
-    def memoize1(obj):
+    def memoize1(obj,key_method=key_method):
         if lru is not None:
             cache = obj.cache = LRUDict(size_limit=lru)
         else:
@@ -79,11 +84,17 @@ def memoize(lru=None,cache_dir=None):
         if cache_dir is not None:
             if not os.path.exists(cache_dir):
                 os.makedirs(cache_dir)
-                
+
         @functools.wraps(obj)
         def memoizer(*args, **kwargs):
             recalc= memoizer.recalculate or memoize.recalculate
-            key = memoize_key(args,**kwargs)
+            if key_method=='pickle':
+                key = memoize_key(args,**kwargs)
+            elif key_method=='str':
+                key = memoize_key_str(args,**kwargs)
+            else:
+                key=key_method(args,**kwargs)
+                # raise Exception("Bad key_method %s"%key_method)
             value_src=None
 
             if cache_dir is not None:
@@ -126,7 +137,7 @@ memoize.disabled = False  # ignore the cache entirely, don't save new result
 
 # returns a memoize which bases all relative path cache_dirs from
 # a given location.  If the given location is a file, then use the dirname
-# i.e. 
+# i.e.
 #  from memoize import memoize_in
 #  memoize=memoize_in(__file__)
 def memoizer_in(base):
@@ -146,3 +157,19 @@ def nomemo():
         yield
     finally:
         memoize.disabled=saved
+
+
+def member_thunk(obj):
+    """
+    memoize for instance methods with no arguments.
+    """
+    @functools.wraps(obj)
+    def memoizer(self):
+        attr_name='_' + obj.__name__
+        if hasattr(self,attr_name):
+            return getattr(self,attr_name)
+        else:
+            value=obj(self)
+            setattr(self,attr_name,value)
+            return value
+    return memoizer

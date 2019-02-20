@@ -50,7 +50,7 @@ except ImportError:
     
 # load both types of indices, so we can choose per-field
 # which one to use
-from .gen_spatial_index import PointIndex
+from .gen_spatial_index import PointIndex,RectIndex
 
 # Older code tried to use multiple implementations
 # import stree
@@ -133,7 +133,7 @@ class Field(object):
         projection: GDAL/OGR parseable string representation
         """
         self.assign_projection(projection)
-        
+
     def assign_projection(self,projection):
         self._projection = projection
 
@@ -145,16 +145,15 @@ class Field(object):
 
         xform = self.make_xform(from_projection,to_projection)
         new_field = self.apply_xform(xform)
-        
         new_field._projection = to_projection
         return new_field
-        
+
     def make_xform(self,from_projection,to_projection):
         if from_projection is None:
             from_projection = self.projection()
             if from_projection is None:
                 raise Exception("No source projection can be determined")
-        
+
         src_srs = osr.SpatialReference()
         src_srs.SetFromUserInput(from_projection)
 
@@ -237,7 +236,7 @@ class Field(object):
 
     def __add__(self,other):
         return BinopField(self,np.add,other)
-    
+
     def __sub__(self,other):
         return BinopField(self,np.subtract,other)
 
@@ -245,7 +244,7 @@ class Field(object):
         """ bounds is a 2x2 [[minx,miny],[maxx,maxy]] array, and is *required* for BlenderFields
         bounds can also be a 4-element sequence, [xmin,xmax,ymin,ymax], for compatibility with
         matplotlib axis(), and Paving.default_clip.
-        
+
         specify *one* of:
           nx,ny: specify number of samples in each dimension
           dx,dy: specify resolution in each dimension
@@ -276,7 +275,7 @@ class Field(object):
         else:
             valuator == getattr(self,valuator)
             newF = valuator(X)
-            
+
         return SimpleGrid(extents=[xmin,xmax,ymin,ymax],
                           F=newF,projection=self.projection())
 
@@ -296,7 +295,6 @@ class XYZField(Field):
         self.from_file = from_file
 
         self.init_listeners()
-        
 
     @with_plt
     def plot(self,**kwargs):
@@ -378,10 +376,13 @@ class XYZField(Field):
         if self._lin_interper is None:
             self._lin_interper = get_lin_interp(self.tri(),self.F)
         return self._lin_interper
-    
+
     #_voronoi = None
     # default_interpolation='naturalneighbor'# phased out by mpl
-    default_interpolation='linear' 
+    default_interpolation='linear'
+    # If true, linear interpolation will revert to nearest when queried outside
+    # the convex hull
+    outside_hull_fallback=True
     def interpolate(self,X,interpolation=None):
         if interpolation is None:
             interpolation=self.default_interpolation
@@ -407,54 +408,14 @@ class XYZField(Field):
             # print "why aren't you using linear?!"
         elif interpolation=='linear':
             interper = self.lin_interper()
-            if 0:
-                # old calling convention
-                for i in range(len(X)):
-                    if i>0 and i%100000==0:
-                        print("%d/%d"%(i,len(X)))
-                    # remember, the slices are y, x
-                    vals = interper[X[i,1]:X[i,1]:2j,X[i,0]:X[i,0]:2j]
-
-                    newF[i] = vals[0,0]
-            else:
-                newF[:] = interper(X[:,0],X[:,1])
-        #elif interpolation=='delaunay':
-        #    if self._voronoi is None:
-        #        self._voronoi = self.calc_voronoi()
-        #
-        #    for i in range(len(X)):
-        #        # get a cell index...
-        #        cell = self._voronoi.closest( X[i] )
-        #        # then which of our vertices are in the cell:
-        #        abc = self._voronoi.nodes(cell)
-        #        # and the locations of those nodes, relative to us
-        #        pnts = self.X[abc]
-        #        # along the AB edge:
-        #        AB = (pnts[1] - pnts[0])
-        #        lenAB = sqrt( (AB*AB).sum() )
-        #        ABunit = AB / lenAB
-        #        AX = (X[i] - pnts[0])
-        #        # project AX onto AB
-        #        alongAX = (AX[0]*ABunit[0] + AX[1]*ABunit[1])
-        #        beta = alongAX / lenAB
-        #        alpha = 1-beta
-        #        D = alpha*pnts[0] + beta*pnts[1]
-        #        
-        #        DC = pnts[2] - D
-        #        lenDC = sqrt( (DC*DC).sum() )
-        #        DCunit = DC / lenDC
-        #        DX = X[i] - D
-        #
-        #        alongDC = DX[0]*DCunit[0] + DX[1]*DCunit[1]
-        #        gamma = alongDC / lenDC
-        #        alpha *= (1-gamma)
-        #        beta  *= (1-gamma)
-        #        
-        #        # now linearly across the triangle:
-        #        v = alpha*self.F[abc[0]] + \
-        #            beta *self.F[abc[1]] + \
-        #            gamma*self.F[abc[2]]
-        #        newF[i] = v
+            newF[:] = interper(X[:,0],X[:,1])
+            if self.outside_hull_fallback:
+                # lin_interper may return masked array instead
+                # of nans.
+                newF=np.ma.filled(newF,np.nan)
+                bad=np.isnan(newF)
+                if np.any(bad):
+                    newF[bad]=self.interpolate(X[bad],'nearest')
         else:
             raise Exception("Bad value for interpolation method %s"%interpolation)
         return newF
@@ -483,7 +444,6 @@ class XYZField(Field):
             self.index = PointIndex(tuples,interleaved=False)
         else:
             self.index = PointIndex(interleaved=False)
-                
         #print "Done"
 
     def within_r(self,p,r):
@@ -493,12 +453,12 @@ class XYZField(Field):
             else: # rtree
                 # first query a rectangle
                 rect = np.array( [p[0]-r,p[0]+r,p[1]-r,p[1]+r] )
-                
+
                 subset = self.index.intersection( rect )
                 if isinstance(subset, types.GeneratorType):
                     subset = list(subset)
                 subset = np.array( subset )
-                
+
                 if len(subset) > 0:
                     dsqr = ((self.X[subset]-p)**2).sum(axis=1)
                     subset = subset[ dsqr<=r**2 ]
@@ -595,7 +555,7 @@ class XYZField(Field):
         grid.  if dx and dy are None, automatically find the grid spacing/extents.
         """
         max_dimension = 10000.
-        
+
         # Try to figure out a rectilinear grid that fits the data:
         xmin,xmax,ymin,ymax = self.bounds()
 
@@ -631,7 +591,7 @@ class XYZField(Field):
         return SimpleGrid(extents=[xmin,xmax,ymin,ymax],
                           F=newF,projection=self.projection())
 
-    def to_grid(self,nx=2000,ny=2000,interp='nn',bounds=None,dx=None,dy=None,aspect=1.0):
+    def to_grid(self,nx=2000,ny=2000,interp='linear',bounds=None,dx=None,dy=None,aspect=1.0):
         """ use the delaunay based griddata() to interpolate this field onto
         a rectilinear grid.  In theory interp='linear' would give bilinear
         interpolation, but it tends to complain about grid spacing, so best to stick
@@ -654,12 +614,12 @@ class XYZField(Field):
             # round xmin/ymin to be an even multiple of dx/dy
             xmin = xmin - (xmin%dx)
             ymin = ymin - (ymin%dy)
-            
+
             nx = int( (xmax-xmin)/dx )
             ny = int( (ymax-ymin)/dy )
             xmax = xmin + nx*dx
             ymax = ymin + ny*dy
-            
+
         # hopefully this is more compatibale between versions, also exposes more of what's
         # going on
         if interp == 'nn':
@@ -672,12 +632,11 @@ class XYZField(Field):
             y=np.linspace(aspect*ymin,aspect*ymax,ny)
             x=np.linspace(xmin,xmax,nx)
             # y,x led to the dimensions being swapped
-            X,Y=np.meshgrid(x,y) 
+            X,Y=np.meshgrid(x,y)
             # Y,X below led to all values being nan...
             griddedF = interper(X,Y) # not sure about index ordering here...
 
         return SimpleGrid(extents=[xmin,xmax,ymin,ymax],F=griddedF)
-
 
     def crop(self,rect):
         xmin,xmax,ymin,ymax = rect
@@ -734,14 +693,14 @@ class XYZField(Field):
 
         if prep:
             chooser = np.zeros(len(self.F),bool8)
-            
+
             prep_poly = prep(poly)
             for i in range(len(self.F)):
                 chooser[i] = prep_poly.contains( geometry.Point(self.X[i]) )
         else:
             # this only works with the stree implementation.
             chooser = self.index.inside_polygon(poly)
-            
+
         if len(chooser) == 0:
             print("Clip to polygon got no points!")
             print("Returning empty field")
@@ -787,7 +746,7 @@ class XYZField(Field):
 
 
     def write(self,fname):
-        fp = file(fname,'wb')
+        fp = open(fname,'wb')
 
         pickle.dump( (self.X,self.F), fp, -1)
         fp.close()
@@ -815,16 +774,15 @@ class XYZField(Field):
             F.append( feat.GetField(value_field) )
 
             geo = feat.GetGeometryRef()
-            
+
             X.append( geo.GetPoint_2D() )
         X = np.array( X )
         F = np.array( F )
         return XYZField(X=X,F=F,from_file=shp_name)
 
-            
     def write_shp(self,shp_name,value_field='value'):
         drv = ogr.GetDriverByName('ESRI Shapefile')
-        
+
         ### open the output shapefile
         if os.path.exists(shp_name) and shp_name.find('.shp')>=0:
             print("removing ",shp_name)
@@ -874,7 +832,7 @@ class XYZField(Field):
         """
         Read XYZField from a pickle file
         """
-        fp = file(fname,'rb')
+        fp = open(fname,'rb')
         X,F = pickle.load( fp )
         fp.close()
         return XYZField(X=X,F=F,from_file=fname)
@@ -999,6 +957,13 @@ class XYZField(Field):
             cir = Circle( bdry[i], radius=l[i])
             ax.add_patch(cir)
 
+    # Pickle support -
+    def __getstate__(self):
+        """ the CGAL.ApolloniusGraph can't be pickled - have to recreate it
+            """
+        d = self.__dict__.copy()
+        d['_lin_interper']=None
+        return d
 
 class PyApolloniusField(XYZField):
     """ 
@@ -1393,7 +1358,7 @@ except AttributeError:
 
 if not has_apollonius:
     has_apollonius=True
-    log.info("Falling back to slow python implementation of ApolloniusField")
+    log.debug("Falling back to slow python implementation of ApolloniusField")
     ApolloniusField=PyApolloniusField
 
 class ConstrainedScaleField(XYZField):
@@ -1654,7 +1619,7 @@ class ConstrainedScaleField(XYZField):
 class XYZText(XYZField):
     def __init__(self,fname,sep=None,projection=None):
         self.filename = fname
-        fp = file(fname,'rt')
+        fp = open(fname,'rt')
 
         data = np.array([list(map(float,line.split(sep))) for line in fp])
         fp.close()
@@ -1896,13 +1861,13 @@ class CurvilinearGrid(QuadrilateralGrid):
             Fb = self.F - Fb
 
         return CurvilinearGrid(X=self.X, F= Fb, projection=self.projection() )
-    
+
 class SimpleGrid(QuadrilateralGrid):
     int_nan = -9999
 
     # Set to "linear" to have value() calls use linear interpolation
     default_interpolation = "nearest"
-    
+
     def __init__(self,extents,F,projection=None):
         """ extents: minx, maxx, miny, maxy
             NB: these are node-centered values, so if you're reading in
@@ -1916,6 +1881,10 @@ class SimpleGrid(QuadrilateralGrid):
 
         self.dx,self.dy = self.delta()
 
+    @property
+    def shape(self):
+        return self.F.shape
+    
     def copy(self):
         return SimpleGrid(extents=list(self.extents),F=self.F.copy(),projection=self.projection())
 
@@ -1946,7 +1915,7 @@ class SimpleGrid(QuadrilateralGrid):
             return poly
         else:
             return geoms
-        
+
     @with_plt
     def contourf(self,*args,**kwargs):
         X,Y = self.XY()
@@ -1980,17 +1949,22 @@ class SimpleGrid(QuadrilateralGrid):
             ims = ax.imshow
         else:
             ims = plt.imshow
-            
+
+        if 'offset' in kwargs:
+            offset=kwargs.pop('offset')
+        else:
+            offset=[0,0]
+
         return ims(maskedF,origin='lower',
-                   extent=[self.extents[0]-0.5*dx, self.extents[1]+0.5*dx,
-                           self.extents[2]-0.5*dy, self.extents[3]+0.5*dy],
+                   extent=[self.extents[0]-0.5*dx + offset[0], self.extents[1]+0.5*dx + offset[0],
+                           self.extents[2]-0.5*dy + offset[1], self.extents[3]+0.5*dy + offset[1]],
                    **kwargs)
 
     def xy(self):
         x = np.linspace(self.extents[0],self.extents[1],self.F.shape[1])
         y = np.linspace(self.extents[2],self.extents[3],self.F.shape[0])
         return x,y
-    
+
     def XY(self):
         X,Y = np.meshgrid(*self.xy())
         return X,Y
@@ -1999,9 +1973,8 @@ class SimpleGrid(QuadrilateralGrid):
         """ unravel to a linear sequence of points
         """
         X,Y = self.XY()
-
         xyz = np.zeros( (self.F.shape[0] * self.F.shape[1], 3), np.float64 )
-        
+
         xyz[:,0] = X.ravel()
         xyz[:,1] = Y.ravel()
         xyz[:,2] = self.F.ravel()
@@ -2028,54 +2001,54 @@ class SimpleGrid(QuadrilateralGrid):
         X = np.zeros( (len(i),2), np.float64 )
         X[:,0] = x[j]
         X[:,1] = y[i]
-              
 
         return XYZField( X, self.F[good], projection = self.projection() )
- 
-        
+
     def to_curvilinear(self):
         X,Y = self.XY()
-        
         XY = concatenate( ( X[:,:,None], Y[:,:,None]), axis=2)
 
         cgrid = CurvilinearGrid(XY,self.F)
         return cgrid
-    
+
     def apply_xform(self,xform):
         # assume that the transform is not a simple scaling in x and y,
         # so we have to switch to a curvilinear grid.
         cgrid = self.to_curvilinear()
 
         return cgrid.apply_xform(xform)
-        
+
+    def rect_to_indexes(self,xxyy):
+        xmin,xmax,ymin,ymax = xxyy
+
+        dx,dy = self.delta()
+
+        min_col = int( max( np.floor( (xmin - self.extents[0]) / dx ), 0) )
+        max_col = int( min( np.ceil( (xmax - self.extents[0]) / dx ), self.F.shape[1]-1) )
+
+        min_row = int( max( np.floor( (ymin - self.extents[2]) / dy ), 0) )
+        max_row = int( min( np.ceil( (ymax - self.extents[2]) / dy ), self.F.shape[0]-1) )
+
+        return [min_row,max_row,min_col,max_col]
+
     def crop(self,rect=None,indexes=None):
         dx,dy = self.delta()
-        
+
         if rect is not None:
-            xmin,xmax,ymin,ymax = rect
+            indexes=self.rect_to_indexes(rect)
 
+        assert indexes is not None,"Must specify one of rect or indexes"
 
-            min_col = int( max( np.floor( (xmin - self.extents[0]) / dx ), 0) )
-            max_col = int( min( np.ceil( (xmax - self.extents[0]) / dx ), self.F.shape[1]-1) )
+        min_row,max_row,min_col,max_col = indexes
+        newF = self.F[min_row:max_row+1, min_col:max_col+1]
+        new_extents = [self.extents[0] + min_col*dx,
+                       self.extents[0] + max_col*dx,
+                       self.extents[2] + min_row*dy,
+                       self.extents[2] + max_row*dy ]
 
-            min_row = int( max( np.floor( (ymin - self.extents[2]) / dy ), 0) )
-            max_row = int( min( np.ceil( (ymax - self.extents[2]) / dy ), self.F.shape[0]-1) )
-
-            # print(min_row, max_row, min_col, max_col)
-            return self.crop(indexes=[min_row,max_row,min_col,max_col])
-        elif indexes is not None:
-            min_row,max_row,min_col,max_col = indexes
-            newF = self.F[min_row:max_row+1, min_col:max_col+1]
-            new_extents = [self.extents[0] + min_col*dx,
-                           self.extents[0] + max_col*dx,
-                           self.extents[2] + min_row*dy,
-                           self.extents[2] + max_row*dy ]
-            
-            return SimpleGrid(extents = new_extents,
-                              F = newF,
-                              projection = self.projection() )
-        else:
-            raise Exception("must specify one of rect [default] or indexes")
+        return SimpleGrid(extents = new_extents,
+                          F = newF,
+                          projection = self.projection() )
 
     def bounds(self):
         return np.array(self.extents)
@@ -2083,9 +2056,11 @@ class SimpleGrid(QuadrilateralGrid):
     def interpolate(self,X,interpolation=None,fallback=True):
         """ interpolation can be nearest or linear
         """
+        X=np.asanyarray(X)
+        
         if interpolation is None:
             interpolation = self.default_interpolation
-        
+
         xmin,xmax,ymin,ymax = self.bounds()
         dx,dy = self.delta()
 
@@ -2137,9 +2112,9 @@ class SimpleGrid(QuadrilateralGrid):
             result = np.nan
 
         # let linear interpolation fall back to nearest at the borders:
-        if interpolation=='linear' and fallback and any(bad):
+        if interpolation=='linear' and fallback and np.any(bad):
             result[bad] = self.interpolate(X[bad],interpolation='nearest',fallback=False)
-            
+
         return result
 
     def value(self,X):
@@ -2159,7 +2134,7 @@ class SimpleGrid(QuadrilateralGrid):
     def upsample(self,factor=2):
         x = np.linspace(self.extents[0],self.extents[1],1+factor*(self.F.shape[1]-1))
         y = np.linspace(self.extents[2],self.extents[3],1+factor*(self.F.shape[0]-1))
-        
+
         new_F = np.zeros( (len(y),len(x)) , np.float64 )
 
         for row in range(len(y)):
@@ -2168,7 +2143,7 @@ class SimpleGrid(QuadrilateralGrid):
                                          self.F[(row+1)//2,col//2] +
                                          self.F[row//2,(col+1)//2] +
                                          self.F[(row+1)//2,(col+1)//2])
-        
+
         return SimpleGrid(self.extents,new_F)
     def downsample(self,factor,method='decimate'):
         """
@@ -2212,7 +2187,7 @@ class SimpleGrid(QuadrilateralGrid):
         of areas missing data.
         Fills in everything within the convex hull of the valid input pixels.
         """
-        
+
         # Find pixels missing one or more neighbors:
         valid = isfinite(self.F)
         all_valid_nbrs = np.ones(valid.shape,'bool')
@@ -2323,18 +2298,40 @@ class SimpleGrid(QuadrilateralGrid):
         # and turn the missing values back to nan's
         self.F[~valid] = np.nan
 
-    
-    def polygon_mask(self,poly):
+    def polygon_mask(self,poly,crop=True,return_values=False):
         """ similar to mask_outside, but:
         much faster due to outsourcing tests to GDAL
         returns a boolean array same size as self.F, with True for 
         pixels inside the polygon.
+
+        crop: if True, optimize by cropping the source raster first.  should
+        provide identical results, but may not be identical due to roundoff.
+
+        return_vales: if True, rather than returning a bitmask the same size
+         as self.F, return just the values of F that fall inside poly. This
+         can save space and time when just extracting a small set of values 
+         from large raster
         """
         # could be made even simpler, by creating OGR features directly from the
         # polygon, rather than create a full-on datasource.
         # likewise, could jump straight to creating a target raster, rather 
         # than creating a SimpleGrid just to get the metadata right.
-        import wkb2shp
+        if crop:
+            xyxy=poly.bounds
+            xxyy=[xyxy[0], xyxy[2], xyxy[1], xyxy[3]]
+            indexes=self.rect_to_indexes(xxyy)
+            cropped=self.crop(indexes=indexes)
+            ret=cropped.polygon_mask(poly,crop=False,return_values=return_values)
+            if return_values:
+                return ret # done!
+            else:
+                mask_crop=ret
+            full_mask=np.zeros(self.F.shape,np.bool)
+            min_row,max_row,min_col,max_col = indexes
+            full_mask[min_row:max_row+1,min_col:max_col+1]=mask_crop
+            return full_mask
+
+        from . import wkb2shp
         raster_ds=self.write_gdal('Memory')
         poly_ds=wkb2shp.wkb2shp("Memory",[poly])
         target_field=SimpleGrid(F=np.zeros(self.F.shape,np.int32),
@@ -2343,11 +2340,19 @@ class SimpleGrid(QuadrilateralGrid):
         # write 1000 into the array where the polygon falls.
         gdal.RasterizeLayer(target_ds,[1],poly_ds.GetLayer(0),None,None,[1000],[])
         new_raster=GdalGrid(target_ds)
-        return new_raster.F>0
-        
+
+        ret=new_raster.F>0
+        if return_values:
+            return self.F[ret]
+        else:
+            return ret
+
     def mask_outside(self,poly,value=np.nan,invert=False,straddle=None):
         """ Set the values that fall outside the given polygon to the
         given value.  Existing nan values are untouched.
+
+        Compared to polygon_mask, this is slow but allows more options on
+        exactly how to test each pixel.
 
         straddle: if None, then only test against the center point
           if True: a pixel intersecting the poly, even if the center is not
@@ -2356,7 +2361,7 @@ class SimpleGrid(QuadrilateralGrid):
         """
         if prep:
             poly = prep(poly)
-            
+
         X,Y = self.xy()
         rect=np.array([[-self.dx/2.0,-self.dy/2.0],
                     [self.dx/2.0,-self.dy/2.0],
@@ -2376,7 +2381,7 @@ class SimpleGrid(QuadrilateralGrid):
                             self.F[row,col] = value
 
     def write(self,fname):
-        fp = file(fname,'wb')
+        fp = open(fname,'wb')
 
         pickle.dump( (self.extents,self.F), fp, -1)
         fp.close()
@@ -2384,12 +2389,12 @@ class SimpleGrid(QuadrilateralGrid):
     def write_gdal_rgb(self,output_file,vmin=None,vmax=None):
         if cm is None:
             raise Exception("No matplotlib - can't map to RGB")
-        
+
         if vmin is None:
             vmin = self.F.min()
         if vmax is None:
             vmax = self.F.max()
-            
+
         fscaled = (self.F-vmin)/(vmax-vmin)
         frgba = (cm.jet(fscaled)*255).astype(np.uint8)
 
@@ -2440,11 +2445,10 @@ class SimpleGrid(QuadrilateralGrid):
         halfdy = 0.5*target.dy
         te = "-te %f %f %f %f "%(target.extents[0]-halfdx,target.extents[2]-halfdy,
                                  target.extents[1]+halfdx,target.extents[3]+halfdy)
-        ts = "-ts %d %d"%(target.F.T.shape) 
-        
+        ts = "-ts %d %d"%(target.F.T.shape)
         return self.warp(target.projection(),
                          extra=te + ts)
-        
+
     def warp(self,t_srs,s_srs=None,fn=None,extra=""):
         """ interface to gdalwarp
         t_srs: string giving the target projection
@@ -2455,7 +2459,7 @@ class SimpleGrid(QuadrilateralGrid):
         """
         tmp_src = tempfile.NamedTemporaryFile(suffix='.tif',delete=False)
         tmp_src_fn = tmp_src.name ; tmp_src.close()
-        
+
         if fn is not None:
             tmp_dest_fn = fn
         else:
@@ -2465,18 +2469,18 @@ class SimpleGrid(QuadrilateralGrid):
 
         s_srs = s_srs or self.projection()
         self.write_gdal(tmp_src_fn)
-        output=subprocess.check_output("%s -s_srs %s -t_srs %s -dstnodata 'nan' %s %s %s"%(self.gdalwarp,s_srs,t_srs,
-                                                                                           extra,
-                                                                                           tmp_src_fn,tmp_dest_fn),
+        output=subprocess.check_output("%s -s_srs '%s' -t_srs '%s' -dstnodata 'nan' %s %s %s"%(self.gdalwarp,s_srs,t_srs,
+                                                                                               extra,
+                                                                                               tmp_src_fn,tmp_dest_fn),
                                        shell=True)
         self.last_warp_output=output # dirty, but maybe helpful
-        
+
         result = GdalGrid(tmp_dest_fn)
         os.unlink(tmp_src_fn)
         if fn is None:
             os.unlink(tmp_dest_fn)
         return result
-        
+
     def write_gdal(self,output_file,nodata=None):
         """ Write a Geotiff of the field.
 
@@ -2485,7 +2489,6 @@ class SimpleGrid(QuadrilateralGrid):
 
         if output_file is "Memory", will create an in-memory GDAL dataset and return it.
         """
-        
         in_memory= (output_file=='Memory')
 
         if not in_memory:
@@ -2515,12 +2518,12 @@ class SimpleGrid(QuadrilateralGrid):
             # print "Flipping to be in image coordinates"
             dy = -dy
             raster = raster[::-1,:]
-        
+
         dst_ds.SetGeoTransform( [ self.extents[0]-0.5*dx, dx,
                                   0, self.extents[3]-0.5*dy, 0, dy ] )
 
         # set the reference info
-        if self.projection() is not None:
+        if self.projection() not in ('',None):
             srs = osr.SpatialReference()
             if srs.SetFromUserInput(self.projection()) != 0:
                 log.warning("Failed to set projection (%s) on GDAL output"%(self.projection()))
@@ -2571,7 +2574,7 @@ class SimpleGrid(QuadrilateralGrid):
             xxyy=as_xxyy(xxyy)
             x = np.arange(xxyy[0],xxyy[1]+resx,resx)
             y = np.arange(xxyy[2],xxyy[3]+resy,resy)
-            
+
         myx,myy = self.xy()
 
         if interpolation == 'bilinear':
@@ -2581,7 +2584,7 @@ class SimpleGrid(QuadrilateralGrid):
                 #  "simple-efficient-bilinear-interpolation-of-images-in-numpy-and-python"
                 # but altered so that x and y are 1-D arrays, and the result is a
                 # 2-D array (x and y as in inputs to meshgrid)
-                
+
                 # scale those to float-valued indices into F
                 x = (np.asarray(x)-self.extents[0])/self.dx
                 y = (np.asarray(y)-self.extents[2])/self.dy
@@ -2616,8 +2619,7 @@ class SimpleGrid(QuadrilateralGrid):
         else:
             k = ['constant','linear','quadratic','cubic'].index(interpolation)
 
-            
-            if any(np.isnan(self.F)):
+            if np.any(np.isnan(self.F)):
                 F = self.F.copy()
                 F[ np.isnan(F) ] = 0.0
             else:
@@ -2664,7 +2666,7 @@ class SimpleGrid(QuadrilateralGrid):
         dx,dy=self.gradient()
         azimuth_rad=azimuth_deg*np.pi/180
         zenith_rad=zenith_deg*np.pi/180
-        
+
         slope_rad = np.arctan( z_factor * np.sqrt( dx.F**2 + dy.F**2) )
         aspect_rad = np.arctan2(dy.F,-dx.F)
         hillshade=np.cos(zenith_rad)*np.cos(slope_rad) + \
@@ -2676,20 +2678,20 @@ class SimpleGrid(QuadrilateralGrid):
         Frgba[...,3] = 1-hs.F.clip(0,1)
         hs.F=Frgba
         return hs
-    
+
+    @with_plt
     def plot_hillshade(self,ax=None,plot_args={},**kwargs):
         shader=self.hillshade_shader(**kwargs)
-        ax=ax or gca()
+        ax=ax or plt.gca()
         return shader.plot(ax=ax,**plot_args)
 
     @staticmethod
     def read(fname):
-        fp = file(fname,'rb')
+        fp = open(fname,'rb')
 
         extents, F = pickle.load( fp )
-
         fp.close()
-        
+
         return SimpleGrid(extents=extents,F=F)
 
 
@@ -2738,7 +2740,7 @@ class GdalGrid(SimpleGrid):
         xmax = max(x0,x1)
         ymin = min(y0,y1)
         ymax = max(y0,y1)
-        
+
         return [xmin,xmax,ymin,ymax],[dx,dy]
 
     def __init__(self,filename,bounds=None,geo_bounds=None):
@@ -2747,7 +2749,7 @@ class GdalGrid(SimpleGrid):
          will load a subset of the raster.
 
         filename: path to a GDAL-recognize file, or an already opened GDAL dataset.
-        geo_bounds: xxyy bounds in geographic coordinates 
+        geo_bounds: xxyy bounds in geographic coordinates
         """
         if isinstance(filename,gdal.Dataset):
             self.gds=filename
@@ -2884,6 +2886,7 @@ if ogr:
             self.delegate_list[i] = d
 
         def value(self,X):
+            X=np.asanyarray(X)
             print("Calculating weights")
             weights = self.ic.calc_weights(X)
             total_weights = weights.sum(axis=-1)
@@ -2982,6 +2985,7 @@ if ogr:
 
         # def to_grid(self,dx,dy,bounds):
         def value(self,X):
+            X=np.asanyarray(X)
             shape_orig=X.shape
             Xlin=X.reshape( [-1,2] )
             V=np.nan*np.ones( len(Xlin), 'f8' )
@@ -3055,26 +3059,26 @@ if ogr:
             self.sources=sources[valid]
 
 class CompositeField(Field):
-    """ 
+    """
     In the same vein as BlenderField, but following the model of raster
     editors like Photoshop or the Gimp.
 
     Individual sources are treated as an ordered "stack" of layers.
-    
+
     Layers higher on the stack can overwrite the data provided by layers
     lower on the stack.
 
     A layer is typically defined by a raster data source and a polygon over
-    which it is valid.  
+    which it is valid.
 
     Each layer's contribution to the final dataset is both a data value and
     an alpha value.  This allows for blending/feathering between layers.
 
-    The default "data_mode" is simply overlay.  Other data modes like "min" or 
-    "max" are possible.  
+    The default "data_mode" is simply overlay.  Other data modes like "min" or
+    "max" are possible.
 
     The default "alpha_mode" is "valid()" which is essentially opaque where there's
-    valid data, and transparent where there isn't.  A second common option would 
+    valid data, and transparent where there isn't.  A second common option would
     probably be "feather(<distance>)", which would take the valid areas of the layer,
     and feather <distance> in from the edges.
 
@@ -3083,6 +3087,59 @@ class CompositeField(Field):
     Alternatively, if a factory is given, it should be callable and will take a single argument -
     a dict with the attributse for each source.  The factory should then return the corresponding
     Field.
+
+    TODO: there are cases where the alpha is so small that roundoff can cause
+    artifacts.  Should push these cases to nan.
+    TODO: currently holes must be filled manually or after the fact.  Is there a clean
+    way to handle that?  Maybe a fill data mode?
+
+    Guide
+    -----
+
+    Create a polygon shapefile, with fields:
+     +------------+-----------+
+     + priority   | numeric   |
+     +------------+-----------+
+     + data_mode  | string    |
+     +------------+-----------+
+     + alpha_mode | string    |
+     +------------+-----------+
+
+    These names match the defaults to the constructor.  Note that there is no
+    reprojection support -- the code assumes that the shapefile and all source
+    data are already in the target projection.  Some code also assumes that it
+    is a square projection.
+
+    .. image:: images/composite-shp-table.png
+
+    Each polygon in the shapefile refers to a source dataset and defines where
+    that dataset will be used.
+
+    .. image:: images/composite-shp.png
+    .. image:: images/composite-shp-zoom.png
+
+    Datasets are processed as layers, building up from the lowest priority
+    to the highest priority.  Higher priority sources generally overwrite
+    lower priority source, but that can be controlled by specifying
+    `data_mode`.  The default is `overlay()`, which simple overwrites
+    the lower priority data.  Other common modes are
+     * `min()`: use the minimum value between this source and lower
+       priority data.  This layer will only *deepen* areas.
+     * `max()`: use the maximum value between this source and lower
+       priority data.  This layer will only *raise* areas.
+     * `fill(dist)`: fill in holes up to `dist` wide in this datasets
+       before proceeding.
+
+    Multiple steps can be chained with commas, as in `fill(5.0),min()`, which
+    would fill in holes smaller than 5 spatial units (e.g. m), and then take
+    the minimum of this dataset and the existing data from previous (lower
+    priority) layers.
+
+    Another example:
+
+    .. image:: images/dcc-original.png
+    .. image:: images/dcc-dredged.png
+
     """
     def __init__(self,shp_fn=None,factory=None,
                  priority_field='priority',
@@ -3129,8 +3186,14 @@ class CompositeField(Field):
             self.delegate_list[i] = self.factory( self.sources[i] )
         return self.delegate_list[i]
 
-    def to_grid(self,nx=None,ny=None,bounds=None,dx=None,dy=None):
+    def to_grid(self,nx=None,ny=None,bounds=None,dx=None,dy=None,
+                mask_poly=None):
         """ render the layers to a SimpleGrid tile.
+        nx,ny: number of pixels in respective dimensions
+        bounds: xxyy bounding rectangle.
+        dx,dy: size of pixels in respective dimensions.
+        mask_poly: a shapely polygon.  only points inside this polygon
+        will be generated.
         """
         # boil the arguments down to dimensions
         if bounds is None:
@@ -3147,16 +3210,18 @@ class CompositeField(Field):
 
         # allocate the blank starting canvas
         result_F =np.ones((ny,nx),'f8')
-        result_F[:]=-999
+        result_F[:]=-999 # -999 so we don't get nan contamination
         result_data=SimpleGrid(extents=bounds,F=result_F)
         result_alpha=result_data.copy()
         result_alpha.F[:]=0.0
 
         # Which sources to use, and in what order?
         box=geometry.box(bounds[0],bounds[2],bounds[1],bounds[3])
+        if mask_poly is not None:
+            box=box.intersection(mask_poly)
 
         # Which sources are relevant?
-        relevant_srcs=np.nonzero( [ box.intersects(geom)  
+        relevant_srcs=np.nonzero( [ box.intersects(geom)
                                     for geom in self.sources['geom'] ])[0]
         # omit negative priorities
         relevant_srcs=relevant_srcs[ self.src_priority[relevant_srcs]>=0 ]
@@ -3169,7 +3234,7 @@ class CompositeField(Field):
             log.info(self.sources['src_name'][src_i])
             log.info("   data mode: %s  alpha mode: %s"%(self.data_mode[src_i],
                                                          self.alpha_mode[src_i]))
-                  
+
             source=self.load_source(src_i)
             src_data = source.to_grid(bounds=bounds,dx=dx,dy=dy)
             src_alpha= SimpleGrid(extents=src_data.extents,
@@ -3177,8 +3242,11 @@ class CompositeField(Field):
 
             if 0: # slower
                 src_alpha.mask_outside(self.sources['geom'][src_i],value=0.0)
-            else: 
-                mask=src_alpha.polygon_mask(self.sources['geom'][src_i])
+            else:
+                src_geom=self.sources['geom'][src_i]
+                if mask_poly is not None:
+                    src_geom=src_geom.intersection(mask_poly)
+                mask=src_alpha.polygon_mask(src_geom)
                 src_alpha.F[~mask] = 0.0
 
             # create an alpha tile. depending on alpha_mode, this may draw on the lower data,
@@ -3204,27 +3272,32 @@ class CompositeField(Field):
                 pixels=int(round(float(dist)/dx))
                 niters=np.maximum( pixels//3, 2 )
                 src_data.fill_by_convolution(iterations=niters)
-            # def blur(dist):
-            #     "smooth data channel with gaussian filter - this allows spreading beyond original poly!"
-            #     pixels=int(round(float(dist)/dx))
-            #     src_data.F=ndimage.gaussian_filter(src_alpha.F,pixels)
-                
+            #def blur(dist):
+            #    "smooth data channel with gaussian filter - this allows spreading beyond original poly!"
+            #    pixels=int(round(float(dist)/dx))
+            #    src_data.F=ndimage.gaussian_filter(src_data.F,pixels)
+
             def overlay():
-                pass 
+                pass
             # alpha channel operations:
             def valid():
                 # updates alpha channel to be zero where source data is missing.
                 data_missing=np.isnan(src_data.F)
                 src_alpha.F[data_missing]=0.0
-            # def blur_alpha(dist):
-            #     "smooth alpha channel with gaussian filter - this allows spreading beyond original poly!"
-            #     pixels=int(round(float(dist)/dx))
-            #     src_alpha.F=ndimage.gaussian_filter(src_alpha.F,pixels)
-            def feather(dist):
+            def blur_alpha(dist):
+                "smooth alpha channel with gaussian filter - this allows spreading beyond original poly!"
+                pixels=int(round(float(dist)/dx))
+                src_alpha.F=ndimage.gaussian_filter(src_alpha.F,pixels)
+            def feather_in(dist):
                 "linear feathering within original poly"
                 pixels=int(round(float(dist)/dx))
                 Fsoft=ndimage.distance_transform_bf(src_alpha.F)
                 src_alpha.F = (Fsoft/pixels).clip(0,1)
+            feather=feather_in
+            def feather_out(dist):
+                pixels=int(round(float(dist)/dx))
+                Fsoft=ndimage.distance_transform_bf(1-src_alpha.F)
+                src_alpha.F = (1-Fsoft/pixels).clip(0,1)
 
             # dangerous! executing code from a shapefile!
             eval(self.data_mode[src_i])
@@ -3237,17 +3310,26 @@ class CompositeField(Field):
 
             assert np.allclose( result_data.extents, src_data.extents )
             assert np.all( result_data.F.shape==src_data.F.shape )
-            # before getting into fancy modes, just stack it all up:
-            result_data.F   = result_data.F *(1-src_alpha.F) + cleaned*src_alpha.F
-            result_alpha.F  = result_alpha.F*(1-src_alpha.F) + src_alpha.F
 
-        # fudge it a bit, and allow semi-transparent data back out, but 
+            # 2018-12-06: this is how it used to work, but this is problematic
+            #  when result_alpha is < 1.
+            # result_data.F   = result_data.F *(1-src_alpha.F) + cleaned*src_alpha.F
+
+            # where result_alpha=1.0, then we want to blend with src_alpha and 1-src_alpha.
+            # if result_alpha=0.0, then we take src wholesale, and carry its alpha through.
+            # 
+            total_alpha=result_alpha.F*(1-src_alpha.F) + src_alpha.F
+            result_data.F   = result_data.F * result_alpha.F *(1-src_alpha.F) + cleaned*src_alpha.F
+            # to avoid contracting data towards zero, have to normalize data by the total alpha.
+            valid=total_alpha>1e-10 # avoid #DIVZERO
+            result_data.F[valid] /= total_alpha[valid]
+            result_alpha.F  = total_alpha
+
+        # fudge it a bit, and allow semi-transparent data back out, but
         # at least nan out the totally transparent stuff.
         result_data.F[ result_alpha.F==0 ] = np.nan
         return result_data
 
-
-            
 class MultiRasterField(Field):
     """ Given a collection of raster files at various resolutions and with possibly overlapping
     extents, manage a field which picks from the highest resolution raster for any given point.
@@ -3274,7 +3356,7 @@ class MultiRasterField(Field):
     clip_max = np.inf
 
     order = 1 # interpolation order
-    
+
     # After clipping, this value will be added to the result.
     # probably shouldn't use this - domain.py takes care of adding in the bathymetry offset
     # and reversing the sign (so everything becomes positive)
@@ -3283,9 +3365,9 @@ class MultiRasterField(Field):
     # any: raise an exception if any raster_file_pattern fails to find any
     #  matches
     # all: raise an exception if all patterns come up empty
-    # False: silently proceed with no matches. 
+    # False: silently proceed with no matches.
     error_on_null_input='any' # 'all', or False
-    
+
     def __init__(self,raster_file_patterns,**kwargs):
         self.__dict__.update(kwargs)
         Field.__init__(self)
@@ -3297,7 +3379,7 @@ class MultiRasterField(Field):
             raster_files += matches
         if len(raster_files)==0 and self.error_on_null_input=='all':
             raise Exception("No patterns got matches")
-        
+
         self.raster_files = raster_files
 
         self.prepare()
@@ -3333,7 +3415,7 @@ class MultiRasterField(Field):
             sources['field'][fi]=None
             sources['filename'][fi]=f
             sources['last_used'][fi]=-1
-        
+
         self.sources = sources
         # -1 means the source isn't loaded.  non-negative means it was last used when serial
         # was that value.  overflow danger...
@@ -3345,8 +3427,8 @@ class MultiRasterField(Field):
         # these are x,x,y,y
         tuples = [(i,extent,None) 
                   for i,extent in enumerate(self.sources['extent'])]
-        
-        self.index = Rtree(tuples,interleaved=False)
+
+        self.index = RectIndex(tuples,interleaved=False)
 
     def report(self):
         """ Short text representation of the layers found and their resolutions
@@ -3369,7 +3451,7 @@ class MultiRasterField(Field):
             if self.open_count >= self.max_count:
                 # Have to choose someone to close.
                 current = np.nonzero(self.sources['last_used']>=0)[0]
-                
+
                 victim = current[ np.argmin( self.sources['last_used'][current] ) ]
                 # print "Will evict source %d"%victim
                 self.sources['last_used'][victim] = -1
@@ -3378,11 +3460,11 @@ class MultiRasterField(Field):
             # open the new guy:
             self.sources['field'][i] = GdalGrid(self.sources['filename'][i])
             self.open_count += 1
-            
+
         self.serial += 1
         self.sources['last_used'][i] = self.serial
         return self.sources['field'][i]
-        
+
     def value_on_point(self,xy):
         hits=self.ordered_hits(xy[xxyy])
         if len(hits) == 0:
@@ -3391,7 +3473,7 @@ class MultiRasterField(Field):
         v = np.nan
         for hit in hits:
             src = self.source(hit)
-            
+
             # Here we should be asking for some kind of basic interpolation
             v = src.interpolate( np.array([xy]), interpolation='linear' )[0]
 
@@ -3400,10 +3482,9 @@ class MultiRasterField(Field):
             if v > self.clip_max:
                 v = self.clip_max
             return v
-
-        print("Bad sample at point ",xy)
+        # print("Bad sample at point ",xy)
         return v
-            
+
     def value(self,X):
         """ X must be shaped (...,2)
         """
@@ -3413,14 +3494,14 @@ class MultiRasterField(Field):
         X = X.reshape((-1,2))
 
         newF = np.zeros( X.shape[0],np.float64 )
-        
+
         for i in range(X.shape[0]):
             if i > 0 and i % 2000 == 0:
                 print("%d/%d"%(i,X.shape[0]))
             newF[i] = self.value_on_point( X[i] )
-        
+
         newF = newF.reshape(orig_shape[:-1])
-        
+
         if newF.ndim == 0:
             return float(newF)
         else:
@@ -3441,7 +3522,7 @@ class MultiRasterField(Field):
         res = self.sources['resolution'][hits].min()
 
         samples = int( np.ceil( norm(e[0] - e[1])/res) )
-        
+
         x=np.linspace(e[0,0],e[1,0],samples)
         y=np.linspace(e[0,1],e[1,1],samples)
 
@@ -3475,30 +3556,47 @@ class MultiRasterField(Field):
 
         if len(hits) == 0:
             return []
-        
-        hits = hits[ np.argsort( self.sources[hits], order=('order','resolution')) ]
+
+        # include filename here to resolve ties, avoiding the fallback behavior which
+        # may error out when comparing None
+        hits = hits[ np.argsort( self.sources[hits], order=('order','resolution','filename')) ]
         return hits
 
     def extract_tile(self,xxyy=None,res=None):
         """ Create the requested tile from merging the sources.  Resolution defaults to
         resolution of the highest resolution source that falls inside the requested region
         """
+        return self.to_grid(bounds=xxyy,dx=res,dy=res)
+
+    def to_grid(self,nx=None,ny=None,interp='linear',bounds=None,dx=None,dy=None,valuator='value'):
+        """
+        Extract data in a grid.  currently only nearest, no linear interpolation.
+        """
+        # This used to be extract_tile, but the interface of to_grid is broader, so better
+        # to have extract_tile be a special case of to_grid.
+        xxyy=bounds
         if xxyy is None:
             xxyy=self.bounds()
         xxyy=as_xxyy(xxyy)
 
         hits = self.ordered_hits(xxyy)
-        assert len(hits)
+        if not len(hits):
+            # this can happen esp. when generating tiles for a larger dataset.
+            log.warning("to_grid: no datasets overlap, will return all nan")
+            if dx is None or dy is None:
+                raise Exception("No hits, and dx/dy not specified so resolution is unknown")
 
-        if res is None:
-            res = self.sources['resolution'][hits].min()
+        if dx is None:
+            dx=self.sources['resolution'][hits].min()
+        if dy is None:
+            dy=self.sources['resolution'][hits].min()
 
         # half-pixel alignment-
         # field.SimpleGrid expects extents which go to centers of pixels.
         # x and y are inclusive of the end pixels (so for exactly abutting rects, there will be 1 pixel
         # of overlap)
-        x=np.arange( xxyy[0],xxyy[1]+res,res)
-        y=np.arange( xxyy[2],xxyy[3]+res,res)
+        x=np.arange( xxyy[0],xxyy[1]+dx,dx)
+        y=np.arange( xxyy[2],xxyy[3]+dy,dy)
         targetF = np.nan*np.zeros( (len(y),len(x)), np.float64)
         pix_extents = [x[0],x[-1], y[0],y[-1] ]
         target = SimpleGrid(extents=pix_extents,F=targetF)
@@ -3515,7 +3613,6 @@ class MultiRasterField(Field):
 
         for hit in hits:
             src = self.source(hit)
-            # src.plot(ax=ax1,vmin=0,vmax=5,interpolation='nearest')
 
             src_x,src_y = src.xy()
             src_dx,src_dy = src.delta()
@@ -3524,7 +3621,6 @@ class MultiRasterField(Field):
             # map_coordinates wants decimal array indices
             # x has the utm easting for each column to extract
             # x-src_x:   easting relative to start of src tile
-            # 
             dec_x = (x-src_x[0]) / src_dx
             dec_y = (y-src_y[0]) / src_dy
 
@@ -3543,7 +3639,7 @@ class MultiRasterField(Field):
                 row_range=row_range[ [0,-1]]
             else:
                 continue
-            
+
             col_slice = slice(col_range[0],col_range[1]+1)
             row_slice = slice(row_range[0],row_range[1]+1)
             dec_x = dec_x[ col_slice ]
@@ -3557,8 +3653,7 @@ class MultiRasterField(Field):
             missing = np.isnan(target.F[ row_slice,col_slice ])
             target.F[ row_slice,col_slice ][missing] = newF[missing]
         return target
-        
-    
+
 class FunctionField(Field):
     """ wraps an arbitrary function
     function must take one argument, X, which has
@@ -3567,9 +3662,10 @@ class FunctionField(Field):
     def __init__(self,func):
         self.func = func
     def value(self,X):
+        X=np.asanyarray(X)
         return self.func(X)
 
-# used to be in its own file    
+# used to be in its own file
 class TileMaker(object):
     """ Given a field, create gridded tiles of the field, including some options for blending, filling,
     cropping, etc.

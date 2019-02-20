@@ -89,11 +89,11 @@ class CIter(object):
     def __getstate__(self):
         # have to break the recursive cycle, so no references to other
         # iters
-        return 
+        return
 
     def __setstate__(self,d):
         self.data = d[1]
-        
+
     def __reduce__(self):
         if self.prv:
             pdata = self.prv.data
@@ -103,8 +103,17 @@ class CIter(object):
             ndata = self.nxt.data
         else:
             ndata = None
-            
+
         return (CIter_expand,(self.clist,pdata,self.data,ndata))
+
+    def __lt__(self,other):
+        """these instances are put in a priority_queue, which in python 3
+        will break ties by comparing not just the key but also the value (self).
+        """
+        return id(self)<id(other)
+
+    def __le__(self,other):
+        return id(self)<=id(other)
 
 
 class CList(object):
@@ -1101,7 +1110,7 @@ class Paving(paving_base,OptimizeGridMixin):
         if geom.type == 'MultiPolygon':
             print("Geometry is a multipolygon - will use the polygon with greatest area")
             areas = [g.area for g in geom.geoms]
-            best = argmax(areas)
+            best = np.argmax(areas)
             old_geom = geom # don't dereference too hastily...
             geom = old_geom.geoms[best]
         
@@ -1122,13 +1131,13 @@ class Paving(paving_base,OptimizeGridMixin):
 
         
         """
-        fp = file(fn,'wb')
+        fp = open(fn,'wb')
         pickle.dump(self,fp,-1)
         fp.close()
 
     @staticmethod
     def load_complete(fn):
-        fp = file(fn,'rb')
+        fp = open(fn,'rb')
         obj = pickle.load(fp)
         fp.close()
         return obj
@@ -1155,12 +1164,12 @@ class Paving(paving_base,OptimizeGridMixin):
         d['vh_info'] = 'rebuild'
 
         d['poly'] = 'rebuild'
-        
+
         d['plot_history'] = []
         d['click_handler_id'] = None
         d['showing_history'] = None
         d['index'] = None
-        
+
         return d
     def __setstate__(self,d):
         self.__dict__.update(d)
@@ -5256,7 +5265,7 @@ class Paving(paving_base,OptimizeGridMixin):
                 break
             if plot_stride and self.step%plot_stride == 0:
                 self.plot()
-                draw()
+                plt.draw()
             if save_stride and self.step%save_stride == 0:
                 fn = self.save_stride_filename()
                 print("Saving current state to %s"%fn)

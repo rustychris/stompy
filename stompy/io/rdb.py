@@ -75,7 +75,7 @@ class Rdb(object):
         self.parse_source_file()
 
     def float_or_nan(self,s):
-        if s in (None,'','Eqp'):
+        if s in (None,'','Eqp','***'):
             return np.nan
         else:
             return float(s)
@@ -131,9 +131,12 @@ class Rdb(object):
             print("text:",self.text)
             print("source_filename:",self.source_filename)
             raise Exception("Empty RDB data?!")
-            
+
         headers = line.strip().split("\t")
-        specs = next(self.fp).strip().split("\t")
+        try:
+            specs = next(self.fp).strip().split("\t")
+        except StopIteration:
+            raise Exception("Possible bad request: %s"%line.strip())
 
         # import the data into an array
         columns = [[] for each in headers]
@@ -284,7 +287,7 @@ def rdb_to_dataset(filename=None,text=None,to_utc=True):
                 while varname in ds:
                     count+=1
                     varname=base_varname+"_%02d"%count
-                
+
             if m.group(4):
                 statistic=rdb_codes.stat_code_lookup(meta['stat_code'])
                 if statistic is not None:
@@ -292,7 +295,7 @@ def rdb_to_dataset(filename=None,text=None,to_utc=True):
 
             if m.group(5) is not None:
                 # TODO: save QA codes
-                continue 
+                continue
 
         if isinstance( usgs_data[key], np.ndarray ):
             if len(data)==len(ds.time):
@@ -312,21 +315,31 @@ def rdb_to_dataset(filename=None,text=None,to_utc=True):
     if 'tz_cd' in usgs_data.keys() and to_utc:
         # tz_cd, in a sample size of 1, is something like PST.
         tz_target=pytz.utc
-        tz_src=usgs_data['tz_cd']
-        if tz_src == 'PST':
-            offset_hours=-8
-        elif tz_src=='PDT':
-            offset_hours=-7
-        elif tz_src=='EST':
-            offset_hours=-5
-        elif tz_src=='EDT':
-            offset_hours=-4
+        #if timezone changes, tz_src is an array of strings
+
+        def tz_to_offset(tz_src):
+            if tz_src == 'PST':
+                return -8
+            elif tz_src=='PDT':
+                return -7
+            elif tz_src=='EST':
+                return -5
+            elif tz_src=='EDT':
+                return -4
+            else:
+                raise Exception("Not sure how to interpret time zone %s"%tz_src)
+
+        if isinstance(usgs_data['tz_cd'],np.ndarray):
+            offset_hours=np.array([tz_to_offset(tz_src) for tz_src in usgs_data['tz_cd']])
+            ds.attrs['tz_cd_original']=",".join( np.unique(ds.tz_cd) )
         else:
-            raise Exception("Not sure how to interpret time zone %s"%tz_src)
-        ds['time'].values -= np.timedelta64(offset_hours,'h')
+            offset_hours=tz_to_offset(usgs_data['tz_cd'])
+            ds.attrs['tz_cd_original']=ds.tz_cd
+
+        tz_src=usgs_data['tz_cd']
+        ds['time'].values -= offset_hours * np.timedelta64(1,'h')
         ds['datenum'].values -= offset_hours/24.
-        ds.attrs['tz_cd_original']=ds.tz_cd
         ds.attrs['tz_cd']='UTC'
-            
+
     return ds
-    
+

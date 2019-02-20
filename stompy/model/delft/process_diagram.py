@@ -12,7 +12,7 @@ log=logging.getLogger('stompy')
 try:
     from graphviz import Digraph
 except ImportError:
-    log.info("graphviz unavailable")
+    log.debug("graphviz unavailable")
 
 class ProcDiagram(object):
     delft_src="/home/rusty/code/delft/d3d/master"
@@ -21,7 +21,7 @@ class ProcDiagram(object):
         self.run_name=run_name
         self.load_tables()
         self.load_run(waq_dir)
-        
+
     def load_tables(self):
         # Load the tables:
         table_dir=os.path.join( self.delft_src,

@@ -9,14 +9,6 @@ try:
 except ImportError:
     import ogr
 
-# # How to use this:
-# ### Load shapefile
-# ods = ogr.Open("/home/rusty/classes/research/spatialdata/us/ca/suntans/shoreline/noaa-medres/pacific_medium_shoreline-cropped.shp")
-# output = "/home/rusty/classes/research/spatialdata/us/ca/suntans/shoreline/noaa-medres/pacific_medium_shoreline-cropped-merged.shp"
-# orig_layer = ods.GetLayer(0)
-# ## process it
-# process_layer(orig_layer,output)
-
 if __name__ == '__main__':
 
     parser = OptionParser(usage="usage: %prog [options] input.shp output.shp")
