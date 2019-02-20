@@ -788,9 +788,6 @@ def plot_scalar_polys(tran,v,ax=None,xform=None,**kw):
     dx=utils.center_to_interval(X[:,0])
     Xexpand2=np.concatenate( (Xexpand-0.5*dx[:,None], Xexpand[-1:,:]+0.5*dx[-1:,None]), axis=0)
 
-    if xform:
-        Xexpand2,Yexpand2=xform(Xexpand2,Yexpand2)
-    
     polys=[]
     values=[]
 
@@ -799,10 +796,14 @@ def plot_scalar_polys(tran,v,ax=None,xform=None,**kw):
         if np.isnan(V[samp,zi]):
             continue
 
-        poly=[ [Xexpand2[samp,  zi],Yexpand[samp,zi]  ],
-               [Xexpand2[samp+1,zi],Yexpand[samp,zi]  ],
-               [Xexpand2[samp+1,zi],Yexpand[samp,zi+1]],
-               [Xexpand2[samp,  zi],Yexpand[samp,zi+1]] ]
+        poly=np.array([ [Xexpand2[samp,  zi],Yexpand[samp,zi]  ],
+                        [Xexpand2[samp+1,zi],Yexpand[samp,zi]  ],
+                        [Xexpand2[samp+1,zi],Yexpand[samp,zi+1]],
+                        [Xexpand2[samp,  zi],Yexpand[samp,zi+1]] ] )
+        if xform:
+            x,y=xform(poly[:,0],poly[:,1])
+            poly=np.c_[x,y]
+        
         polys.append(poly)
         values.append(V[samp,zi])
 
