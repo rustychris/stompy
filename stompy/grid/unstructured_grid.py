@@ -1517,6 +1517,20 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 nbrs.append(c1)
         return nbrs
 
+    def cell_to_cell_node_neighbors(self,c):
+        """ Return adjacent cells for c sharing at least one node
+            Include the cell itself in list returned
+        """
+        nodes=self.cell_to_nodes(c)
+
+        nbrs = []
+        for node in nodes[np.where(nodes >= 0)[0]]:
+            n2c=self.node_to_cells(node) # make sure it's fresh
+            nbrs += n2c
+        nbrs = np.unique(np.asarray(nbrs))
+
+        return nbrs
+
     def is_boundary_cell(self,c):
         """ True if any of this cells edges lie on the boundary
         (i.e. have only one adjacent cell)
@@ -2300,7 +2314,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
     #-# Plotting
     def plot_boundary(self,ax=None,**kwargs):
-        return self.plot_edges(mask=self.edges['mark']>0,**kwargs)
+        return self.plot_edges(ax=ax,mask=self.edges['mark']>0,**kwargs)
 
     def node_clip_mask(self,clip):
         return within_2d(self.nodes['x'],clip)
