@@ -18,6 +18,7 @@ see end of file
 from __future__ import print_function
 
 import numpy as np
+import pdb
 from scipy.ndimage import label
 
 if 1:
@@ -247,8 +248,8 @@ def min_graph_elevation_for_edge(g,dem,j,starts='lowest'):
     # asserts/assumes that the extents are multiples of dx,dy.
     dx=dem.dx ; dy=dem.dy
     dxy=np.array([dx,dy])
-    assert dem.extents[0] % dem.dx == 0
-    assert dem.extents[2] % dem.dy == 0
+    #assert dem.extents[0] % dem.dx == 0
+    #assert dem.extents[2] % dem.dy == 0
 
     # protects from roundoff cases
     pad=1

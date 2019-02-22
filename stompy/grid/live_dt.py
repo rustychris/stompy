@@ -1059,7 +1059,6 @@ class LiveDtGridBase(orthomaker.OrthoMaker):
         """ Returns a polygon for the boundary that has all 'small' concave features
         removed.  Modifies the boundary points, but only by adding new samples evenly
         between originals.
-
         """
         # Make sure that all edges are sufficiently sampled:
         self.subdivide_iterate(min_edge_length=min_edge_length)

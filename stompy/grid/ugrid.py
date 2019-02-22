@@ -647,7 +647,6 @@ class UgridXr(object):
         # length 1.
         Ncells = len(bed)
 
-        # 
         layers = self.nc[self.layer_var_name()]
         layer_vals=layers.values
         if layers.attrs.get('positive')=='down':

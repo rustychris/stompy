@@ -5265,7 +5265,7 @@ class Paving(paving_base,OptimizeGridMixin):
                 break
             if plot_stride and self.step%plot_stride == 0:
                 self.plot()
-                draw()
+                plt.draw()
             if save_stride and self.step%save_stride == 0:
                 fn = self.save_stride_filename()
                 print("Saving current state to %s"%fn)

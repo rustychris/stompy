@@ -196,11 +196,15 @@ class Structurer(object):
             if var_name == 'U_top1m':
                 weights = self.averaging_weights(proc=proc,time_step=tindex,ztop=0,dz=1.0)
                 # problem: weights is cell, layer, but U is layer, cell
+                # fixed - it was missing metadata on dv.
                 U = self.cell_velocity(processor=proc,time_step = tindex)
-
+                
                 # this does the vertical averaging in each water column
                 U[ weights==0 ] = 0.0 # avoid nan contamination
                 data_for_proc = np.sum( U[:,:,:2] * weights[:,:,None],axis=1)
+                print("data_for_proc %d finite %d nan"%
+                      (np.isfinite(data_for_proc).sum(),
+                       np.isnan(data_for_proc).sum()))
             elif var_name=='eta':
                 data_for_proc = self.read_cell_scalar(label='eta',processor=proc,time_step = tindex)
             elif var_name in ['u_wind','v_wind']:
@@ -260,6 +264,7 @@ class UgridAverager(Structurer):
                                face_v_vname='vc')
             ug.nc.z_r.attrs['positive']='down'
             ug.nc.z_w.attrs['positive']='down'
+            ug.nc.dv.attrs['positive']='down'
             self.ugrids.append(ug)
             self.grids.append(ug.grid)
 

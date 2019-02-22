@@ -28,6 +28,10 @@ def decompose(t,h,omegas):
     """
     t=np.asanyarray(t)
     omegas=np.asanyarray(omegas)
+
+    valid=np.isfinite(t)&np.isfinite(h)
+    t=t[valid]
+    h=h[valid]
     
     def sim(a,b):
         if a is b:
