@@ -154,6 +154,8 @@ class GenericConfig(object):
         # if the line already exists, it will be written out commented, otherwise
         # it won't be written at all.
         self.set_value(key,None)
+    def __contains__(self,key):
+        return self[key] is not None
 
     def __eq__(self,other):
         return self.is_equal(other)
@@ -464,6 +466,7 @@ class SuntansModel(dfm.HydroModel):
         new_model.restart_model=self
         new_model.restart_symlink=symlink
         new_model.set_grid(unstructured_grid.UnstructuredGrid.read_suntans(self.run_dir))
+        new_model.run_start=self.restartable_time()
         return new_model
 
     @classmethod
@@ -1186,13 +1189,19 @@ class SuntansModel(dfm.HydroModel):
                 self.bc_type3[cell][scalar_name].append(da)
 
     def dredge_boundary(self,linestring,dredge_depth):
-        super(SuntansModel,self).dredge_boundary(linestring,dredge_depth,
-                                                 edge_field='edge_depth',
-                                                 cell_field='depth')
+        if self.restart is not None:
+            return
+        else:
+            return super(SuntansModel,self).dredge_boundary(linestring,dredge_depth,
+                                                            edge_field='edge_depth',
+                                                            cell_field='depth')
     def dredge_discharge(self,point,dredge_depth):
-        super(SuntansModel,self).dredge_discharge(point,dredge_depth,
-                                                  edge_field='edge_depth',
-                                                  cell_field='depth')
+        if self.restart is not None:
+            return
+        else:
+            return super(SuntansModel,self).dredge_discharge(point,dredge_depth,
+                                                             edge_field='edge_depth',
+                                                             cell_field='depth')
         
     def write_flow_bc(self,bc):
         da=bc.data()
@@ -1542,7 +1551,14 @@ class SuntansModel(dfm.HydroModel):
                     self.restart_copier(os.path.join(parent_base,fn),
                                         os.path.join(self.run_dir,fn))
             # single files
-            for fn in ['vertspace.dat']:
+            single_files=['vertspace.dat']
+            if 'DataLocations' in self.config: # this apparently freezes
+                # UNTESTED
+                single_files.append(self.config['DataLocations'])
+            if 'ProfileDataFile' in self.config:
+                # UNTESTED
+                single_files.append(self.config['ProfileDataFile'])
+            for fn in single_files:
                 self.restart_copier(os.path.join(parent_base,fn),
                                     os.path.join(self.run_dir,fn))
         else:
@@ -1616,6 +1632,147 @@ class SuntansModel(dfm.HydroModel):
         else:
             raise Exception("Need to implement map output filenames for non-netcdf")
 
+    @classmethod
+    def parse_profdata(cls,fn):
+        """
+        Parse the profdata.dat file associated with a run.
+        fn: path to file to parse.
+        This is a classmethod to allow external usage but keep it bundled with the 
+        SunDriver class.
+        Returns an xarray dataset 
+
+        NOTE: if this uses caching at some point in the future, monitor_output should
+        be adapted to make a copy since it mutates the dataset.
+
+        data format:
+         (4 byte int)numTotalDataPoints: Number of data points found on all processors.  Note that
+             that this could be different from the number specified since some may lie outside the domain.
+         (4 byte int)numInterpPoints: Number of nearest neighbors to each point used for interpolation.
+         (4 byte int)NkmaxProfs: Number of vertical levels output in the profiles.
+         (4 byte int)nsteps: Total number of time steps in the simulation.
+         (4 byte int)ntoutProfs: Frequency of profile output.  This implies a total of nsteps/ntoutProfs are output.
+         (8 byte double)dt: Time step size
+         (8 byte double array X NkmaxProfs)dz: Contains the vertical grid spacings.
+         (4 byte int array X numTotalDataPoints)allIndices: Contains the indices of each point that determines its
+             original location in the data file.  This is mostly for debugging since the output data is resorted
+             so that it is in the same order as it appeared in the data file.
+         (4 byte int array X 2*numTotalDataPoints)dataXY: Contains the original data points at (or near) which profiles
+             are output.
+         (8 byte double array X numTotalDataPoints*numInterpPoints)xv: Array containing the x-locations of the nearest
+             neighbors to the dataXY points.  If numInterpPoints=3, then the 3 closest neighbors to the point
+             (dataXY[2*i],dataXY[2*i+1]) are (xv[3*i],yv[3*i]), (xv[3*i+1],yv[3*i+1]), (xv[3*i+2],yv[3*i+2]).
+         (8 byte double array X numTotalDataPoints*numInterpPoints)yv: Array containing the y-locations of the nearest
+             neighbors to the dataXY points (see xv above).
+        """
+        pdata=xr.Dataset()
+        with open(fn,'rb') as fp:
+            hdr_ints = np.fromfile(fp,np.int32,count=5)
+            pdata['num_total_data_points']=(),hdr_ints[0]
+            pdata['num_interp_points'] =(), hdr_ints[1]
+            pdata['nkmax_profs'] =(), hdr_ints[2]
+            pdata['nsteps'] =(), hdr_ints[3]
+            pdata['ntout_profs'] =(), hdr_ints[4]
+
+            pdata['dt'] =(), np.fromfile(fp,np.float64,1)[0]
+            pdata['dzz'] = np.fromfile(fp,np.float64,pdata['nkmax_profs'].item() )
+            pdata['all_indices'] = np.fromfile(fp,np.int32,pdata['num_total_data_points'].item())
+            dataxy = np.fromfile(fp,np.float64,2*pdata['num_total_data_points'].item())
+            pdata['request_xy'] =('request','xy'), dataxy.reshape( (-1,2) )
+            pdata['request_xy'].attrs['description']="Coordinates of the requested profiles"
+            
+            xvyv = np.fromfile(fp,np.float64,2*(pdata['num_total_data_points']*pdata['num_interp_points']).item())
+            pdata['prof_xy'] =('profile','xy'), xvyv.reshape( (2,-1) ).transpose()
+            pdata['prof_xy'].attrs['description']="Coordinates of the output profiles"
+        return pdata
+
+    def read_profile_data_raw(self,scalar,pdata=None,memmap=True):
+        """
+        scalar is one of HorizontalVelocityFile,
+        FreeSurfaceFile, etc
+
+        pdata: a previously parsed ProfData file, from parse_profdata. Can be passed
+           in to avoid re-parsing this file.
+        memmap: by default the file is memory mapped, which can be a huge performance
+        savings for large files.  In some cases and platforms it is less stable,
+        though.
+        """
+        if pdata is None:
+            pdata=self.parse_profdata(self.file_path('ProfileDataFile'))
+        prof_pnts = pdata.prof_xy
+        prof_len = prof_pnts.shape[0]
+
+        prof_fname = self.file_path(scalar) + ".prof"
+
+        if not os.path.exists(prof_fname):
+            log.debug("Request for profile for %s, but %s does not exist"%(scalar,prof_fname))
+            return None
+
+        # Figure out the shape of the output:
+        #  I'm assuming that profile data gets spat out in the same
+        #  ordering of dimensions as regular grid-based data
+
+        shape_per_step = []
+
+        # profiles.c writes u first then v, then w, each with a
+        # separate call to Write3DData()
+        if scalar == 'HorizontalVelocityFile':
+            shape_per_step.append(3)
+
+        # the outer loop is over profile points
+        shape_per_step.append(prof_len)
+
+        # And does it have z-levels? if so, that is the inner-most
+        #  loop, so the last dimension of the array
+        if scalar != 'FreeSurfaceFile':
+            nkmax_profs = pdata['nkmax_profs'].item() 
+            shape_per_step.append(nkmax_profs)
+
+        # better to use the size of the specific file we're opening:
+        prof_dat_size=os.stat(prof_fname).st_size
+        REALSIZE=8
+        bytes_per_step = REALSIZE * np.prod( np.array(shape_per_step) )
+        n_steps_in_file=int(prof_dat_size//bytes_per_step )
+
+        final_shape = tuple([n_steps_in_file] + shape_per_step)
+
+        if memmap: # BRAVE!
+            # print "Trying to memory map the data.."
+            data = np.memmap(prof_fname, dtype=np.float64, mode='r', shape=final_shape)
+        else:
+            data = np.fromfile(prof_fname,float64)
+            data = data.reshape(*final_shape)
+
+        # no caching at this point..
+        return data
+
+    def monitor_output(self):
+        if 'DataLocations' not in self.config: return None
+
+        pdata=self.parse_profdata(self.file_path('ProfileDataFile'))
+
+        file_to_var={'FreeSurfaceFile':'eta',
+                     'HorizontalVelocityFile':'u',
+                     'TemperatureFile':'temp',
+                     'SalinityFile':'salt',
+                     'EddyViscosityFile':'nut',
+                     'VerticalVelocityFile':'w',
+                     'ScalarDiffusivityFile':'kappa'}
+        # Try to figure out which variables have been output in profiles
+        # Just scan what's there, to avoid trying to figure out defaults.
+        for scalar in list(file_to_var.keys()):
+            raw_data=self.read_profile_data_raw(scalar,pdata=pdata)
+            if raw_data is not None:
+                if scalar=='FreeSurfaceFile':
+                    dims=('time','profile')
+                elif scalar=='HorizontalVelocityFile':
+                    dims=('time','xyz','profile','layer')
+                else:
+                    dims=('time','profile','layer')
+                # May need to use a different layer dimension for w...
+                print("%s:  raw data shape: %s  dims: %s"%(scalar,str(raw_data.shape),dims))
+                pdata[file_to_var[scalar]]=dims,raw_data
+        return pdata
+    
     _subdomain_grids=None
     def subdomain_grid(self,p):
         if self._subdomain_grids is None:
