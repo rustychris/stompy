@@ -1543,16 +1543,19 @@ class SuntansModel(dfm.HydroModel):
             # multiprocessor files except the .<proc> suffix, to be symlinked
             # or copied
             parent_base=os.path.dirname(self.restart)
-            for fn_base in ['celldata.dat','cells.dat',
-                            'edgedata.dat','edges.dat',
-                            'nodes.dat','topology.dat']:
+            multi_proc_files=['celldata.dat','cells.dat',
+                              'edgedata.dat','edges.dat',
+                              'nodes.dat','topology.dat']
+            if os.path.exists(os.path.join(parent_base,'depths.dat-edge')):
+                multi_proc_files.append('depths.dat-edge')
+            for fn_base in multi_proc_files:
                 for proc in range(self.num_procs):
                     fn=fn_base+".%d"%proc
                     self.restart_copier(os.path.join(parent_base,fn),
                                         os.path.join(self.run_dir,fn))
             # single files
             single_files=['vertspace.dat']
-            if 'DataLocations' in self.config: # this apparently freezes
+            if 'DataLocations' in self.config:
                 # UNTESTED
                 single_files.append(self.config['DataLocations'])
             if 'ProfileDataFile' in self.config:
@@ -1769,8 +1772,23 @@ class SuntansModel(dfm.HydroModel):
                 else:
                     dims=('time','profile','layer')
                 # May need to use a different layer dimension for w...
-                print("%s:  raw data shape: %s  dims: %s"%(scalar,str(raw_data.shape),dims))
+                # print("%s:  raw data shape: %s  dims: %s"%(scalar,str(raw_data.shape),dims))
                 pdata[file_to_var[scalar]]=dims,raw_data
+
+        # This may need some tweaking, but it's a start.
+        # use microseconds to get some reasonable precision for fraction dt
+        # but note that this isn't necessarily exact.
+        dt_prof=np.timedelta64( int( pdata['ntout_profs']*pdata['dt']*1e6),'us')
+        pdata['time']=('time',),(self.run_start + dt_prof*np.arange(pdata.dims['time']))
+                
+        # Total hack for convenience -- add a closest_to([x,y]) method to extract a single
+        # profile.
+        @utils.add_to(pdata)
+        def closest_to(self,target):
+            dists=utils.dist(target,self['prof_xy'].values)
+            idx=np.argmin(dists)
+            return self.isel(profile=idx)
+                
         return pdata
     
     _subdomain_grids=None
