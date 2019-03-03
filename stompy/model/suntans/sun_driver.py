@@ -1546,7 +1546,7 @@ class SuntansModel(dfm.HydroModel):
             multi_proc_files=['celldata.dat','cells.dat',
                               'edgedata.dat','edges.dat',
                               'nodes.dat','topology.dat']
-            if os.path.exists(os.path.join(parent_base,'depths.dat-edge')):
+            if os.path.exists(os.path.join(parent_base,'depths.dat-edge.0')):
                 multi_proc_files.append('depths.dat-edge')
             for fn_base in multi_proc_files:
                 for proc in range(self.num_procs):
