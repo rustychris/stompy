@@ -301,7 +301,9 @@ class BC(object):
             return data
         elif isinstance(data,xr.Dataset):
             if len(data.data_vars)==1:
-                da=data[data.data_vars[0]]
+                # some xarray allow inteeger index to get first item.
+                # 0.10.9 requires this cast to list first.
+                da=data[list(data.data_vars)[0]]
                 da.attrs['mode']=self.mode
                 return da
             else:
@@ -1050,8 +1052,13 @@ class HydroModel(object):
         # similar, but for the mdu:
         if sys.platform=='win32':
             # use cli to partition the mdu
+            # if this were being run not in run_dir, 
+            # oddly, even on windows, dflowfm requires only forward
+            # slashes in the path to the mdu (ver 1.4.4)
+            # since run_dflowfm uses run_dir as the working directory
+            # here we strip to the basename
             cmd=["--partition:ndomains=%d:icgsolver=6"%self.num_procs,
-                 self.mdu.filename]
+                 os.path.basename(self.mdu.filename)]
             self.run_dflowfm(cmd,mpi=False)
         else:
             # some of the older linux compiles don't seem to
@@ -1062,7 +1069,7 @@ class HydroModel(object):
 
             gen_parallel=os.path.join(self.dfm_bin_dir,"generate_parallel_mdu.sh")
             cmd=[gen_parallel,os.path.basename(self.mdu.filename),"%d"%self.num_procs]
-            utils.call_with_path(cmd,self.run_dir)
+            return utils.call_with_path(cmd,self.run_dir)
 
     _dflowfm_exe=None
     @property
@@ -1087,9 +1094,6 @@ class HydroModel(object):
           even when num_procs is >1. This is useful for partition which
           runs single-core.
         """
-        # Names of the executables
-        dflowfm=self.dflowfm_exe #os.path.join(self.dfm_bin_dir,"dflowfm")
-
         if mpi=='auto':
             num_procs=self.num_procs
         else:
@@ -1104,11 +1108,10 @@ class HydroModel(object):
                         +cmd )
             # "%s -n %d %s %s"%(mpiexec,self.num_procs,dflowfm,cmd)
         else:
-            real_cmd=[dflowfm]+cmd
-            # real_cmd="%s %s"%(dflowfm,cmd)
+            real_cmd=[self.dflowfm_exe]+cmd
 
         self.log.info("Running command: %s"%(" ".join(real_cmd)))
-        utils.call_with_path(real_cmd,self.run_dir)
+        return utils.call_with_path(real_cmd,self.run_dir)
 
     def run_model(self):
         self.run_dflowfm(cmd=["-t","1","--autostartstop",
@@ -2076,6 +2079,7 @@ class DFlowModel(HydroModel):
 
     def write_forcing(self,overwrite=True):
         bc_fn=self.ext_force_file()
+        assert bc_fn,"DFM script requires old-style BC file.  Set [external forcing] ExtForceFile"
         if overwrite and os.path.exists(bc_fn):
             os.unlink(bc_fn)
         super(DFlowModel,self).write_forcing()
@@ -2108,7 +2112,7 @@ class DFlowModel(HydroModel):
         dfm_grid.write_dfm(self.grid,dest,overwrite=True)
 
     def ext_force_file(self):
-        return os.path.join(self.run_dir,self.mdu['external forcing','ExtForceFile'])
+        return self.mdu.filepath(('external forcing','ExtForceFile'))
 
     def load_mdu(self,fn):
         self.mdu=dio.MDUFile(fn)
@@ -2243,6 +2247,7 @@ class DFlowModel(HydroModel):
 
     def write_monitor_points(self):
         fn=self.mdu.filepath( ('output','ObsFile') )
+        if fn is None: return
         with open(fn,'at') as fp:
             for i,mon_feat in enumerate(self.mon_points):
                 try:
@@ -2253,6 +2258,7 @@ class DFlowModel(HydroModel):
                 fp.write("%.3f %.3f '%s'\n"%(xy[0],xy[1],name))
     def write_monitor_sections(self):
         fn=self.mdu.filepath( ('output','CrsFile') )
+        if fn is None: return
         with open(fn,'at') as fp:
             for i,mon_feat in enumerate(self.mon_sections):
                 try:
@@ -2468,6 +2474,6 @@ class DFlowModel(HydroModel):
 
 import sys
 if sys.platform=='win32':
-    cls=HydroModel
+    cls=DFlowModel
     cls.dfm_bin_exe="dflowfm-cli.exe"
     cls.mpi_bin_exe="mpiexec.exe"

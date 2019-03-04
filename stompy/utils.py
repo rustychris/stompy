@@ -2015,7 +2015,9 @@ def call_with_path(cmd,path):
     try:
         os.chdir(path)
         shell=(type(cmd) in six.string_types)
-        return subprocess.call(cmd,shell=shell)
+        # return subprocess.call(cmd,shell=shell)
+        output=subprocess.check_output(cmd,shell=shell)
+        return output
     finally:
         os.chdir(pwd)
 
