@@ -10,7 +10,10 @@ def periods(start_date,end_date,days_per_request):
     if days_per_request is None:
         yield (start_date,end_date)
     elif isinstance(days_per_request,str):
-        periods=pd.PeriodIndex(start=start_date,end=end_date,freq=days_per_request)
+        # This is deprecated:
+        #periods=pd.PeriodIndex(start=start_date,end=end_date,freq=days_per_request)
+        # This is the recommended update
+        periods=pd.period_range(start=start_date,end=end_date,freq=days_per_request)
         for period in periods:
             # The round() call both avoids a warning about nanoseconds, and
             # makes this output equivalent to the days_per_request~integer

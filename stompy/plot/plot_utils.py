@@ -24,8 +24,12 @@ try:
 except ImportError:
     xr="XARRAY NOT AVAILABLE"
 
-# convenience function for getting coordinates from the plot:
 def pick_points(n):
+    """
+    convenience function for getting coordinates from the plot:
+    this is not much better than plt.ginput().  you should 
+    probably just use that.
+    """
     count = [0]
     pick_points.results = np.zeros( (n,2), float64)
 
@@ -411,7 +415,7 @@ def enable_picker(coll,ax=None,cb=None,points=5):
      
     returns an object which when called always returns the most recent index chosen
     """
-    ax = ax or coll.get_axes() # was plt.gca()
+    ax = ax or coll.axes # was plt.gca(), then coll.get_axes().  modern is just .axes
     coll.set_picker(points) # should be 5 points
 
     class dummy(object):

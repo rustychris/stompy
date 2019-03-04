@@ -86,6 +86,8 @@ HycomMultiScalarBC=dfm.HycomMultiScalarBC
 NOAAStageBC=dfm.NOAAStageBC
 NwisFlowBC=dfm.NwisFlowBC
 NwisStageBC=dfm.NwisStageBC
+CdecFlowBC=dfm.CdecFlowBC
+CdecStageBC=dfm.CdecStageBC
 
 class GenericConfig(object):
     """ Handles reading and writing of suntans.dat formatted files.
@@ -152,6 +154,8 @@ class GenericConfig(object):
         # if the line already exists, it will be written out commented, otherwise
         # it won't be written at all.
         self.set_value(key,None)
+    def __contains__(self,key):
+        return self[key] is not None
 
     def __eq__(self,other):
         return self.is_equal(other)
@@ -412,6 +416,14 @@ class SunConfig(GenericConfig):
 class SuntansModel(dfm.HydroModel):
     # Annoying, but suntans doesn't like signed elevations
     # this offset will be applied to grid depths and freesurface boundary conditions.
+    # This is error prone, though, and makes it difficult to "round-trip"
+    # grid information.  In particular, if a new run is created by loading an old
+    # run, there will be an issue where the grid may get z_offset applied twice.
+    # This should be reimplemented as a z_datum.  So no behind-the-scenes offsets,
+    # just have a standardized place for saying that my model's z=0 is z_offset
+    # from z_datum, e.g. z_datum='NAVD88' and z_offset.
+    # maybe the appropriate thing is a dictionary, mapping datum names to offsets.
+    # like z_datum['NAVD88']=-5.
     z_offset=0.0
     ic_ds=None
 
@@ -454,6 +466,7 @@ class SuntansModel(dfm.HydroModel):
         new_model.restart_model=self
         new_model.restart_symlink=symlink
         new_model.set_grid(unstructured_grid.UnstructuredGrid.read_suntans(self.run_dir))
+        new_model.run_start=self.restartable_time()
         return new_model
 
     @classmethod
@@ -558,7 +571,7 @@ class SuntansModel(dfm.HydroModel):
 
         
     @staticmethod
-    def load(fn):
+    def load(fn,load_grid=True):
         """
         Open an existing model setup, from path to its suntans.dat
         """
@@ -576,8 +589,18 @@ class SuntansModel(dfm.HydroModel):
             model.num_procs=1
         model.infer_restart()
         model.set_times_from_config()
+        # This will need some tweaking to fail gracefully
+        if load_grid:
+            model.load_grid()
         return model
-
+    def load_grid(self):
+        """
+        Set self.grid from existing suntans-format grid in self.run_dir.
+        """
+        g=unstructured_grid.UnstructuredGrid.read_suntans(self.run_dir)
+        self.set_grid(g)
+        return g
+    
     def infer_restart(self):
         """
         See if this run is a restart.
@@ -607,10 +630,11 @@ class SuntansModel(dfm.HydroModel):
             log.debug("Does not look like a restart based on %s"%start_path)
             self.restart=None
 
-    def chain_restarts(self,count=None):
+    def chain_restarts(self,count=None,load_grid=False):
         """
         return a list of up to count (None: unlimited) Model instances
         in forward chronological order of consecutive restarts.
+        load_grid: defaults to *not* loading the grid of the earlier runs.
         """
         runs=[self]
         run=self
@@ -619,7 +643,7 @@ class SuntansModel(dfm.HydroModel):
                 break
             run.infer_restart()
             if run.restart and run.restart is not True:
-                run=SuntansModel.load(run.restart)
+                run=SuntansModel.load(run.restart,load_grid=load_grid)
                 runs.insert(0,run)
             else:
                 break
@@ -1088,7 +1112,6 @@ class SuntansModel(dfm.HydroModel):
             ds['point_cell'].values[pnt_idx]=c
             ds['point_layer'].values[pnt_idx]=k
 
-            print("punting on point source salinity and temp")
             # really shaky ground here..
             if 'T' in self.bc_point_sources[key]:
                 combine_items( ds['point_T'].isel(Npoint=pnt_idx).values,
@@ -1165,25 +1188,49 @@ class SuntansModel(dfm.HydroModel):
             for cell in self.bc_geom_to_cells(bc.geom):
                 self.bc_type3[cell][scalar_name].append(da)
 
+    def dredge_boundary(self,linestring,dredge_depth):
+        if self.restart is not None:
+            return
+        else:
+            return super(SuntansModel,self).dredge_boundary(linestring,dredge_depth,
+                                                            edge_field='edge_depth',
+                                                            cell_field='depth')
+    def dredge_discharge(self,point,dredge_depth):
+        if self.restart is not None:
+            return
+        else:
+            return super(SuntansModel,self).dredge_discharge(point,dredge_depth,
+                                                             edge_field='edge_depth',
+                                                             cell_field='depth')
+        
     def write_flow_bc(self,bc):
         da=bc.data()
         self.bc_type2_segments[bc.name]['Q'].append(da)
 
         assert len(da.dims)<=1,"Flow must have dims either time, or none"
 
+        if bc.dredge_depth is not None:
+            log.info("Dredging grid for flow boundary %s"%bc.name)
+            self.dredge_boundary(np.array(bc.geom.coords),
+                                 bc.dredge_depth)
+
         edges=self.bc_geom_to_edges(bc.geom)
         for j in edges:
             self.bc_type2[j]['Q'].append(bc.name)
 
+
     def write_source_sink_bc(self,bc):
         da=bc.data()
-        
-        c=self.bc_geom_to_interior_cell(bc.geom)
-        print("Punting on k for source")
-        # can come back later and map bc.z to a proper layer k
-        k=0 
-        
-        self.bc_point_sources[(c,k)]['Q'].append(da)
+
+        if bc.dredge_depth is not None:
+            # Additionally modify the grid to make sure there is a place for inflow to
+            # come in.
+            log.info("Dredging grid for source/sink BC %s"%bc.name)
+            self.dredge_discharge(np.array(bc.geom.coords),
+                                  bc.dredge_depth)
+        ck=self.bc_to_interior_cell_layer(bc) # (cell,layer) tuple
+
+        self.bc_point_sources[ck]['Q'].append(da)
         
         assert len(da.dims)<=1,"Flow must have dims either time, or none"
             
@@ -1225,7 +1272,9 @@ class SuntansModel(dfm.HydroModel):
         geom: LineString geometry
         return list of boundary edges adjacent to geom.
         """
-        return dfm_grid.polyline_to_boundary_edges(self.grid,np.array(geom.coords))
+        # return dfm_grid.polyline_to_boundary_edges(self.grid,np.array(geom.coords))
+        # now part of UnstructuredGrid
+        return self.grid.select_edges_by_polyline(geom)
 
     def set_times_from_config(self):
         """
@@ -1494,15 +1543,25 @@ class SuntansModel(dfm.HydroModel):
             # multiprocessor files except the .<proc> suffix, to be symlinked
             # or copied
             parent_base=os.path.dirname(self.restart)
-            for fn_base in ['celldata.dat','cells.dat',
-                            'edgedata.dat','edges.dat',
-                            'nodes.dat','topology.dat']:
+            multi_proc_files=['celldata.dat','cells.dat',
+                              'edgedata.dat','edges.dat',
+                              'nodes.dat','topology.dat']
+            if os.path.exists(os.path.join(parent_base,'depths.dat-edge.0')):
+                multi_proc_files.append('depths.dat-edge')
+            for fn_base in multi_proc_files:
                 for proc in range(self.num_procs):
                     fn=fn_base+".%d"%proc
                     self.restart_copier(os.path.join(parent_base,fn),
                                         os.path.join(self.run_dir,fn))
             # single files
-            for fn in ['vertspace.dat']:
+            single_files=['vertspace.dat']
+            if 'DataLocations' in self.config:
+                # UNTESTED
+                single_files.append(self.config['DataLocations'])
+            if 'ProfileDataFile' in self.config:
+                # UNTESTED
+                single_files.append(self.config['ProfileDataFile'])
+            for fn in single_files:
                 self.restart_copier(os.path.join(parent_base,fn),
                                     os.path.join(self.run_dir,fn))
         else:
@@ -1552,6 +1611,14 @@ class SuntansModel(dfm.HydroModel):
         fns.sort()
         return fns
 
+    def avg_outputs(self):
+        if int(self.config['calcaverage']):
+            fns=glob.glob(os.path.join(self.run_dir,self.config['averageNetcdfFile']+"*"))
+            fns.sort()
+            return fns
+        else:
+            return []
+        
     def map_outputs(self):
         """
         return a list of map output files -- if netcdf output is enabled,
@@ -1568,6 +1635,162 @@ class SuntansModel(dfm.HydroModel):
         else:
             raise Exception("Need to implement map output filenames for non-netcdf")
 
+    @classmethod
+    def parse_profdata(cls,fn):
+        """
+        Parse the profdata.dat file associated with a run.
+        fn: path to file to parse.
+        This is a classmethod to allow external usage but keep it bundled with the 
+        SunDriver class.
+        Returns an xarray dataset 
+
+        NOTE: if this uses caching at some point in the future, monitor_output should
+        be adapted to make a copy since it mutates the dataset.
+
+        data format:
+         (4 byte int)numTotalDataPoints: Number of data points found on all processors.  Note that
+             that this could be different from the number specified since some may lie outside the domain.
+         (4 byte int)numInterpPoints: Number of nearest neighbors to each point used for interpolation.
+         (4 byte int)NkmaxProfs: Number of vertical levels output in the profiles.
+         (4 byte int)nsteps: Total number of time steps in the simulation.
+         (4 byte int)ntoutProfs: Frequency of profile output.  This implies a total of nsteps/ntoutProfs are output.
+         (8 byte double)dt: Time step size
+         (8 byte double array X NkmaxProfs)dz: Contains the vertical grid spacings.
+         (4 byte int array X numTotalDataPoints)allIndices: Contains the indices of each point that determines its
+             original location in the data file.  This is mostly for debugging since the output data is resorted
+             so that it is in the same order as it appeared in the data file.
+         (4 byte int array X 2*numTotalDataPoints)dataXY: Contains the original data points at (or near) which profiles
+             are output.
+         (8 byte double array X numTotalDataPoints*numInterpPoints)xv: Array containing the x-locations of the nearest
+             neighbors to the dataXY points.  If numInterpPoints=3, then the 3 closest neighbors to the point
+             (dataXY[2*i],dataXY[2*i+1]) are (xv[3*i],yv[3*i]), (xv[3*i+1],yv[3*i+1]), (xv[3*i+2],yv[3*i+2]).
+         (8 byte double array X numTotalDataPoints*numInterpPoints)yv: Array containing the y-locations of the nearest
+             neighbors to the dataXY points (see xv above).
+        """
+        pdata=xr.Dataset()
+        with open(fn,'rb') as fp:
+            hdr_ints = np.fromfile(fp,np.int32,count=5)
+            pdata['num_total_data_points']=(),hdr_ints[0]
+            pdata['num_interp_points'] =(), hdr_ints[1]
+            pdata['nkmax_profs'] =(), hdr_ints[2]
+            pdata['nsteps'] =(), hdr_ints[3]
+            pdata['ntout_profs'] =(), hdr_ints[4]
+
+            pdata['dt'] =(), np.fromfile(fp,np.float64,1)[0]
+            pdata['dzz'] = np.fromfile(fp,np.float64,pdata['nkmax_profs'].item() )
+            pdata['all_indices'] = np.fromfile(fp,np.int32,pdata['num_total_data_points'].item())
+            dataxy = np.fromfile(fp,np.float64,2*pdata['num_total_data_points'].item())
+            pdata['request_xy'] =('request','xy'), dataxy.reshape( (-1,2) )
+            pdata['request_xy'].attrs['description']="Coordinates of the requested profiles"
+            
+            xvyv = np.fromfile(fp,np.float64,2*(pdata['num_total_data_points']*pdata['num_interp_points']).item())
+            pdata['prof_xy'] =('profile','xy'), xvyv.reshape( (2,-1) ).transpose()
+            pdata['prof_xy'].attrs['description']="Coordinates of the output profiles"
+        return pdata
+
+    def read_profile_data_raw(self,scalar,pdata=None,memmap=True):
+        """
+        scalar is one of HorizontalVelocityFile,
+        FreeSurfaceFile, etc
+
+        pdata: a previously parsed ProfData file, from parse_profdata. Can be passed
+           in to avoid re-parsing this file.
+        memmap: by default the file is memory mapped, which can be a huge performance
+        savings for large files.  In some cases and platforms it is less stable,
+        though.
+        """
+        if pdata is None:
+            pdata=self.parse_profdata(self.file_path('ProfileDataFile'))
+        prof_pnts = pdata.prof_xy
+        prof_len = prof_pnts.shape[0]
+
+        prof_fname = self.file_path(scalar) + ".prof"
+
+        if not os.path.exists(prof_fname):
+            log.debug("Request for profile for %s, but %s does not exist"%(scalar,prof_fname))
+            return None
+
+        # Figure out the shape of the output:
+        #  I'm assuming that profile data gets spat out in the same
+        #  ordering of dimensions as regular grid-based data
+
+        shape_per_step = []
+
+        # profiles.c writes u first then v, then w, each with a
+        # separate call to Write3DData()
+        if scalar == 'HorizontalVelocityFile':
+            shape_per_step.append(3)
+
+        # the outer loop is over profile points
+        shape_per_step.append(prof_len)
+
+        # And does it have z-levels? if so, that is the inner-most
+        #  loop, so the last dimension of the array
+        if scalar != 'FreeSurfaceFile':
+            nkmax_profs = pdata['nkmax_profs'].item() 
+            shape_per_step.append(nkmax_profs)
+
+        # better to use the size of the specific file we're opening:
+        prof_dat_size=os.stat(prof_fname).st_size
+        REALSIZE=8
+        bytes_per_step = REALSIZE * np.prod( np.array(shape_per_step) )
+        n_steps_in_file=int(prof_dat_size//bytes_per_step )
+
+        final_shape = tuple([n_steps_in_file] + shape_per_step)
+
+        if memmap: # BRAVE!
+            # print "Trying to memory map the data.."
+            data = np.memmap(prof_fname, dtype=np.float64, mode='r', shape=final_shape)
+        else:
+            data = np.fromfile(prof_fname,float64)
+            data = data.reshape(*final_shape)
+
+        # no caching at this point..
+        return data
+
+    def monitor_output(self):
+        if 'DataLocations' not in self.config: return None
+
+        pdata=self.parse_profdata(self.file_path('ProfileDataFile'))
+
+        file_to_var={'FreeSurfaceFile':'eta',
+                     'HorizontalVelocityFile':'u',
+                     'TemperatureFile':'temp',
+                     'SalinityFile':'salt',
+                     'EddyViscosityFile':'nut',
+                     'VerticalVelocityFile':'w',
+                     'ScalarDiffusivityFile':'kappa'}
+        # Try to figure out which variables have been output in profiles
+        # Just scan what's there, to avoid trying to figure out defaults.
+        for scalar in list(file_to_var.keys()):
+            raw_data=self.read_profile_data_raw(scalar,pdata=pdata)
+            if raw_data is not None:
+                if scalar=='FreeSurfaceFile':
+                    dims=('time','profile')
+                elif scalar=='HorizontalVelocityFile':
+                    dims=('time','xyz','profile','layer')
+                else:
+                    dims=('time','profile','layer')
+                # May need to use a different layer dimension for w...
+                # print("%s:  raw data shape: %s  dims: %s"%(scalar,str(raw_data.shape),dims))
+                pdata[file_to_var[scalar]]=dims,raw_data
+
+        # This may need some tweaking, but it's a start.
+        # use microseconds to get some reasonable precision for fraction dt
+        # but note that this isn't necessarily exact.
+        dt_prof=np.timedelta64( int( pdata['ntout_profs']*pdata['dt']*1e6),'us')
+        pdata['time']=('time',),(self.run_start + dt_prof*np.arange(pdata.dims['time']))
+                
+        # Total hack for convenience -- add a closest_to([x,y]) method to extract a single
+        # profile.
+        @utils.add_to(pdata)
+        def closest_to(self,target):
+            dists=utils.dist(target,self['prof_xy'].values)
+            idx=np.argmin(dists)
+            return self.isel(profile=idx)
+                
+        return pdata
+    
     _subdomain_grids=None
     def subdomain_grid(self,p):
         if self._subdomain_grids is None:
@@ -1678,8 +1901,8 @@ class SuntansModel(dfm.HydroModel):
     def extract_station(self,xy=None,ll=None,chain_count=1):
         """
         Return a dataset for a single point in the model
-        xy: native model coordinates
-        ll: lon/lat coordinates
+        xy: native model coordinates, [Nstation,2]
+        ll: lon/lat coordinates, [Nstation,2]
         chain_count: max number of restarts to go back.
           1=>no chaining just this model.  None or 0:
           chain all runs possible.  Otherwise, go back max
@@ -1688,53 +1911,143 @@ class SuntansModel(dfm.HydroModel):
         # For the moment, just use map output
         if xy is None:
             xy=self.ll_to_native(ll)
+            
         map_fns=self.map_outputs()
 
-        # Find which subdomain to use:
-        match=[None,None,np.inf,None] # proc,cell,distance,ds
+        # First, map request locations to processor and cell
+        
+        xy=np.asarray(xy)
+        orig_ndim=xy.ndim
+        if orig_ndim==1:
+            xy=xy[None,:]
+        elif orig_ndim>2:
+            raise Exception("Can only handle single coordinates or an list of coordinates")
+            
+        num_stations=len(xy)
+
+        # allocate, [proc,cell,distance] per point
+        matches=[[None,None,np.inf] for i in range(num_stations)]
+
+        # outer loop on proc
         for proc,map_fn in enumerate(map_fns):
             map_ds=xr.open_dataset(map_fn)
             g=unstructured_grid.UnstructuredGrid.from_ugrid(map_ds)
-            c=g.select_cells_nearest(xy,inside=False)
-            d=utils.dist(g.cells_center()[c],xy)
-            if d<match[2]:
-                match=[proc,c,d,map_fn]
-            map_ds.close()
-        if match[1] is None:
-            raise Exception("Could not find model output at %.0f,%.0f"%(xy[0],xy[1]))
-        # print("Matched to cell center %.0fm away"%(match[2]))
-
+            cc=g.cells_center()
+            # inner loop on station
+            for station in range(num_stations):
+                c=g.select_cells_nearest(xy[station],inside=False)
+                d=utils.dist(cc[c],xy[station])
+                if d<matches[station][2]:
+                    matches[station]=[proc,c,d]
+        # Now we know exactly which procs are useful, and can close
+        # the others
+        hot_procs={} # dictionary tracking which processors are useful
+        for station,(proc,c,d) in enumerate(matches):
+            hot_procs[proc]=(station,c,d)
+        for proc,map_fn in enumerate(map_fns):
+            if proc not in hot_procs:
+                xr.open_dataset(map_fn).close()
+            # otherwise close later
+            
         if chain_count==1:
             runs=[self]
         else:
             runs=self.chain_restarts(count=chain_count)
 
-        proc,cell,distance,map_fn=match
-
         dss=[] # per-restart datasets
 
+        # workaround for cases where numsides was not held constant
+        max_numsides=0
+        min_numsides=1000000
+        
         for run in runs:
-            map_ds=xr.open_dataset(run.map_outputs()[proc])
+            model_out=None
+            for proc,map_fn in enumerate(run.map_outputs()):
+                if proc not in hot_procs: continue # doesn't have any hits
+                
+                map_ds=xr.open_dataset(run.map_outputs()[proc])
 
-            # Work around bad naming of dimensions
-            map_ds['Nk_c']=map_ds['Nk']
-            del map_ds['Nk']
+                # Work around bad naming of dimensions
+                map_ds['Nk_c']=map_ds['Nk']
+                del map_ds['Nk']
 
-            # Extract time series there:
-            model_out=xr.Dataset() # not middle out
-            model_out['time']=map_ds.time
-            model_out['distance_from_target']=(),match[2]
+                # wait until we've loaded one to initialize the dataset for this run
+                if model_out is None:
+                    model_out=xr.Dataset() # not middle out
+                    model_out['time']=map_ds.time
 
-            for d in map_ds.data_vars:
-                if 'Nc' in map_ds[d].dims:
-                    model_out[d]=map_ds[d].isel(Nc=match[1])
+                    # allocate output variables:
+                    for d in map_ds.data_vars:
+                        if 'Nc' in map_ds[d].dims:
+                            # put station first
+                            new_dims=['station']
+                            new_shape=[num_stations]
+                            for d_dim in map_ds[d].dims:
+                                if d_dim=='Nc':
+                                    continue # replaced by station above
+                                else:
+                                    new_dims.append(d_dim)
+                                    new_shape.append(map_ds.dims[d_dim])
+                            model_out[d]=tuple(new_dims), np.zeros(new_shape, map_ds[d].dtype )
 
+                # For vectorized indexing, pulls the stations we want want from this
+                # processor, but only gets as far as ordering them densely on this
+                # proc
+                Nc_indexer=xr.DataArray( [m[1] for m in matches if m[0]==proc ],
+                                         dims=['proc_station'] )
+                assert len(Nc_indexer),"Somehow this proc has no hits"
+                
+                # and the station indexes in model_out to assign to.
+                # this can't use vectorized indexing because you can't assign to the
+                # result of vectorized indexing.
+                proc_stations=np.array( [i for i,m in enumerate(matches) if m[0]==proc] )
+                                        
+                for d in map_ds.data_vars:
+                    if d not in model_out: continue
+
+                    # potentially gets one isel out of the tight loop
+                    # this appears to work.
+                    extracted=map_ds[d].isel(Nc=Nc_indexer)
+                    # extracted will have 'station' in the wrong place. transpose
+                    dims=['proc_station'] + [d for d in extracted.dims if d!='proc_station']
+                    extractedT=extracted.transpose(*dims)
+                    model_out[d].values[proc_stations,...] = extractedT.values
+                    
+                    #for station in lin_idx,arr_idx in enumerate(np.ndindex(stn_shape)):
+                    #    if matches[lin_idx][0]!=proc: continue
+                    #    
+                    #    extracted=map_ds[d].isel(Nc=matches[lin_idx][1])
+                    #    # seems like voodoo -- construct an index into the output,
+                    #    # which will let us point to the desired station.
+                    #    sel=dict(zip(stn_dims,arr_idx))
+                    #    model_out[d].isel(sel).values[...]=extracted
             if dss:
                 # limit to non-overlapping
                 time_sel=model_out.time.values>dss[-1].time.values[-1]
                 model_out=model_out.isel(time=time_sel)
+            max_numsides=max(max_numsides,model_out.dims['numsides'])
+            min_numsides=min(min_numsides,model_out.dims['numsides'])
             dss.append(model_out)
+            
+        if max_numsides!=min_numsides:
+            log.warning("numsides varies %d to %d over restarts.  Kludge around"%(min_numsides,max_numsides))
+            dss=[ ds.isel(numsides=slice(0,min_numsides)) for ds in dss]
+        combined_ds=xr.concat(dss,dim='time',data_vars='minimal',coords='minimal')
 
-        combined_ds=xr.concat(dss,dim='time',data_vars='minimal')
+        # copy from matches
+        combined_ds['distance_from_target']=('station',), np.zeros(num_stations, np.float64)
+        combined_ds['subdomain']=('station',), np.zeros(num_stations,np.int32)
+        combined_ds['station_cell']=('station',), np.zeros(num_stations,np.int32)
+        combined_ds['station_cell'].attrs['description']="Cell index in subdomain grid"
+        combined_ds['station_x']=('station',), xy[...,0]
+        combined_ds['station_y']=('station',), xy[...,1]
+        
+        for station in range(num_stations):
+            # here we know the order and can go straight to values
+            combined_ds['distance_from_target'].values[station]=matches[station][2]
+            combined_ds['subdomain'].values[station]=matches[station][0]
 
+        if orig_ndim==1:
+            combined_ds=combined_ds.isel(station=0)
+            
         return combined_ds

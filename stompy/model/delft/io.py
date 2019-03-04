@@ -1250,9 +1250,9 @@ class SectionedConfig(object):
             self.rows.append(section)
             self.rows.append(row_text)
 
-    def __setitem__(self,sec_key,value):
+    def __setitem__(self,sec_key,value): # self[sec_key]=value
         self.set_value(sec_key,value)
-    def __getitem__(self,sec_key):
+    def __getitem__(self,sec_key):       # self[sec_key]
         return self.get_value(sec_key)
 
     def filepath(self,sec_key):

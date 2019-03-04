@@ -64,10 +64,13 @@ def weighted_grid_extrapolation(g,samples,alpha=1e-5,
 
     for i in range(len(samples)):
         if i%1000==0:
-            log.warning("%d/%d samples"%(i,len(samples)))
+            log.info("%d/%d samples"%(i,len(samples)))
             
         rec=samples.iloc[i]
-        weight=rec[weight_col]
+        if weight_col is None:
+            weight=1.0
+        else:
+            weight=rec[weight_col]
         if x_col is not None:
             xy=rec[[x_col,y_col]].values
         else:

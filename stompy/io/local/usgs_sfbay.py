@@ -241,7 +241,6 @@ ftype:easy
 """
 
 
-
 def query_usgs_sfbay(period_start, period_end, cache_dir=None):
     params=[]
 
@@ -321,5 +320,11 @@ def query_usgs_sfbay(period_start, period_end, cache_dir=None):
                 
     df = pd.read_csv(StringIO(data2),skiprows=[1],parse_dates=["Date"] )
 
+    # merge in lat/lon
+    lonlats=[station_number_to_lonlat(s) for s in df['Station Number']]
+    lonlats=np.array(lonlats)
+    df['longitude']=lonlats[:,0]
+    df['latitude']=lonlats[:,1]
+    
     return df
 

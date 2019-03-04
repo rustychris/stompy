@@ -28,6 +28,10 @@ def decompose(t,h,omegas):
     """
     t=np.asanyarray(t)
     omegas=np.asanyarray(omegas)
+
+    valid=np.isfinite(t)&np.isfinite(h)
+    t=t[valid]
+    h=h[valid]
     
     def sim(a,b):
         if a is b:
@@ -114,7 +118,7 @@ def decompose_noaa37(t,h):
 
 def select_omegas(T,omegas=None,factor=0.25):
     """
-    T: timedelta64 giving duration of a timeseries
+    T: duration of a timeseries in seconds
     omegas: an array of angular frequencies in rad/s, defaults to
     the 37 constituents used in NOAA predictions.
 
