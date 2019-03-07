@@ -1353,6 +1353,7 @@ class HydroModel(object):
         Project array of longitude/latitude [...,2] to
         model-native (e.g. UTM meters)
         """
+        assert self.projection,"Must set projection, i.e. x.projection='EPSG:26910'"
         return proj_utils.mapper('WGS84',self.projection)
 
     @property
