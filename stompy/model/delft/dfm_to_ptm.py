@@ -471,6 +471,8 @@ class DFlowToPTMHydro(object):
                 # dried out by setting cell_top=0, though they do show a zero wet area.
                 self.cell_k_top_var[:,ti] = self.nkmax
 
+            # HERE: this should probably use edge area and length, so that
+            #  fluxes
             # edge eta is taken from the higher freesurface
             eta_cell=self.out_nc['Mesh2_sea_surface_elevation'][:,ti]
             edge_eta=np.maximum( eta_cell[c1], eta_cell[c2] )

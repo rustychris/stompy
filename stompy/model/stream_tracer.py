@@ -1,11 +1,8 @@
 import numpy as np
 import xarray as xr
-
 from stompy.grid import unstructured_grid
 from stompy import utils
 from shapely import geometry
-
-
 # Then a Perot-like calculation on each cell in the dual
 def U_perot(g,Q,V):
     cc=g.cells_center()
@@ -177,7 +174,6 @@ def steady_streamline_oneway(g,Uc,x0,max_t=3600,max_steps=1000,max_dist=None,
                 
         # Special case for sliding along an edge
         # note that we only want to do this when the edge is convergent.
-
         if dt_max_edge==0.0 and j_cross is not None and is_convergent(j_cross,c,c_U,c_cross,c_cross_U):
             # print("Moving along edge")
             edge_tan=np.array([-edge_norm[j_cross,1],
@@ -221,6 +217,10 @@ def steady_streamline_oneway(g,Uc,x0,max_t=3600,max_steps=1000,max_dist=None,
                         break
                 else:
                     raise Exception("Couldn't find a good edge after going through node")
+                # update c_cross_U since we changed c_cross
+                c_cross_U=Uc[c_cross,:]
+                if bidir and (np.dot(c_U,c_cross_U)<0):
+                    c_cross_U=-c_cross_U # don't modify Uc!
         else:
             t_max_edge=t+dt_max_edge
             if t_max_edge>max_t:
@@ -296,6 +296,9 @@ def steady_streamline_twoways(g,Uc,x0,**kw):
     """
     Trace upstream and downstream with velocities Uc, concatenate
     the results and return dataset.
+    Note that there may be repeated points in the trajectory -- this is
+    currently left in place to help with debugging, since the points may
+    be repeated but reflect different cells or stopping conditions.
     """
     ds_fwd=steady_streamline_oneway(g,Uc,x0,**kw)
     ds_rev=steady_streamline_oneway(g,-Uc,x0,**kw)
@@ -311,15 +314,29 @@ def prepare_grid(g):
 class StreamDistance(object):
     def __init__(self,g,U,source_ds,
                  alongs=None,acrosses=None,
-                 g_rot=None,U_rot=None):
+                 bidir=False,
+                 g_rot=None,U_rot=None,
+                 along_args={},across_args={}):
         self.g=g
+        prepare_grid(g)
+        
         self.U=U
         self.source_ds=source_ds
         self.g_rot=g_rot or self.g
+
+        if self.g_rot != self.g:
+            prepare_grid(self.g_rot)
+            
         if U_rot is None:
             assert self.g==self.g_rot
             U_rot=utils.rot(np.pi/2,self.U)
         self.U_rot=U_rot
+
+        self.bidir=bidir
+        self.along_args=dict(bidir=bidir,max_t=20*3600,max_dist=500)
+        self.along_args.update(along_args)
+        self.across_args=dict(bidir=bidir,max_t=20*3600,max_dist=100)
+        self.across_args.update(across_args)
 
         if alongs:
             self.alongs=alongs
@@ -341,12 +358,14 @@ class StreamDistance(object):
         for i in utils.progress(range(self.source_ds.dims['sample'])):
             x0=self.source_ds.x.values[i,:]
             acrosses.append(self.trace_across(x0))
+        self.acrosses=acrosses
+    
     def trace_along(self,x):
         # bidir, max_t, max_dist should be instance attributes
-        return steady_streamline_twoways(self.g,self.U,x,bidir=False,max_t=20*3600,max_dist=500)
+        return steady_streamline_twoways(self.g,self.U,x,**self.along_args)
     def trace_across(self,x):
         # bidir, max_t, max_dist should be instance attributes
-        return steady_streamline_twoways(self.g_rot,self.U_rot,x,bidir=False,max_t=20*3600,max_dist=100)
+        return steady_streamline_twoways(self.g_rot,self.U_rot,x,**self.across_args)
 
     def stream_distance(self,x_target,sample,x_along=None,x_across=None,plot=False):
         if x_along is None:
@@ -357,20 +376,21 @@ class StreamDistance(object):
         s_along=self.alongs[sample]
         s_across=self.acrosses[sample]
         if plot: # plot the pieces
+            import matplotlib.pyplot as plt
             plt.figure(1).clf()
             fig,ax=plt.subplots(1,1,num=1)
 
-            g.plot_edges(ax=ax,color='k',lw=0.3)
+            self.g.plot_edges(ax=ax,color='k',lw=0.3)
 
             ax.plot( [x_target[0]],[x_target[1]],'ro')
-            ax.plot( self.source_ds.x.values[close_samples,0],
-                     self.source_ds.x.values[close_samples,1],
-                     'm.')
+            ax.plot( self.source_ds.x.values[sample,0],
+                     self.source_ds.x.values[sample,1],
+                     'go')
 
-            ax.plot(x_along.x.values[:,0],x_along.x.values[:,1],'b-')
-            ax.plot(x_across.x.values[:,0],x_across.x.values[:,1],'b-')
-            ax.plot(s_along.x.values[:,0],s_along.x.values[:,1],'b-')
-            ax.plot(s_across.x.values[:,0],s_across.x.values[:,1],'b-')
+            ax.plot(x_along.x.values[:,0],x_along.x.values[:,1],'b-',label='x along')
+            ax.plot(x_across.x.values[:,0],x_across.x.values[:,1],'k-',label='x across')
+            ax.plot(s_along.x.values[:,0],s_along.x.values[:,1],'r-',label='s along')
+            ax.plot(s_across.x.values[:,0],s_across.x.values[:,1],'-',color='orange',label='s across')
 
         x_along_g=geometry.LineString(x_along.x.values)
         x_across_g=geometry.LineString(x_across.x.values)
@@ -386,10 +406,30 @@ class StreamDistance(object):
         if xs1.is_empty or xs2.is_empty:
             return np.array([np.nan,np.nan])
 
+        if xs1.type!='Point':
+            #raise Exception("xs1: expected point but got %s"%xs1.wkt)
+            print("x_target=%s  sample=%s  expected point but got %s"%(str(x_target),sample,xs1.wkt))
+            return np.array([np.nan,np.nan])
+        if xs2.type!='Point':
+            #raise Exception("xs2: expected point but got %s"%xs2.wkt)
+            print("x_target=%s  sample=%s  expected point but got %s"%(str(x_target),sample,xs2.wkt))
+            return np.array([np.nan,np.nan])
+
         dist_along1=x_along_g.project(x_pnt) - x_along_g.project(xs1)
         dist_along2=-(s_along_g.project(s_pnt) - s_along_g.project(xs2))
         dist_across1=s_across_g.project(s_pnt) - s_across_g.project(xs1)
         dist_across2=-(x_across_g.project(x_pnt) - x_across_g.project(xs2))
+
+        if self.bidir:
+            # those dist values are signed, and no guarantees that the signs
+            # are the same. e.g. x_along and s_along may have the opposite
+            # orientation when bidir is true.
+            # use the sign at the target -- that way the signed distances are
+            # consistent across multiple samples with the same target
+            if dist_along1*dist_along2<0:
+                dist_along2*=-1
+            if dist_across1*dist_across2<0:
+                dist_across2*=-1
 
         return np.array( [0.5*(dist_along1+dist_along2),
                           0.5*(dist_across1+dist_across2)])

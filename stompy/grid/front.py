@@ -2232,7 +2232,8 @@ class AdvancingTriangles(AdvancingFront):
                 failures['cells'].append(c)
         return failures
 
-    cost_method='cc_py'
+    # cc_py is more elegant and crappier
+    cost_method='base'
     def cost_function(self,n):
         """
         Return a function which takes an x,y pair, and evaluates

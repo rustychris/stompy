@@ -1454,6 +1454,16 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         self._node_index = None
         return node_map
 
+    def delete_orphan_edges(self):
+        """
+        Delete edges which have no cell neighbors
+        """
+        e2c=self.edge_to_cells()
+
+        to_delete=np.all(e2c<0,axis=1) & (~self.edges['deleted'])
+        for j in np.nonzero(to_delete)[0]:
+            self.delete_edge(j)
+    
     def delete_orphan_nodes(self):
         """ Scan for nodes not part of an edge, and delete them.
         """
@@ -3706,7 +3716,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     def select_edges_intersecting(self,geom,invert=False,mask=None):
         """
         geom: a shapely geometry
-        returns: bitmask overcells, with non-deleted, selected edges set and others False.
+        returns: bitmask over edges, with non-deleted, selected edges set and others False.
         if invert is True, select edges which do not intersect the the given geometry.
         mask: bitmask or index array to limit the selection to a subset of edges.
         note that the return value is still a bitmask over the whole set of edges, not just
