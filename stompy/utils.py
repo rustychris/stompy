@@ -51,12 +51,19 @@ def add_to(instance):
         def decorator(f):
             import types
             f = types.MethodType(f, instance, instance.__class__)
-            setattr(instance, f.func_name, f)
+            # see note below
+            #setattr(instance, f.func_name, f)
+            instance.__dict__[f.func_name]=f
             return f
     else:
         def decorator(f):
             f=f.__get__(instance,type(instance))
-            setattr(instance,f.__name__,f)
+            # Some classes like xarray Dataset overload __setattr__, and
+            # won't let setattr work.  In this case pretend that We Know Best
+            # and go straight to the dictionary.  This will fail in the case
+            # of a class using slots, but that hasn't come up yet.
+            #setattr(instance,f.__name__,f)
+            instance.__dict__[f.__name__]=f
 
     return decorator
 
@@ -2029,7 +2036,9 @@ def call_with_path(cmd,path):
     try:
         os.chdir(path)
         shell=(type(cmd) in six.string_types)
-        return subprocess.call(cmd,shell=shell)
+        # return subprocess.call(cmd,shell=shell)
+        output=subprocess.check_output(cmd,shell=shell)
+        return output
     finally:
         os.chdir(pwd)
 
