@@ -1723,7 +1723,7 @@ class SuntansModel(dfm.HydroModel):
             self.warn_initial_water_level+=1
             return 0.0
 
-    def extract_station(self,xy=None,ll=None,chain_count=1):
+    def extract_station_hist(self,xy=None,ll=None,chain_count=1):
         """
         Return a dataset for a single point in the model
         xy: native model coordinates, [Nstation,2]
@@ -1732,6 +1732,25 @@ class SuntansModel(dfm.HydroModel):
           1=>no chaining just this model.  None or 0:
           chain all runs possible.  Otherwise, go back max
           number of runs up to chain_count
+
+        This version pulls output from history files
+        """
+        raise Exception("Not yet implemented")
+        
+    def extract_station(self,xy=None,ll=None,chain_count=1):
+        return extract_station_map(xy=xy,ll=ll,chain_count=chain_count)
+        
+    def extract_station_map(self,xy=None,ll=None,chain_count=1):
+        """
+        Return a dataset for a single point in the model
+        xy: native model coordinates, [Nstation,2]
+        ll: lon/lat coordinates, [Nstation,2]
+        chain_count: max number of restarts auto go back.
+          1=>no chaining just this model.  None or 0:
+          chain all runs possible.  Otherwise, go back max
+          number of runs up to chain_count
+
+        This version pulls output from map files
         """
         # For the moment, just use map output
         if xy is None:
