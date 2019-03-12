@@ -1224,6 +1224,10 @@ class HydroModel(object):
         return utils.call_with_path(real_cmd,self.run_dir)
 
     def run_model(self):
+        """ Alias for run_simulation
+        """
+        return self.run_simulation()
+    def run_simulation(self):
         self.run_dflowfm(cmd=["-t","1","--autostartstop",
                               os.path.basename(self.mdu.filename)])
 
@@ -2284,6 +2288,9 @@ class DFlowModel(HydroModel):
     def ext_force_file(self):
         return self.mdu.filepath(('external forcing','ExtForceFile'))
 
+    def load_template(self,fn):
+        """ more generic name for load_mdu """
+        return self.load_mdu(fn) 
     def load_mdu(self,fn):
         self.mdu=dio.MDUFile(fn)
 
