@@ -652,8 +652,11 @@ class CutoffStrategy(Strategy):
         # Cutoff wants a small-ish internal angle
         # If the sites edges are long, scale_factor > 1
         # and we'd like to be making smaller edges, so ideal angle gets smaller
-        # 
-        if theta> 89*np.pi/180:
+
+        # this used to be a comparison to 89, but that is too strict.
+        # there could be an obtuse angle that we'd like to Cutoff and then
+        # optimize back to acute.
+        if theta>179*np.pi/180:
             return np.inf # not allowed
         else:
             ideal=60 + (1-scale_factor)*30
@@ -1759,21 +1762,36 @@ class AdvancingFront(object):
         if self.grid.nodes['fixed'][n]==self.RIGID:
             return 0.0
         fn=self.cost_function(n)
-        return (fn and fn(self.grid.nodes['x'][n]))
+        if fn:
+            return fn(self.grid.nodes['x'][n])
+        else:
+            return 0.0
 
-    def optimize_nodes(self,nodes,max_levels=3,cost_thresh=2):
+    cost_thresh_default=0.22
+    def optimize_nodes(self,nodes,max_levels=4,cost_thresh=None):
         """
         iterate over the given set of nodes, optimizing each location,
         and possibly expanding the set of nodes in order to optimize
         a larger area.
-        """
-        max_cost=0
 
+        2019-03-12: max_levels used to default to 3, but there were
+         cases where it needed a little more perseverance.
+         cost_thresh defaults to 0.22, following the tuning of paver.py
+        
+        """
+        if cost_thresh is None:
+            cost_thresh=self.cost_thresh_default
+            
         for level in range(max_levels):
+            max_cost=0
             for n in nodes:
                 # relax_node can return 0 if there was no cost
                 # function to optimize
-                max_cost=max(max_cost,self.relax_node(n) or 0.0)
+
+                # this node may already be good enough
+                if self.eval_cost(n)<cost_thresh: continue
+                new_cost=self.relax_node(n) or 0.0
+                max_cost=max(max_cost,new_cost)
             if max_cost <= cost_thresh:
                 break
             if level==0:
@@ -2234,6 +2252,7 @@ class AdvancingTriangles(AdvancingFront):
 
     # cc_py is more elegant and crappier
     cost_method='base'
+    cost_thresh_default=0.22
     def cost_function(self,n):
         """
         Return a function which takes an x,y pair, and evaluates
