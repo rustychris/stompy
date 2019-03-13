@@ -36,6 +36,9 @@ class BC(object):
     # not sure if I'll keep these -- may be better to query at time of use
     grid_edge=None
     grid_cell=None
+    # but these are more general, and can vastly speedup MultiBC
+    grid_edges=None
+    grid_cells=None
 
     # some BCs allow 'add', which just applies a delta to a previously
     # set BC.
@@ -1067,7 +1070,7 @@ class HydroModel(object):
 
         g=self.grid
         
-        feat_edges=g.select_edges_by_polyline(linestring,rrtol=3.0)
+        feat_edges=g.select_edges_by_polyline(linestring,rrtol=3.0,update_e2c=False)
         
         if len(feat_edges)==0:
             raise Exception("No boundary edges matched by %s"%(str(linestring)))
@@ -1700,11 +1703,16 @@ class MultiBC(BC):
             sub_kw=dict(self.saved_kw) # copy original
             sub_kw['geom']=sub_geom
             sub_kw['name']="%s%04d"%(self.name,j)
+            # this is only guaranteed to be a representative element
             sub_kw['grid_edge']=j
-            j_cells=grid.edge_to_cells(j)
+            # this, if set, is all the elements
+            sub_kw['grid_edges']=[j]
+            j_cells=grid.edges['cells'][j] 
             assert j_cells.min()<0
             assert j_cells.max()>=0
-            sub_kw['grid_cell']=j_cells.max()
+            c=j_cells.max()
+            sub_kw['grid_cell']=c
+            sub_kw['grid_cells']=[c]
 
             assert self.model is not None,"Why would that be?"
             assert sub_geom is not None,"Huh?"
