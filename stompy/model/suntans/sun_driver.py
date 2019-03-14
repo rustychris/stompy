@@ -1749,6 +1749,9 @@ class SuntansModel(dfm.HydroModel):
         return data
 
     def monitor_output(self):
+        """
+        Return xarray Dataset including the monitor output
+        """
         if 'DataLocations' not in self.config: return None
 
         pdata=self.parse_profdata(self.file_path('ProfileDataFile'))
@@ -1898,7 +1901,7 @@ class SuntansModel(dfm.HydroModel):
             self.warn_initial_water_level+=1
             return 0.0
 
-    def extract_station_hist(self,xy=None,ll=None,chain_count=1):
+    def extract_station_monitor(self,xy=None,ll=None,chain_count=1):
         """
         Return a dataset for a single point in the model
         xy: native model coordinates, [Nstation,2]
@@ -1910,10 +1913,58 @@ class SuntansModel(dfm.HydroModel):
 
         This version pulls output from history files
         """
-        raise Exception("Not yet implemented")
+        assert chain_count==1,"Not implemented for chaining runs"
+        mon=self.monitor_output()
+        if mon is None:
+            return None # maybe profile output wasn't enabled.
+
+        if xy is None:
+            xy=self.ll_to_native(ll)
+
+        xy=np.asarray(xy)
+        orig_ndim=xy.ndim
+        if orig_ndim==1:
+            xy=xy[None,:]
+        elif orig_ndim>2:
+            raise Exception("Can only handle single coordinates or an list of coordinates")
+            
+        num_stations=len(xy)
+
+        stations=[]
         
-    def extract_station(self,xy=None,ll=None,chain_count=1):
-        return extract_station_map(xy=xy,ll=ll,chain_count=chain_count)
+        for stn in range(num_stations):
+            dists=utils.dist(xy[stn,:],mon.prof_xy.values)
+            best=np.argmin(dists)
+            station=mon.isel(profile=best)
+            station['distance_from_target']=(),dists[best]
+            station['profile_index']=best
+            station['source']='monitor'
+            stations.append(station)
+
+        combined_ds=xr.concat(stations,dim='station')
+        combined_ds['station_x']=('station',), xy[...,0]
+        combined_ds['station_y']=('station',), xy[...,1]
+
+        if orig_ndim==1:
+            combined_ds=combined_ds.isel(station=0)
+
+        return combined_ds
+        
+    def extract_station(self,xy=None,ll=None,chain_count=1,source='auto'):
+        """
+        See extract_station_map, extract_station_monitor for details.
+        Will try monitor output if it exists, otherwise map output.
+        source: 'auto' (default), 'map' or 'monitor' to force a choice.
+
+        If a specific source is chosen and doesn't exist, returns None
+        """
+        if source in ['auto','monitor']:
+            ds=self.extract_station_monitor(xy=xy,ll=ll,chain_count=chain_count)
+            if (ds is not None) or (source=='monitor'):
+                return ds
+        if source in ['auto','map']:
+            return self.extract_station_map(xy=xy,ll=ll,chain_count=chain_count)
+        assert False,"How did we get here"
         
     def extract_station_map(self,xy=None,ll=None,chain_count=1):
         """
@@ -1927,7 +1978,6 @@ class SuntansModel(dfm.HydroModel):
 
         This version pulls output from map files
         """
-        # For the moment, just use map output
         if xy is None:
             xy=self.ll_to_native(ll)
             
@@ -2060,6 +2110,7 @@ class SuntansModel(dfm.HydroModel):
         combined_ds['station_cell'].attrs['description']="Cell index in subdomain grid"
         combined_ds['station_x']=('station',), xy[...,0]
         combined_ds['station_y']=('station',), xy[...,1]
+        combined_ds['source']=('station',), ["map"]*num_stations
         
         for station in range(num_stations):
             # here we know the order and can go straight to values
