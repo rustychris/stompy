@@ -1784,7 +1784,6 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         """
         # try to be a little clever about recalculating -
         # it can be very slow to check all edges for UNKNOWN
-
         if recalc:
             self.edges['cells'][:,:]=self.UNMESHED
             self.log.info("Recalculating edge to cells" )
@@ -2060,7 +2059,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         else:
             return [b[0],b[2],b[1],b[3]]
 
-    def edges_normals(self,edges=slice(None),force_inward=False):
+    def edges_normals(self,edges=slice(None),force_inward=False,update_e2c=True):
         """
         Calculate unit normal vectors for all edges, or a subset if edges
         is specified.
@@ -2068,6 +2067,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
            sign of the normal such that it is positive towards the adjacent
            cell, i.e. positive into the domain.  Otherwise, all normals
            are positive left-to-right (i.e. from cell 0 to cell 1)
+
+        update_e2c: whether to recalculate edges['cells'] for the required edges.
         """
         # does not assume the grid is orthogonal - normals are found by rotating
         # the tangent vector
@@ -2084,7 +2085,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         normals[...,1] *= -1
         normals /= mag(normals)[...,None]
         if force_inward:
-            e2c=self.edge_to_cells(e=edges)
+            if update_e2c:
+                self.edge_to_cells(e=edges)
+            e2c=self.edges['cells'][edges]
+
             to_flip=(e2c[...,1]<0)&(e2c[...,0]>=0) # c1 is 'outside', c0 is 'inside'
             # This feels a bit sketch when edges is a single index.  Tested with
             # numpy 1.14.0 and it does the right thing
@@ -3666,7 +3670,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     #  easier to compose selections with bitmasks, so there it is.
     #  when implementing these, note that all selections should avoid 'deleted' elements.
     #   unless the selection criteria explicitly includes them.
-    def select_edges_by_polyline(self,geom,rrtol=3.0):
+    def select_edges_by_polyline(self,geom,rrtol=3.0,update_e2c=True):
         """
         same as dfm_grid.polyline_to_boundary_edges:
 
@@ -3678,6 +3682,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         rrtol: controls search distance away from boundary. Defaults to
         roughly 3 cell length scales out from the boundary.
 
+        update_e2c: if True, will call edge_to_cells() first.  This is safest, but
+        can be slow.  If the caller can guarantee that edges['cells'] is up to date,
+        set this to False to avoid the overhead.
+
         returns ndarray of edge indices.
         """
         if isinstance(geom,geometry.LineString):
@@ -3685,7 +3693,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         else:
             linestring=np.asanyarray(geom)
 
-        self.edge_to_cells()
+        if update_e2c:
+            self.edge_to_cells()
+            
         boundary_edges=np.nonzero( np.any(self.edges['cells']<0,axis=1) )[0]
         adj_cells=self.edges['cells'][boundary_edges].max(axis=1)
 
@@ -3693,7 +3703,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         edge_centers=self.edges_center()[boundary_edges]
         cell_to_edge=edge_centers-adj_centers
         cell_to_edge_dist=mag(cell_to_edge)
-        outward=-self.edges_normals(edges=boundary_edges,force_inward=True)
+        outward=-self.edges_normals(edges=boundary_edges,force_inward=True,update_e2c=update_e2c)
 
         dis=np.maximum( 0.5*np.sqrt(self.cells_area()[adj_cells]),
                         cell_to_edge_dist )

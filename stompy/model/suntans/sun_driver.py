@@ -526,7 +526,7 @@ class SuntansModel(dfm.HydroModel):
             
         # with the current suntans version, depths are on cells, but model driver
         # code in places wants an edge depth.  so copy those here.
-        e2c=grid.edge_to_cells()
+        e2c=grid.edge_to_cells() # this is assumed in other parts of the code that do not recalculate it.
         nc1=e2c[:,0].copy()   ; nc2=e2c[:,1].copy()
         nc1[nc1<0]=nc2[nc1<0] ; nc2[nc2<0]=nc1[nc2<0]
         # edge depth is shallower of neighboring cells
@@ -982,6 +982,8 @@ class SuntansModel(dfm.HydroModel):
                 return np.vstack(profiles).T
             return np.interp( utils.to_dnum(ds.time.values),
                               utils.to_dnum(da.time.values), da.values )
+        import time
+        elapsed=[0.0]
 
         def combine_items(values,bc_items,offset=0.0):
             base_item=None
@@ -1000,13 +1002,17 @@ class SuntansModel(dfm.HydroModel):
 
             for bc_item in bc_items:
                 if bc_item.mode=='add':
+                    t0=time.time()
                     values[:] += pad_dims(interp_time(bc_item))
+                    elapsed[0]+=time.time()-t0
                 else:
                     base_item=bc_item
             if base_item is None:
                 self.log.warning("BC for cell %d has no overwrite items"%type3_cell)
             else:
+                t0=time.time()
                 values[:] += pad_dims(interp_time(bc_item))
+                elapsed[0]+=time.time()-t0
 
         cc=self.grid.cells_center()
 
@@ -1121,7 +1127,8 @@ class SuntansModel(dfm.HydroModel):
                                self.bc_point_sources[key]['S'] )
                                
         # End new point source code
-        
+
+        print("Total time in interp_time: %.3fs"%elapsed[0])
         return ds
 
     def write_bc(self,bc):
@@ -1142,7 +1149,8 @@ class SuntansModel(dfm.HydroModel):
         water_level=bc.data()
         assert len(water_level.dims)<=1,"Water level must have dims either time, or none"
 
-        cells=self.bc_geom_to_cells(bc.geom)
+        cells=bc.grid_cells or self.bc_geom_to_cells(bc.geom)
+        
         for cell in cells:
             self.bc_type3[cell]['h'].append(water_level)
 
@@ -1153,7 +1161,7 @@ class SuntansModel(dfm.HydroModel):
         # standardize on vector velocity, and project to normal
         # here?
         ds=bc.dataset()
-        edges=self.bc_geom_to_edges(bc.geom)
+        edges=bc.grid_edges or self.bc_geom_to_edges(bc.geom)
 
         for j in edges:
             for comp in ['u','v']:
@@ -1183,9 +1191,9 @@ class SuntansModel(dfm.HydroModel):
         else:
             # info is duplicated on type2 (flow) and type3 (stage) BCs, which
             # is sorted out later.
-            for j in self.bc_geom_to_edges(bc.geom):
+            for j in (bc.grid_edges or self.bc_geom_to_edges(bc.geom)):
                 self.bc_type2[j][scalar_name].append(da)
-            for cell in self.bc_geom_to_cells(bc.geom):
+            for cell in (bc.grid_cells or self.bc_geom_to_cells(bc.geom)):
                 self.bc_type3[cell][scalar_name].append(da)
 
     def dredge_boundary(self,linestring,dredge_depth):
@@ -1214,10 +1222,9 @@ class SuntansModel(dfm.HydroModel):
             self.dredge_boundary(np.array(bc.geom.coords),
                                  bc.dredge_depth)
 
-        edges=self.bc_geom_to_edges(bc.geom)
+        edges=(bc.grid_edges or self.bc_geom_to_edges(bc.geom))
         for j in edges:
             self.bc_type2[j]['Q'].append(bc.name)
-
 
     def write_source_sink_bc(self,bc):
         da=bc.data()
@@ -1272,9 +1279,7 @@ class SuntansModel(dfm.HydroModel):
         geom: LineString geometry
         return list of boundary edges adjacent to geom.
         """
-        # return dfm_grid.polyline_to_boundary_edges(self.grid,np.array(geom.coords))
-        # now part of UnstructuredGrid
-        return self.grid.select_edges_by_polyline(geom)
+        return self.grid.select_edges_by_polyline(geom,update_e2c=False)
 
     def set_times_from_config(self):
         """
