@@ -457,6 +457,14 @@ class DFlowToPTMHydro(object):
         c2[c2<0]=c1[c2<0]
         c1[c1<0]=c2[c1<0] # unnecessary, but hey..
 
+        # Make it clear that the step-integrated values are not valid
+        # for i=0
+        self.h_flow_var[:,:,0]=np.nan
+        self.A_edge_var[:,:,0]=np.nan
+        self.edge_k_top_var[:,0]=0
+        self.v_flow_var[:,:,0]=np.nan
+        self.A_face_var[:,:,0]=np.nan
+        
         for ti,t in enumerate(times):
             if True: # ti%24==0:
                 print("%d/%d t=%s"%(ti,len(times),t))
@@ -471,12 +479,12 @@ class DFlowToPTMHydro(object):
                 # dried out by setting cell_top=0, though they do show a zero wet area.
                 self.cell_k_top_var[:,ti] = self.nkmax
 
+            # HERE: this should probably use edge area and length, so that
+            #  fluxes
             # edge eta is taken from the higher freesurface
             eta_cell=self.out_nc['Mesh2_sea_surface_elevation'][:,ti]
             edge_eta=np.maximum( eta_cell[c1], eta_cell[c2] )
             edge_water_depth=edge_eta + self.out_nc['Mesh2_edge_depth'][:]
-            # all or nothing for sigma layers
-            self.edge_k_top_var[:,ti] = np.where(edge_water_depth>0,self.nkmax,0)
 
             # bed never moves in this code
             self.cell_k_bot_var[:,ti] = 1
@@ -507,75 +515,87 @@ class DFlowToPTMHydro(object):
             # h_flow gets interesting as we have to read dwaq output
             # dwaq uses seconds from reference time
             hyd_t_sec=(t-utils.to_dt64(self.hyd.time0))/np.timedelta64(1,'s')
-            # flows is all horizontal flows, layer by layer, surface to bed,
-            # and then vertical flows.
-            # only flow edges get flows, though.
-            flows=self.hyd.flows(hyd_t_sec)
-            areas=self.hyd.areas(hyd_t_sec)
 
-            # compose exch_to_2d_link,link_to_edge_sign, weed out unmapped
-            # links, and copy into h_flow_avg.  start with naive loops
-            h_flow_avg=np.zeros((self.g.Nedges(),self.nkmax),np.float64)
-            h_area_avg=np.zeros_like(h_flow_avg)
+            # time-step integrated quantities in PTM reflect the preceding interval
+            # but DWAQ integrated quantities reflect the following interval.
+            if ti+1<len(times):
+                # flows is all horizontal flows, layer by layer, surface to bed,
+                # and then vertical flows.
+                # only flow edges get flows, though.
+                flows=self.hyd.flows(hyd_t_sec)
+                areas=self.hyd.areas(hyd_t_sec)
 
-            # vectorized
-            # just the horizontal exchanges
-            exchs=np.arange(self.hyd.n_exch_x+self.hyd.n_exch_y)
+                # compose exch_to_2d_link,link_to_edge_sign, weed out unmapped
+                # links, and copy into h_flow_avg.  start with naive loops
+                h_flow_avg=np.zeros((self.g.Nedges(),self.nkmax),np.float64)
+                h_area_avg=np.zeros_like(h_flow_avg)
 
-            Qs=flows[exchs]
-            # for horizontal exchanges in a sigma grid, this is a safe way
-            # to get layer:
-            ks=self.hyd.seg_k[self.poi0[exchs][:,1]]
-            links=self.hyd.exch_to_2d_link['link'][exchs]
+                # vectorized
+                # just the horizontal exchanges
+                exchs=np.arange(self.hyd.n_exch_x+self.hyd.n_exch_y)
 
-            link_sgns=self.hyd.exch_to_2d_link['sgn'][exchs]
-            js_j_sgns=self.link_to_edge_sign[links,:]
-            js=js_j_sgns[:,0]
-            j_sgns=js_j_sgns[:,1]
+                Qs=flows[exchs]
+                # for horizontal exchanges in a sigma grid, this is a safe way
+                # to get layer:
+                ks=self.hyd.seg_k[self.poi0[exchs][:,1]]
+                links=self.hyd.exch_to_2d_link['link'][exchs]
 
-            sgns=np.where(js>=0,link_sgns*j_sgns,0)
+                link_sgns=self.hyd.exch_to_2d_link['sgn'][exchs]
+                js_j_sgns=self.link_to_edge_sign[links,:]
+                js=js_j_sgns[:,0]
+                j_sgns=js_j_sgns[:,1]
 
-            # so far this is k in the DWAQ world, surface to bed.
-            # but now we assign in the untrim sense, bed to surface.
-            ptm_ks=self.nkmax-ks-1
+                sgns=np.where(js>=0,link_sgns*j_sgns,0)
 
-            h_flow_avg[js,ptm_ks]=Qs*sgns
-            h_area_avg[js,ptm_ks]=np.where(js>=0,areas[exchs],0.0)
+                # so far this is k in the DWAQ world, surface to bed.
+                # but now we assign in the untrim sense, bed to surface.
+                ptm_ks=self.nkmax-ks-1
+                h_flow_avg[js,ptm_ks]=Qs*sgns
+                h_area_avg[js,ptm_ks]=np.where(js>=0,areas[exchs],0.0)
 
-            self.h_flow_var[:,:,ti]=h_flow_avg
-            self.A_edge_var[:,:,ti]=h_area_avg
+                self.h_flow_var[:,:,ti+1]=h_flow_avg
+                self.A_edge_var[:,:,ti+1]=h_area_avg
+                
+                # edge ktop is based on presence of flux rather than geometry of freesurface
+                # and bed, since eta is instantaneous.  Could also use areas, but fluxes
+                # are more 'fundamental' 
+                edge_is_wet=np.any( h_flow_avg!=0.0, axis=1)
+                self.edge_k_top_var[:,ti+1] = np.where(edge_is_wet,self.nkmax,0)
 
-            v_flow_avg=np.zeros((self.g.Ncells(),self.nkmax), np.float64)
-            v_area_avg=np.zeros_like(v_flow_avg)
+                v_flow_avg=np.zeros((self.g.Ncells(),self.nkmax), np.float64)
+                v_area_avg=np.zeros_like(v_flow_avg)
 
-            if self.nkmax>1:
-                # this is here for future reference, but most of the
-                # other code is not ready for 3D, and this code has not been
-                # tested.
-                for exch in range(self.hyd.n_exch_x+self.hyd.n_exch_y,self.hyd.n_exch):
-                    # negate, because dwaq records this relative to the exchange,
-                    # which is top-segment to next segment down.
-                    Q=-flows[exch]
-                    assert self.poi0[exch][0] >=0,"Wasn't expecting BC exchanges in the vertical"
-                    seg_up,seg_down=self.poi0[exch][0,:2]
-                    k_upper=self.hyd.seg_k[seg_up]
-                    k_lower=self.hyd.seg_k[seg_down]
-                    elt=self.hyd.seg_to_2d_element[seg_up]
-                    assert k_upper+1==k_lower,"Thought this was a given"
-                    assert elt==self.hyd.seg_to_2d_element[seg_down],"Maybe this wasn't a vertical exchange"
-                    # based on looking at the untrim output, this should be recorded to
-                    # the k of the lower layer, but also flipped to be bed->surface
-                    # ordered
-                    # assumes that dwaq cells are numbered the same as dfm cells.
-                    v_flow_avg[elt,nkmax-k_lower-1]=Q
-                    if k_upper==0: # repeat top flux
-                        v_flow_avg[elt,nkmax-k_upper-1]=Q
-            else:
-                # At least populate the area, though it may not make a difference
-                v_area_avg[:,0] = np.where(cell_water_depth>0,Ac,0.0)
-            self.v_flow_var[:,:,ti]=v_flow_avg
-            self.A_face_var[:,:,ti]=v_area_avg
+                if self.nkmax>1:
+                    # this is here for future reference, but most of the
+                    # other code is not ready for 3D, and this code has not been
+                    # tested.
+                    for exch in range(self.hyd.n_exch_x+self.hyd.n_exch_y,self.hyd.n_exch):
+                        # negate, because dwaq records this relative to the exchange,
+                        # which is top-segment to next segment down.
+                        Q=-flows[exch]
+                        assert self.poi0[exch][0] >=0,"Wasn't expecting BC exchanges in the vertical"
+                        seg_up,seg_down=self.poi0[exch][0,:2]
+                        k_upper=self.hyd.seg_k[seg_up]
+                        k_lower=self.hyd.seg_k[seg_down]
+                        elt=self.hyd.seg_to_2d_element[seg_up]
+                        assert k_upper+1==k_lower,"Thought this was a given"
+                        assert elt==self.hyd.seg_to_2d_element[seg_down],"Maybe this wasn't a vertical exchange"
+                        # based on looking at the untrim output, this should be recorded to
+                        # the k of the lower layer, but also flipped to be bed->surface
+                        # ordered
+                        # assumes that dwaq cells are numbered the same as dfm cells.
+                        v_flow_avg[elt,nkmax-k_lower-1]=Q
+                        if k_upper==0: # repeat top flux
+                            v_flow_avg[elt,nkmax-k_upper-1]=Q
+                else:
+                    # At least populate the area, though it may not make a difference
+                    v_area_avg[:,0] = np.where(cell_water_depth>0,Ac,0.0)
 
+                self.v_flow_var[:,:,ti+1]=v_flow_avg
+                self.A_face_var[:,:,ti+1]=v_area_avg
+
+            # Instantaneous values
+            
             #   Mesh2_face_water_volume
             vols=self.hyd.volumes(hyd_t_sec)
             # assume again that cells are numbered the same.

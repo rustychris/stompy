@@ -1,3 +1,5 @@
 *.png
 cache
 test_cache
+ptm_out
+run-dfm_to_ptm

@@ -1256,7 +1256,14 @@ class SectionedConfig(object):
         return self.get_value(sec_key)
 
     def filepath(self,sec_key):
+        """
+        Lookup a filename via a ('section','name') tuple, and
+        return the full filename including base path.
+        if the key does not exist or is empty, return None.
+        """
         val=self.get_value(sec_key)
+        if not val:
+            return None
         if self.base_path:
             return os.path.join(self.base_path,val)
         else:

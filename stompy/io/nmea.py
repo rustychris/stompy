@@ -1,6 +1,8 @@
 import datetime
 import numpy as np
 import pdb
+import functools
+from .. import utils
 
 class ParseError(Exception):
     pass
@@ -37,6 +39,9 @@ def parse_degmin(degmin,sign):
 # line=fp.readline()
 # line='$GPGGA,005744.000,0721.1657,N,08159.6998,W,2,11,0.8,20.7,M,3.1,M,0.8,0000*6C'
 def parse_sentence(line):
+    # This used to put a decimal day fraction into 'time', but for consistency
+    # with other code, this is now in time_dn, and time, when possible, is a numpy
+    # datetime64
     data_check=line.split('*')
     if len(data_check)==2:
         data,check=data_check
@@ -51,8 +56,8 @@ def parse_sentence(line):
         if not to_check:
             checksummed=False
         else:
-            xor=reduce( lambda a,b: a^b, [ord(c) 
-                                          for c in to_check ] )
+            xor=functools.reduce( lambda a,b: a^b, [ord(c) 
+                                                    for c in to_check ] )
             calc=hex(xor)[2:].upper()
             checksummed=(calc==check.strip())
     except ValueError:
@@ -73,7 +78,7 @@ def parse_sentence(line):
         time_dn=my_float(time[:2])/24 + my_float(time[2:4])/(24*60) + my_float(time[4:])/86400
         lat=parse_degmin(lat,lat_sign)    
         lon=parse_degmin(lon,lon_sign)
-        result.update( dict(time=time_dn,lat=lat,lon=lon) )
+        result.update( dict(time_dn=time_dn,lat=lat,lon=lon) )
     elif parts[0]=='$RDENS':
         result['ensemble']=my_float(parts[1])
         result['pc_time']=my_float(parts[2])
@@ -102,7 +107,12 @@ def parse_sentence(line):
         dn=date.toordinal() + time_dn
         lat=parse_degmin(lat,lat_sign)    
         lon=parse_degmin(lon,lon_sign)
-        result.update( dict(time=time_dn,lat=lat,lon=lon,dn=dn) )
+        result.update( dict(time_dn=time_dn,lat=lat,lon=lon,dn=dn) )
+
+        # Add a numpy timestamp, too
+        time_us=int(time_dn*86400*1e6)
+        time_dt64=utils.to_dt64(date) + np.timedelta64(time_us,'us')
+        result['time']=time_dt64
     else:
         # print "Skip sentence type ",parts[0]
         pass

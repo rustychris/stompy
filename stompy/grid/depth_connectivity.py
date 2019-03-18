@@ -261,6 +261,11 @@ def min_graph_elevation_for_edge(g,dem,j,starts='lowest'):
     # tile = dem.extract_tile(xxyy)
     tile=dem.crop(xxyy)
 
+    # Some of the above is for precise usage of SimpleGrid.
+    # but in some cases we're dealing with a MultiRasterField, and the
+    # local resolution is coarser:
+    dx=tile.dx ; dy=tile.dy
+    
     if tile is None:
         return np.nan
 

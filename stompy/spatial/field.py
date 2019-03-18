@@ -3386,7 +3386,9 @@ class MultiRasterField(Field):
 
     def bounds(self):
         """ Aggregate bounds """
-        all_extents = np.array(self.extents)
+        # Old code -- seems broken
+        # all_extents = np.array(self.extents)
+        all_extents=self.sources['extent']
 
         return [ all_extents[:,0].min(),
                  all_extents[:,1].max(),
@@ -3422,6 +3424,19 @@ class MultiRasterField(Field):
 
         self.build_index()
 
+    # Thin wrapper to make a multiraster field look like one giant high resolution
+    # raster.
+    @property
+    def dx(self):
+        return np.abs(self.sources['resx']).min()
+    @property
+    def dy(self):
+        # many files report negative dy!
+        return np.abs(self.sources['resy']).min()
+
+    def crop(self,rect=None):
+        return self.to_grid(bounds=rect)
+    
     def build_index(self):
         # Build a basic index that will return the overlapping dataset for a given point
         # these are x,x,y,y

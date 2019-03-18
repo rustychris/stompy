@@ -154,6 +154,8 @@ class GenericConfig(object):
         # if the line already exists, it will be written out commented, otherwise
         # it won't be written at all.
         self.set_value(key,None)
+    def __contains__(self,key):
+        return self[key] is not None
 
     def __eq__(self,other):
         return self.is_equal(other)
@@ -464,6 +466,7 @@ class SuntansModel(dfm.HydroModel):
         new_model.restart_model=self
         new_model.restart_symlink=symlink
         new_model.set_grid(unstructured_grid.UnstructuredGrid.read_suntans(self.run_dir))
+        new_model.run_start=self.restartable_time()
         return new_model
 
     @classmethod
@@ -523,7 +526,7 @@ class SuntansModel(dfm.HydroModel):
             
         # with the current suntans version, depths are on cells, but model driver
         # code in places wants an edge depth.  so copy those here.
-        e2c=grid.edge_to_cells()
+        e2c=grid.edge_to_cells() # this is assumed in other parts of the code that do not recalculate it.
         nc1=e2c[:,0].copy()   ; nc2=e2c[:,1].copy()
         nc1[nc1<0]=nc2[nc1<0] ; nc2[nc2<0]=nc1[nc2<0]
         # edge depth is shallower of neighboring cells
@@ -979,6 +982,8 @@ class SuntansModel(dfm.HydroModel):
                 return np.vstack(profiles).T
             return np.interp( utils.to_dnum(ds.time.values),
                               utils.to_dnum(da.time.values), da.values )
+        import time
+        elapsed=[0.0]
 
         def combine_items(values,bc_items,offset=0.0):
             base_item=None
@@ -997,13 +1002,17 @@ class SuntansModel(dfm.HydroModel):
 
             for bc_item in bc_items:
                 if bc_item.mode=='add':
+                    t0=time.time()
                     values[:] += pad_dims(interp_time(bc_item))
+                    elapsed[0]+=time.time()-t0
                 else:
                     base_item=bc_item
             if base_item is None:
                 self.log.warning("BC for cell %d has no overwrite items"%type3_cell)
             else:
+                t0=time.time()
                 values[:] += pad_dims(interp_time(bc_item))
+                elapsed[0]+=time.time()-t0
 
         cc=self.grid.cells_center()
 
@@ -1118,7 +1127,8 @@ class SuntansModel(dfm.HydroModel):
                                self.bc_point_sources[key]['S'] )
                                
         # End new point source code
-        
+
+        print("Total time in interp_time: %.3fs"%elapsed[0])
         return ds
 
     def write_bc(self,bc):
@@ -1139,7 +1149,8 @@ class SuntansModel(dfm.HydroModel):
         water_level=bc.data()
         assert len(water_level.dims)<=1,"Water level must have dims either time, or none"
 
-        cells=self.bc_geom_to_cells(bc.geom)
+        cells=bc.grid_cells or self.bc_geom_to_cells(bc.geom)
+        
         for cell in cells:
             self.bc_type3[cell]['h'].append(water_level)
 
@@ -1150,7 +1161,7 @@ class SuntansModel(dfm.HydroModel):
         # standardize on vector velocity, and project to normal
         # here?
         ds=bc.dataset()
-        edges=self.bc_geom_to_edges(bc.geom)
+        edges=bc.grid_edges or self.bc_geom_to_edges(bc.geom)
 
         for j in edges:
             for comp in ['u','v']:
@@ -1180,19 +1191,25 @@ class SuntansModel(dfm.HydroModel):
         else:
             # info is duplicated on type2 (flow) and type3 (stage) BCs, which
             # is sorted out later.
-            for j in self.bc_geom_to_edges(bc.geom):
+            for j in (bc.grid_edges or self.bc_geom_to_edges(bc.geom)):
                 self.bc_type2[j][scalar_name].append(da)
-            for cell in self.bc_geom_to_cells(bc.geom):
+            for cell in (bc.grid_cells or self.bc_geom_to_cells(bc.geom)):
                 self.bc_type3[cell][scalar_name].append(da)
 
     def dredge_boundary(self,linestring,dredge_depth):
-        super(SuntansModel,self).dredge_boundary(linestring,dredge_depth,
-                                                 edge_field='edge_depth',
-                                                 cell_field='depth')
+        if self.restart is not None:
+            return
+        else:
+            return super(SuntansModel,self).dredge_boundary(linestring,dredge_depth,
+                                                            edge_field='edge_depth',
+                                                            cell_field='depth')
     def dredge_discharge(self,point,dredge_depth):
-        super(SuntansModel,self).dredge_discharge(point,dredge_depth,
-                                                  edge_field='edge_depth',
-                                                  cell_field='depth')
+        if self.restart is not None:
+            return
+        else:
+            return super(SuntansModel,self).dredge_discharge(point,dredge_depth,
+                                                             edge_field='edge_depth',
+                                                             cell_field='depth')
         
     def write_flow_bc(self,bc):
         da=bc.data()
@@ -1205,10 +1222,9 @@ class SuntansModel(dfm.HydroModel):
             self.dredge_boundary(np.array(bc.geom.coords),
                                  bc.dredge_depth)
 
-        edges=self.bc_geom_to_edges(bc.geom)
+        edges=(bc.grid_edges or self.bc_geom_to_edges(bc.geom))
         for j in edges:
             self.bc_type2[j]['Q'].append(bc.name)
-
 
     def write_source_sink_bc(self,bc):
         da=bc.data()
@@ -1263,9 +1279,7 @@ class SuntansModel(dfm.HydroModel):
         geom: LineString geometry
         return list of boundary edges adjacent to geom.
         """
-        # return dfm_grid.polyline_to_boundary_edges(self.grid,np.array(geom.coords))
-        # now part of UnstructuredGrid
-        return self.grid.select_edges_by_polyline(geom)
+        return self.grid.select_edges_by_polyline(geom,update_e2c=False)
 
     def set_times_from_config(self):
         """
@@ -1534,15 +1548,25 @@ class SuntansModel(dfm.HydroModel):
             # multiprocessor files except the .<proc> suffix, to be symlinked
             # or copied
             parent_base=os.path.dirname(self.restart)
-            for fn_base in ['celldata.dat','cells.dat',
-                            'edgedata.dat','edges.dat',
-                            'nodes.dat','topology.dat']:
+            multi_proc_files=['celldata.dat','cells.dat',
+                              'edgedata.dat','edges.dat',
+                              'nodes.dat','topology.dat']
+            if os.path.exists(os.path.join(parent_base,'depths.dat-edge.0')):
+                multi_proc_files.append('depths.dat-edge')
+            for fn_base in multi_proc_files:
                 for proc in range(self.num_procs):
                     fn=fn_base+".%d"%proc
                     self.restart_copier(os.path.join(parent_base,fn),
                                         os.path.join(self.run_dir,fn))
             # single files
-            for fn in ['vertspace.dat']:
+            single_files=['vertspace.dat']
+            if 'DataLocations' in self.config:
+                # UNTESTED
+                single_files.append(self.config['DataLocations'])
+            if 'ProfileDataFile' in self.config:
+                # UNTESTED
+                single_files.append(self.config['ProfileDataFile'])
+            for fn in single_files:
                 self.restart_copier(os.path.join(parent_base,fn),
                                     os.path.join(self.run_dir,fn))
         else:
@@ -1616,6 +1640,165 @@ class SuntansModel(dfm.HydroModel):
         else:
             raise Exception("Need to implement map output filenames for non-netcdf")
 
+    @classmethod
+    def parse_profdata(cls,fn):
+        """
+        Parse the profdata.dat file associated with a run.
+        fn: path to file to parse.
+        This is a classmethod to allow external usage but keep it bundled with the 
+        SunDriver class.
+        Returns an xarray dataset 
+
+        NOTE: if this uses caching at some point in the future, monitor_output should
+        be adapted to make a copy since it mutates the dataset.
+
+        data format:
+         (4 byte int)numTotalDataPoints: Number of data points found on all processors.  Note that
+             that this could be different from the number specified since some may lie outside the domain.
+         (4 byte int)numInterpPoints: Number of nearest neighbors to each point used for interpolation.
+         (4 byte int)NkmaxProfs: Number of vertical levels output in the profiles.
+         (4 byte int)nsteps: Total number of time steps in the simulation.
+         (4 byte int)ntoutProfs: Frequency of profile output.  This implies a total of nsteps/ntoutProfs are output.
+         (8 byte double)dt: Time step size
+         (8 byte double array X NkmaxProfs)dz: Contains the vertical grid spacings.
+         (4 byte int array X numTotalDataPoints)allIndices: Contains the indices of each point that determines its
+             original location in the data file.  This is mostly for debugging since the output data is resorted
+             so that it is in the same order as it appeared in the data file.
+         (4 byte int array X 2*numTotalDataPoints)dataXY: Contains the original data points at (or near) which profiles
+             are output.
+         (8 byte double array X numTotalDataPoints*numInterpPoints)xv: Array containing the x-locations of the nearest
+             neighbors to the dataXY points.  If numInterpPoints=3, then the 3 closest neighbors to the point
+             (dataXY[2*i],dataXY[2*i+1]) are (xv[3*i],yv[3*i]), (xv[3*i+1],yv[3*i+1]), (xv[3*i+2],yv[3*i+2]).
+         (8 byte double array X numTotalDataPoints*numInterpPoints)yv: Array containing the y-locations of the nearest
+             neighbors to the dataXY points (see xv above).
+        """
+        pdata=xr.Dataset()
+        with open(fn,'rb') as fp:
+            hdr_ints = np.fromfile(fp,np.int32,count=5)
+            pdata['num_total_data_points']=(),hdr_ints[0]
+            pdata['num_interp_points'] =(), hdr_ints[1]
+            pdata['nkmax_profs'] =(), hdr_ints[2]
+            pdata['nsteps'] =(), hdr_ints[3]
+            pdata['ntout_profs'] =(), hdr_ints[4]
+
+            pdata['dt'] =(), np.fromfile(fp,np.float64,1)[0]
+            pdata['dzz'] = np.fromfile(fp,np.float64,pdata['nkmax_profs'].item() )
+            pdata['all_indices'] = np.fromfile(fp,np.int32,pdata['num_total_data_points'].item())
+            dataxy = np.fromfile(fp,np.float64,2*pdata['num_total_data_points'].item())
+            pdata['request_xy'] =('request','xy'), dataxy.reshape( (-1,2) )
+            pdata['request_xy'].attrs['description']="Coordinates of the requested profiles"
+            
+            xvyv = np.fromfile(fp,np.float64,2*(pdata['num_total_data_points']*pdata['num_interp_points']).item())
+            pdata['prof_xy'] =('profile','xy'), xvyv.reshape( (2,-1) ).transpose()
+            pdata['prof_xy'].attrs['description']="Coordinates of the output profiles"
+        return pdata
+
+    def read_profile_data_raw(self,scalar,pdata=None,memmap=True):
+        """
+        scalar is one of HorizontalVelocityFile,
+        FreeSurfaceFile, etc
+
+        pdata: a previously parsed ProfData file, from parse_profdata. Can be passed
+           in to avoid re-parsing this file.
+        memmap: by default the file is memory mapped, which can be a huge performance
+        savings for large files.  In some cases and platforms it is less stable,
+        though.
+        """
+        if pdata is None:
+            pdata=self.parse_profdata(self.file_path('ProfileDataFile'))
+        prof_pnts = pdata.prof_xy
+        prof_len = prof_pnts.shape[0]
+
+        prof_fname = self.file_path(scalar) + ".prof"
+
+        if not os.path.exists(prof_fname):
+            log.debug("Request for profile for %s, but %s does not exist"%(scalar,prof_fname))
+            return None
+
+        # Figure out the shape of the output:
+        #  I'm assuming that profile data gets spat out in the same
+        #  ordering of dimensions as regular grid-based data
+
+        shape_per_step = []
+
+        # profiles.c writes u first then v, then w, each with a
+        # separate call to Write3DData()
+        if scalar == 'HorizontalVelocityFile':
+            shape_per_step.append(3)
+
+        # the outer loop is over profile points
+        shape_per_step.append(prof_len)
+
+        # And does it have z-levels? if so, that is the inner-most
+        #  loop, so the last dimension of the array
+        if scalar != 'FreeSurfaceFile':
+            nkmax_profs = pdata['nkmax_profs'].item() 
+            shape_per_step.append(nkmax_profs)
+
+        # better to use the size of the specific file we're opening:
+        prof_dat_size=os.stat(prof_fname).st_size
+        REALSIZE=8
+        bytes_per_step = REALSIZE * np.prod( np.array(shape_per_step) )
+        n_steps_in_file=int(prof_dat_size//bytes_per_step )
+
+        final_shape = tuple([n_steps_in_file] + shape_per_step)
+
+        if memmap: # BRAVE!
+            # print "Trying to memory map the data.."
+            data = np.memmap(prof_fname, dtype=np.float64, mode='r', shape=final_shape)
+        else:
+            data = np.fromfile(prof_fname,float64)
+            data = data.reshape(*final_shape)
+
+        # no caching at this point..
+        return data
+
+    def monitor_output(self):
+        """
+        Return xarray Dataset including the monitor output
+        """
+        if 'DataLocations' not in self.config: return None
+
+        pdata=self.parse_profdata(self.file_path('ProfileDataFile'))
+
+        file_to_var={'FreeSurfaceFile':'eta',
+                     'HorizontalVelocityFile':'u',
+                     'TemperatureFile':'temp',
+                     'SalinityFile':'salt',
+                     'EddyViscosityFile':'nut',
+                     'VerticalVelocityFile':'w',
+                     'ScalarDiffusivityFile':'kappa'}
+        # Try to figure out which variables have been output in profiles
+        # Just scan what's there, to avoid trying to figure out defaults.
+        for scalar in list(file_to_var.keys()):
+            raw_data=self.read_profile_data_raw(scalar,pdata=pdata)
+            if raw_data is not None:
+                if scalar=='FreeSurfaceFile':
+                    dims=('time','profile')
+                elif scalar=='HorizontalVelocityFile':
+                    dims=('time','xyz','profile','layer')
+                else:
+                    dims=('time','profile','layer')
+                # May need to use a different layer dimension for w...
+                # print("%s:  raw data shape: %s  dims: %s"%(scalar,str(raw_data.shape),dims))
+                pdata[file_to_var[scalar]]=dims,raw_data
+
+        # This may need some tweaking, but it's a start.
+        # use microseconds to get some reasonable precision for fraction dt
+        # but note that this isn't necessarily exact.
+        dt_prof=np.timedelta64( int( pdata['ntout_profs']*pdata['dt']*1e6),'us')
+        pdata['time']=('time',),(self.run_start + dt_prof*np.arange(pdata.dims['time']))
+                
+        # Total hack for convenience -- add a closest_to([x,y]) method to extract a single
+        # profile.
+        @utils.add_to(pdata)
+        def closest_to(self,target):
+            dists=utils.dist(target,self['prof_xy'].values)
+            idx=np.argmin(dists)
+            return self.isel(profile=idx)
+                
+        return pdata
+    
     _subdomain_grids=None
     def subdomain_grid(self,p):
         if self._subdomain_grids is None:
@@ -1723,7 +1906,7 @@ class SuntansModel(dfm.HydroModel):
             self.warn_initial_water_level+=1
             return 0.0
 
-    def extract_station(self,xy=None,ll=None,chain_count=1):
+    def extract_station_monitor(self,xy=None,ll=None,chain_count=1):
         """
         Return a dataset for a single point in the model
         xy: native model coordinates, [Nstation,2]
@@ -1732,8 +1915,74 @@ class SuntansModel(dfm.HydroModel):
           1=>no chaining just this model.  None or 0:
           chain all runs possible.  Otherwise, go back max
           number of runs up to chain_count
+
+        This version pulls output from history files
         """
-        # For the moment, just use map output
+        assert chain_count==1,"Not implemented for chaining runs"
+        mon=self.monitor_output()
+        if mon is None:
+            return None # maybe profile output wasn't enabled.
+
+        if xy is None:
+            xy=self.ll_to_native(ll)
+
+        xy=np.asarray(xy)
+        orig_ndim=xy.ndim
+        if orig_ndim==1:
+            xy=xy[None,:]
+        elif orig_ndim>2:
+            raise Exception("Can only handle single coordinates or an list of coordinates")
+            
+        num_stations=len(xy)
+
+        stations=[]
+        
+        for stn in range(num_stations):
+            dists=utils.dist(xy[stn,:],mon.prof_xy.values)
+            best=np.argmin(dists)
+            station=mon.isel(profile=best)
+            station['distance_from_target']=(),dists[best]
+            station['profile_index']=best
+            station['source']='monitor'
+            stations.append(station)
+
+        combined_ds=xr.concat(stations,dim='station')
+        combined_ds['station_x']=('station',), xy[...,0]
+        combined_ds['station_y']=('station',), xy[...,1]
+
+        if orig_ndim==1:
+            combined_ds=combined_ds.isel(station=0)
+
+        return combined_ds
+        
+    def extract_station(self,xy=None,ll=None,chain_count=1,source='auto'):
+        """
+        See extract_station_map, extract_station_monitor for details.
+        Will try monitor output if it exists, otherwise map output.
+        source: 'auto' (default), 'map' or 'monitor' to force a choice.
+
+        If a specific source is chosen and doesn't exist, returns None
+        """
+        if source in ['auto','monitor']:
+            ds=self.extract_station_monitor(xy=xy,ll=ll,chain_count=chain_count)
+            if (ds is not None) or (source=='monitor'):
+                return ds
+        if source in ['auto','map']:
+            return self.extract_station_map(xy=xy,ll=ll,chain_count=chain_count)
+        assert False,"How did we get here"
+        
+    def extract_station_map(self,xy=None,ll=None,chain_count=1):
+        """
+        Return a dataset for a single point in the model
+        xy: native model coordinates, [Nstation,2]
+        ll: lon/lat coordinates, [Nstation,2]
+        chain_count: max number of restarts auto go back.
+          1=>no chaining just this model.  None or 0:
+          chain all runs possible.  Otherwise, go back max
+          number of runs up to chain_count
+
+        This version pulls output from map files
+        """
         if xy is None:
             xy=self.ll_to_native(ll)
             
@@ -1866,6 +2115,7 @@ class SuntansModel(dfm.HydroModel):
         combined_ds['station_cell'].attrs['description']="Cell index in subdomain grid"
         combined_ds['station_x']=('station',), xy[...,0]
         combined_ds['station_y']=('station',), xy[...,1]
+        combined_ds['source']=('station',), ["map"]*num_stations
         
         for station in range(num_stations):
             # here we know the order and can go straight to values

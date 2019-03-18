@@ -36,6 +36,9 @@ class BC(object):
     # not sure if I'll keep these -- may be better to query at time of use
     grid_edge=None
     grid_cell=None
+    # but these are more general, and can vastly speedup MultiBC
+    grid_edges=None
+    grid_cells=None
 
     # some BCs allow 'add', which just applies a delta to a previously
     # set BC.
@@ -301,7 +304,9 @@ class BC(object):
             return data
         elif isinstance(data,xr.Dataset):
             if len(data.data_vars)==1:
-                da=data[data.data_vars[0]]
+                # some xarray allow inteeger index to get first item.
+                # 0.10.9 requires this cast to list first.
+                da=data[list(data.data_vars)[0]]
                 da.attrs['mode']=self.mode
                 return da
             else:
@@ -1065,7 +1070,7 @@ class HydroModel(object):
 
         g=self.grid
         
-        feat_edges=g.select_edges_by_polyline(linestring,rrtol=3.0)
+        feat_edges=g.select_edges_by_polyline(linestring,rrtol=3.0,update_e2c=False)
         
         if len(feat_edges)==0:
             raise Exception("No boundary edges matched by %s"%(str(linestring)))
@@ -1160,8 +1165,13 @@ class HydroModel(object):
         # similar, but for the mdu:
         if sys.platform=='win32':
             # use cli to partition the mdu
+            # if this were being run not in run_dir, 
+            # oddly, even on windows, dflowfm requires only forward
+            # slashes in the path to the mdu (ver 1.4.4)
+            # since run_dflowfm uses run_dir as the working directory
+            # here we strip to the basename
             cmd=["--partition:ndomains=%d:icgsolver=6"%self.num_procs,
-                 self.mdu.filename]
+                 os.path.basename(self.mdu.filename)]
             self.run_dflowfm(cmd,mpi=False)
         else:
             # some of the older linux compiles don't seem to
@@ -1172,7 +1182,7 @@ class HydroModel(object):
 
             gen_parallel=os.path.join(self.dfm_bin_dir,"generate_parallel_mdu.sh")
             cmd=[gen_parallel,os.path.basename(self.mdu.filename),"%d"%self.num_procs]
-            utils.call_with_path(cmd,self.run_dir)
+            return utils.call_with_path(cmd,self.run_dir)
 
     _dflowfm_exe=None
     @property
@@ -1197,9 +1207,6 @@ class HydroModel(object):
           even when num_procs is >1. This is useful for partition which
           runs single-core.
         """
-        # Names of the executables
-        dflowfm=self.dflowfm_exe #os.path.join(self.dfm_bin_dir,"dflowfm")
-
         if mpi=='auto':
             num_procs=self.num_procs
         else:
@@ -1214,13 +1221,16 @@ class HydroModel(object):
                         +cmd )
             # "%s -n %d %s %s"%(mpiexec,self.num_procs,dflowfm,cmd)
         else:
-            real_cmd=[dflowfm]+cmd
-            # real_cmd="%s %s"%(dflowfm,cmd)
+            real_cmd=[self.dflowfm_exe]+cmd
 
         self.log.info("Running command: %s"%(" ".join(real_cmd)))
-        utils.call_with_path(real_cmd,self.run_dir)
+        return utils.call_with_path(real_cmd,self.run_dir)
 
     def run_model(self):
+        """ Alias for run_simulation
+        """
+        return self.run_simulation()
+    def run_simulation(self):
         self.run_dflowfm(cmd=["-t","1","--autostartstop",
                               os.path.basename(self.mdu.filename)])
 
@@ -1353,6 +1363,7 @@ class HydroModel(object):
         Project array of longitude/latitude [...,2] to
         model-native (e.g. UTM meters)
         """
+        assert self.projection,"Must set projection, i.e. x.projection='EPSG:26910'"
         return proj_utils.mapper('WGS84',self.projection)
 
     @property
@@ -1692,11 +1703,16 @@ class MultiBC(BC):
             sub_kw=dict(self.saved_kw) # copy original
             sub_kw['geom']=sub_geom
             sub_kw['name']="%s%04d"%(self.name,j)
+            # this is only guaranteed to be a representative element
             sub_kw['grid_edge']=j
-            j_cells=grid.edge_to_cells(j)
+            # this, if set, is all the elements
+            sub_kw['grid_edges']=[j]
+            j_cells=grid.edges['cells'][j] 
             assert j_cells.min()<0
             assert j_cells.max()>=0
-            sub_kw['grid_cell']=j_cells.max()
+            c=j_cells.max()
+            sub_kw['grid_cell']=c
+            sub_kw['grid_cells']=[c]
 
             assert self.model is not None,"Why would that be?"
             assert sub_geom is not None,"Huh?"
@@ -2236,6 +2252,7 @@ class DFlowModel(HydroModel):
 
     def write_forcing(self,overwrite=True):
         bc_fn=self.ext_force_file()
+        assert bc_fn,"DFM script requires old-style BC file.  Set [external forcing] ExtForceFile"
         if overwrite and os.path.exists(bc_fn):
             os.unlink(bc_fn)
         super(DFlowModel,self).write_forcing()
@@ -2277,8 +2294,11 @@ class DFlowModel(HydroModel):
         dfm_grid.write_dfm(self.grid,dest,overwrite=True)
 
     def ext_force_file(self):
-        return os.path.join(self.run_dir,self.mdu['external forcing','ExtForceFile'])
+        return self.mdu.filepath(('external forcing','ExtForceFile'))
 
+    def load_template(self,fn):
+        """ more generic name for load_mdu """
+        return self.load_mdu(fn) 
     def load_mdu(self,fn):
         self.mdu=dio.MDUFile(fn)
 
@@ -2412,6 +2432,7 @@ class DFlowModel(HydroModel):
 
     def write_monitor_points(self):
         fn=self.mdu.filepath( ('output','ObsFile') )
+        if fn is None: return
         with open(fn,'at') as fp:
             for i,mon_feat in enumerate(self.mon_points):
                 try:
@@ -2422,6 +2443,7 @@ class DFlowModel(HydroModel):
                 fp.write("%.3f %.3f '%s'\n"%(xy[0],xy[1],name))
     def write_monitor_sections(self):
         fn=self.mdu.filepath( ('output','CrsFile') )
+        if fn is None: return
         with open(fn,'at') as fp:
             for i,mon_feat in enumerate(self.mon_sections):
                 try:
@@ -2635,6 +2657,6 @@ class DFlowModel(HydroModel):
 
 import sys
 if sys.platform=='win32':
-    cls=HydroModel
+    cls=DFlowModel
     cls.dfm_bin_exe="dflowfm-cli.exe"
     cls.mpi_bin_exe="mpiexec.exe"

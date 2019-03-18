@@ -267,6 +267,11 @@ def shp2geom(shp_fn,use_wkt=False,target_srs=None,
         # The try..except block is from olden days when OGR was not stable
         # to weird geometries.
 
+        geo_ref=f.GetGeometryRef()
+        if geo_ref is None:
+            # this is possible, for example, in QGIS delete all nodes of a
+            # line, but don't delete the actual feature.
+            return None
         #try:
         if use_wkt:
             geo=wkt.loads( f.GetGeometryRef().ExportToWkt() )

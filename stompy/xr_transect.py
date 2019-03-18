@@ -683,19 +683,14 @@ def lplt():
     import matplotlib.pyplot as plt
     return plt
 
-def plot_scalar_pcolormesh(tran,v,ax=None,xform=None,**kw):
-    """
-    This approximates a sigma coordinate grid in the slice.
-    Since that's not the natural staggering for a transect,
-    it requires some extrapolation which will probably look
-    bad for grids where a specific layer index can jump around
-    in the vertical (e.g. variable resolution ADCP).
-    """
-    plt=lplt()
-    from stompy.plot import plot_utils
 
-    ax=ax or plt.gca()
-
+def interp_to_grid(tran,v,expand_x=True,expand_y=True):
+    """
+    Return dense matrix for X,Y and V (from v, or tran[v] if v is str)
+    expand_x: defaults to 1 more value in the X dimension than in V, suitable for
+    passing to pcolormesh.
+    expand_y: defaults to 1 more value in the Y dimension than in V, for pcolormesh
+    """
     if isinstance(v,six.string_types):
         v=tran[v]
 
@@ -712,16 +707,20 @@ def plot_scalar_pcolormesh(tran,v,ax=None,xform=None,**kw):
     Y=y.values
     Dz=dz.values
 
-    # Expands the vertical coordinate in the vertical
-    Ybot=Y-0.5*Dz
-    Yexpand=np.concatenate( (Ybot,Ybot[:,-1:]), axis=1)
-    Yexpand[:,-1]=np.nan
-    Yexpand[:,1:]=np.where( np.isfinite(Yexpand[:,1:]),
-                            Yexpand[:,1:],
-                            Y+0.5*Dz)
-    # Expands the horizontal coordinate in the vertical
-    Xexpand=np.concatenate( (X,X[:,-1:]), axis=1)
-
+    if expand_y:
+        # Expands the vertical coordinate in the vertical
+        Ybot=Y-0.5*Dz
+        Yexpand=np.concatenate( (Ybot,Ybot[:,-1:]), axis=1)
+        Yexpand[:,-1]=np.nan
+        Yexpand[:,1:]=np.where( np.isfinite(Yexpand[:,1:]),
+                                Yexpand[:,1:],
+                                Y+0.5*Dz)
+        # Expands the horizontal coordinate in the vertical
+        Xexpand=np.concatenate( (X,X[:,-1:]), axis=1)
+    else:
+        Yexpand=Y
+        Xexpand=X
+        
     # And expand in the horizontal
     def safe_midpnt(a,b):
         ab=0.5*(a+b)
@@ -731,15 +730,35 @@ def plot_scalar_pcolormesh(tran,v,ax=None,xform=None,**kw):
         ab[invalid]=b[invalid]
         return ab
 
-    dx=utils.center_to_interval(X[:,0])
-    Xexpand2=np.concatenate( (Xexpand-0.5*dx[:,None], Xexpand[-1:,:]+0.5*dx[-1:,None]), axis=0)
-    Yexpand2=np.concatenate( (Yexpand[:1,:],
-                              safe_midpnt(Yexpand[:-1],Yexpand[1:]),
-                              Yexpand[-1:,:]), axis=0)
+    if expand_x:
+        dx=utils.center_to_interval(X[:,0])
+        Xexpand2=np.concatenate( (Xexpand-0.5*dx[:,None], Xexpand[-1:,:]+0.5*dx[-1:,None]), axis=0)
+        Yexpand2=np.concatenate( (Yexpand[:1,:],
+                                  safe_midpnt(Yexpand[:-1],Yexpand[1:]),
+                                  Yexpand[-1:,:]), axis=0)
+    else:
+        Xexpand2=Xexpand
+        Yexpand2=Yexpand
+    return Xexpand2,Yexpand2,scal.values
+
+def plot_scalar_pcolormesh(tran,v,ax=None,xform=None,**kw):
+    """
+    This approximates a sigma coordinate grid in the slice.
+    Since that's not the natural staggering for a transect,
+    it requires some extrapolation which will probably look
+    bad for grids where a specific layer index can jump around
+    in the vertical (e.g. variable resolution ADCP).
+    """
+    plt=lplt()
+    from stompy.plot import plot_utils
+
+    ax=ax or plt.gca()
+
+    X,Y,V = interp_to_grid(tran,v)
 
     if xform:
-        Xexpand2,Yexpand2=xform(Xexpand2,Yexpand2)
-    coll=ax.pcolor(Xexpand2,Yexpand2,scal.values,**kw)
+        X,Y=xform(X,Y)
+    coll=ax.pcolor(X,Y,V,**kw)
 
     return coll
 
@@ -815,9 +834,25 @@ def plot_scalar_polys(tran,v,ax=None,xform=None,**kw):
 
     return coll
 
-
 plot_scalar=plot_scalar_polys
 
+def contour(tran,v,*args,**kwargs):
+    if isinstance(v,six.string_types):
+        v=tran[v]
+
+    x,y,scal,dz=xr.broadcast(get_d_sample(tran),tran.z_ctr,v,get_z_dz(tran))
+    if 'ax' in kwargs:
+        ax=kwargs.pop('ax')
+    else:
+        ax=plt.gca()
+    # x is always full, but y can have nan, and that triggers a warning.
+    # appears to be okay to just fill with 0.
+    yvals=y.values.copy()
+    yvals[np.isnan(yvals)]=0.0
+    return ax.contour(x.values,
+                      yvals,
+                      scal.values,
+                      *args,**kwargs)
 
 # Code related to averaging multiple transects
 def transects_to_segment(trans,unweight=True,ax=None):
