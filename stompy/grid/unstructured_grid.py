@@ -3751,6 +3751,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     def cell_polygon(self,c):
         return geometry.Polygon(self.nodes['x'][self.cell_to_nodes(c)])
 
+    def edge_line(self,e):
+        return geometry.LineString(self.nodes['x'][self.edges['nodes'][e]])
+
     def node_point(self,n):
         return geometry.Point( self.nodes['x'][n] )
 
