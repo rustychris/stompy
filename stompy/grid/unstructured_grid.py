@@ -372,6 +372,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         return UnstructuredGrid(grid=self)
 
     def copy_from_grid(self,grid):
+        """
+        Copy topology from grid to self, replacing any existing
+        grid information.
+        In the future this may also handle copying additional node/edge/cell
+        fields, but right now does NOT.
+        """
         # this takes care of allocation, and setting the most basic topology
         cell_nodes=grid.cells['nodes']
         if self.max_sides < grid.max_sides:

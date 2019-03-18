@@ -465,7 +465,13 @@ class SuntansModel(dfm.HydroModel):
         new_model.restart=self.config_filename
         new_model.restart_model=self
         new_model.restart_symlink=symlink
-        new_model.set_grid(unstructured_grid.UnstructuredGrid.read_suntans(self.run_dir))
+        # There is some extra machinery in load_grid(...) to get the right cell and
+        # edge depths -- this call would lose those
+        # new_model.set_grid(unstructured_grid.UnstructuredGrid.read_suntans(self.run_dir))
+        # So copy the grid we already have.
+        # UnstructuredGrid.copy() is naive and doesn't get all the depth fields, so
+        # here just pass self.grid, even though it may get mutated.
+        new_model.set_grid(self.grid)
         new_model.run_start=self.restartable_time()
         return new_model
 
@@ -534,8 +540,9 @@ class SuntansModel(dfm.HydroModel):
 
         if 'edge_depth' in grid.edges.dtype.names:
             deep_edges=(grid.edges['edge_depth']<edge_depth)
-            print("%d edges had a specified depth deeper than neighboring cells.  Replaced them"%
-                  deep_edges.sum())
+            if np.any(deep_edges):
+                self.log.info("%d edges had a specified depth deeper than neighboring cells.  Replaced them"%
+                              deep_edges.sum())
             grid.edges['edge_depth'][deep_edges]=edge_depth[deep_edges]
         else:        
             grid.add_edge_field('edge_depth',edge_depth)
@@ -598,7 +605,43 @@ class SuntansModel(dfm.HydroModel):
         Set self.grid from existing suntans-format grid in self.run_dir.
         """
         g=unstructured_grid.UnstructuredGrid.read_suntans(self.run_dir)
+
+        # hacked in support to read cell depths
+        cell_depth_fn=self.file_path('depth')+"-voro"
+        if ( ('depth' not in g.cells.dtype.names)
+             and
+             (os.path.exists(cell_depth_fn)) ):
+            self.log.info("Will read cell depths, too")
+            cell_xyz=np.loadtxt(cell_depth_fn)
+            assert cell_xyz.shape[0]==g.Ncells(),"%s didn't have the right number of cells (%d vs %d)"%(cell_depth_fn,
+                                                                                                        cell_xyz.shape[0],
+                                                                                                        g.Ncells())
+            # cell centers can be a bit lenient in case there are centroid vs. circumcenter vs nudged
+            # differences.
+            if not np.allclose(cell_xyz[:,:2], g.cells_center()):
+                self.log.warning("%s cell locations don't match grid"%cell_depth_fn)
+                self.log.warning("Will forge ahead nevertheless")
+            # on disk these are positive down, but model driver convention is positive up
+            # (despite being called depth...)
+            g.add_cell_field('depth',-cell_xyz[:,2])
+            
+        # hacked  in support to read depth on edges
+        edge_depth_fn=self.file_path('depth')+"-edge"
+        if ( ('edge_depth' not in g.edges.dtype.names)
+             and
+             (os.path.exists(edge_depth_fn)) ):
+            self.log.info("Will read edge depths, too")
+            edge_xyz=np.loadtxt(edge_depth_fn)
+            assert edge_xyz.shape[0]==g.Nedges(),"%s didn't have the right number of edges (%d vs %d)"%(edge_depth_fn,
+                                                                                                        edge_xyz.shape[0],
+                                                                                                        g.Nedges())
+            assert np.allclose(edge_xyz[:,:2], g.edges_center()),"%s edge locations don't match"%edge_depth_fn
+            # on disk these are positive down, but model driver convention is positive up
+            # (despite being called depth...)
+            g.add_edge_field('edge_depth',-edge_xyz[:,2])
+        
         self.set_grid(g)
+            
         return g
     
     def infer_restart(self):
