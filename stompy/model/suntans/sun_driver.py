@@ -529,14 +529,14 @@ class SuntansModel(dfm.HydroModel):
                 cell_depth=np.zeros(grid.Ncells(),np.float64)
             grid.add_cell_field('depth',cell_depth)
 
-            
         # with the current suntans version, depths are on cells, but model driver
         # code in places wants an edge depth.  so copy those here.
         e2c=grid.edge_to_cells() # this is assumed in other parts of the code that do not recalculate it.
         nc1=e2c[:,0].copy()   ; nc2=e2c[:,1].copy()
         nc1[nc1<0]=nc2[nc1<0] ; nc2[nc2<0]=nc1[nc2<0]
         # edge depth is shallower of neighboring cells
-        edge_depth=np.minimum(grid.cells['depth'][nc1],grid.cells['depth'][nc2])
+        # these depths are still positive up, though.
+        edge_depth=np.maximum(grid.cells['depth'][nc1],grid.cells['depth'][nc2])
 
         if 'edge_depth' in grid.edges.dtype.names:
             deep_edges=(grid.edges['edge_depth']<edge_depth)
@@ -1502,7 +1502,6 @@ class SuntansModel(dfm.HydroModel):
         ds['xp']=('Np',),self.grid.nodes['x'][:,0]
         ds['yp']=('Np',),self.grid.nodes['x'][:,1]
 
-
         depth=-(self.grid.cells['depth'] + self.z_offset)
         ds['dv']=('Nc',),depth.clip(float(self.config['minimum_depth']),np.inf)
 
@@ -1671,14 +1670,20 @@ class SuntansModel(dfm.HydroModel):
         """
         return a list of map output files -- if netcdf output is enabled,
         that is what will be returned.
+        Guaranteed to be in the order of subdomain numbering
         """
         if int(self.config['outputNetcdf']):
             if int(self.config['mergeArrays']):
                 # should just be 1
                 return [os.path.join(self.run_dir,self.config['outputNetcdfFile'])]
             else:
+                # convoluted, but allow for some of the odd name construction for
+                # per-domain files, relying only on the assumption that the
+                # suffix is the processor number.
                 fns=glob.glob(os.path.join(self.run_dir,self.config['outputNetcdfFile']+"*"))
-                fns.sort()
+                procs=[int(fn.split('.')[-1]) for fn in fns]
+                order=np.argsort(procs)
+                fns=[fns[i] for i in order]
                 return fns
         else:
             raise Exception("Need to implement map output filenames for non-netcdf")
@@ -1848,13 +1853,17 @@ class SuntansModel(dfm.HydroModel):
             self._subdomain_grids={}
 
         if p not in self._subdomain_grids:
-            edges_fn=os.path.join(self.run_dir,'edges.dat.%d')
-            cells_fn=os.path.join(self.run_dir,'cells.dat.%d')
-            points_fn=os.path.join(self.run_dir,'points.dat')
             sub_g=unstructured_grid.UnstructuredGrid.read_suntans_hybrid(path=self.run_dir,
                                                                          points='points.dat',
                                                                          edges='edges.dat.%d'%p,
                                                                          cells='cells.dat.%d'%p)
+            # edge depth is an ad-hoc extension, not "standard" enough to be in
+            # read_suntans_hybrid, so add it in here:
+            edge_depth_fn=self.file_path('depth')+"-edge.%d"%p
+            if os.path.exists(edge_depth_fn):
+                edge_xyz=np.loadtxt(edge_depth_fn)
+                sub_g.add_edge_field('edge_depth',edge_xyz[:,2])
+            
             self._subdomain_grids[p]=sub_g
         return self._subdomain_grids[p]
 
