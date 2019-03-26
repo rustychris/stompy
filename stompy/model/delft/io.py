@@ -847,7 +847,8 @@ def dfm_wind_to_nc(wind_u_fn,wind_v_fn,nc_fn):
 
     # assign some attributes while we're at it
     for k in ['FileVersion','Filetype','dx','dy','grid_unit','unit1','x_llcorner','y_llcorner']:
-        setattr(nc,k,u_header[k])
+        if k in u_header:
+            setattr(nc,k,u_header[k])
 
     # cf conventions suggest this order of dimensions
     u_var = nc.createVariable('wind_u',np.float32,[tdim,ydim,xdim],

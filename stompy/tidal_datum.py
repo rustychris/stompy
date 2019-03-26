@@ -49,11 +49,11 @@ def find_tidal_datum(timeseries,stat,daily=False):
     Nmonths = int( (t[-1] - t[i0])*24*60 / T57M2 )
 
     # Low Water find minimum in each TM2 segment 
-    jm=np.zeros(57*Nmonths,int32) # indices to low water within each M2 period
+    jm=np.zeros(57*Nmonths,np.int32) # indices to low water within each M2 period
 
     for k in range(57*Nmonths):
-        i1=i0+np.round(k * nm2) # index of kth m2
-        i2=i0+np.round((k+1) * nm2)
+        i1=int(i0+np.round(k * nm2)) # index of kth m2
+        i2=int(i0+np.round((k+1) * nm2))
         if stat is 'min':
             jm[k] = i1 + np.argmin( h[i1:i2] )
         elif stat is 'max':
