@@ -490,7 +490,10 @@ class SuntansModel(dfm.HydroModel):
             fn=os.path.join(fn,"suntans.dat")
             if not os.path.exists(fn):
                 return False
+
         model=cls.load(fn)
+        if model is None:
+            return False
         return model.is_completed()
     def is_completed(self):
         step_fn=os.path.join(self.run_dir,self.config['ProgressFile'])
@@ -581,10 +584,14 @@ class SuntansModel(dfm.HydroModel):
     def load(fn,load_grid=True):
         """
         Open an existing model setup, from path to its suntans.dat
+        return None if run could not be loaded.
         """
         model=SuntansModel()
         if os.path.isdir(fn):
             fn=os.path.join(fn,'suntans.dat')
+        if not os.path.exists(fn):
+            return None
+        
         model.load_template(fn)
         model.set_run_dir(os.path.dirname(fn),mode='existing')
         # infer number of processors based on celldata files
@@ -598,7 +605,12 @@ class SuntansModel(dfm.HydroModel):
         model.set_times_from_config()
         # This will need some tweaking to fail gracefully
         if load_grid:
-            model.load_grid()
+            try:
+                model.load_grid()
+            except OSError:
+                # this may be too strict -- a multiproc run could be fine but not
+                # necessarily have the global grid.
+                return None
         return model
     def load_grid(self):
         """
