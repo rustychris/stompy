@@ -426,7 +426,8 @@ class SuntansModel(dfm.HydroModel):
     # like z_datum['NAVD88']=-5.
     z_offset=0.0
     ic_ds=None
-
+    met_ds=None
+    
     # None: not a restart, or
     # path to suntans.dat for the run being restarted, or True if this is
     # a restart but we don't we have a separate directory for the restart,
@@ -490,7 +491,10 @@ class SuntansModel(dfm.HydroModel):
             fn=os.path.join(fn,"suntans.dat")
             if not os.path.exists(fn):
                 return False
+
         model=cls.load(fn)
+        if model is None:
+            return False
         return model.is_completed()
     def is_completed(self):
         step_fn=os.path.join(self.run_dir,self.config['ProgressFile'])
@@ -581,10 +585,14 @@ class SuntansModel(dfm.HydroModel):
     def load(fn,load_grid=True):
         """
         Open an existing model setup, from path to its suntans.dat
+        return None if run could not be loaded.
         """
         model=SuntansModel()
         if os.path.isdir(fn):
             fn=os.path.join(fn,'suntans.dat')
+        if not os.path.exists(fn):
+            return None
+        
         model.load_template(fn)
         model.set_run_dir(os.path.dirname(fn),mode='existing')
         # infer number of processors based on celldata files
@@ -598,7 +606,12 @@ class SuntansModel(dfm.HydroModel):
         model.set_times_from_config()
         # This will need some tweaking to fail gracefully
         if load_grid:
-            model.load_grid()
+            try:
+                model.load_grid()
+            except OSError:
+                # this may be too strict -- a multiproc run could be fine but not
+                # necessarily have the global grid.
+                return None
         return model
     def load_grid(self):
         """
@@ -877,7 +890,8 @@ class SuntansModel(dfm.HydroModel):
         self.bc_ds=self.compile_bcs()
 
         self.write_bc_ds()
-        self.met_ds=self.zero_met()
+        if self.met_ds is None:
+            self.met_ds=self.zero_met()
         self.write_met_ds()
 
     def ds_time_units(self):
@@ -904,8 +918,15 @@ class SuntansModel(dfm.HydroModel):
                               encoding=dict(time={'units':self.ds_time_units()}))
 
     def write_met_ds(self):
-        self.met_ds.to_netcdf( os.path.join(self.run_dir,
-                                            self.config['metfile']),
+        fn=os.path.join(self.run_dir,
+                        self.config['metfile'])
+        if os.path.exists(fn):
+            print("Will replace %s"%fn)
+            os.unlink(fn)
+        else:
+            print("Writing met ds to %s"%fn)
+        print(str(self.met_ds))
+        self.met_ds.to_netcdf( fn,
                                encoding=dict(nt={'units':self.ds_time_units()},
                                              Time={'units':self.ds_time_units()}) )
 
@@ -1548,17 +1569,25 @@ class SuntansModel(dfm.HydroModel):
         return ds_ic
 
     met_pad=np.timedelta64(1,'D')
-    def zero_met(self):
+    def zero_met(self,times=None):
+        """
+        Create an empty (zero valued, and T=20degC) dataset for met
+        forcing.
+        times: defaults to 4 time steps bracketing the run, pass in
+        other ndarray(datetime64) to override
+        """
         ds_met=xr.Dataset()
 
         # this is nt in the sample, but maybe time is okay??
         # nope -- needs to be nt.
         # quadratic interpolation is used, so we need to pad out before/after
         # the simulation
-        ds_met['nt']=('nt',),[self.run_start-self.met_pad,
-                              self.run_start,
-                              self.run_stop,
-                              self.run_stop+self.met_pad]
+        if times is None:
+            times=[self.run_start-self.met_pad,
+                   self.run_start,
+                   self.run_stop,
+                   self.run_stop+self.met_pad]
+        ds_met['nt']=('nt',),times
         ds_met['Time']=('nt',),ds_met.nt.values
 
         xxyy=self.grid.bounds()
