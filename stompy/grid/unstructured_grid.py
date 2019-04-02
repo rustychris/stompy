@@ -3641,6 +3641,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             coll = ax.scatter(xy[mask,0],xy[mask,1],20,*args,**kwargs)
 
         if labeler is not None:
+            if labeler=='id':
+                labeler=lambda i,r: str(i)
+            elif labeler in self.cells.dtype.names:
+                field=labeler
+                labeler=lambda i,r: str(r[field])
+                
             for c in np.nonzero(mask)[0]:
                 ax.text(xy[c,0],xy[c,1],labeler(c,self.cells[c]))
 

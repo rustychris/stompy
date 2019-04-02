@@ -1659,6 +1659,11 @@ class SuntansModel(dfm.HydroModel):
         return fns
 
     def avg_outputs(self):
+        """
+        with mergeArrays=1, these get sequenced with nstepsperncfile
+        with mergeArrays=0, each processor gets a file.
+        currently this function does not expose the difference
+        """
         if int(self.config['calcaverage']):
             fns=glob.glob(os.path.join(self.run_dir,self.config['averageNetcdfFile']+"*"))
             fns.sort()
@@ -1670,12 +1675,20 @@ class SuntansModel(dfm.HydroModel):
         """
         return a list of map output files -- if netcdf output is enabled,
         that is what will be returned.
-        Guaranteed to be in the order of subdomain numbering
+        Guaranteed to be in the order of subdomain numbering if mergeArrays=0,
+        and in chronological order if mergeArrays=1.
+
+        Currently you can't distinguish which is which just from the output
+        of this method.
         """
         if int(self.config['outputNetcdf']):
             if int(self.config['mergeArrays']):
-                # should just be 1
-                return [os.path.join(self.run_dir,self.config['outputNetcdfFile'])]
+                # in this case the outputs are chunked in time
+                # with names like Estuary_SUNTANS.nc_0000.nc
+                #  i.e. <outputNetcdfFile>_<seqN>.nc
+                fns=glob.glob(os.path.join(self.run_dir,self.config['outputNetcdfFile']+"_*.nc"))
+                fns.sort()
+                return fns
             else:
                 # convoluted, but allow for some of the odd name construction for
                 # per-domain files, relying only on the assumption that the

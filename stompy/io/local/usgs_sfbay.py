@@ -6,6 +6,7 @@ Note that SFEI ERDDAP is not necessarily up to date!
 import os
 import six
 
+import logging
 import numpy as np
 import matplotlib.pyplot as plt
 import xarray as xr
@@ -240,8 +241,20 @@ maxrow:99999
 ftype:easy
 """
 
+from .common import periods
 
-def query_usgs_sfbay(period_start, period_end, cache_dir=None):
+def query_usgs_sfbay(period_start, period_end, cache_dir=None, days_per_request='M'):
+    # Handle longer periods:
+    if days_per_request is not None:
+        logging.info("Will break that up into pieces")
+        dfs=[]
+        for interval_start,interval_end in periods(period_start,period_end,days_per_request):
+            df=query_usgs_sfbay(interval_start,interval_end,cache_dir=cache_dir,days_per_request=None)
+            if df is not None:
+                dfs.append(df)
+        return pd.concat(dfs)
+    logging.info("Fetch %s -- %s"%(period_start,period_end))
+    
     params=[]
 
     for column,text in usgs_sfbay_columns:
@@ -319,6 +332,8 @@ def query_usgs_sfbay(period_start, period_end, cache_dir=None):
                 data2=fp.read()
                 
     df = pd.read_csv(StringIO(data2),skiprows=[1],parse_dates=["Date"] )
+    if len(df)==0:
+        return None
 
     # merge in lat/lon
     lonlats=[station_number_to_lonlat(s) for s in df['Station Number']]

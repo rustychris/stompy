@@ -7372,6 +7372,12 @@ END_MULTIGRID"""%num_layers
 
     def add_transects_from_shp(self,shp_fn,naming='count',clip_to_poly=True,
                                on_boundary='warn_and_skip'):
+        """
+        Add monitor transects from a shapefile.
+        By default transects are named in sequence.  
+        Specify a shapefile field name in 'naming' to pull user-specified
+        names for the transects.
+        """
         locations=wkb2shp.shp2geom(shp_fn)
         g=self.hydro.grid()
 
