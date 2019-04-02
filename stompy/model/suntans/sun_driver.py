@@ -582,10 +582,14 @@ class SuntansModel(dfm.HydroModel):
 
         
     @staticmethod
-    def load(fn,load_grid=True):
+    def load(fn,load_grid=True,load_met=False,load_ic=False,load_bc=False):
         """
         Open an existing model setup, from path to its suntans.dat
         return None if run could not be loaded.
+
+        load_met: if true, load an existing Met netcdf file to self.met_ds
+        load_ic: likewise for initial conditions
+        load_bc: likewise for boundary conditions
         """
         model=SuntansModel()
         if os.path.isdir(fn):
@@ -612,6 +616,13 @@ class SuntansModel(dfm.HydroModel):
                 # this may be too strict -- a multiproc run could be fine but not
                 # necessarily have the global grid.
                 return None
+
+        if load_met:
+            model.load_met_ds()
+        if load_ic:
+            model.load_ic_ds()
+        if load_bc:
+            model.load_bc_ds()
         return model
     def load_grid(self):
         """
@@ -805,7 +816,11 @@ class SuntansModel(dfm.HydroModel):
 
     def write_ic_ds(self):
         self.ic_ds.to_netcdf( os.path.join(self.run_dir,self.config['initialNCfile']) )
-
+    def load_ic_ds(self):
+        fn=os.path.join(self.run_dir,self.config['initialNCfile'])
+        if not os.path.exists(fn): return False
+        self.ic_ds=xr.open_dataset(fn)
+        
     def set_initial_h_from_bc(self):
         """
         prereq: self.bc_ds has been set.
@@ -916,6 +931,11 @@ class SuntansModel(dfm.HydroModel):
         self.bc_ds.to_netcdf( os.path.join(self.run_dir,
                                            self.config['netcdfBdyFile']),
                               encoding=dict(time={'units':self.ds_time_units()}))
+    def load_bc_ds(self):
+        fn=os.path.join(self.run_dir,
+                        self.config['netcdfBdyFile'])
+        if not os.path.exists(fn): return False
+        self.bc_ds=xr.open_dataset(fn)
 
     def write_met_ds(self):
         fn=os.path.join(self.run_dir,
@@ -930,6 +950,12 @@ class SuntansModel(dfm.HydroModel):
                                encoding=dict(nt={'units':self.ds_time_units()},
                                              Time={'units':self.ds_time_units()}) )
 
+    def load_met_ds(self):
+        fn=os.path.join(self.run_dir,
+                        self.config['metfile'])
+        if not os.path.exists(fn): return False
+        self.met_ds=xr.open_dataset(fn)
+        
     def layer_data(self,with_offset=False,edge_index=None,cell_index=None,z_bed=None):
         """
         Returns layer data without z_offset applied, and
