@@ -1054,7 +1054,8 @@ class PyApolloniusField(XYZField):
         for shp_name in shp_names:
             print("Reading %s"%shp_name)
 
-            layer=wkb2shp.shp2geom(shp_name)
+            layer=wkb2shp.shp2geom(shp_name,fold_to_lower=True)
+            value_field=value_field.lower()
             
             for i in range(len(layer)):
                 geo = layer['geom'][i]

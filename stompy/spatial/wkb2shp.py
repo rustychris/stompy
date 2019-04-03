@@ -194,7 +194,8 @@ def wkb2shp(shp_name,
 
 # kind of the reverse of the above
 def shp2geom(shp_fn,use_wkt=False,target_srs=None,
-             source_srs=None,return_srs=False):
+             source_srs=None,return_srs=False,
+             fold_to_lower=False):
     """
     Read a shapefile into memory as a numpy array.
     Data is returned as a record array, with geometry as a shapely
@@ -206,6 +207,8 @@ def shp2geom(shp_fn,use_wkt=False,target_srs=None,
     but the shapefile does not specify a projection, and source_srs is not given,
     then an exception is raised.  source_srs will override the projection in 
     the shapefile if specified.
+
+    fold_to_lower: fold field names to lower case.
 
     return_srs: return a tuple, second item being the text representation of the project, or
      None if no projection information was found.
@@ -221,7 +224,7 @@ def shp2geom(shp_fn,use_wkt=False,target_srs=None,
         if source_srs is None:
             raise Exception("Reprojection requested, but no source reference available")
 
-        mapper=proj_utils.mapper(source_srs,'EPSG:26910')
+        mapper=proj_utils.mapper(source_srs,target_srs)
         # have to massage it a bit to suit shapely's calling convention
         def xform(x,y,z=None): # x,y,z may be scalar or array
             # ugly code... annoying code...
@@ -249,7 +252,9 @@ def shp2geom(shp_fn,use_wkt=False,target_srs=None,
     
     for i in range(fld_count):
         fdef =defn.GetFieldDefn(i)
-        name = fdef.name 
+        name = fdef.name
+        if fold_to_lower:
+            name=name.lower()
         ogr_type = fdef.GetTypeName()
         if ogr_type == 'String':
             np_type = object

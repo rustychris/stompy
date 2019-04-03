@@ -17,6 +17,8 @@ except ImportError:
 
 import shapely.wkb
 import matplotlib
+# Avoid interactive display in case we're on a server
+matplotlib.use('Agg')
 
 # Cairo doesn't play well with some conda installations.
 import pylab 
