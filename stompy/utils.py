@@ -1635,7 +1635,7 @@ def array_append( A, b ):
     # the layout is different and it would just get confusing, or
     # A is a slice on other dimensions, too, which gets too confusing.
 
-    if A.base is None or type(A.base) == str \
+    if (A.base is None) or type(A.base) in (str,bytes) \
            or A.base.size == A.size or A.base.strides != A.strides \
            or A.shape[1:] != A.base.shape[1:]:
         new_shape = list(A.shape)

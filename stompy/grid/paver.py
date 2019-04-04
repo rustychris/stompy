@@ -581,6 +581,9 @@ class Paving(paving_base,OptimizeGridMixin):
     dyn_zoom = 0
     label = None # convenience for keeping track of tests
 
+    # how many times to try relaxing the neighborhood around edits
+    relaxation_iterations=4
+    
     beta_rule = BETA_RESCUE # BETA_NEVER, BETA_RESCUE, BETA_ALWAYS
     
     nonlocal_method = PROACTIVE_DELAUNAY
@@ -2126,7 +2129,7 @@ class Paving(paving_base,OptimizeGridMixin):
             
             # is it free? both sides of the edge must either be
             # boundary or unmeshed (-1 or -2)
-            if any( self.edges[e,3:5] >= 0 ):
+            if np.any( self.edges[e,3:5] >= 0 ):
                 # this edge should not be counted
                 # print "stopping: edge AB has cells"
                 to_elt = A
@@ -3952,7 +3955,7 @@ class Paving(paving_base,OptimizeGridMixin):
                         all_nbrs_from_tk = self.angle_sort_nodes(to_delete,all_nbrs,return_angles=False)
                         bi = np.nonzero( all_nbrs_from_tk == b)[0][0]
                         all_nbrs_from_tk = np.concatenate( (all_nbrs_from_tk[bi:], all_nbrs_from_tk[:bi]) )
-                        if any( all_nbrs_from_tk != all_nbrs ):
+                        if np.any( all_nbrs_from_tk != all_nbrs ):
                             if self.verbose > 1:
                                 print("New angle sorting check raised the red flag")
                                 self.plot()
@@ -4027,7 +4030,7 @@ class Paving(paving_base,OptimizeGridMixin):
 
                 # self.hold() # don't update the DT while relaxing.
                 try:
-                    for i in range(4):
+                    for i in range(self.relaxation_iterations):
                         cells_to_check = np.unique( np.array( self.updated_cells,np.int32) )
                         nodes_to_check = np.unique( self.cells[cells_to_check,:] )
 
@@ -4038,7 +4041,7 @@ class Paving(paving_base,OptimizeGridMixin):
 
                             angles = self.tri_angles(cells_to_verify)
 
-                            failed = cells_to_verify[ any(angles>self.max_angle,axis=1) ]
+                            failed = cells_to_verify[ np.any(angles>self.max_angle,axis=1) ]
 
                             print(" precheck bad cells: ",failed)
 

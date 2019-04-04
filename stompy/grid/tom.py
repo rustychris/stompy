@@ -62,6 +62,7 @@ class Tom(object):
     smooth = 1
     simplify_tolerance=0.0 # length scale for geometry simplification before smoothing
     resume_checkpoint_fn = None
+    dump_checkpoint=False #
     verbosity=1
     dry_run=0
     optimize = None
@@ -71,6 +72,7 @@ class Tom(object):
     scale_factor = 1.0
     scale_ratio_for_cutoff = 1.0
     output_path="."
+    relaxation_iterations=4
     
     # These are not currently mutable from the command line
     # but could be.
@@ -103,6 +105,7 @@ class Tom(object):
         else:
             print("         [DISABLED] -a telescoping_scale.shp")
         print("         -f N.NN              # factor for adjusting scale globally")
+        print("         -I N                 # relaxation iterations, default %d"%self.relaxation_iterations)
         print("         -C N.NN              # smoothing: min number of cells across a channel")
         print("         -p N                 # output interval for plots   ")
         print("         -c N                 # checkpoint interval         ")
@@ -111,6 +114,7 @@ class Tom(object):
         print("         -o                   # enable optimization ")
         print("         -O path              # set output path")
         print("         -r checkpoint.pav    # resume from a checkpoint    ")
+        print("         -R checkpoint.pav    # load a checkpoint and output plot and shapefile")
         print("         -v N                 # set verbosity level N")
         print("         -n                   # ready the shoreline, but don't mesh it")
         print("         -m x1,y1,x2,y2,dx,dy # output raster of scale field")
@@ -146,7 +150,7 @@ class Tom(object):
         
     def run(self,argv):
         try:
-            opts,rest = getopt.getopt(argv[1:],'hb:s:a:t:i:c:r:dv:np:om:i:f:g:C:O:D:',
+            opts,rest = getopt.getopt(argv[1:],'hb:s:a:t:i:c:r:R:dv:np:om:i:f:g:C:O:D:I:',
                                       ['slide-interior',
                                        'rigid-interior'])
         except getopt.GetoptError as e:
@@ -177,8 +181,13 @@ class Tom(object):
                 self.checkpoint_interval = int(val)
             elif opt == '-C':
                 self.scale_ratio_for_cutoff = float(val)
+            elif opt == '-I':
+                self.relaxation_iterations = int(val)
             elif opt == '-r':
                 self.resume_checkpoint_fn = val
+            elif opt == '-R':
+                self.resume_checkpoint_fn = val
+                self.dump_checkpoint=True
             elif opt == '-d':
                 self.smooth = 0
             elif opt == '-v':
@@ -241,6 +250,8 @@ class Tom(object):
             self.p = paver.Paving.load_complete(self.resume_checkpoint_fn)
             self.p.verbose = self.verbosity
 
+        self.p.relaxation_iterations=self.relaxation_iterations
+        
         if self.dry_run:
             print("dry run...")
         elif self.density_map:
@@ -249,6 +260,12 @@ class Tom(object):
             bounds = np.array( [[x1,y1],[x2,y2]] )
             rasterized = f.to_grid(dx=dx,dy=dy,bounds=bounds)
             rasterized.write_gdal( "scale-raster.tif" )
+        elif self.dump_checkpoint:
+            # write grid as shapefile
+            if self.output_shp:
+                print("Writing shapefile with %d features (edges)"%(self.p.Nedges()))
+                self.p.write_shp(self.output_shp,only_boundaries=0,overwrite=1)
+            self.plot_intermediate()
         else:
             starting_step = self.p.step
             self.create_grid()
