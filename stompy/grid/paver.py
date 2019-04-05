@@ -581,6 +581,9 @@ class Paving(paving_base,OptimizeGridMixin):
     dyn_zoom = 0
     label = None # convenience for keeping track of tests
 
+    # how many times to try relaxing the neighborhood around edits
+    relaxation_iterations=4
+    
     beta_rule = BETA_RESCUE # BETA_NEVER, BETA_RESCUE, BETA_ALWAYS
     
     nonlocal_method = PROACTIVE_DELAUNAY
@@ -2051,14 +2054,14 @@ class Paving(paving_base,OptimizeGridMixin):
                     print("nodes are ",n1,n2)
                     print("Intersection found between edges %d and %d"%(e,e_bad))
                     
-                    [annotate(str(i),self.points[i]) for i in (n1,n2,a,b)]
+                    [plt.annotate(str(i),self.points[i]) for i in (n1,n2,a,b)]
                     #annotate('p1',p1+ref)
                     #annotate('p2',p2+ref)
                     
-                    plot([pa[0]+ref[0],pb[0]+ref[0]],
-                         [pa[1]+ref[1],pb[1]+ref[1]],'m',lw=3)
-                    plot([p1[0]+ref[0],p2[0]+ref[0]],
-                         [p1[1]+ref[1],p2[1]+ref[1]],'c',lw=3)
+                    plt.plot([pa[0]+ref[0],pb[0]+ref[0]],
+                             [pa[1]+ref[1],pb[1]+ref[1]],'m',lw=3)
+                    plt.plot([p1[0]+ref[0],p2[0]+ref[0]],
+                             [p1[1]+ref[1],p2[1]+ref[1]],'c',lw=3)
 
                     return n1,n2
         return None
@@ -2126,7 +2129,7 @@ class Paving(paving_base,OptimizeGridMixin):
             
             # is it free? both sides of the edge must either be
             # boundary or unmeshed (-1 or -2)
-            if any( self.edges[e,3:5] >= 0 ):
+            if np.any( self.edges[e,3:5] >= 0 ):
                 # this edge should not be counted
                 # print "stopping: edge AB has cells"
                 to_elt = A
@@ -2558,11 +2561,11 @@ class Paving(paving_base,OptimizeGridMixin):
             past_cw = (new_point_angle - cw_angle_bound) % (2*np.pi)
             if past_cw > angle_range:
                 print("Nope - the angle of the new point was bad relative to neighbors.")
-                print("  cw_angle_bound: %f"%(180*cw_angle_bound/pi))
-                print("     angle_range: %f"%(180*angle_range/pi))
+                print("  cw_angle_bound: %f"%(180*cw_angle_bound/np.pi))
+                print("     angle_range: %f"%(180*angle_range/np.pi))
                 print("     center node: %d"%(start_elt.data))
-                annotate('center',start_point)
-                annotate('new_point',new_point)
+                plt.annotate('center',start_point)
+                plt.annotate('new_point',new_point)
 
                 new_node_passes_checks = 0
                 
@@ -3049,7 +3052,7 @@ class Paving(paving_base,OptimizeGridMixin):
             if self.verbose > 2:
                 print("HEAP: pulled %s with metric %f=%.2fdeg"%(e,
                                                                 self.unpaved[ring_i].metric(e),
-                                                                180*self.unpaved[ring_i].metric(e)/pi))
+                                                                180*self.unpaved[ring_i].metric(e)/np.pi))
                 
             if self.unpaved[ring_i].metric(e) == 0.0: #need to recompute the angle
                 new_metric = self.internal_angle(apex=e)
@@ -3117,7 +3120,7 @@ class Paving(paving_base,OptimizeGridMixin):
 
         ab_parallel = ab
 
-        ab_perp = rot(pi/2,ab)
+        ab_perp = rot(np.pi/2,ab)
 
         theta = np.arctan2( np.dot(bc,ab_perp), np.dot(bc,ab_parallel) )
 
@@ -3362,7 +3365,7 @@ class Paving(paving_base,OptimizeGridMixin):
 
         if self.verbose > 2:
             if best_nbr is not None:
-                annotate('NL:%d'%best_nbr,self.points[best_nbr])
+                plt.annotate('NL:%d'%best_nbr,self.points[best_nbr])
 
         if best_nbr is None and shoot_ray:
             ## Try the ray shooting method
@@ -3460,7 +3463,7 @@ class Paving(paving_base,OptimizeGridMixin):
             print("Desired length: ",local_length)
             print("Current edge length: ",edge_lengths)
             print("Scale factor: ",scale_factor)
-            print("theta: %f"%(theta*180/pi))
+            print("theta: %f"%(theta*180/np.pi))
             print("len(unpaved): ",len(unpaved))
             if len(unpaved) < 10:
                 print("  nodes:",unpaved.to_array())
@@ -3952,7 +3955,7 @@ class Paving(paving_base,OptimizeGridMixin):
                         all_nbrs_from_tk = self.angle_sort_nodes(to_delete,all_nbrs,return_angles=False)
                         bi = np.nonzero( all_nbrs_from_tk == b)[0][0]
                         all_nbrs_from_tk = np.concatenate( (all_nbrs_from_tk[bi:], all_nbrs_from_tk[:bi]) )
-                        if any( all_nbrs_from_tk != all_nbrs ):
+                        if np.any( all_nbrs_from_tk != all_nbrs ):
                             if self.verbose > 1:
                                 print("New angle sorting check raised the red flag")
                                 self.plot()
@@ -4027,7 +4030,7 @@ class Paving(paving_base,OptimizeGridMixin):
 
                 # self.hold() # don't update the DT while relaxing.
                 try:
-                    for i in range(4):
+                    for i in range(self.relaxation_iterations):
                         cells_to_check = np.unique( np.array( self.updated_cells,np.int32) )
                         nodes_to_check = np.unique( self.cells[cells_to_check,:] )
 
@@ -4038,7 +4041,7 @@ class Paving(paving_base,OptimizeGridMixin):
 
                             angles = self.tri_angles(cells_to_verify)
 
-                            failed = cells_to_verify[ any(angles>self.max_angle,axis=1) ]
+                            failed = cells_to_verify[ np.any(angles>self.max_angle,axis=1) ]
 
                             print(" precheck bad cells: ",failed)
 
@@ -4895,10 +4898,10 @@ class Paving(paving_base,OptimizeGridMixin):
                 new_pnt   = self.boundary_slider(ri,new_alpha)
                 cur_pnt   = self.points[i]
 
-                annotate('lower',lower_pnt)
-                annotate('upper',upper_pnt)
-                annotate('new',new_pnt)
-                annotate('cur',cur_pnt)
+                plt.annotate('lower',lower_pnt)
+                plt.annotate('upper',upper_pnt)
+                plt.annotate('new',new_pnt)
+                plt.annotate('cur',cur_pnt)
 
                 raise Exception("Stop and take a look")
             return False

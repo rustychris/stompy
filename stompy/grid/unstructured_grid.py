@@ -372,6 +372,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         return UnstructuredGrid(grid=self)
 
     def copy_from_grid(self,grid):
+        """
+        Copy topology from grid to self, replacing any existing
+        grid information.
+        In the future this may also handle copying additional node/edge/cell
+        fields, but right now does NOT.
+        """
         # this takes care of allocation, and setting the most basic topology
         cell_nodes=grid.cells['nodes']
         if self.max_sides < grid.max_sides:
@@ -3635,6 +3641,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             coll = ax.scatter(xy[mask,0],xy[mask,1],20,*args,**kwargs)
 
         if labeler is not None:
+            if labeler=='id':
+                labeler=lambda i,r: str(i)
+            elif labeler in self.cells.dtype.names:
+                field=labeler
+                labeler=lambda i,r: str(r[field])
+                
             for c in np.nonzero(mask)[0]:
                 ax.text(xy[c,0],xy[c,1],labeler(c,self.cells[c]))
 
@@ -3744,6 +3756,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
     def cell_polygon(self,c):
         return geometry.Polygon(self.nodes['x'][self.cell_to_nodes(c)])
+
+    def edge_line(self,e):
+        return geometry.LineString(self.nodes['x'][self.edges['nodes'][e]])
 
     def node_point(self,n):
         return geometry.Point( self.nodes['x'][n] )

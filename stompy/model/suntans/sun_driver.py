@@ -426,7 +426,8 @@ class SuntansModel(dfm.HydroModel):
     # like z_datum['NAVD88']=-5.
     z_offset=0.0
     ic_ds=None
-
+    met_ds=None
+    
     # None: not a restart, or
     # path to suntans.dat for the run being restarted, or True if this is
     # a restart but we don't we have a separate directory for the restart,
@@ -465,7 +466,13 @@ class SuntansModel(dfm.HydroModel):
         new_model.restart=self.config_filename
         new_model.restart_model=self
         new_model.restart_symlink=symlink
-        new_model.set_grid(unstructured_grid.UnstructuredGrid.read_suntans(self.run_dir))
+        # There is some extra machinery in load_grid(...) to get the right cell and
+        # edge depths -- this call would lose those
+        # new_model.set_grid(unstructured_grid.UnstructuredGrid.read_suntans(self.run_dir))
+        # So copy the grid we already have.
+        # UnstructuredGrid.copy() is naive and doesn't get all the depth fields, so
+        # here just pass self.grid, even though it may get mutated.
+        new_model.set_grid(self.grid)
         new_model.run_start=self.restartable_time()
         return new_model
 
@@ -484,7 +491,10 @@ class SuntansModel(dfm.HydroModel):
             fn=os.path.join(fn,"suntans.dat")
             if not os.path.exists(fn):
                 return False
+
         model=cls.load(fn)
+        if model is None:
+            return False
         return model.is_completed()
     def is_completed(self):
         step_fn=os.path.join(self.run_dir,self.config['ProgressFile'])
@@ -523,19 +533,20 @@ class SuntansModel(dfm.HydroModel):
                 cell_depth=np.zeros(grid.Ncells(),np.float64)
             grid.add_cell_field('depth',cell_depth)
 
-            
         # with the current suntans version, depths are on cells, but model driver
         # code in places wants an edge depth.  so copy those here.
         e2c=grid.edge_to_cells() # this is assumed in other parts of the code that do not recalculate it.
         nc1=e2c[:,0].copy()   ; nc2=e2c[:,1].copy()
         nc1[nc1<0]=nc2[nc1<0] ; nc2[nc2<0]=nc1[nc2<0]
         # edge depth is shallower of neighboring cells
-        edge_depth=np.minimum(grid.cells['depth'][nc1],grid.cells['depth'][nc2])
+        # these depths are still positive up, though.
+        edge_depth=np.maximum(grid.cells['depth'][nc1],grid.cells['depth'][nc2])
 
         if 'edge_depth' in grid.edges.dtype.names:
             deep_edges=(grid.edges['edge_depth']<edge_depth)
-            print("%d edges had a specified depth deeper than neighboring cells.  Replaced them"%
-                  deep_edges.sum())
+            if np.any(deep_edges):
+                self.log.info("%d edges had a specified depth deeper than neighboring cells.  Replaced them"%
+                              deep_edges.sum())
             grid.edges['edge_depth'][deep_edges]=edge_depth[deep_edges]
         else:        
             grid.add_edge_field('edge_depth',edge_depth)
@@ -571,13 +582,21 @@ class SuntansModel(dfm.HydroModel):
 
         
     @staticmethod
-    def load(fn,load_grid=True):
+    def load(fn,load_grid=True,load_met=False,load_ic=False,load_bc=False):
         """
         Open an existing model setup, from path to its suntans.dat
+        return None if run could not be loaded.
+
+        load_met: if true, load an existing Met netcdf file to self.met_ds
+        load_ic: likewise for initial conditions
+        load_bc: likewise for boundary conditions
         """
         model=SuntansModel()
         if os.path.isdir(fn):
             fn=os.path.join(fn,'suntans.dat')
+        if not os.path.exists(fn):
+            return None
+        
         model.load_template(fn)
         model.set_run_dir(os.path.dirname(fn),mode='existing')
         # infer number of processors based on celldata files
@@ -591,14 +610,62 @@ class SuntansModel(dfm.HydroModel):
         model.set_times_from_config()
         # This will need some tweaking to fail gracefully
         if load_grid:
-            model.load_grid()
+            try:
+                model.load_grid()
+            except OSError:
+                # this may be too strict -- a multiproc run could be fine but not
+                # necessarily have the global grid.
+                return None
+
+        if load_met:
+            model.load_met_ds()
+        if load_ic:
+            model.load_ic_ds()
+        if load_bc:
+            model.load_bc_ds()
         return model
     def load_grid(self):
         """
         Set self.grid from existing suntans-format grid in self.run_dir.
         """
         g=unstructured_grid.UnstructuredGrid.read_suntans(self.run_dir)
+
+        # hacked in support to read cell depths
+        cell_depth_fn=self.file_path('depth')+"-voro"
+        if ( ('depth' not in g.cells.dtype.names)
+             and
+             (os.path.exists(cell_depth_fn)) ):
+            self.log.info("Will read cell depths, too")
+            cell_xyz=np.loadtxt(cell_depth_fn)
+            assert cell_xyz.shape[0]==g.Ncells(),"%s didn't have the right number of cells (%d vs %d)"%(cell_depth_fn,
+                                                                                                        cell_xyz.shape[0],
+                                                                                                        g.Ncells())
+            # cell centers can be a bit lenient in case there are centroid vs. circumcenter vs nudged
+            # differences.
+            if not np.allclose(cell_xyz[:,:2], g.cells_center()):
+                self.log.warning("%s cell locations don't match grid"%cell_depth_fn)
+                self.log.warning("Will forge ahead nevertheless")
+            # on disk these are positive down, but model driver convention is positive up
+            # (despite being called depth...)
+            g.add_cell_field('depth',-cell_xyz[:,2])
+            
+        # hacked  in support to read depth on edges
+        edge_depth_fn=self.file_path('depth')+"-edge"
+        if ( ('edge_depth' not in g.edges.dtype.names)
+             and
+             (os.path.exists(edge_depth_fn)) ):
+            self.log.info("Will read edge depths, too")
+            edge_xyz=np.loadtxt(edge_depth_fn)
+            assert edge_xyz.shape[0]==g.Nedges(),"%s didn't have the right number of edges (%d vs %d)"%(edge_depth_fn,
+                                                                                                        edge_xyz.shape[0],
+                                                                                                        g.Nedges())
+            assert np.allclose(edge_xyz[:,:2], g.edges_center()),"%s edge locations don't match"%edge_depth_fn
+            # on disk these are positive down, but model driver convention is positive up
+            # (despite being called depth...)
+            g.add_edge_field('edge_depth',-edge_xyz[:,2])
+        
         self.set_grid(g)
+            
         return g
     
     def infer_restart(self):
@@ -749,7 +816,11 @@ class SuntansModel(dfm.HydroModel):
 
     def write_ic_ds(self):
         self.ic_ds.to_netcdf( os.path.join(self.run_dir,self.config['initialNCfile']) )
-
+    def load_ic_ds(self):
+        fn=os.path.join(self.run_dir,self.config['initialNCfile'])
+        if not os.path.exists(fn): return False
+        self.ic_ds=xr.open_dataset(fn)
+        
     def set_initial_h_from_bc(self):
         """
         prereq: self.bc_ds has been set.
@@ -834,7 +905,8 @@ class SuntansModel(dfm.HydroModel):
         self.bc_ds=self.compile_bcs()
 
         self.write_bc_ds()
-        self.met_ds=self.zero_met()
+        if self.met_ds is None:
+            self.met_ds=self.zero_met()
         self.write_met_ds()
 
     def ds_time_units(self):
@@ -859,13 +931,31 @@ class SuntansModel(dfm.HydroModel):
         self.bc_ds.to_netcdf( os.path.join(self.run_dir,
                                            self.config['netcdfBdyFile']),
                               encoding=dict(time={'units':self.ds_time_units()}))
+    def load_bc_ds(self):
+        fn=os.path.join(self.run_dir,
+                        self.config['netcdfBdyFile'])
+        if not os.path.exists(fn): return False
+        self.bc_ds=xr.open_dataset(fn)
 
     def write_met_ds(self):
-        self.met_ds.to_netcdf( os.path.join(self.run_dir,
-                                            self.config['metfile']),
+        fn=os.path.join(self.run_dir,
+                        self.config['metfile'])
+        if os.path.exists(fn):
+            print("Will replace %s"%fn)
+            os.unlink(fn)
+        else:
+            print("Writing met ds to %s"%fn)
+        print(str(self.met_ds))
+        self.met_ds.to_netcdf( fn,
                                encoding=dict(nt={'units':self.ds_time_units()},
                                              Time={'units':self.ds_time_units()}) )
 
+    def load_met_ds(self):
+        fn=os.path.join(self.run_dir,
+                        self.config['metfile'])
+        if not os.path.exists(fn): return False
+        self.met_ds=xr.open_dataset(fn)
+        
     def layer_data(self,with_offset=False,edge_index=None,cell_index=None,z_bed=None):
         """
         Returns layer data without z_offset applied, and
@@ -1459,7 +1549,6 @@ class SuntansModel(dfm.HydroModel):
         ds['xp']=('Np',),self.grid.nodes['x'][:,0]
         ds['yp']=('Np',),self.grid.nodes['x'][:,1]
 
-
         depth=-(self.grid.cells['depth'] + self.z_offset)
         ds['dv']=('Nc',),depth.clip(float(self.config['minimum_depth']),np.inf)
 
@@ -1506,17 +1595,25 @@ class SuntansModel(dfm.HydroModel):
         return ds_ic
 
     met_pad=np.timedelta64(1,'D')
-    def zero_met(self):
+    def zero_met(self,times=None):
+        """
+        Create an empty (zero valued, and T=20degC) dataset for met
+        forcing.
+        times: defaults to 4 time steps bracketing the run, pass in
+        other ndarray(datetime64) to override
+        """
         ds_met=xr.Dataset()
 
         # this is nt in the sample, but maybe time is okay??
         # nope -- needs to be nt.
         # quadratic interpolation is used, so we need to pad out before/after
         # the simulation
-        ds_met['nt']=('nt',),[self.run_start-self.met_pad,
-                              self.run_start,
-                              self.run_stop,
-                              self.run_stop+self.met_pad]
+        if times is None:
+            times=[self.run_start-self.met_pad,
+                   self.run_start,
+                   self.run_stop,
+                   self.run_stop+self.met_pad]
+        ds_met['nt']=('nt',),times
         ds_met['Time']=('nt',),ds_met.nt.values
 
         xxyy=self.grid.bounds()
@@ -1617,6 +1714,11 @@ class SuntansModel(dfm.HydroModel):
         return fns
 
     def avg_outputs(self):
+        """
+        with mergeArrays=1, these get sequenced with nstepsperncfile
+        with mergeArrays=0, each processor gets a file.
+        currently this function does not expose the difference
+        """
         if int(self.config['calcaverage']):
             fns=glob.glob(os.path.join(self.run_dir,self.config['averageNetcdfFile']+"*"))
             fns.sort()
@@ -1628,14 +1730,28 @@ class SuntansModel(dfm.HydroModel):
         """
         return a list of map output files -- if netcdf output is enabled,
         that is what will be returned.
+        Guaranteed to be in the order of subdomain numbering if mergeArrays=0,
+        and in chronological order if mergeArrays=1.
+
+        Currently you can't distinguish which is which just from the output
+        of this method.
         """
         if int(self.config['outputNetcdf']):
             if int(self.config['mergeArrays']):
-                # should just be 1
-                return [os.path.join(self.run_dir,self.config['outputNetcdfFile'])]
-            else:
-                fns=glob.glob(os.path.join(self.run_dir,self.config['outputNetcdfFile']+"*"))
+                # in this case the outputs are chunked in time
+                # with names like Estuary_SUNTANS.nc_0000.nc
+                #  i.e. <outputNetcdfFile>_<seqN>.nc
+                fns=glob.glob(os.path.join(self.run_dir,self.config['outputNetcdfFile']+"_*.nc"))
                 fns.sort()
+                return fns
+            else:
+                # convoluted, but allow for some of the odd name construction for
+                # per-domain files, relying only on the assumption that the
+                # suffix is the processor number.
+                fns=glob.glob(os.path.join(self.run_dir,self.config['outputNetcdfFile']+"*"))
+                procs=[int(fn.split('.')[-1]) for fn in fns]
+                order=np.argsort(procs)
+                fns=[fns[i] for i in order]
                 return fns
         else:
             raise Exception("Need to implement map output filenames for non-netcdf")
@@ -1805,13 +1921,17 @@ class SuntansModel(dfm.HydroModel):
             self._subdomain_grids={}
 
         if p not in self._subdomain_grids:
-            edges_fn=os.path.join(self.run_dir,'edges.dat.%d')
-            cells_fn=os.path.join(self.run_dir,'cells.dat.%d')
-            points_fn=os.path.join(self.run_dir,'points.dat')
             sub_g=unstructured_grid.UnstructuredGrid.read_suntans_hybrid(path=self.run_dir,
                                                                          points='points.dat',
                                                                          edges='edges.dat.%d'%p,
                                                                          cells='cells.dat.%d'%p)
+            # edge depth is an ad-hoc extension, not "standard" enough to be in
+            # read_suntans_hybrid, so add it in here:
+            edge_depth_fn=self.file_path('depth')+"-edge.%d"%p
+            if os.path.exists(edge_depth_fn):
+                edge_xyz=np.loadtxt(edge_depth_fn)
+                sub_g.add_edge_field('edge_depth',edge_xyz[:,2])
+            
             self._subdomain_grids[p]=sub_g
         return self._subdomain_grids[p]
 

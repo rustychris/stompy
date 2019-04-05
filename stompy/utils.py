@@ -1635,7 +1635,7 @@ def array_append( A, b ):
     # the layout is different and it would just get confusing, or
     # A is a slice on other dimensions, too, which gets too confusing.
 
-    if A.base is None or type(A.base) == str \
+    if (A.base is None) or type(A.base) in (str,bytes) \
            or A.base.size == A.size or A.base.strides != A.strides \
            or A.shape[1:] != A.base.shape[1:]:
         new_shape = list(A.shape)
@@ -2001,6 +2001,11 @@ def download_url(url,local_file,log=None,on_abort='pass',**extra_args):
         if parsed.scheme in ['http','https']:
             import requests
             r=requests.get(url,stream=True,**extra_args)
+
+            # Throw an error for bad status codes
+            # 2019-03-26 RH: are there cases where we *don't* want
+            #    to do this?
+            r.raise_for_status()
 
             with open(local_file,'wb') as fp:
                 for chunk in r.iter_content(chunk_size=1024):

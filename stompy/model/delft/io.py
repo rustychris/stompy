@@ -847,7 +847,8 @@ def dfm_wind_to_nc(wind_u_fn,wind_v_fn,nc_fn):
 
     # assign some attributes while we're at it
     for k in ['FileVersion','Filetype','dx','dy','grid_unit','unit1','x_llcorner','y_llcorner']:
-        setattr(nc,k,u_header[k])
+        if k in u_header:
+            setattr(nc,k,u_header[k])
 
     # cf conventions suggest this order of dimensions
     u_var = nc.createVariable('wind_u',np.float32,[tdim,ydim,xdim],
@@ -953,7 +954,7 @@ def dfm_wind_to_nc(wind_u_fn,wind_v_fn,nc_fn):
 
         assert u_time==v_time
 
-        if frame_i%96==0:
+        if frame_i%200==0:
             print("%d frames, %s most recent"%(frame_i,u_time))
         u_var[frame_i,:,:] = u_block
         v_var[frame_i,:,:] = v_block

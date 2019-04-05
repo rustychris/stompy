@@ -20,7 +20,10 @@ def fetch_range(lon_range, lat_range, time_range, cache_dir):
     Limitations:
      * not ready for time ranges that span multiple HYCOM experiments.
     """
-    times=pd.DatetimeIndex(start=time_range[0],end=time_range[1],freq='D')
+    # deprecated
+    #times=pd.DatetimeIndex(start=time_range[0],end=time_range[1],freq='D')
+    # modern call
+    times=pd.date_range(start=time_range[0],end=time_range[1],freq='D')
 
     last_ds=None
     lon_slice=None
@@ -43,7 +46,19 @@ def fetch_range(lon_range, lat_range, time_range, cache_dir):
         filenames.append(cache_name)
     return filenames
 
+class HycomException(Exception):
+    pass
+
 def fetch_one_day(t,output_fn,lon_range,lat_range):
+    """
+    Download physical variables from hycom for the lat/lon ranges,
+    and the 24 hours following the given time t.
+
+    Raises HycomException if the download fails, leaving any partial
+    or bad download in output_fn+"-FAIL"
+
+    returns None
+    """
     t=utils.to_datetime(t)
 
     # this is going to be a problem, since they switch experiments mid-day.
@@ -75,6 +90,26 @@ def fetch_one_day(t,output_fn,lon_range,lat_range):
 
     params=var_args+loc_args+time_args+etc_args
 
+    # DBG:
+    logging.info("About to download from hycom:")
+    logging.info(ncss_base_url)
+    logging.info(params)
+    t=time.time()
     utils.download_url(ncss_base_url,local_file=output_fn,
-                       params=params)
+                       log=logging,params=params,timeout=1800)
+    elapsed=time.time()-t
+    logging.info("download_url: elapsed time %.1fs"%elapsed)
 
+    valid=True
+    with open(output_fn,'rb') as fp:
+        head=fp.read(1000)
+        if ( (b'500 Internal Server Error' in head)
+             or (b'No such file' in head) ):
+            logging.error("HYCOM download failed with server error")
+            valid=False
+    if not valid:
+        logging.error("renaming failed hycom download")
+        os.rename(output_fn,output_fn+"-FAIL")
+        raise HycomException("HYCOM download failed")
+
+    
