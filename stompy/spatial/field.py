@@ -3142,6 +3142,7 @@ class CompositeField(Field):
     .. image:: images/dcc-dredged.png
 
     """
+    projection=None
     def __init__(self,shp_fn=None,factory=None,
                  priority_field='priority',
                  data_mode='data_mode',
@@ -3149,7 +3150,7 @@ class CompositeField(Field):
                  shp_data=None):
         self.shp_fn = shp_fn
         if shp_fn is not None: # read from shapefile
-            self.sources=wkb2shp.shp2geom(shp_fn)
+            self.sources,self.projection=wkb2shp.shp2geom(shp_fn,return_srs=True)
         else:
             self.sources=shp_data
 
@@ -3241,14 +3242,11 @@ class CompositeField(Field):
             src_alpha= SimpleGrid(extents=src_data.extents,
                                   F=np.ones(src_data.F.shape,'f8'))
 
-            if 0: # slower
-                src_alpha.mask_outside(self.sources['geom'][src_i],value=0.0)
-            else:
-                src_geom=self.sources['geom'][src_i]
-                if mask_poly is not None:
-                    src_geom=src_geom.intersection(mask_poly)
-                mask=src_alpha.polygon_mask(src_geom)
-                src_alpha.F[~mask] = 0.0
+            src_geom=self.sources['geom'][src_i]
+            if mask_poly is not None:
+                src_geom=src_geom.intersection(mask_poly)
+            mask=src_alpha.polygon_mask(src_geom)
+            src_alpha.F[~mask] = 0.0
 
             # create an alpha tile. depending on alpha_mode, this may draw on the lower data,
             # the polygon and/or the data tile.
@@ -3271,8 +3269,11 @@ class CompositeField(Field):
             def fill(dist):
                 "fill in small missing areas"
                 pixels=int(round(float(dist)/dx))
-                niters=np.maximum( pixels//3, 2 )
-                src_data.fill_by_convolution(iterations=niters)
+                # for fill, it may be better to clip this to 1 pixel, rather than
+                # bail when pixels==0
+                if pixels>0:
+                    niters=np.maximum( pixels//3, 2 )
+                    src_data.fill_by_convolution(iterations=niters)
             #def blur(dist):
             #    "smooth data channel with gaussian filter - this allows spreading beyond original poly!"
             #    pixels=int(round(float(dist)/dx))
@@ -3288,17 +3289,20 @@ class CompositeField(Field):
             def blur_alpha(dist):
                 "smooth alpha channel with gaussian filter - this allows spreading beyond original poly!"
                 pixels=int(round(float(dist)/dx))
-                src_alpha.F=ndimage.gaussian_filter(src_alpha.F,pixels)
+                if pixels>0:
+                    src_alpha.F=ndimage.gaussian_filter(src_alpha.F,pixels)
             def feather_in(dist):
                 "linear feathering within original poly"
                 pixels=int(round(float(dist)/dx))
-                Fsoft=ndimage.distance_transform_bf(src_alpha.F)
-                src_alpha.F = (Fsoft/pixels).clip(0,1)
+                if pixels>0:
+                    Fsoft=ndimage.distance_transform_bf(src_alpha.F)
+                    src_alpha.F = (Fsoft/pixels).clip(0,1)
             feather=feather_in
             def feather_out(dist):
                 pixels=int(round(float(dist)/dx))
-                Fsoft=ndimage.distance_transform_bf(1-src_alpha.F)
-                src_alpha.F = (1-Fsoft/pixels).clip(0,1)
+                if pixels>0:
+                    Fsoft=ndimage.distance_transform_bf(1-src_alpha.F)
+                    src_alpha.F = (1-Fsoft/pixels).clip(0,1)
 
             # dangerous! executing code from a shapefile!
             eval(self.data_mode[src_i])
