@@ -124,7 +124,7 @@ def lowpass_fir(x,winsize,ignore_nan=True,axis=-1,mode='same',use_fft=False,
 
     slices=[None]*x.ndim
     slices[axis]=slice(None)
-    win=win[slices] # expand to get the right broadcasting
+    win=win[tuple(slices)] # expand to get the right broadcasting
 
     if ignore_nan:
         x=x.copy()

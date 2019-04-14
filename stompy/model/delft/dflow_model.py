@@ -1919,12 +1919,18 @@ class HycomMultiVelocityBC(HycomMultiBC):
     Otherwise small errors, including quantization and discretization,
     lead to a net flux.
     """
+    # If this is set, flux calculations will assume the average freesurface
+    # is at this elevation as opposed to 0.0
+    # this is a positive-up value
+    z_offset=None
     def __init__(self,**kw):
         super(HycomMultiVelocityBC,self).__init__(self.VelocityProfileBC,**kw)
 
     class VelocityProfileBC(VelocityBC):
         cache_dir=None # unused now, but makes parameter-setting logic cleaner
+        z_offset=None # likewise -- just used by the MultiBC
         _dataset=None # supplied by factory
+
         def dataset(self):
             self._dataset.attrs['mode']=self.mode
             return self._dataset
@@ -1964,6 +1970,11 @@ class HycomMultiVelocityBC(HycomMultiBC):
 
         self.init_bathy()
 
+        # handle "manual" z offset, i.e. the grid will not be shifted, but the
+        # freesurface is not 0.0 relative to the grid depths.
+        eta=self.z_offset or 0.0
+        assert self.model.z_offset==0.0,"Trying to avoid model.z_offset"
+        
         # Initialize per-edge details
         self.model.grid._edge_depth=self.model.grid.edges['edge_depth']
         layers=self.model.layer_data(with_offset=True)
@@ -2001,7 +2012,10 @@ class HycomMultiVelocityBC(HycomMultiBC):
             # First, establish the geometry on the suntans side, in terms of z_interface values
             # for all wet layers.  below-bed layers have zero vertical span.  positive up, but
             # shift back to real, non-offset, vertical coordinate
-            sun_z_interface=(-self.model.z_offset)+layers.z_interface.values.clip(edge_depth,np.inf)
+            # NB: trying to move away from model.z_offset.  self.z_offset, if set, should
+            # provide an estimate of the mean freesurface elevation.
+            # 2019-04-14: clip to eta here.
+            sun_z_interface=(-self.model.z_offset)+layers.z_interface.values.clip(edge_depth,eta)
             sub_bc.sun_z_interfaces=sun_z_interface
             # And the pointwise data from hycom:
             hy_layers=hy_ds0.depth.values.copy()
@@ -2044,7 +2058,7 @@ class HycomMultiVelocityBC(HycomMultiBC):
                 z_sel=sub_bc.hy_valid
 
                 sun_dz=np.diff(-sub_bc.sun_z_interfaces)
-                sun_valid=sun_dz>0
+                sun_valid=sun_dz>0 # both surface and bed cells may be dry.
                 for water_vel,water_vel_bottom,sun_var,trans_var in [ (water_u,water_u_bottom,'u','Uint'),
                                                                       (water_v,water_v_bottom,'v','Vint') ]:
                     sub_water_vel=np.concatenate([ water_vel[z_sel,row,col],
@@ -2059,16 +2073,14 @@ class HycomMultiVelocityBC(HycomMultiBC):
                     sun_d_veldz=np.diff(sun_veldz)
 
                     sub_bc._dataset[sun_var].values[ti,sun_valid]=sun_d_veldz[sun_valid]/sun_dz[sun_valid]
-                    # might as well calculate flux while we are here
-                    # explicit flux:
-                    # sub_bc._dataset[trans_var].values[ti]=(sub_bc._dataset[sun_var]*sun_dz).sum()
-                    # but we've already done the integration
+                    # we've already done the integration
                     sub_bc._dataset[trans_var].values[ti]=sun_veldz[-1]
             hy_ds.close() # free up netcdf resources
 
         # project transport onto edges to get fluxes
         total_Q=0.0
         total_flux_A=0.0
+        
         for i,sub_bc in enumerate(self.sub_bcs):
             Q_in=sub_bc.edge_length*(sub_bc.inward_normal[0]*sub_bc._dataset['Uint'].values +
                                      sub_bc.inward_normal[1]*sub_bc._dataset['Vint'].values)
@@ -2077,8 +2089,10 @@ class HycomMultiVelocityBC(HycomMultiBC):
             # edge_depth here reflects the expected water column depth.  it is the bed elevation, with
             # the z_offset removed (I hope), under the assumption that a typical eta is close to 0.0,
             # but may be offset as much as -10.
-            # edge_depth is positive up.  here assume typical eta=0
-            total_flux_A+=sub_bc.edge_length*(-sub_bc.edge_depth).clip(0,np.inf)
+            # edge_depth is positive up.
+            #total_flux_A+=sub_bc.edge_length*(eta-sub_bc.edge_depth).clip(0,np.inf)
+            # maybe better to keep it consistent with above code -
+            total_flux_A+=sub_bc.edge_length*(sub_bc.sun_z_interfaces[0]-sub_bc.sun_z_interfaces[-1])
 
         Q_error=total_Q-target_Q
         vel_error=Q_error/total_flux_A
@@ -2090,6 +2104,7 @@ class HycomMultiVelocityBC(HycomMultiBC):
         for i,sub_bc in enumerate(self.sub_bcs):
             # seems like we should be subtracting vel_error, but that results in a doubling
             # of the error?
+            # 2019-04-14: is that an outdated comment?  
             sub_bc._dataset['u'].values[:,:] -= vel_error[:,None]*sub_bc.inward_normal[0]
             sub_bc._dataset['v'].values[:,:] -= vel_error[:,None]*sub_bc.inward_normal[1]
             sub_bc.update_Q_in()
