@@ -22,9 +22,10 @@ def lowpass(data,in_t=None,cutoff=None,order=4,dt=None,axis=-1,causal=False):
     returns vector same as data, but with high frequencies removed
     """
     
-    # Step 1: Determine dt from data
-    dt=dt or np.median(np.diff(in_t))
-    dt=float(dt)
+    # Step 1: Determine dt from data or from user if specified
+    if dt is None:
+        dt=np.median(np.diff(in_t))
+    dt=float(dt) # make sure it's not an int
     cutoff=float(cutoff)
 
     Wn = dt / cutoff 

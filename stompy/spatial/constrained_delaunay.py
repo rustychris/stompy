@@ -65,10 +65,12 @@ class ConstrainedXYZField(field.XYZField):
         F = []
         edges = []
 
+        value_field=value_field.lower()
+        
         for shp_name in shp_names:
             print("Reading %s"%shp_name)
 
-            layer=wkb2shp.shp2geom(shp_name)
+            layer=wkb2shp.shp2geom(shp_name,fold_to_lower=True)
             
             for row in layer:
                 value = row[value_field]
