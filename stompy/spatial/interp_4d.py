@@ -87,13 +87,13 @@ def weighted_grid_extrapolation(g,samples,alpha=1e-5,
         D.set_flux(weight*rec[value_col],cell=cell,xy=xy)
         Dw.set_flux(weight,cell=cell,xy=xy)
 
-    log.warning("Construct 1st linear system")
+    log.info("Construct 1st linear system")
     D.construct_linear_system()
-    log.warning("Solve 1st linear system")
+    log.info("Solve 1st linear system")
     D.solve_linear_system(animate=False)
-    log.warning("Construct 2nd linear system")
+    log.info("Construct 2nd linear system")
     Dw.construct_linear_system()
-    log.warning("Solve 2nd linear system")
+    log.info("Solve 2nd linear system")
     Dw.solve_linear_system(animate=False)
 
     C=D.C_solved
