@@ -159,9 +159,28 @@ if __name__=='__main__':
         output_fn=os.path.join(dem_dir,'merged.tif')
         os.path.exists(output_fn) and os.unlink(output_fn)
         log.info("Merging using gdal_merge.py")
-        cmd="gdal_merge.py -init nan -a_nodata nan -o %s %s/tile*.tif"%(output_fn,dem_dir)
-        log.info(cmd)
-        subprocess.call(cmd,shell=True)
+        
+        # Try importing gdal_merge directly, which will more reliably
+        # find the right library since if we got this far, python already
+        # found gdal okay.  Unfortunately it's not super straightforward
+        # to get the right way of importing this, since it's intended as
+        # a script and not a module.
+        try:
+            from Scripts import gdal_merge
+        except ImportError:
+            log.warning("Failed to import gdal_merge, will try subprocess",exc_info=True)
+            gdal_merge=None
+
+        tiles=glob.glob("%s/tile*.tif"%dem_dir)
+        cmd=["python","gdal_merge.py","-init","nan","-a_nodata","nan",
+             "-o",output_fn]+tiles
+        
+        log.info(" ".join(cmd))
+                
+        if gdal_merge:
+            gdal_merge.main(argv=cmd[1:])
+        else:
+            subprocess.call(" ".join(cmd),shell=True)
 
 
 
