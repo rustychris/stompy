@@ -2273,12 +2273,25 @@ class DFlowModel(HydroModel):
     def __init__(self,*a,**kw):
         super(DFlowModel,self).__init__(*a,**kw)
         self.structures=[]
-
+        self.load_default_mdu()
+        
+    def load_default_mdu(self):
+        """
+        Load a default set of config values from data/defaults-r53925.mdu
+        """
+        # This is copied straight from the source distribution
+        fn=os.path.join(os.path.dirname(__file__),"data","defaults-r53925.mdu")
+        self.load_mdu(fn)
+        
+        # And some extra settings to make it compatible with this script
+        self.mdu['external forcing','ExtForceFile']='FlowFM.ext'
+        
     def write_forcing(self,overwrite=True):
         bc_fn=self.ext_force_file()
         assert bc_fn,"DFM script requires old-style BC file.  Set [external forcing] ExtForceFile"
         if overwrite and os.path.exists(bc_fn):
             os.unlink(bc_fn)
+        utils.touch(bc_fn)
         super(DFlowModel,self).write_forcing()
 
     default_grid_target_filename='grid_net.nc'

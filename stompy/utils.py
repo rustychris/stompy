@@ -1229,7 +1229,7 @@ def unix_to_dt64(t):
     Convert a floating point unix timestamp to numpy datetime64
     """
     unix0=np.datetime64('1970-01-01 00:00:00')
-    return unix0 + t*np.timedelta64(1,'s')
+    return unix0 + (t*1e6).astype(np.int64)*np.timedelta64(1,'us')
 
 def cf_string_to_dt64(x):
     """ return a seconds-based numpy datetime
