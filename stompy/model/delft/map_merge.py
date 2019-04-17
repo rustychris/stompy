@@ -1,3 +1,8 @@
+"""
+WORK IN PROGRESS
+ -- does not do anything useful at this point
+"""
+
 import six
 import xarray as xr
 
