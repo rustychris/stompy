@@ -63,9 +63,9 @@ def fetch_one_day(t,output_fn,lon_range,lat_range):
 
     # this is going to be a problem, since they switch experiments mid-day.
     # that's unkind.
-    if t>=datetime.datetime(2017,2,1,0,0) and t<datetime.datetime(2017,6,1,0,0):
+    if t>=datetime.datetime(2017,2,1,0,0) and t<datetime.datetime(2017,6,1,12,0):
         ncss_base_url="http://ncss.hycom.org/thredds/ncss/GLBv0.08/expt_92.8"
-    if t>=datetime.datetime(2017,6,1,12,0) and t<=datetime.datetime(2017,10,1,9,0):
+    elif t>=datetime.datetime(2017,6,1,12,0) and t<=datetime.datetime(2017,10,1,9,0):
         ncss_base_url="http://ncss.hycom.org/thredds/ncss/GLBv0.08/expt_57.7"
     elif t>=datetime.datetime(2017,10,1,12,0) and t<=datetime.datetime(2018,3,20,9,0):
         ncss_base_url="http://ncss.hycom.org/thredds/ncss/GLBv0.08/expt_92.9"

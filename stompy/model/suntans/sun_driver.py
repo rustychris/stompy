@@ -1101,7 +1101,7 @@ class SuntansModel(dfm.HydroModel):
                 self.log.warning("BC for cell %d has no overwrite items"%type3_cell)
             else:
                 t0=time.time()
-                values[:] += pad_dims(interp_time(bc_item))
+                values[:] += pad_dims(interp_time(base_item))
                 elapsed[0]+=time.time()-t0
 
         cc=self.grid.cells_center()
