@@ -2045,7 +2045,7 @@ class HycomMultiVelocityBC(HycomMultiBC):
             if 'time' in hy_ds.dims:
                 # again, assuming that we only care about the first time step in each file
                 hy_ds=hy_ds.isel(time=0)
-            print(hy_ds.time.values)
+            log.info(hy_ds.time.values)
 
             water_u=hy_ds.water_u.values
             water_v=hy_ds.water_v.values
@@ -2105,8 +2105,8 @@ class HycomMultiVelocityBC(HycomMultiBC):
 
         Q_error=total_Q-target_Q
         vel_error=Q_error/total_flux_A
-        print("Velocity error: %.6f -- %.6f m/s"%(vel_error.min(),vel_error.max()))
-        print("total_flux_A: %.3e"%total_flux_A)
+        log.info("Velocity error: %.6f -- %.6f m/s"%(vel_error.min(),vel_error.max()))
+        log.info("total_flux_A: %.3e"%total_flux_A)
 
         # And apply the adjustment, and update integrated quantities
         adj_total_Q=0.0
@@ -2120,7 +2120,7 @@ class HycomMultiVelocityBC(HycomMultiBC):
             adj_total_Q=adj_total_Q+sub_bc._dataset['Q_in']
         adj_Q_error=adj_total_Q-target_Q
         adj_vel_error=adj_Q_error/total_flux_A
-        print("Post-adjustment velocity error: %.6f -- %.6f m/s"%(adj_vel_error.min(),adj_vel_error.max()))
+        log.info("Post-adjustment velocity error: %.6f -- %.6f m/s"%(adj_vel_error.min(),adj_vel_error.max()))
 
 
 class NOAAStageBC(StageBC):
