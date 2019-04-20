@@ -5953,6 +5953,7 @@ class SuntansGrid(UnstructuredGrid):
     max_sides=3
 
     def __init__(self,suntans_path,elev2depth=False):
+        logging.warning("SuntansGrid will be deprecated.  Use UnstructuredGrid.read_suntans")
         super(SuntansGrid,self).__init__()
         self.read_from_file(suntans_path)
     def read_from_file(self,suntans_path):

@@ -54,6 +54,7 @@ class PtmBin(object):
             type_str = self.fp.read(80).strip()
             name_str = self.fp.read(80).strip()
             atts.append( (idx,type_str,name_str) )
+        self.atts=atts
 
     def scan_to_timestep(self,ts):
         """ Return true if successful, False if ts is beyond end of file.
@@ -180,6 +181,82 @@ class PtmBin(object):
             ax.set_aspect('equal')
             ax.axis(zoom)
 
+class PtmState(object):
+    """
+    Probably ought to share some code with PtmBin.  
+    """
+    REAL=np.float32
+    step_header_dtype=np.dtype( [('year',np.int32),
+                                 ('month',np.int32),
+                                 ('day',np.int32),
+                                 ('hour',np.int32),
+                                 ('minute',np.int32),
+                                 ('Npart',np.int32)] )
+    
+    def __init__(self,fn):
+        self.fn=fn
+        self.step_offsets={}
+        self.fp=open(self.fn,'rb')
+
+        self.read_header()
+        
+    def read_header(self):
+        self.fp.seek(0)
+
+        Nfields=np.fromfile(self.fp,np.int32,count=1)[0]
+        attr_dtype=[('attr_id',np.int32),
+                    ('name','S80')]
+        attrs=np.fromfile(self.fp,attr_dtype,Nfields)
+
+        
+        part_dtype=[('id',np.int32),
+                    ('x',np.float64,3),
+                    ('status',np.int32)]
+
+        for attr_name in attrs['name']:
+            attr_name=attr_name.decode('latin').strip()
+            if attr_name=='velocity':
+                part_dtype.append( ('u',self.REAL,3) )
+            elif attr_name=='depth_avg_vel':
+                part_dtype.append( ('uavg',self.REAL,2) )
+            elif attr_name=='hor_swim_vel':
+                part_dtype.append( ('uswim',self.REAL,2) )
+            else:
+                part_dtype.append( (attr_name,self.REAL) )
+
+        self.part_dtype=np.dtype(part_dtype)
+        self.step_offsets[0]=self.fp.tell()
+
+    def read_step_header(self):
+        """
+        read the per-timestep header from the current location of self.fp,
+        leaving fp just after the header
+        """
+        return np.fromfile(self.fp,self.step_header_dtype,1)[0]
+        
+    def scan_to_step(self,step):
+        start_step=step
+        # find a known offset location
+        while start_step not in self.step_offsets:
+            assert start_step>=0
+            start_step-=1
+        while start_step<step:
+            self.fp.seek(self.step_offsets[start_step])
+            hdr=self.read_step_header()
+            start_step+=1
+            framesize=( self.step_header_dtype.itemsize+
+                        hdr['Npart']*self.part_dtype.itemsize)
+            self.step_offsets[start_step]=self.step_offsets[start_step-1]+framesize
+
+        self.fp.seek(self.step_offsets[step])
+    def read_step(self,step):
+        self.scan_to_step(step)
+        hdr=self.read_step_header()
+        particles=np.fromfile(self.fp,self.part_dtype,hdr['Npart'])
+        return hdr,particles
+
+
+            
 def shp2pol(shpfile,outdir):
     """
     Converts a polygon shape file to a *.pol file
