@@ -1975,7 +1975,7 @@ class HycomMultiVelocityBC(HycomMultiBC):
         eta=self.z_offset or 0.0
         assert self.model.z_offset==0.0,"Trying to avoid model.z_offset"
 
-        log.info("populate_values: eta is %s"%eta)
+        # log.info("populate_values: eta is %s"%eta)
         
         # Initialize per-edge details
         self.model.grid._edge_depth=self.model.grid.edges['edge_depth']
@@ -2019,7 +2019,7 @@ class HycomMultiVelocityBC(HycomMultiBC):
             # 2019-04-14: clip to eta here.
             sun_z_interface=(-self.model.z_offset)+layers.z_interface.values.clip(edge_depth,eta)
             sub_bc.sun_z_interfaces=sun_z_interface
-            log.info("sun_z_interface set on edge: %s"%str(sun_z_interface))
+            # log.info("sun_z_interface set on edge: %s"%str(sun_z_interface))
             # And the pointwise data from hycom:
             hy_layers=hy_ds0.depth.values.copy()
             sub_bc.hy_valid=valid=np.isfinite(hy_ds0.water_u.isel(lat=row,lon=col).values)
@@ -2045,7 +2045,7 @@ class HycomMultiVelocityBC(HycomMultiBC):
             if 'time' in hy_ds.dims:
                 # again, assuming that we only care about the first time step in each file
                 hy_ds=hy_ds.isel(time=0)
-            print(hy_ds.time.values)
+            log.info(hy_ds.time.values)
 
             water_u=hy_ds.water_u.values
             water_v=hy_ds.water_v.values
@@ -2081,7 +2081,7 @@ class HycomMultiVelocityBC(HycomMultiBC):
                     # but do it again!
                     int_A=sun_veldz[-1]
                     int_B=(np.diff(-sub_bc.sun_z_interfaces)*sub_bc._dataset[sun_var].values[ti,:]).sum()
-                    log.info("two integrations: %f vs %f"%(int_A,int_B))
+                    # log.info("two integrations: %f vs %f"%(int_A,int_B))
                     sub_bc._dataset[trans_var].values[ti]=int_B # sun_veldz[-1]
 
             hy_ds.close() # free up netcdf resources
@@ -2105,8 +2105,8 @@ class HycomMultiVelocityBC(HycomMultiBC):
 
         Q_error=total_Q-target_Q
         vel_error=Q_error/total_flux_A
-        print("Velocity error: %.6f -- %.6f m/s"%(vel_error.min(),vel_error.max()))
-        print("total_flux_A: %.3e"%total_flux_A)
+        log.info("Velocity error: %.6f -- %.6f m/s"%(vel_error.min(),vel_error.max()))
+        log.info("total_flux_A: %.3e"%total_flux_A)
 
         # And apply the adjustment, and update integrated quantities
         adj_total_Q=0.0
@@ -2120,7 +2120,7 @@ class HycomMultiVelocityBC(HycomMultiBC):
             adj_total_Q=adj_total_Q+sub_bc._dataset['Q_in']
         adj_Q_error=adj_total_Q-target_Q
         adj_vel_error=adj_Q_error/total_flux_A
-        print("Post-adjustment velocity error: %.6f -- %.6f m/s"%(adj_vel_error.min(),adj_vel_error.max()))
+        log.info("Post-adjustment velocity error: %.6f -- %.6f m/s"%(adj_vel_error.min(),adj_vel_error.max()))
 
 
 class NOAAStageBC(StageBC):
