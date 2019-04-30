@@ -4,6 +4,8 @@ Tools related to comparing time series, typically model-obs or model-model.
 import numpy as np
 import xarray as xr
 import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+from stompy import filters
 from matplotlib import dates
 
 from .. import (xr_utils, utils)
@@ -105,9 +107,10 @@ def fix_date_labels(ax):
 def calibration_figure_3panel(all_sources,combined,
                               metric_x=0,metric_ref=1,
                               offset_source=0,scatter_x_source=0,
+                              num=None,
                               styles=None):
     gs = gridspec.GridSpec(2, 3)
-    fig=plt.figure(figsize=(9,7))
+    fig=plt.figure(figsize=(9,7),num=num)
     ts_ax = fig.add_subplot(gs[0, :])
     lp_ax = fig.add_subplot(gs[1, :-1])
     scat_ax=fig.add_subplot(gs[1, -1])
@@ -169,7 +172,7 @@ def calibration_figure_3panel(all_sources,combined,
                     **styles[i])
         #ax.legend(fontsize=8)
 
-    ts_ax.set_title(model.run_dir)
+    # ts_ax.set_title(model.run_dir)
     fix_date_labels(ts_ax)
     fix_date_labels(lp_ax)
     return fig
