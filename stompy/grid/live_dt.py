@@ -346,7 +346,7 @@ class LiveDtGridBase(orthomaker.OrthoMaker):
                                  self.points[[a,b],1],'m')
 
                 # Debugging:
-                # raise Exception,"Stopping before trying to fix conflicting edges"
+                # raise Exception("Stopping before trying to fix conflicting edges")
                 self.prepare_conflicting_edges(e,constr_edges)
             else:
                 break

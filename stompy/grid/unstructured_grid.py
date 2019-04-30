@@ -3986,6 +3986,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         a bitmask set to True for cells falling on the "left"
         side of the linestring.
 
+        line: shapely LineString object
+
         Uses basic graph traversal, and will be faster when start
         is set to a cell index on the smaller side of the linestring.
 
@@ -4823,7 +4825,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     def write_cells_shp(self,shpname,extra_fields=[],overwrite=False):
         """ extra_fields is a list of lists,
             with either 3 items:
-              # this was is obsolete.
+              # this way is obsolete.
               extra_fields[i] = (field_name,field_type, lambda cell_index: field_value)
               field type must be a numpy type - int32,float64, etc.
             or 2 items:

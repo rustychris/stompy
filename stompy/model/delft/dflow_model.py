@@ -1248,6 +1248,9 @@ class HydroModel(object):
         i.e. name='Old_River', return the matching geometry from the gazetteer as
         a shapely geometry.
         if no match, return None.  Error if more than one match
+
+        This method requires that at most 1 feature is matched, and returns only 
+        the geometry
         """
         hits=self.match_gazetteer(**kws)
         if hits:
@@ -2516,9 +2519,7 @@ class DFlowModel(HydroModel):
                 ]
                 fp.write("\n".join(lines))
                 pli_fn=os.path.join(self.run_dir,s['name']+'.pli')
-                feat=self.match_gazetteer(name=s['name'])
-                assert len(feat)==1
-                geom=feat[0]['geom']
+                geom=self.get_geometry(name=s['name'])
                 assert geom.type=='LineString'
                 pli_data=[ (s['name'], np.array(geom.coords)) ]
                 dio.write_pli(pli_fn,pli_data)
@@ -2690,7 +2691,26 @@ class DFlowModel(HydroModel):
         assert len(fns)==1
         return fns[0]
 
+    def extract_section(self,name=None,chain_count=1):
+        """
+        Return xr.Dataset for monitored cross section.
+        currently only supports selection by name.  may allow for 
+        xy, ll in the future.
+        """
+        
+        his=xr.open_dataset(self.his_output())
+        names=his.cross_section_name.values
+        try:
+            names=[n.decode() for n in names]
+        except AttributeError:
+            pass
 
+        if name not in names:
+            return None
+        idx=names.index(name)
+        # this has a bunch of extra cruft -- some other time remove
+        # the parts that are not relevant to the cross section.
+        return his.isel(cross_section=idx)
 
 import sys
 if sys.platform=='win32':

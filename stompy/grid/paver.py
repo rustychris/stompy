@@ -3710,7 +3710,7 @@ class Paving(paving_base,OptimizeGridMixin):
                         newB = pnts[1] + rot(-bisect_angle,pnts[0] - pnts[1])
 
                     new_node = self.add_node(newB,stat=self.FREE)
-
+                    
                     # and we just created edges.  If we're closing
                     # the ring then the first node in ordered is repeated and
                     # we don't want to add that edge twice:
@@ -3721,6 +3721,14 @@ class Paving(paving_base,OptimizeGridMixin):
                     else:
                         n_new_edges = len(ordered)
 
+
+                    # 2019-04-28: consider pre-testing these
+                    for i in range(n_new_edges):
+                        if len(self.check_line_is_clear(ordered[i], new_node ))>0:
+                            print("EASY There.  Bisect wasn't clear")
+                            raise StrategyFailed('Bisect intersected existing edges')
+                    # /2019-04-28
+                               
                     for i in range(n_new_edges):
                         self.add_edge( ordered[i], new_node )
                         self.updated_cells += self.cells_from_last_new_edge 
@@ -4171,6 +4179,9 @@ class Paving(paving_base,OptimizeGridMixin):
         """ some helpful (?) plots after fill() 
         """
         center_elt = self.last_fill_iter
+        if center_elt is None:
+            print("No data for last fill")
+            return
         print("Strategies were ",self.last_strategies)
         n = center_elt.data
         scale = self.density( self.points[n] )
@@ -4182,7 +4193,7 @@ class Paving(paving_base,OptimizeGridMixin):
         
         self.plot_nodes( [center_elt.prv.data,center_elt.data,center_elt.nxt.data] )
 
-        axis('equal')
+        plt.axis('equal')
 
 
     def post_fill(self,ordered,modified_nodes):
