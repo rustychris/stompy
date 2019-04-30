@@ -254,6 +254,20 @@ class PtmState(object):
         hdr=self.read_step_header()
         particles=np.fromfile(self.fp,self.part_dtype,hdr['Npart'])
         return hdr,particles
+    def read_timestep(self,step):
+        """
+        make it look more like PtmBin 
+        """
+        hdr,particles=self.read_step(step)
+
+        if hdr['minute'] == 60:
+            hdr['hour'] += 1
+            hdr['minute'] = 0
+        if hdr['hour'] == 24:
+            hdr['hour'] = 0
+            hdr['day'] += 1
+
+        return datetime(hdr['year'],hdr['month'],hdr['day'],hdr['hour'],hdr['minute']),particles
 
 
             

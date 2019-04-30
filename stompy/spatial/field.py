@@ -2755,6 +2755,7 @@ class GdalGrid(SimpleGrid):
         if isinstance(filename,gdal.Dataset):
             self.gds=filename
         else:
+            assert os.path.exists(filename),"GdalGrid: '%s' does not exist"%filename
             self.gds = gdal.Open(filename)
         (x0, dx, r1, y0, r2, dy ) = self.gds.GetGeoTransform()
 

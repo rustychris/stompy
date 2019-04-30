@@ -379,3 +379,26 @@ def bundle_components(ds,new_var,comp_vars,frame,comp_names=None):
     ds[new_var]=vector.transpose( *roll_dims )
     if comp_names is not None:
         ds[frame]=(frame,),comp_names
+
+
+
+def concat_permissive(srcs,**kw):
+    """
+    Small wrapper around xr.concat which fills in nan 
+    coordinates where they are missing, in case some
+    of the incoming datasets have more metadata than others. 
+    """
+    extra_coords=set()
+    for src in srcs:
+        extra_coords |= set(src.coords)
+
+    expanded_srcs=[]
+
+    for src in srcs:
+        for extra in extra_coords:
+            if extra not in src:
+                src=src.assign_coords(**{extra:np.nan})
+        expanded_srcs.append(src)
+
+    return xr.concat(expanded_srcs,**kw)
+

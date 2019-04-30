@@ -1163,26 +1163,29 @@ class HydroModel(object):
         if self.num_procs<=1:
             return
         # similar, but for the mdu:
-        if sys.platform=='win32':
-            # use cli to partition the mdu
-            # if this were being run not in run_dir, 
-            # oddly, even on windows, dflowfm requires only forward
-            # slashes in the path to the mdu (ver 1.4.4)
-            # since run_dflowfm uses run_dir as the working directory
-            # here we strip to the basename
-            cmd=["--partition:ndomains=%d:icgsolver=6"%self.num_procs,
-                 os.path.basename(self.mdu.filename)]
-            self.run_dflowfm(cmd,mpi=False)
-        else:
-            # some of the older linux compiles don't seem to
-            # handle the mdu well, so use the shell script.
-            cmd=["--partition:ndomains=%d"%self.num_procs,
-                 self.mdu['geometry','NetFile']]
-            self.run_dflowfm(cmd,mpi=False)
-
-            gen_parallel=os.path.join(self.dfm_bin_dir,"generate_parallel_mdu.sh")
-            cmd=[gen_parallel,os.path.basename(self.mdu.filename),"%d"%self.num_procs]
-            return utils.call_with_path(cmd,self.run_dir)
+        # precompiled 1.5.2 linux binaries are able to partition the mdu okay,
+        # so switch to always using dflowfm to partition grid and mdu.
+        
+        #if sys.platform=='win32':
+        # use cli to partition the mdu
+        # if this were being run not in run_dir, 
+        # oddly, even on windows, dflowfm requires only forward
+        # slashes in the path to the mdu (ver 1.4.4)
+        # since run_dflowfm uses run_dir as the working directory
+        # here we strip to the basename
+        cmd=["--partition:ndomains=%d:icgsolver=6"%self.num_procs,
+             os.path.basename(self.mdu.filename)]
+        self.run_dflowfm(cmd,mpi=False)
+        # else:
+        #     # some of the older linux compiles don't seem to
+        #     # handle the mdu well, so use the shell script.
+        #     cmd=["--partition:ndomains=%d"%self.num_procs,
+        #          self.mdu['geometry','NetFile']]
+        #     self.run_dflowfm(cmd,mpi=False)
+        # 
+        #     gen_parallel=os.path.join(self.dfm_bin_dir,"generate_parallel_mdu.sh")
+        #     cmd=[gen_parallel,os.path.basename(self.mdu.filename),"%d"%self.num_procs]
+        #     return utils.call_with_path(cmd,self.run_dir)
 
     _dflowfm_exe=None
     @property
@@ -1874,7 +1877,7 @@ class HycomMultiScalarBC(HycomMultiBC):
                 # for scalars, pray this never gets used...
                 # don't use nan in case it participates in a summation with 0, but
                 # make it yuge to make it easier to spot if it is ever used
-                print("Hmm - got a dry hycom edge, even though should be skipping those now")
+                log.warning("Hmm - got a dry hycom edge, even though should be skipping those now")
                 sub_bc._dataset[sun_var].values[:]=100000000.
 
         # Populate the scalar data, outer loop is over hycom files, since
@@ -1884,7 +1887,7 @@ class HycomMultiScalarBC(HycomMultiBC):
             if 'time' in hy_ds.dims:
                 # again, assuming that we only care about the first time step in each file
                 hy_ds=hy_ds.isel(time=0)
-            print(hy_ds.time.values)
+            log.info(hy_ds.time.values)
 
             scalar_val=hy_ds[hy_scalar].values
             scalar_val_bottom=hy_ds[hy_scalar+'_bottom'].values
@@ -1897,21 +1900,33 @@ class HycomMultiScalarBC(HycomMultiBC):
                 row,col=sub_bc.hy_row_col
                 z_sel=sub_bc.hy_valid
 
-                sun_dz=np.diff(-sub_bc.sun_z_interfaces)
-                sun_valid=sun_dz>0
-
                 sub_scalar_val=np.concatenate([ scalar_val[z_sel,row,col],
                                                 scalar_val_bottom[None,row,col] ])
+                sun_dz=np.diff(-sub_bc.sun_z_interfaces)
+                
+                if 0:
+                    # 2019-04-17:
+                    # This is the approach from the velocity interpolation.  It aims to preserve
+                    # flux, but for scalar we really want clean profiles, and if suntans is a bit
+                    # deeper than hycom somewhere, just extend the profile, rather than the flux
+                    # code which would put 0 down there.
+                    
+                    # integrate -- there isn't a super clean way to do this that I see.
+                    # but averaging each interval is probably good enough, just loses some vertical
+                    # accuracy.
+                    sun_valid=sun_dz>0
+                    
+                    interval_mean_val=0.5*(sub_scalar_val[:-1]+sub_scalar_val[1:])
+                    valdz=np.concatenate( ([0],np.cumsum(np.diff(hy_depths)*interval_mean_val)) )
+                    sun_valdz=np.interp(-sub_bc.sun_z_interfaces, hy_depths, valdz)
+                    sun_d_veldz=np.diff(sun_valdz)
 
-                # integrate -- there isn't a super clean way to do this that I see.
-                # but averaging each interval is probably good enough, just loses some vertical
-                # accuracy.
-                interval_mean_val=0.5*(sub_scalar_val[:-1]+sub_scalar_val[1:])
-                valdz=np.concatenate( ([0],np.cumsum(np.diff(hy_depths)*interval_mean_val)) )
-                sun_valdz=np.interp(-sub_bc.sun_z_interfaces, hy_depths, valdz)
-                sun_d_veldz=np.diff(sun_valdz)
-
-                sub_bc._dataset[sun_var].values[ti,sun_valid]=sun_d_veldz[sun_valid]/sun_dz[sun_valid]
+                    sub_bc._dataset[sun_var].values[ti,sun_valid]=sun_d_veldz[sun_valid]/sun_dz[sun_valid]
+                else:
+                    # more direct interpolation approach - linearly interpolate to center of z level
+                    depth_middle=-sub_bc.sun_z_interfaces[:-1] + 0.5*sun_dz
+                    sub_bc._dataset[sun_var].values[ti,:]=np.interp(depth_middle,hy_depths,sub_scalar_val)
+                
             hy_ds.close() # free up netcdf resources
 
 

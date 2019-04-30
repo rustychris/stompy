@@ -161,21 +161,21 @@ class GenericConfig(object):
         return self.is_equal(other)
     def is_equal(self,other,limit_to_keys=None):
         # key by key equality comparison:
-        print("Comparing two configs")
+        log.debug("Comparing two configs")
         for k in self.entries.keys():
             if limit_to_keys and k not in limit_to_keys:
                 continue
             if k not in other.entries:
-                print("Other is missing key %s"%k)
+                log.debug("Other is missing key %s"%k)
                 return False
             elif self.val_to_str(other.entries[k][0]) != self.val_to_str(self.entries[k][0]):
-                print("Different values key %s => %s, %s"%(k,self.entries[k][0],other.entries[k][0]))
+                log.debug("Different values key %s => %s, %s"%(k,self.entries[k][0],other.entries[k][0]))
                 return False
         for k in other.entries.keys():
             if limit_to_keys and k not in limit_to_keys:
                 continue
             if k not in self.entries:
-                print("other has extra key %s"%k)
+                log.debug("other has extra key %s"%k)
                 return False
         return True
 
@@ -248,7 +248,7 @@ class GenericConfig(object):
             if os.path.exists(filename):
                 existing_conf = self.__class__(filename)
                 if existing_conf == self:
-                    print("No change in config")
+                    log.debug("No change in config")
                     return
 
         if os.path.exists(filename) and backup:
@@ -273,7 +273,7 @@ class SunConfig(GenericConfig):
             return start_datetime
 
         # That failed, so try the other way
-        print("Trying the new way of specifying t0")
+        log.debug("Trying the new way of specifying t0")
         s = self.conf_str('TimeZero') # 1999-01-01-00:00
         start_datetime = datetime.datetime.strptime(s,'%Y-%m-%d-%H:%M')
         start_datetime = start_datetime.replace(tzinfo=utc)
@@ -941,11 +941,11 @@ class SuntansModel(dfm.HydroModel):
         fn=os.path.join(self.run_dir,
                         self.config['metfile'])
         if os.path.exists(fn):
-            print("Will replace %s"%fn)
+            log.info("Will replace %s"%fn)
             os.unlink(fn)
         else:
-            print("Writing met ds to %s"%fn)
-        print(str(self.met_ds))
+            log.debug("Writing met ds to %s"%fn)
+        log.debug(str(self.met_ds))
         self.met_ds.to_netcdf( fn,
                                encoding=dict(nt={'units':self.ds_time_units()},
                                              Time={'units':self.ds_time_units()}) )
@@ -1199,7 +1199,7 @@ class SuntansModel(dfm.HydroModel):
 
         for pnt_idx,key in enumerate(self.bc_point_sources.keys()):
             (c,k)=key
-            print("Point source for cell=%d, k=%d"%(c,k))
+            log.info("Point source for cell=%d, k=%d"%(c,k))
             assert 'Q' in self.bc_point_sources[key]
 
             combine_items(ds['point_Q'].isel(Npoint=pnt_idx).values,
@@ -1218,7 +1218,7 @@ class SuntansModel(dfm.HydroModel):
                                
         # End new point source code
 
-        print("Total time in interp_time: %.3fs"%elapsed[0])
+        log.info("Total time in interp_time: %.3fs"%elapsed[0])
         return ds
 
     def write_bc(self,bc):

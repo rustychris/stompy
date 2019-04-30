@@ -1223,6 +1223,20 @@ def to_jdate(t):
     doy=dt.toordinal() - dt0.toordinal()
     return dt0.year * 1000 + doy
 
+def floor_dt64(t,dt,t0=np.datetime64("1970-01-01 00:00:00")):    
+    """
+    Round the given t down to an integer number of dt from
+    a reference time (defaults to unix epoch)
+    """
+    return t0+dt*int(np.floor( (t-t0) / dt ))
+
+def ceil_dt64(t,dt,t0=np.datetime64("1970-01-01 00:00:00")):
+    """
+    Round the given t up to an integer number of dt from
+    a reference time (defaults to unix epoch)
+    """
+    return t0+dt*int(np.ceil( (t-t0) / dt ))
+
 
 def unix_to_dt64(t):
     """
@@ -2065,17 +2079,20 @@ def progress(a,interval_s=5.0,msg="%s"):
             t0=t
         yield elt
 
-def is_stale(target,srcs):
+def is_stale(target,srcs,ignore_missing=False):
     """
     Makefile-esque checker --
     if target does not exist or is older than any of srcs,
     return true (i.e. stale).
-    if a src does not exist, raise an Exception
+    if a src does not exist, raise an Exception, unless ignore_missing=True.
     """
     if not os.path.exists(target): return True
     for src in srcs:
         if not os.path.exists(src):
-            raise Exception("Dependency %s does not exist"%src)
+            if ignore_missing:
+                continue
+            else:
+                raise Exception("Dependency %s does not exist"%src)
         if os.stat(src).st_mtime > os.stat(target).st_mtime:
             return True
     return False
