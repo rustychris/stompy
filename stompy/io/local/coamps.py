@@ -28,7 +28,7 @@ def known_missing(recs):
             return True
     return False
 
-def coamps_files(start,stop,cache_dir):
+def coamps_files(start,stop,cache_dir,fields=['wnd_utru','wnd_vtru','pres_msl']):
     """ 
     Generate urls, filenames, and dates for
     fetching or reading COAMPS data
@@ -71,10 +71,17 @@ def coamps_files(start,stop,cache_dir):
             
             recs=dict()
 
-            for field_name in ['wnd_utru','wnd_vtru','pres_msl']:
+            for field_name in fields:
                 if field_name in ['wnd_utru','wnd_vtru']:
                     elev_code=105 # 0001: surface?  0105: above surface  0100: pressure?
                     elev=100
+                elif field_name in ['rltv_hum','air_temp']:
+                    # these are available at 20, while winds seems only at 100 and higher
+                    elev_code=105
+                    elev=20
+                elif field_name in ['sol_rad']:
+                    elev_code=1
+                    elev=0
                 else:
                     # pressure at sea level
                     elev_code=102
@@ -96,17 +103,21 @@ def coamps_files(start,stop,cache_dir):
             raise Exception("Couldn't find a run for date %s"%day_dt.strftime('%Y-%m-%d %H:%M'))
 
 
-def fetch_coamps_wind(start,stop, cache_dir):
+def fetch_coamps_wind(start,stop, cache_dir, **kw):
     """
     start,stop: datetime64
+    cache_dir: pre-existing cache directory
+    kw: can pass fields=['wnd_utru',...] on through to coamps_files()
     returns a list of local netcdf filenames, one per time step.
+
 
     Download all COAMPS outputs between the given np.datetime64()s.
     Does not do any checking against available data, so requesting data
     before or after what is available will fail.
     """
     files=[]
-    for recs in coamps_files(start,stop,cache_dir):
+    
+    for recs in coamps_files(start,stop,cache_dir,**kw):
         for field_name in recs:
             rec=recs[field_name]
             output_fn=rec['local']
