@@ -2046,7 +2046,8 @@ def download_url(url,local_file,log=None,on_abort='pass',**extra_args):
 
     except Exception as exc:
         if on_abort=='remove':
-            os.unlink(local_file)
+            if os.path.exists(local_file):
+                os.unlink(local_file)
         raise
 
 def call_with_path(cmd,path):

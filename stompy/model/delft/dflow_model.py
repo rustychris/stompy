@@ -2727,6 +2727,26 @@ class DFlowModel(HydroModel):
         # the parts that are not relevant to the cross section.
         return his.isel(cross_section=idx)
 
+    def extract_station(self,xy=None,ll=None,name=None):
+        his=xr.open_dataset(self.his_output())
+        if name is not None:
+            names=his.station_name.values
+            try:
+                names=[n.decode() for n in names]
+            except AttributeError:
+                pass
+
+            if name not in names:
+                return None
+            idx=names.index(name)
+        else:
+            raise Exception("Only picking by name has been implemented for DFM output")
+        
+        # this has a bunch of extra cruft -- some other time remove
+        # the parts that are not relevant to the cross section.
+        return his.isel(stations=idx)
+
+
 import sys
 if sys.platform=='win32':
     cls=DFlowModel
