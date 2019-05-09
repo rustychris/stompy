@@ -1819,6 +1819,9 @@ class HycomMultiScalarBC(HycomMultiBC):
 
         # Get spatial information about hycom files
         hy_ds0=xr.open_dataset(self.data_files[0])
+        # make lon canonically [-180,180]
+        hy_ds0.lon.values[:] = (hy_ds0.lon.values+180)%360.0 - 180.0
+        
         if 'time' in hy_ds0.water_u.dims:
             hy_ds0=hy_ds0.isel(time=0)
         # makes sure lon,lat are compatible with water velocity
@@ -1980,6 +1983,9 @@ class HycomMultiVelocityBC(HycomMultiBC):
 
         # Get spatial information about hycom files
         hy_ds0=xr.open_dataset(self.data_files[0])
+        # make lon canonically [-180,180]
+        hy_ds0.lon.values[:] = (hy_ds0.lon.values+180)%360.0 - 180.0
+        
         if 'time' in hy_ds0.water_u.dims:
             hy_ds0=hy_ds0.isel(time=0)
         # makes sure lon,lat are compatible with water velocity
