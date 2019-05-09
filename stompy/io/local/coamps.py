@@ -71,25 +71,34 @@ def coamps_files(start,stop,cache_dir,fields=['wnd_utru','wnd_vtru','pres_msl'])
             
             recs=dict()
 
+            
             for field_name in fields:
                 if field_name in ['wnd_utru','wnd_vtru']:
+                    cat="MET"
                     elev_code=105 # 0001: surface?  0105: above surface  0100: pressure?
                     elev=100
                 elif field_name in ['rltv_hum','air_temp']:
+                    cat="MET"
                     # these are available at 20, while winds seems only at 100 and higher
                     elev_code=105
                     elev=20
-                elif field_name in ['sol_rad']:
+                elif field_name in ['sol_rad','grnd_sea_temp']:
                     elev_code=1
                     elev=0
                 else:
                     # pressure at sea level
                     elev_code=102
                     elev=0
-                url_file=("US058GMET-GR1dyn.COAMPS-CENCOOS_CENCOOS-n3-c1_"
+                    
+                if field_name in ['grnd_sea_temp']:
+                    cat="COM"
+                else:
+                    cat="MET"
+
+                url_file=("US058G%s-GR1dyn.COAMPS-CENCOOS_CENCOOS-n3-c1_"
                           "%03d"
                           "00F0NL"
-                          "%s_%04d_%06d-000000%s")%(hour_of_run,run_tag,elev_code,elev,field_name)
+                          "%s_%04d_%06d-000000%s")%(cat,hour_of_run,run_tag,elev_code,elev,field_name)
 
                 output_fn=os.path.join(cache_dir, dataset_name, url_file)
                 recs[field_name]=dict(url=base_url+url_file,
@@ -135,13 +144,26 @@ def fetch_coamps_wind(start,stop, cache_dir, **kw):
             time.sleep(2) # be a little nice.
     return files
 
-
 def coamps_press_windxy_dataset(bounds,start,stop,cache_dir):
+    return coamps_dataset(bounds,start,stop,cache_dir,
+                          fields=['wnd_utru','wnd_vtru','pres_msl'])
+
+def coamps_dataset(bounds,start,stop,cache_dir,
+                   fields=['wnd_utru','wnd_vtru','pres_msl']):
     """
     Downloads COAMPS winds for the given period (see fetch_coamps_wind),
     trims to the bounds xxyy, and returns an xarray Dataset.
+
+    fields: these are the coamps names for the fields.  for legacy reasons,
+      some of them are remapped in the dataset
+      wnd_utru => wind_u
+      wnd_vtru => wind_v
+      pres_msl => pres
     """
-    fetch_coamps_wind(start,stop,cache_dir)
+    fields=list(fields)
+    fields.sort()
+    
+    fetch_coamps_wind(start,stop,cache_dir,fields=fields)
 
     pad=10e3
     crop=[bounds[0]-pad,bounds[1]+pad,
@@ -149,37 +171,39 @@ def coamps_press_windxy_dataset(bounds,start,stop,cache_dir):
 
     dss=[] 
 
-    for recs in coamps_files(start,stop,cache_dir):
-        timestamp=recs['wnd_utru']['timestamp']
+    renames={'wnd_utru':'wind_u',
+             'wnd_vtru':'wind_v',
+             'pres_msl':'pres'}
+    
+    for recs in coamps_files(start,stop,cache_dir,fields=fields):
+        timestamp=recs[fields[0]]['timestamp']
         timestamp_dt=utils.to_datetime(timestamp)
         timestamp_str=timestamp_dt.strftime('%Y-%m-%d %H:%M')
         # use the local file dirname to get the same model subdirectory
         # i.e. cencoos_4km
-        cache_fn=os.path.join(os.path.dirname(recs['pres_msl']['local']),
-                              "%s.nc"%timestamp_dt.strftime('%Y%m%d%H%M'))
+        cache_fn=os.path.join(os.path.dirname(recs[fields[0]]['local']),
+                              "%s-%s.nc"%(timestamp_dt.strftime('%Y%m%d%H%M'),
+                                          "-".join(fields)))
         if not os.path.exists(cache_fn):
             print(timestamp_str)
-
-            # load the 3 fields:
-            wnd_utru=field.GdalGrid(recs['wnd_utru']['local'])
-            wnd_vtru=field.GdalGrid(recs['wnd_vtru']['local'])
-            pres_msl=field.GdalGrid(recs['pres_msl']['local'])
-
-            # Reproject to UTM: these come out as 3648m resolution, compared to 4km input.
-            # Fine.  366 x 325.  Crops down to 78x95
-            wnd_utru_utm=wnd_utru.warp("EPSG:26910").crop(crop)
-            wnd_vtru_utm=wnd_vtru.warp("EPSG:26910").crop(crop)
-            pres_msl_utm=pres_msl.warp("EPSG:26910").crop(crop)
-
             ds=xr.Dataset()
             ds['time']=timestamp
-            x,y = wnd_utru_utm.xy()
-            ds['x']=('x',),x
-            ds['y']=('y',),y
-            # copy, in hopes that we can free up ram more quickly
-            ds['wind_u']=('y','x'), wnd_utru_utm.F.copy()
-            ds['wind_v']=('y','x'), wnd_vtru_utm.F.copy()
-            ds['pres']=('y','x'), pres_msl_utm.F.copy()
+
+            for i,field_name in enumerate(fields):
+                # load the grib file
+                raw=field.GdalGrid(recs[field_name]['local'])
+                # Reproject to UTM: these come out as 3648m resolution, compared to 4km input.
+                # Fine.  366 x 325.  Crops down to 78x95
+                raw_utm=raw.warp("EPSG:26910").crop(crop)
+
+                if i==0: # take spatial details from the first field
+                    x,y = raw_utm.xy()
+                    ds['x']=('x',),x
+                    ds['y']=('y',),y
+
+                ds_name=renames.get(field_name,field_name)
+                # copy, in hopes that we can free up ram more quickly
+                ds[ds_name]=('y','x'), raw_utm.F.copy()
 
             ds.to_netcdf(cache_fn)
             ds.close()

@@ -1819,6 +1819,9 @@ class HycomMultiScalarBC(HycomMultiBC):
 
         # Get spatial information about hycom files
         hy_ds0=xr.open_dataset(self.data_files[0])
+        # make lon canonically [-180,180]
+        hy_ds0.lon.values[:] = (hy_ds0.lon.values+180)%360.0 - 180.0
+        
         if 'time' in hy_ds0.water_u.dims:
             hy_ds0=hy_ds0.isel(time=0)
         # makes sure lon,lat are compatible with water velocity
@@ -1980,6 +1983,9 @@ class HycomMultiVelocityBC(HycomMultiBC):
 
         # Get spatial information about hycom files
         hy_ds0=xr.open_dataset(self.data_files[0])
+        # make lon canonically [-180,180]
+        hy_ds0.lon.values[:] = (hy_ds0.lon.values+180)%360.0 - 180.0
+        
         if 'time' in hy_ds0.water_u.dims:
             hy_ds0=hy_ds0.isel(time=0)
         # makes sure lon,lat are compatible with water velocity
@@ -2726,6 +2732,26 @@ class DFlowModel(HydroModel):
         # this has a bunch of extra cruft -- some other time remove
         # the parts that are not relevant to the cross section.
         return his.isel(cross_section=idx)
+
+    def extract_station(self,xy=None,ll=None,name=None):
+        his=xr.open_dataset(self.his_output())
+        if name is not None:
+            names=his.station_name.values
+            try:
+                names=[n.decode() for n in names]
+            except AttributeError:
+                pass
+
+            if name not in names:
+                return None
+            idx=names.index(name)
+        else:
+            raise Exception("Only picking by name has been implemented for DFM output")
+        
+        # this has a bunch of extra cruft -- some other time remove
+        # the parts that are not relevant to the cross section.
+        return his.isel(stations=idx)
+
 
 import sys
 if sys.platform=='win32':
