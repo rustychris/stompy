@@ -886,7 +886,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             with open(cells_fn,'rt') as fp:
                 for line in fp:
                     parts=line.strip().split()
-                    nsides=int(parts[0])
+                    try:
+                        nsides=int(parts[0])
+                    except ValueError:
+                        logging.error("Error parsing nsides in suntans hybrid -- maybe a classic suntans grid?",
+                                      exc_info=True)
+                        raise
                     max_sides=max(nsides,max_sides)
                     cc=[float(p) for p in parts[1:3]]
                     nodes=[int(p) for p in parts[3:3+nsides]]
@@ -961,6 +966,100 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 g.add_cell_field('Nk',Nk)
         return g
 
+    @staticmethod
+    def read_sms(fname,open_marker=3,land_marker=1):
+        """
+        Ported from https://github.com/rustychris/stomel/blob/master/src/trigrid.py
+        """
+        fp = open(fname)
+
+        # skip leading blank lines
+        while 1:
+            line = fp.readline().strip()
+            if line != "":
+                break
+
+        # first non-blank line has number of cells and edges:
+        Ncells,Npoints = map(int,line.split())
+
+        # each point has three numbers, though the third is apparently
+        # always 0
+
+        points = np.zeros((Npoints,2),np.float64)
+        for i in range(Npoints):
+            line = fp.readline().split()
+            # pnt_id is 1-based
+            pnt_id = int(line[0])
+
+            points[pnt_id-1] = [float(s) for s in line[1:3]]
+
+        logging.info("Reading cells")
+        max_sides=12 # aim high...
+        real_max_sides=3 # but track what the real value is
+        cells = np.zeros((Ncells,max_sides),np.int32) # store zero-based indices, and assume
+        cells[:]=-1 
+        cell_mask = np.ones( len(cells) )
+
+        # for now, everything is a triangle. need sample input with quads to test
+        # non-triangle code.
+        for i in range(Ncells):
+            parsed = [int(s) for s in fp.readline().split()]
+            cell_id = parsed[0]
+            nvertices = parsed[1]
+            pnt_ids = np.array(parsed[2:])
+
+            if nvertices>real_max_sides: real_max_sides=nvertices
+            
+            # store them as zero-based.  Point indices beyond nvertices
+            # already initialized to -1 above.
+            cells[cell_id-1,:nvertices] = pnt_ids - 1
+
+        cells=cells[:,:real_max_sides]
+        
+        g=UnstructuredGrid(max_sides=real_max_sides)
+        g.from_simple_data(points=points,cells=cells)
+
+        # At this point we have enough info to create the edges
+        g.make_edges_from_cells()
+
+        # And then go back and switch the marker for some of the edges:
+        logging.info("Reading boundaries")
+        def read_first_int():
+            return int(fp.readline().split()[0])
+
+        for btype in ['open','land']:
+            if btype == 'open':
+                marker = open_marker # open - not sure if this is 2 or 3...
+            else:
+                marker = land_marker # closed
+                
+            n_boundaries = read_first_int()
+            logging.info("Number of %s boundaries: %d"%(btype,n_boundaries))
+            tot_boundary_nodes = read_first_int() # who cares...
+
+            for boundary_i in range(n_boundaries):
+                logging.info("Reading %s boundary %d"%(btype,boundary_i+1))
+                n_nodes_this_boundary = read_first_int()
+                for i in range(n_nodes_this_boundary):
+                    node_i = read_first_int() - 1 # zero-based
+                    if i>0:
+                        # update the marker in edges
+                        if node_i < last_node_i:
+                            pa,pb = node_i,last_node_i
+                        else:
+                            pa,pb = last_node_i,node_i
+                            
+                        edge_i = g.nodes_to_edge((pa,pb))
+                        if edge_i is None:
+                            logging.error("Couldn't find edge %d-%d"%(pa,pb))
+                            raise
+                        g.edges['mark'][edge_i] = marker
+                            
+                    last_node_i = node_i
+
+        logging.debug("Done reading sms grid")
+        return g
+    
     def write_to_xarray(self,ds=None,mesh_name='mesh',
                         node_coordinates='node_x node_y',
                         face_node_connectivity='face_node',
@@ -2167,6 +2266,11 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         self._node_to_edges = n2e
 
     def nodes_to_edge(self,n1,n2=None):
+        """
+        return edge index for the edge joining nodes n1,n2
+        n1: node index, or if n2 is None, a sequence of 2 node indices
+        n2: node index
+        """
         if n2 is None:
             n1,n2=n1
 
@@ -2183,7 +2287,6 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         # for e in candidates1:
         #     if n2 in self.edges['nodes'][e]:
         #         return e
-        # return None
 
     def nodes_to_cell(self,ns,fail_hard=True):
         cells=self.node_to_cells(ns[0])
