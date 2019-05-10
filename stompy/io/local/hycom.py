@@ -33,7 +33,8 @@ def fetch_range(lon_range, lat_range, time_range, cache_dir):
 
     filenames=[]
 
-    for t in times:
+    for idx,t in enumerate(times):
+        log.info("t=%s  %d/%d"%(t,idx,len(times)))
         time_str = t.strftime('%Y%m%d%H')
         cache_name=os.path.join( cache_dir,
                                  "%s-%.2f_%.2f_%.2f_%.2f.nc"%(time_str,
@@ -41,9 +42,12 @@ def fetch_range(lon_range, lat_range, time_range, cache_dir):
                                                               lat_range[0],lat_range[1]) )
         if not os.path.exists(cache_name):
             log.info("Fetching %s"%cache_name)
-            fetch_one_day(t,cache_name,lon_range,lat_range)
+            try:
+                fetch_one_day(t,cache_name,lon_range,lat_range)
+                filenames.append(cache_name)
+            except HycomException:
+                log.warning("HYCOM download failed -- will continue with other days")
             time.sleep(1)
-        filenames.append(cache_name)
     return filenames
 
 class HycomException(Exception):
@@ -91,27 +95,37 @@ def fetch_one_day(t,output_fn,lon_range,lat_range):
                ('accept',"netcdf4")]
 
     params=var_args+loc_args+time_args+etc_args
+    valid=True
 
     # DBG:
     logging.info("About to download from hycom:")
     logging.info(ncss_base_url)
     logging.info(params)
     t=time.time()
-    utils.download_url(ncss_base_url,local_file=output_fn,
-                       log=logging,params=params,timeout=1800)
+    try:
+        utils.download_url(ncss_base_url,local_file=output_fn,
+                           log=logging,params=params,timeout=1800)
+    except:
+        logging.error("fetching hycom:", exc_info=True)
+        valid=False
+
     elapsed=time.time()-t
     logging.info("download_url: elapsed time %.1fs"%elapsed)
 
-    valid=True
-    with open(output_fn,'rb') as fp:
-        head=fp.read(1000)
-        if ( (b'500 Internal Server Error' in head)
-             or (b'No such file' in head) ):
-            logging.error("HYCOM download failed with server error")
-            valid=False
+    if valid:
+        with open(output_fn,'rb') as fp:
+            head=fp.read(1000)
+            if ( (b'500 Internal Server Error' in head)
+                 or (b'No such file' in head) ):
+                logging.error("HYCOM download failed with server error")
+                valid=False
     if not valid:
         logging.error("renaming failed hycom download")
-        os.rename(output_fn,output_fn+"-FAIL")
+        if os.path.exists(output_fn):
+            os.rename(output_fn,output_fn+"-FAIL")
+        else:
+            with open(output_fn+"-FAIL",'wt') as fp:
+                fp.write("Failed to download.  see stompy/io/local/hycom.py")
         raise HycomException("HYCOM download failed")
 
     
