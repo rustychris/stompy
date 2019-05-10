@@ -967,7 +967,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         return g
 
     @staticmethod
-    def read_sms(fname,open_marker=3,land_marker=1):
+    def read_sms(fname,open_marker=2,land_marker=1):
         """
         Ported from https://github.com/rustychris/stomel/blob/master/src/trigrid.py
         """
