@@ -3,3 +3,11 @@ cache
 test_cache
 ptm_out
 run-dfm_to_ptm
+cells.dat
+edges.dat
+final.pav
+final.pdf
+points.dat
+smoothed-shoreline.*
+tom.log
+
