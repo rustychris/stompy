@@ -118,7 +118,7 @@ def coops_dataset(station,start_date,end_date,products,
     return ds_merged
 
 def coops_dataset_product(station,product,
-                          start_date,end_date,days_per_request=None,
+                          start_date,end_date,days_per_request='M',
                           cache_dir=None,refetch_incomplete=True):
     """
     Retrieve a single data product from a single station.
