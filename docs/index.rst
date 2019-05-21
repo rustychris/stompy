@@ -3,11 +3,16 @@
    You can adapt this file completely to your liking, but it should at least
    contain the root `toctree` directive.
 
-Welcome to stompy's documentation!
-==================================
+stompy
+======
+
+Spatial Tools for Ocean Modeling in Python
+
+A collection of tools related to oceanographic data processing with an
+emphasis on modeling.
 
 .. toctree::
-   :maxdepth: 4
+   :maxdepth: 2
    :caption: Contents:
 
    stompy

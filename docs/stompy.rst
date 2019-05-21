@@ -3,14 +3,12 @@ stompy
 
 Spatial Tools for Ocean Modeling in Python
 
-A broad collection of half-baked tools related to 
-oceanographic data processing with an emphasis on modeling.
+A collection of tools related to oceanographic data processing with an
+emphasis on modeling.
 
 
 Subpackages
 -----------
-
-Groups of modules with a common theme.
 
 .. toctree::
    :maxdepth: 1
@@ -23,8 +21,6 @@ Groups of modules with a common theme.
 
 Submodules
 ----------
-
-Top-level modules, narrower scope, including utility modules.
 
 .. toctree::
    :maxdepth: 1
