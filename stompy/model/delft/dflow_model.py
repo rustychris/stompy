@@ -1767,7 +1767,12 @@ class HycomMultiBC(MultiBC):
         values as hycom's positive down bathymetry.
         """
         # TODO: download hycom bathy on demand.
-        hy_bathy=self.hy_bathy=xr.open_dataset( os.path.join(self.cache_dir,'depth_GLBa0.08_09.nc') )
+        # This version of the file is from experiment 93.0, and ostensibly is on the
+        # computational grid
+        # ftp://ftp.hycom.org/datasets/GLBb0.08/expt_93.0/topo/depth_GLBb0.08_09m11.nc
+        # This is what I've used in the past:
+        hy_bathy=self.hy_bathy=hycom.hycom_bathymetry(self.model.run_start,self.cache_dir)
+        # xr.open_dataset( os.path.join(self.cache_dir,'depth_GLBa0.08_09.nc') )
         lon_min,lon_max,lat_min,lat_max=self.ll_box
 
         sel=((hy_bathy.Latitude.values>=lat_min) &
