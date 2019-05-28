@@ -53,6 +53,24 @@ def fetch_range(lon_range, lat_range, time_range, cache_dir):
 class HycomException(Exception):
     pass
 
+def hycom_bathymetry(t,cache_dir):
+    """
+    Return a dataset for the hycom bathymetry, suitable for the given date.
+    currently doesn't do anything with the date, and always returns the most
+    recent bathymetry.
+    """
+    url="ftp://ftp.hycom.org/datasets/GLBb0.08/expt_93.0/topo/depth_GLBb0.08_09m11.nc"
+    local_fn=os.path.join(cache_dir,url.split("/")[-1])
+    if not os.path.exists(local_fn):
+        utils.download_url(url,local_fn,log=log,on_abort='remove')
+
+    ds=xr.open_dataset(local_fn)
+    # make it look like the older file
+    invalid=ds.depth.values>1e6
+    ds.depth.values[invalid]=np.nan
+    ds['bathymetry']=ds['depth']
+    return ds
+
 def fetch_one_day(t,output_fn,lon_range,lat_range):
     """
     Download physical variables from hycom for the lat/lon ranges,
@@ -73,6 +91,9 @@ def fetch_one_day(t,output_fn,lon_range,lat_range):
         ncss_base_url="http://ncss.hycom.org/thredds/ncss/GLBv0.08/expt_57.7"
     elif t>=datetime.datetime(2017,10,1,12,0) and t<=datetime.datetime(2018,3,20,9,0):
         ncss_base_url="http://ncss.hycom.org/thredds/ncss/GLBv0.08/expt_92.9"
+    elif t>=datetime.datetime(2018,3,20,0,0): #  and t<=datetime.datetime(2018,3,20,9,0):
+        # New - testing!
+        ncss_base_url="http://ncss.hycom.org/thredds/ncss/GLBv0.08/expt_93.0"
     else:
         raise Exception("Not ready for other experiments")
 
