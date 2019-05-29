@@ -6,6 +6,8 @@ import time
 import datetime
 import pandas as pd
 import numpy as np
+import xarray as xr
+
 import logging
 from ... import utils
 log=logging.getLogger('hycom')
@@ -44,10 +46,13 @@ def fetch_range(lon_range, lat_range, time_range, cache_dir):
             log.info("Fetching %s"%cache_name)
             try:
                 fetch_one_day(t,cache_name,lon_range,lat_range)
-                filenames.append(cache_name)
             except HycomException:
                 log.warning("HYCOM download failed -- will continue with other days")
+                continue
             time.sleep(1)
+
+        filenames.append(cache_name)
+
     return filenames
 
 class HycomException(Exception):

@@ -58,7 +58,8 @@ def combine_sources(all_sources,dt=np.timedelta64(900,'s'),min_period=True):
     return combined
 
 
-def assemble_comparison_data(models,observations,model_labels=None):
+def assemble_comparison_data(models,observations,model_labels=None,
+                             extract_options={}):
     # models: list of HydroModel instances
     # observations: list of DataArrays representing time series
     #   the first observation must have lon and lat fields
@@ -76,16 +77,15 @@ def assemble_comparison_data(models,observations,model_labels=None):
     model_data=[] # a data array per model
     for model,label in zip(models,model_labels):
         if base_obs.name=='water_level':
-            ds=model.extract_station(ll=[base_obs.lon,base_obs.lat])
+            ds=model.extract_station(ll=[base_obs.lon,base_obs.lat],**extract_options)
             da=ds['eta']
             da.name='water_level' # having the same name helps later
         elif base_obs.name=='flow':
             assert False,"this has not been written yet"
             # extract_section currently only for DFM, and only by name
-            ds=model.extract_section(ll=[base_obs.lon,base_obs.lat])
+            ds=model.extract_section(ll=[base_obs.lon,base_obs.lat],**extract_options)
             da=ds['cross_section_discharge'] # that's a DFM name...
             da.name='flow' # having the same name helps later
-
         else:
             raise Exception("Not yet ready")
         da=da.assign_coords(label=label)
