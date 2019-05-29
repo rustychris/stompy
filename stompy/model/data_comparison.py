@@ -29,6 +29,12 @@ def period_intersection(sources):
     return t_min,t_max
 
 def combine_sources(all_sources,dt=np.timedelta64(900,'s'),min_period=True):
+    """
+    Resample multiple time series to common timebase.
+    all_sources: list of xr.DataArray()
+    dt: each input is resample at this time step.
+    min_period: True => use the 
+    """
     # For many plots and metrics need a common timeline -- 
     # Get them on common time frames
     if min_period:
@@ -42,9 +48,13 @@ def combine_sources(all_sources,dt=np.timedelta64(900,'s'),min_period=True):
                             dt)
     bin_labels=resample_bins[:-1]
 
+    # All data arrays get renamed to the field name of the first one
+    field_name=all_sources[0].name
+
     def resample(da):
         # groupby_bins allows for specifying the exact bins and labels,
         # simplifying concatenation below.
+        da=da.rename(field_name)
         da_r=(da.groupby_bins(da.time,resample_bins,labels=bin_labels)
               .mean()
               .rename(time_bins='time')
@@ -53,19 +63,22 @@ def combine_sources(all_sources,dt=np.timedelta64(900,'s'),min_period=True):
 
     resampled=[resample(da) for da in all_sources]
 
-    field_name=all_sources[0].name
     combined=xr_utils.concat_permissive(resampled,dim='source')[field_name]
     return combined
 
 
 def assemble_comparison_data(models,observations,model_labels=None,
                              extract_options={}):
-    # models: list of HydroModel instances
-    # observations: list of DataArrays representing time series
-    #   the first observation must have lon and lat fields
-    #   defining where to extract data from in the model.
-    # returns a list of dataarrays, and a combined dataset
+    """
+    Extract data from one or more model runs to match one or more observations
+    
+    models: list of HydroModel instances
+    observations: list of DataArrays representing time series
+      the first observation must have lon and lat fields
+      defining where to extract data from in the model.
 
+    returns a tuple: ( [list of dataarrays], combined dataset )
+    """
     if model_labels is None:
         if len(models)==1:
             model_labels=["Model"]
@@ -148,7 +161,7 @@ def calibration_figure_3panel(all_sources,combined=None,
     fig=plt.figure(figsize=(9,7),num=num)
     ts_ax = fig.add_subplot(gs[0, :])
     lp_ax = fig.add_subplot(gs[1, :-1])
-    scat_ax=fig.add_subplot(gs[1, -1])
+    scat_ax=fig.add_subplot(gs[1, 2])
 
     if trim_time:
         t_min,t_max=period_intersection(all_sources)
