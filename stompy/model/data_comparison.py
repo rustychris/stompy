@@ -123,7 +123,7 @@ def calc_metrics(x,ref):
     x, ref: DataArrays with common time dimension
     """
     metrics={}
-    metrics['bias']=(x-ref).mean()
+    metrics['bias']=np.nanmean( (x-ref).values )
     valid=np.isfinite( (x+ref).values )
     metrics['r'] = np.corrcoef( x.values[valid],ref.values[valid])[0,1]
     metrics['lag']= utils.find_lag_xr(x,ref) 
