@@ -1864,6 +1864,11 @@ class CurvilinearGrid(QuadrilateralGrid):
         return CurvilinearGrid(X=self.X, F= Fb, projection=self.projection() )
 
 class SimpleGrid(QuadrilateralGrid):
+    """
+    A spatial field stored as a regular cartesian grid.
+    The spatial extent of the field is stored in self.extents 
+    (as xmin,xmax,ymin,ymax) and the data in the 2D array self.F
+    """
     int_nan = -9999
 
     # Set to "linear" to have value() calls use linear interpolation
@@ -2724,6 +2729,12 @@ class GtxGrid(SimpleGrid):
                             projection=projection) 
 
 class GdalGrid(SimpleGrid):
+    """
+    A specialization of SimpleGrid that can load single channel and RGB 
+    files via the GDAL library.
+    Use this for loading GeoTIFFs, some GRIB files, and other formats supported
+    by GDAL.
+    """
     @staticmethod
     def metadata(filename):
         """ Return the extents and resolution without loading the whole file

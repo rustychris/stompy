@@ -210,7 +210,7 @@ def center_to_edge_2d(X,Y,dx_single=None,dy_single=None):
             X=X.values
         if isinstance(Y,xr.DataArray):
             Y=Y.values
-    if np.any(np.isnan(X)) or np.any(np.isnan(Y)):
+    if np.any(isnant(X)) or np.any(isnant(Y)):
         log.warning('center_to_edge2d() does not cope well with nan')
     if X.ndim==Y.ndim==1:
         Xpad=center_to_edge(X,dx_single=dx_single)
@@ -1228,7 +1228,7 @@ def floor_dt64(t,dt,t0=np.datetime64("1970-01-01 00:00:00")):
     Round the given t down to an integer number of dt from
     a reference time (defaults to unix epoch)
     """
-    return t0+dt*int(np.floor( (t-t0) / dt ))
+    return t0+dt*(np.floor( (t-t0) / dt )).astype(np.int64)
 
 def ceil_dt64(t,dt,t0=np.datetime64("1970-01-01 00:00:00")):
     """
@@ -1772,6 +1772,15 @@ def isnat(x):
     and are likely to change.
     """
     return x.astype('i8') == np.datetime64('NaT').astype('i8')
+
+def isnant(x):
+    """
+    try isnan, if it fails try isnat
+    """
+    try:
+        return np.isnan(x)
+    except TypeError:
+        return isnat(x)
 
 
 def group_by_sign_hysteresis(Q,Qlow=0,Qhigh=0):

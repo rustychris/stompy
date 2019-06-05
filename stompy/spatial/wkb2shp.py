@@ -1,3 +1,10 @@
+"""
+Functions for reading and writing shapefiles.
+
+These are simple wrappers around OGR and Shapely
+libraries.
+
+"""
 from __future__ import print_function
 import six
 
@@ -25,16 +32,24 @@ def wkb2shp(shp_name,
             fields = None,
             overwrite=False,
             geom_type=None):
-    """ shp_name: filename.shp for writing the result
+    """
+    Save data to a shapefile.
+
+    shp_name: filename.shp for writing the result
     or 'MEMORY' to return an in-memory ogr layer.
 
-      input_wkbs: shapely geometry objects for each feature.  They must all
+      input_wkbs: list of shapely geometry objects for each feature.  They must all
                   be the same geometry type (no mixing lines and polygons, etc.)
-    Three ways of specifying fields:
+
+    There are three ways of specifying fields:
        field_gen: a function which will be called once for each feature, with
                   the geometry as its argument, and returns a dict of fields.
-       fields: a numpy array with named fields, or
-       fields: a dict of field names
+       fields: a numpy structure array with named fields, or
+       fields: a dict of field names, with each dictionary entry holding a sequence
+         of field values.
+
+    srs_text: sets the projection information when writing the shapefile.  Expects
+    a string, for example 'EPSG:3095'  or 'WGS84'.
     """
     if shp_name.lower()=='memory':
         drv = ogr.GetDriverByName('Memory')
@@ -199,11 +214,11 @@ def shp2geom(shp_fn,use_wkt=False,target_srs=None,
     """
     Read a shapefile into memory as a numpy array.
     Data is returned as a record array, with geometry as a shapely
-    geometry in the 'geom' field.
+    geometry object in the 'geom' field.
 
     target_srs: input suitable for osgeo.osr.SetFromUserInput(), or an
     existing osr.SpatialReference, to specify
-    a projection to which the data should be translated.  If this is specified
+    a projection to which the data should be projected.  If this is specified
     but the shapefile does not specify a projection, and source_srs is not given,
     then an exception is raised.  source_srs will override the projection in 
     the shapefile if specified.

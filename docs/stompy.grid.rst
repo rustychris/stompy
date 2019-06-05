@@ -1,6 +1,30 @@
 stompy\.grid — Grid reading, writing and manipulating
 ====================
 
+Modules for generating, converting, plotting, and editing
+unstructured grids as used in hydrodynamic models (e.g.
+UnTRIM, SUNTANS, DFlow-FM).
+
+For generating grids, the only stable and robust code for
+this is in `tom.py` (triangular orthogonal mesher) and `paver.py`.
+`tom.py` is a command line interface to `paver.py`.  A simple
+example of calling tom is in `stompy/tests/test_tom.sh`, and
+invoking `tom.py -h` will show the other options available.
+
+For most other grid-related tasks, the best module to use
+is `unstructured_grid.py`, as it supports non-triangular meshes
+(such as mixed triangles/quads), and is actively developed.
+Grid generation methods built on unstructured_grid.py are
+in front.py, but these are not stable and generally should not
+be used.
+
+Note that for any significant amount of grid modification, the
+CGAL python bindings are essential. A backup pure python
+implementation is included, but will be orders of magnitude
+slower and likely less robust numerically.  Watch for error
+messages near the start of using tom.py to see whether there
+are issues loading CGAL.
+
 Submodules
 ----------
 

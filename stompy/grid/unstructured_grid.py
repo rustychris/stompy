@@ -3838,7 +3838,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         edge_hits=boundary_edges[hits]
         return edge_hits
 
-    def select_edges_intersecting(self,geom,invert=False,mask=None):
+    def select_edges_intersecting(self,geom,invert=False,mask=slice(None)):
         """
         geom: a shapely geometry
         returns: bitmask over edges, with non-deleted, selected edges set and others False.
