@@ -48,6 +48,9 @@ def fetch_range(lon_range, lat_range, time_range, cache_dir):
             except HycomException:
                 log.warning("HYCOM download failed -- will continue with other days")
             time.sleep(1)
+        else:
+            filenames.append(cache_name)
+
     return filenames
 
 class HycomException(Exception):

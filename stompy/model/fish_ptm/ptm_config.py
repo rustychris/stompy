@@ -212,5 +212,6 @@ PARTICLE GROUP INFORMATION
                 os.unlink(fn)
 
     def write(self):
+        os.path.exists(self.run_dir) or os.makedirs(self.run_dir)
         with open(os.path.join(self.run_dir,"FISH_PTM.inp"),'wt') as fp:
             fp.write(self.text())

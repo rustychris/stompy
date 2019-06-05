@@ -402,16 +402,23 @@ class BC(object):
                         x_axis_type="datetime")
 
         if self.bokeh_show_intermediate:
-            da=self.src_data()
-            self.plot_bokeh(da,p,label="src")
-            for filt in self.filters[::-1]:
-                da=filt.transform_output(da)
-                self.plot_bokeh(da,p,label=filt.label())
-            da=self.to_model_timezone(da)
-            self.plot_bokeh(da,p)
+            da=self.as_data_array(self.src_data())
+            
+            if da is not None:
+                self.plot_bokeh(da,p,label="src")
+                for filt in self.filters[::-1]:
+                    da=filt.transform_output(da)
+                    self.plot_bokeh(da,p,label=filt.label())
+                da=self.to_model_timezone(da)
+                self.plot_bokeh(da,p)
+            else:
+                log.warning("No src_data => no bokeh plot for %s"%str(self))
         else:
             da=self.data()
-            self.plot_bokeh(da,p)
+            if da is not None:
+                self.plot_bokeh(da,p)
+            else:
+                log.warning("No src_data => no bokeh plot for %s"%str(self))
         if filename is None:
             filename="bc_%s.html"%self.name
         output_fn=os.path.join(path,filename)
@@ -538,7 +545,8 @@ class Transform(BCFilter):
         if self.fn_da:
             da=self.fn_da(da)
         if self.fn:
-            da.values[:]=self.fn(da.values)
+            # use ellipsis in case da.values is scalar
+            da.values[...]=self.fn(da.values)
         return da
 
 class FillGaps(BCFilter):
@@ -557,6 +565,8 @@ class FillGaps(BCFilter):
     def transform_output(self,da):
         # have self.bc, self.bc.model
         # self.bc.data_start, self.bc.data_stop
+        if da.ndim==0: # scalar -- no series to fill
+            return da
         if len(da)==0:
             log.warning("FillGaps called with no input data")
             da=xr.DataArray(self.large_gap_value)
@@ -2177,13 +2187,18 @@ class CdecBC(object):
     cache_dir=None # set this to enable caching
     station=None # generally three letter string, all caps
     sensor=None # integer - default values set in subclasses.
+    default=None # what to return for src_data() if no data can be fetched.
     pad=np.timedelta64(24,'h')
 
 class CdecFlowBC(CdecBC,FlowBC):
     sensor=20 # flow at event frequency
     def src_data(self):
         ds=self.fetch_for_period(self.data_start,self.data_stop)
-        return ds['Q']
+        if ds is not None:
+            return ds['Q']
+        else:
+            log.warning("CDEC station %s, sensor %d found no data"%(self.station,self.sensor))
+            return self.default
     def write_bokeh(self,**kw):
         defaults=dict(title="CDEC Flow: %s (%s)"%(self.name,self.station))
         defaults.update(kw)
@@ -2194,16 +2209,20 @@ class CdecFlowBC(CdecBC,FlowBC):
         ds=cdec.cdec_dataset(station=self.station,
                              start_date=period_start-self.pad,end_date=period_stop+self.pad,
                              sensor=self.sensor, cache_dir=self.cache_dir)
-        # to m3/s
-        ds['Q']=ds['sensor%04d'%self.sensor] * 0.028316847
-        ds['Q'].attrs['units']='m3 s-1'
+        if ds is not None:
+            # to m3/s
+            ds['Q']=ds['sensor%04d'%self.sensor] * 0.028316847
+            ds['Q'].attrs['units']='m3 s-1'
         return ds
     
 class CdecStageBC(CdecBC,StageBC):
     sensor=1 # stage at event frequency
     def src_data(self):
         ds=self.fetch_for_period(self.data_start,self.data_stop)
-        return ds['z']
+        if ds is None:
+            return self.default
+        else:
+            return ds['z']
     def write_bokeh(self,**kw):
         defaults=dict(title="CDEC Stage: %s (%s)"%(self.name,self.station))
         defaults.update(kw)
@@ -2215,15 +2234,16 @@ class CdecStageBC(CdecBC,StageBC):
         ds=cdec.cdec_dataset(station=self.station,
                              start_date=period_start-pad,end_date=period_stop+pad,
                              sensor=self.sensor, cache_dir=self.cache_dir)
-        # to m
-        ds['z']=ds['sensor%04d'%self.sensor] * 0.3048
-        ds['z'].attrs['units']='m'
-        return ds
+        if ds is not None:
+            # to m
+            ds['z']=ds['sensor%04d'%self.sensor] * 0.3048
+            ds['z'].attrs['units']='m'
+            return ds
     
 class NwisBC(object):
     cache_dir=None
     product_id="set_in_subclass"
-
+    default=None # in case no data can be fetched
     def __init__(self,station,**kw):
         """
         station: int or string station id, e.g. 11455478
@@ -2250,16 +2270,20 @@ class NwisStageBC(NwisBC,StageBC):
                                   end_date=period_stop,
                                   products=[self.product_id],
                                   cache_dir=self.cache_dir)
-        ds['z']=('time',), 0.3048*ds['height_gage']
-        ds['z'].attrs['units']='m'
+        if ds is not None:
+            ds['z']=('time',), 0.3048*ds['height_gage']
+            ds['z'].attrs['units']='m'
         return ds
-
 
 class NwisFlowBC(NwisBC,FlowBC):
     product_id=60 # discharge
     def src_data(self):
         ds=self.fetch_for_period(self.data_start,self.data_stop)
-        return ds['Q']
+        if ds is not None:
+            return ds['Q']
+        else:
+            return self.default
+    
     def write_bokeh(self,**kw):
         defaults=dict(title="Flow: %s (%s)"%(self.name,self.station))
         defaults.update(kw)
@@ -2275,8 +2299,9 @@ class NwisFlowBC(NwisBC,FlowBC):
                                   end_date=period_stop,
                                   products=[self.product_id],
                                   cache_dir=self.cache_dir)
-        ds['Q']=('time',), 0.028316847*ds['stream_flow_mean_daily']
-        ds['Q'].attrs['units']='m3 s-1'
+        if ds is not None:
+            ds['Q']=('time',), 0.028316847*ds['stream_flow_mean_daily']
+            ds['Q'].attrs['units']='m3 s-1'
         return ds
 
 
@@ -2379,7 +2404,8 @@ class DFlowModel(HydroModel):
         except FileNotFoundError:
             log.warning("Loading model from %s, no grid could be loaded"%fn)
             model.grid=None
-        model.set_run_dir(os.path.dirname(fn),mode='existing')
+        d=os.path.dirname(fn) or "."
+        model.set_run_dir(d,mode='existing')
         # infer number of processors based on mdu files
         # Not terribly robust if there are other files around..
         sub_mdu=glob.glob( fn.replace('.mdu','_*.mdu') )

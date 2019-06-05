@@ -212,14 +212,23 @@ def calibration_figure_3panel(all_sources,combined=None,
             mask= (dn<dn[0]+2*cutoff) | (dn>dn[-1]-2*cutoff)
             x_lp[mask]=np.nan
             return x_lp
-        for i in range(len(combined.source)):
-            ax.plot(t,lp(combined.isel(source=i).values)-offsets[i],
-                    label=combined.label.isel(source=i).item(),
-                    **styles[i])
-        #ax.legend(fontsize=8)
 
-    # ts_ax.set_title(model.run_dir)
+        has_lp_data=False
+        for i in range(len(combined.source)):
+            y=lp(combined.isel(source=i).values)-offsets[i]
+            if np.any(np.isfinite(y)):
+                has_lp_data=True
+                ax.plot(t,y,
+                        label=combined.label.isel(source=i).item(),
+                        **styles[i])
+
     fix_date_labels(ts_ax)
-    fix_date_labels(lp_ax)
+    if has_lp_data:
+        fix_date_labels(lp_ax)
+    else:
+        lp_ax.xaxis.set_visible(0)
+        lp_ax.yaxis.set_visible(0)
+        lp_ax.text(0.5,0.5,"Insufficient data for low-pass",transform=lp_ax.transAxes,
+                   ha='center',va='center')
 
     return fig
