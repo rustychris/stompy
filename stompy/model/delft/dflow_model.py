@@ -1369,8 +1369,11 @@ class HydroModel(object):
         Project array of longitude/latitude [...,2] to
         model-native (e.g. UTM meters)
         """
-        assert self.projection,"Must set projection, i.e. x.projection='EPSG:26910'"
-        return proj_utils.mapper('WGS84',self.projection)
+        if self.projection is None:
+            log.warning("projection is not set, i.e. x.projection='EPSG:26910'")
+            return lambda x:x
+        else:
+            return proj_utils.mapper('WGS84',self.projection)
 
     @property
     @memoize.member_thunk
@@ -1379,7 +1382,10 @@ class HydroModel(object):
         Project array of x/y [...,2] coordinates in model-native
         project (e.g. UTM meters) to longitude/latitude
         """
-        return proj_utils.mapper(self.projection,'WGS84')
+        if self.projection is not None:
+            return proj_utils.mapper(self.projection,'WGS84')
+        else:
+            return lambda x: x
 
     # Some BC methods need to know more about the domain, so DFlowModel
     # provides these accessors

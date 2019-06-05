@@ -478,6 +478,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         return UnstructuredGrid(edges=g.edges,points=g.points,cells=g.cells)
 
     @staticmethod
+    def read_ugrid(*a,**kw):
+        return UnstructuredGrid.from_ugrid(*a,**kw)
+    
+    @staticmethod
     def from_ugrid(nc,mesh_name=None,skip_edges=False,fields='auto'):
         """ extract 2D grid from netcdf/ugrid
         nc: either a filename or an xarray dataset.
@@ -2067,11 +2071,29 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         # return self.nodes['x'][self.edges['nodes']].mean(axis=1)
         return centers
 
-    def cells_centroid(self,ids=None):
+    def cells_centroid(self,ids=None,method='py'):
+        """
+        Calculate cell centroids.  Defaults to faster python method,
+        though subsetting with ids is not optimized with the python method.
+        """
+        if method=='py':
+            cxy=self.cells_centroid_py()
+            if ids is not None:
+                cxy=cxy[ids]
+            return cxy
+        else:
+            return self.cells_centroid_shapely(ids=ids)
+        
+    def cells_centroid_shapely(self,ids=None):
+        """
+        Calculate cell centroids using shapely/libgeos library.
+        Possibly more robust than python code, but 2 orders of magnitude 
+        slower.
+        """
         if ids is None:
             ids=np.arange(self.Ncells())
 
-        centroids=np.zeros( (len(ids),2),'f8')*np.nan
+        centroids=np.zeros( (len(ids),2),np.float64)*np.nan
 
         for ci,c in enumerate(ids):
             if not self.cells['deleted'][c]:
@@ -2080,31 +2102,35 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
     def cells_centroid_py(self):
         """
-        This is not currently any faster than using the above shapely
-        code, but is pasted in here since it may become faster with
-        some tweaking, or be more amenable to numba or cython acceleration
-        in the future.
+        Vectorized python calculation of centroids.  Returns centroids
+        [Ncells,{x,y}], with nan for deleted cells.
         """
         A=self.cells_area()
         cxy=np.zeros( (self.Ncells(),2), np.float64)
 
         refs=self.nodes['x'][self.cells['nodes'][:,0]]
 
-        all_pnts=self.nodes['x'][self.cells['nodes']] - refs[:,None,:]
+        # replace missing nodes with first node
+        cnodes=np.where( self.cells['nodes']>=0,
+                         self.cells['nodes'],
+                         self.cells['nodes'][:,0][:,None] )
+        all_pnts=self.nodes['x'][cnodes] - refs[:,None,:]
 
-        for c in np.nonzero(~self.cells['deleted'])[0]:
-            nodes=self.cell_to_nodes(c)
+        i=np.arange(cnodes.shape[1])
+        ip1=(i+1)%cnodes.shape[1]
 
-            i=np.arange(len(nodes))
-            ip1=(i+1)%len(nodes)
-            nA=all_pnts[c,i]
-            nB=all_pnts[c,ip1]
+        xA=all_pnts[:,i,:]
+        xB=all_pnts[:,ip1,:]
+        tmp=xA[:,:,0]*xB[:,:,1] - xB[:,:,0]*xA[:,:,1]
 
-            tmp=(nA[:,0]*nB[:,1] - nB[:,0]*nA[:,1])
-            cxy[c,0] = ( (nA[:,0]+nB[:,0])*tmp).sum()
-            cxy[c,1] = ( (nA[:,1]+nB[:,1])*tmp).sum()
+        cxy[:,0] = ( (xA[:,:,0]+xB[:,:,0])*tmp).sum(axis=1)
+        cxy[:,1] = ( (xA[:,:,1]+xB[:,:,1])*tmp).sum(axis=1)
+
         cxy /= 6*A[:,None]
         cxy += refs
+
+        cxy[g.cells['deleted'],:]=np.nan
+
         return cxy
 
     default_cells_center_mode='first3'
@@ -4196,7 +4222,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     def shortest_path(self,n1,n2,return_type='nodes',
                       edge_weight=None,max_return=None,
                       edge_selector=lambda j: True,
-                      directed=False):
+                      directed=False,
+                      traverse='nodes'):
         """ dijkstra on the edge graph from n1 to n2
 
         return_type:
@@ -4216,6 +4243,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         If max_return is not None, it sets the maximum number of nodes in n2 to return.
         If n2 is a single scalar index, then the return value is just the requested value
+
+        traverse:
+          'nodes' path is nodes connected by edges.  
+          'cells' path is cells connected by edges
+            this changes the interpretation of n1,n2 and return_type, such that these
+            are all cell indexes instead of node indexes.
         """
         if pq is None:
             raise GridException("shortest_path requires the  priority_queue module.")
@@ -4235,6 +4268,13 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         results=[] # list of dicts, return values per target node in dests
 
+        if traverse=='cells':
+            e2c=self.edge_to_cells()
+            # safer than using circumcenters
+            x=self.cells_centroid()
+        elif traverse=='nodes':
+            x=self.nodes['x']
+            
         while 1:
             # find the queue-member with the lowest cost:
             if len(queue)==0:
@@ -4245,28 +4285,39 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
             done[best] = [best_cost,pred]
 
-            #if best == n2:
             if best in dests:
+                # use the key 'n', but if traverse=='cells', that is actually
+                # a cell index
                 results.append( dict(n=best,cost=best_cost) )
                 if len(results)>=max_return:
                     break # done!
 
             # figure out its neighbors
             nbrs=[] # tuples of nbr node, edge, +1/-1 direction
-            for j in self.node_to_edges(n=best):
-                if edge_selector(j):
-                    ne1,ne2=self.edges['nodes'][j]
-                    if ne1==best:
-                        nbrs.append( (ne2,j,1) )
-                    else:
-                        nbrs.append( (ne1,j,-1) )
 
+            if traverse=='nodes':
+                for j in self.node_to_edges(n=best):
+                    if edge_selector(j):
+                        ne1,ne2=self.edges['nodes'][j]
+                        if ne1==best:
+                            nbrs.append( (ne2,j,1) )
+                        else:
+                            nbrs.append( (ne1,j,-1) )
+            elif traverse=='cells':
+                for j in self.cell_to_edges(best):
+                    if edge_selector(j):
+                        c1,c2=e2c[j]
+                        if c1==best and c2>=0:
+                            nbrs.append( (c2,j,1) )
+                        elif c2==best and c1>=0:
+                            nbrs.append( (c1,j,-1) )
+                        
             for nbr,j,direc in nbrs:
                 if nbr in done:
                     continue
 
                 if edge_weight is None:
-                    dist = mag( self.nodes['x'][nbr] - self.nodes['x'][best] )
+                    dist = mag( x[nbr] - x[best] )
                 elif directed:
                     dist = edge_weight(j,direc)
                 else:
@@ -4283,11 +4334,11 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     queue[nbr] = [new_cost,best]
 
         # update/replace the return values in results based on return_type
-        return_values=[] #  (node, <return value>)
+        return_values=[] #  (node/cell, <return value>)
         for i,result in enumerate(results):
-            if return_type in ['nodes','edges','sides']:
+            if return_type in ['nodes','edges','sides','cells']:
                 # reconstruct the path:
-                path = [result['n']]
+                path = [result['n']] # will be a cell if traverse=='cells'
                 while 1:
                     pred=done[path[-1]][1]
                     if pred is None:
@@ -4296,11 +4347,17 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                         path.append(pred)
                 result['path']=np.array(path[::-1]) # reverse it so it goes from n1 to n2
 
-            if return_type=='nodes':
+            if return_type in ['nodes','cells']:
                 return_value=path
             elif return_type in ('edges','sides'):
-                return_value=np.array( [self.nodes_to_edge(path[i],path[i+1])
-                                        for i in range(len(path)-1)] )
+                if traverse=='nodes':
+                    return_value=np.array( [self.nodes_to_edge(path[i],path[i+1])
+                                            for i in range(len(path)-1)] )
+                elif traverse=='cells':
+                    return_value=np.array( [self.cells_to_edge(path[i],path[i+1])
+                                            for i in range(len(path)-1)] )
+                else:
+                    raise Exception("Bad value for traverse: %s"%traverse)
             elif return_type=='cost':
                 return_value=done[result['n']][0]
             return_values.append( (result['n'],return_value) )

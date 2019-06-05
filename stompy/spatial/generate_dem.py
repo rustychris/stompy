@@ -51,8 +51,10 @@ def create_dataset(args):
         
         log.warning("Source %s was not found -- ignoring"%attrs['src_name'])
         return None
-    
+        
     comp_field=field.CompositeField(shp_fn=args.shapefile,
+                                    shp_query=args.query,
+                                    target_date=args.date,
                                     factory=factory,
                                     priority_field='priority',
                                     data_mode='data_mode',
@@ -60,7 +62,7 @@ def create_dataset(args):
     return comp_field
 
 
-def process_tile(args,overwrite=False):
+def process_tile(args,mask_poly=None,overwrite=False):
     fn,xxyy,res = args
 
     bleed=150 # pad out the tile by this much to avoid edge effects
@@ -71,7 +73,7 @@ def process_tile(args,overwrite=False):
                    xxyy[1]+bleed,
                    xxyy[2]-bleed,
                    xxyy[3]+bleed ]
-        dem=dataset.to_grid(dx=res,dy=res,bounds=xxyy_pad)
+        dem=dataset.to_grid(dx=res,dy=res,bounds=xxyy_pad,mask_poly=mask_poly)
 
         if bleed!=0:
             dem=dem.crop(xxyy)
@@ -104,15 +106,19 @@ if __name__=='__main__':
     parser=argparse.ArgumentParser(description='Generate DEM from multiple sources.')
 
     parser.add_argument("-s", "--shapefile", help="Shapefile defining sources")
-    parser.add_argument("-o", "--output", help="Directory for writing output", default="output")
+    parser.add_argument("-o", "--output", help="Directory for writing output, default 'output'", default="output")
     parser.add_argument("-p", "--path", help="Add to search path for source datasets",
                         action='append',default=["."])
     parser.add_argument("-m", "--merge", help="Merge the tiles once all have been rendered",action='store_true')
-    parser.add_argument("-r", "--resolution", help="Output resolution", default=10.0,type=float)
+    parser.add_argument("-r", "--resolution", help="Output resolution, default 10", default=10.0,type=float)
     parser.add_argument("-b", "--bounds",help="Bounds for output xmin xmax ymin ymax",nargs=4,type=float)
-    parser.add_argument("-t", "--tilesize",help="Make tiles NxN",default=1000,type=int)
+    parser.add_argument("-t", "--tilesize",help="Make tiles NxN, default 1000",default=1000,type=int)
     parser.add_argument("-v", "--verbose",help="Increase verbosity",default=1,action='count')
     parser.add_argument("-f", "--force",help="Overwrite existing tiles",action='store_true')
+    parser.add_argument("-q", "--query",help="Query to select subset of features",default=None)
+    parser.add_argument("-d", "--date",help="Target date",default=None,type=np.datetime64)
+    parser.add_argument("-g", "--grid",help="Mask region by grid outline",default=None)
+    parser.add_argument("--buffer",help="Buffer distnace beyond grid",default=100.0)
 
     args=parser.parse_args()
 
@@ -129,6 +135,29 @@ if __name__=='__main__':
     tile_x=tile_y=res*args.tilesize
 
     total_bounds=args.bounds
+
+    if args.grid is not None:
+        from ..grid import cli
+        # mimic the format in grid.cli
+        fmt,path=args.grid.split(':')
+        log.info("Reading %s as %s"%(path,fmt))
+        if fmt in cli.ReadGrid.formats:
+            grid=cli.ReadGrid.formats[fmt][1](fmt,path)
+        else:
+            log.error("Did not understand format %s"%fmt)
+            log.error("Read formats are: %s"%(cli.ReadGrid.format_list()))
+            raise Exception("Bad grid format")
+
+        poly=grid.boundary_polygon()
+        poly_buff=poly.buffer(args.buffer)
+
+        if total_bounds is None:
+            xyxy=np.array(poly_buff.bounds)
+            total_bounds=[xyxy[0],xyxy[2],xyxy[1],xyxy[3]]
+            log.info('Bounds will default to grid+buffer, %s'%str(total_bounds))
+    else:
+        poly_buff=None
+    
     # round out to tiles
     total_tile_bounds= [np.floor(total_bounds[0]/tile_x) * tile_x,
                         np.ceil(total_bounds[1]/tile_x) * tile_x,
@@ -151,7 +180,7 @@ if __name__=='__main__':
     else:
         for i,call in enumerate(calls):
             log.info("Call %d/%d %s"%(i,len(calls),call[0]))
-            process_tile(call,overwrite=args.force)
+            process_tile(call,mask_poly=poly_buff,overwrite=args.force)
 
     if args.merge:
         # and then merge them with something like:
@@ -168,7 +197,7 @@ if __name__=='__main__':
         try:
             from Scripts import gdal_merge
         except ImportError:
-            log.warning("Failed to import gdal_merge, will try subprocess",exc_info=True)
+            log.info("Failed to import gdal_merge, will try subprocess",exc_info=args.verbose>1)
             gdal_merge=None
 
         tiles=glob.glob("%s/tile*.tif"%dem_dir)
@@ -180,7 +209,9 @@ if __name__=='__main__':
         if gdal_merge:
             gdal_merge.main(argv=cmd[1:])
         else:
-            subprocess.call(" ".join(cmd),shell=True)
+            # more likely that gdal_merge.py is on PATH, than the script itself will
+            # be seen by python, so drop python, and invoke script directly.
+            subprocess.call(" ".join(cmd[1:]),shell=True)
 
 
 

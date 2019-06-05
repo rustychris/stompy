@@ -210,6 +210,7 @@ def wkb2shp(shp_name,
 # kind of the reverse of the above
 def shp2geom(shp_fn,use_wkt=False,target_srs=None,
              source_srs=None,return_srs=False,
+             query=None,
              fold_to_lower=False):
     """
     Read a shapefile into memory as a numpy array.
@@ -232,6 +233,9 @@ def shp2geom(shp_fn,use_wkt=False,target_srs=None,
     if ods is None:
         raise ValueError("File '%s' corrupt or not found"%shp_fn)
     layer = ods.GetLayer(0)
+
+    if query is not None:
+        layer.SetAttributeFilter(query)
 
     if target_srs is not None: # potentially transform on the fly
         if source_srs is None:
@@ -277,6 +281,11 @@ def shp2geom(shp_fn,use_wkt=False,target_srs=None,
         elif ogr_type =='Integer':
             np_type = np.int32
             getter = lambda f,i=i: f.GetFieldAsInteger(i)
+        elif ogr_type == 'Date':
+            np_type = '<M8[s]' # np.datetime64
+            # this handles null and real dates, whereas GetFieldAsDateTime
+            # would take more finagling to deal with nulls.
+            getter = lambda f,i=i: np.datetime64(f.GetFieldAsString(i).replace('/','-'))
         else:
             np_type = np.float64
             getter = lambda f,i=i: f.GetFieldAsDouble(i)

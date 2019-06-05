@@ -99,9 +99,12 @@ class PtmBin(object):
         return valid_ts + 1
 
     def dt_seconds(self):
+        """
+        Return the bin file output interval in decimal seconds.
+        """
         dnum1,data = self.read_timestep(0)
         dnum2,data = self.read_timestep(1)
-        return (dnum2-dnum1)
+        return (dnum2-dnum1).total_seconds()
 
     def read_timestep(self,ts=0):
         """ returns a datenum and the particle array
@@ -269,8 +272,6 @@ class PtmState(object):
 
         return datetime(hdr['year'],hdr['month'],hdr['day'],hdr['hour'],hdr['minute']),particles
 
-
-            
 def shp2pol(shpfile,outdir):
     """
     Converts a polygon shape file to a *.pol file
@@ -279,28 +280,26 @@ def shp2pol(shpfile,outdir):
     """
     # RH: converted to stompy methods, but untested
     poly=wkb2shp.shp2geom(shpfile)['geom'][0]
-
-    xy=np.array(poly.exterior.coords)
-    numverts = xy.shape[0]
-
     polynameext =   os.path.basename(shpfile)
     polyname,ext = os.path.splitext(polynameext)
-
     outfile = '%s/%s.pol'%(outdir,polyname)
 
-    print('Writing polygon to: %s...'%outfile)
+    geom2pol(poly,outfile)
 
-    f = open(outfile,'w')
-    f.write('POLYGON_NAME\n')
-    f.write('%s\n'%polyname)
-    f.write('NUMBER_OF_VERTICES\n')
-    f.write('%d\n'%numverts)
+def geom2pol(poly,outfile,polyname=None):
+    xy=np.array(poly.exterior.coords)
+    numverts = xy.shape[0]
+    if polyname is None:
+        polyname=os.path.basename(outfile).replace('.pol','')
+        
+    with open(outfile,'w') as f:
+        f.write('POLYGON_NAME\n')
+        f.write('%s\n'%polyname)
+        f.write('NUMBER_OF_VERTICES\n')
+        f.write('%d\n'%numverts)
 
-    for ii in range(numverts):
-        f.write('%6.10f %6.10f\n'%(xy[ii,0],xy[ii,1]))
-
-    f.close()
-    print('Done.')
+        for ii in range(numverts):
+            f.write('%6.10f %6.10f\n'%(xy[ii,0],xy[ii,1]))
 
 def calc_agebin(binfile,ncfile,polyfile,ntout):
     """

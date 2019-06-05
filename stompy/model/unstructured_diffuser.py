@@ -281,6 +281,11 @@ class Diffuser(object):
         #return np.random.random(self.Ncalc)
         return (np.arange(self.Ncalc) % 10.0) / 10.0
 
+    def compute(self):
+        self.construct_linear_system()
+        self.solve_linear_system()
+        return self.C_solved
+        
     solve_method='direct'
     solve_tol=1e-6
     def solve_linear_system(self,animate=False):
