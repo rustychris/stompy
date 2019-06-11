@@ -2332,6 +2332,10 @@ class DwaqAggregator(Hydro):
     # # 'centroids': use element centroids
     horizontal_length_scales='subdomain,geometric'
 
+    # Rather than loading DWAQ flowgeom netcdf, try to load DFM map output, which
+    # can have more information.
+    flowgeom_use_dfm_map=True
+    
     # how many of these can be factor out into above classes?
     # agg_shp: can specify, but if not specified, will try to generate a 1:1 
     #   mapping
@@ -2401,6 +2405,17 @@ class DwaqAggregator(Hydro):
         
         return self._flowgeoms[p]
 
+    def dfm_map_file(self,p):
+        """
+        Try to infer the name of the dfm map output for processor p, and
+        if it exists, return that path
+        """
+        map_fn=os.path.join(self.path,"DFM_OUTPUT_%s"%self.run_prefix,"%s_%04d_map.nc"%(self.run_prefix,p))
+        if os.path.exists(map_fn):
+            return map_fn
+        else:
+            return None
+    
     _flowgeoms_xr=None
     def open_flowgeom_ds(self,p):
         """ Same as open_flowgeom(), but transitioning to xarray dataset instead of qnc.
@@ -2413,7 +2428,45 @@ class DwaqAggregator(Hydro):
 
         if p not in self._flowgeoms_xr:
             hyd=self.open_hyd(p)
-            fg=xr.open_dataset(hyd.get_path('grid-coordinates-file'))
+            flowgeom_fn=hyd.get_path('grid-coordinates-file')
+            if self.flowgeom_use_dfm_map:
+                if p==0:
+                    msg=self.log.info
+                else:
+                    msg=self.log.debug
+                msg("[proc=%d] Checking to see if a DFM map file can be used instead of flowgeom"%p)
+                map_fn=self.dfm_map_file(p)
+                if map_fn:
+                    msg("Yes - will load %s"%map_fn)
+                    flowgeom_fn=map_fn
+            fg=xr.open_dataset(flowgeom_fn)
+
+            # if this is ugrid output, include copies of some variables to their pre-ugrid
+            # names
+            for old,new in [ ('NetNode_x','mesh2d_node_x'),
+                             ('NetNode_y','mesh2d_node_y'),
+                             ('NetNode_z','mesh2d_node_z'),
+                             ('NetElemNode','mesh2d_face_nodes'),
+                             # some duplicates because newer DFM output varies
+                             ('FlowElemGlobalNr','mesh2d_face_global_number'),
+                             ('FlowElemGlobalNr','mesh2d_flowelem_globalnr'),
+                             ('FlowElemDomain','mesh2d_face_domain_number'),
+                             ('FlowElemDomain','mesh2d_flowelem_domain'),
+                             ('FlowElem_bl','mesh2d_flowelem_bl'),
+                             ('FlowElem_bac','mesh2d_flowelem_ba')
+                             ]:
+                if new in fg and old not in fg:
+                    # also some of those index fields are saved as float(?!)
+                    if old in ['FlowElemDomain','FlowElemGlobalNr','NetElemNode']:
+                        data=fg[new]
+                        data.values[ np.isnan(data.values) ]=-999999
+                        fg[old]=data.astype(np.int32)
+                    else:
+                        fg[old]=fg[new] # should just be a shallow copy.  cheap.
+
+            # special handling for other dimensions
+            if 'nFlowElem' not in fg.dims and 'nmesh2d_face' in fg.dims:
+                fg['nFlowElem']=fg['nmesh2d_face']
             
             if ('NetNode_x' in fg) and ('NetElemNode' in fg['NetNode_x'].dims):
                 self.log.info("Trying to triage bad dimensions in NetCDF (probably ddcouplefm output)")
@@ -2535,14 +2588,33 @@ class DwaqAggregator(Hydro):
         for p in range(self.nprocs):
             nc=self.open_flowgeom_ds(p)
             if 'FlowElemGlobalNr' in nc:
-                max_gid=max(max_gid, nc.FlowElemGlobalNr[:].max() )
+                max_gid=max(max_gid, nc.FlowElemGlobalNr.values.max() )
+            #elif 'mesh2d_face_global_number' in nc:
+            #    max_gid=max(max_gid, nc.mesh2d_face_global_number.values.max() )
             elif self.nprocs==1:
                 max_gid=len(nc['nFlowElem'])
             else:
                 raise Exception("Need global element numbers for multi-processor run")
-            max_elts_2d_per_proc=max(max_elts_2d_per_proc,len(nc['nFlowElem']))
-            max_lnks_2d_per_proc=max(max_lnks_2d_per_proc,len(nc['nFlowLink']))
-            # nc.close() # now we cache this
+            if 'nFlowElem' in nc.dims:
+                ncell='nFlowElem'
+            elif 'nmesh2d_face' in nc.dims:
+                ncell='nmesh2d_face'
+            else:
+                raise Exception("Could't find face dimension")
+            max_elts_2d_per_proc=max(max_elts_2d_per_proc,len(nc[ncell]))
+            if 'nFlowLink' in nc:
+                nlinks_here=len(nc['nFlowLink'])
+            elif 'mesh2d_face_links' in nc:
+                nlinks_here=nc['mesh2d_face_links'].max()
+            elif 'nmesh2d_edge' in nc.dims:
+                # missing link info may be a problem later, but at the moment we just need
+                # an upper bound
+                self.log.warning("No Link information in waqgeom, so will estimate max by number of edges")
+                nlinks_here=nc.dims['nmesh2d_edge']
+            else:
+                raise Exception("Couldn't find link dimension")
+            max_lnks_2d_per_proc=max(max_lnks_2d_per_proc,nlinks_here)
+            # no nc.close(), as it is now cached
 
         n_global_elements=int(max_gid) # ids should be 1-based, so this is also the count
 
@@ -2653,12 +2725,14 @@ class DwaqAggregator(Hydro):
             self.log.info("init_elt_mapping: proc=%d"%p)
             # used to use circumcenters, but that can be problematic
             nc=self.open_flowgeom_ds(p)
-            try:
+            if 'FlowElem_zcc' in nc:
                 # typically positive down
                 ccz=nc.FlowElem_zcc[:].values
-            except AttributeError:
+            elif 'FlowElem_bl' in nc:
                 # typically positive up, negate to be consistent with FlowElem_zcc
                 ccz=-nc.FlowElem_bl[:].values
+            else:
+                raise Exception("flowgeom does not have cell depths.  Maybe there is DFM map output that we didn't find?")
                 
             ncg=dfm_grid.DFMGrid(nc)
             g_centroids=ncg.cells_centroid()
@@ -2711,7 +2785,10 @@ class DwaqAggregator(Hydro):
 
         if (not self.merge_only) and self.nudge_elements:
             global_remapped={} # global id => nudged element.
-            agg_g=unstructured_grid.UnstructuredGrid.from_shp(self.agg_shp)
+            if isinstance(self.agg_shp,unstructured_grid.UnstructuredGrid):
+                agg_g=self.agg_shp
+            else:
+                agg_g=unstructured_grid.UnstructuredGrid.from_shp(self.agg_shp)
             
             for nudge_iter in range(5):
                 nudge_count=0
@@ -2952,7 +3029,11 @@ class DwaqAggregator(Hydro):
             elem_dom_id=nc.FlowElemDomain.values # domains are numbered from 0
 
             if self.link_ownership=="FlowLinkDomain":
-                link_dom_id=nc.FlowLinkDomain.values
+                if p==0 and 'FlowLinkDomain' not in nc:
+                    self.log.warning("FlowLinkDomain not found, so link ownership will use min element")
+                    self.link_ownership="owner_of_min_elem"
+                else:
+                    link_dom_id=nc.FlowLinkDomain.values
             else:
                 # otherwise, don't even load it.  probably means we can't trust it.
                 pass 
@@ -2972,7 +3053,15 @@ class DwaqAggregator(Hydro):
             # on order, but only for the top layer?
             # should be...
 
-            links=nc.FlowLink.values # 1-based
+            # hmm - with ugrid output do not necessarily have link variable.
+            if 'FlowLink' in nc:
+                links=nc.FlowLink.values # 1-based
+            else:
+                self.log.warning("Danger: faking missing link data with edges")
+                # These are 1-based, with closed, non-computational neighbors
+                # ==0
+                links=nc.mesh2d_edge_faces.values.astype(np.int32)
+            
             def local_elts_to_link(from_2d,to_2d):
                 # slow - have to lookup the link
                 sela=(links[:,0]==from_2d)&(links[:,1]==to_2d)
@@ -3031,7 +3120,6 @@ class DwaqAggregator(Hydro):
                             pass
                         else:
                             # Ownership is not clear
-
                             if self.link_ownership=="FlowLinkDomain":
                                 # trust subdomain FlowLinkDomain to resolve ownership
                                 link_idx=local_elts_to_link(from_2d,to_2d)

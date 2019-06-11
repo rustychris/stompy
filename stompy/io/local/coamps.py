@@ -13,7 +13,19 @@ from ... import utils
 log=logging.getLogger('coamps')
 
 missing_files= [ 'cencoos_4km/2017/2017091612/',
-                 'cencoos_4km/2017/2017091700/']
+                 'cencoos_4km/2017/2017091700/',
+                 'cencoos_4km/2018/2018013112/',
+                 'cencoos_4km/2018/2018013012/'
+]
+# specifically in 2018, these are missing:
+# http://www.usgodae.org/pub/outgoing/fnmoc/models/coamps/calif/cencoos/cencoos_4km/2018/2018013112/US058GMET-GR1dyn.COAMPS-CENCOOS_CENCOOS-n3-c1_00900F0NL2018013112_0105_000100-000000wnd_utru
+# http://www.usgodae.org/pub/outgoing/fnmoc/models/coamps/calif/cencoos/cencoos_4km/2018/2018013112/US058GMET-GR1dyn.COAMPS-CENCOOS_CENCOOS-n3-c1_01000F0NL2018013112_0105_000100-000000wnd_utru
+# http://www.usgodae.org/pub/outgoing/fnmoc/models/coamps/calif/cencoos/cencoos_4km/2018/2018013112/US058GMET-GR1dyn.COAMPS-CENCOOS_CENCOOS-n3-c1_01100F0NL2018013112_0105_000100-000000wnd_utru
+# http://www.usgodae.org/pub/outgoing/fnmoc/models/coamps/calif/cencoos/cencoos_4km/2018/2018013112/US058GMET-GR1dyn.COAMPS-CENCOOS_CENCOOS-n3-c1_00800F0NL2018013112_0105_000100-000000wnd_utru
+# http://www.usgodae.org/pub/outgoing/fnmoc/models/coamps/calif/cencoos/cencoos_4km/2018/2018013112/US058GMET-GR1dyn.COAMPS-CENCOOS_CENCOOS-n3-c1_00700F0NL2018013112_0105_000100-000000wnd_utru
+# http://www.usgodae.org/pub/outgoing/fnmoc/models/coamps/calif/cencoos/cencoos_4km/2018/2018013012/US058GMET-GR1dyn.COAMPS-CENCOOS_CENCOOS-n3-c1_00300F0NL2018013012_0105_000100-000000wnd_vtru
+# http://www.usgodae.org/pub/outgoing/fnmoc/models/coamps/calif/cencoos/cencoos_4km/2018/2018013012/US058GMET-GR1dyn.COAMPS-CENCOOS_CENCOOS-n3-c1_00100F0NL2018013012_0105_000100-000000wnd_utru
+
 
 def known_missing(recs):
     """
@@ -57,6 +69,9 @@ def coamps_files(start,stop,cache_dir,fields=['wnd_utru','wnd_vtru','pres_msl'])
         # runs go for 48 hours, so we have a few chances to get the
         # same output timestamp
         for step_back in [0,12,24,36]:
+            if step_back != 0:
+                log.warning("Trying to find data for %s, step back is %d"%(str(day_dt),step_back))
+                
             run_start=run_start0-datetime.timedelta(hours=step_back)
 
             # how many hours into this run is the target datetime?
@@ -70,7 +85,6 @@ def coamps_files(start,stop,cache_dir,fields=['wnd_utru','wnd_vtru','pres_msl'])
                       "coamps/calif/cencoos/cencoos_4km/%04d/%s/")%(run_start.year,run_tag)
             
             recs=dict()
-
             
             for field_name in fields:
                 if field_name in ['wnd_utru','wnd_vtru']:
@@ -119,19 +133,19 @@ def fetch_coamps_wind(start,stop, cache_dir, **kw):
     kw: can pass fields=['wnd_utru',...] on through to coamps_files()
     returns a list of local netcdf filenames, one per time step.
 
-
     Download all COAMPS outputs between the given np.datetime64()s.
     Does not do any checking against available data, so requesting data
     before or after what is available will fail.
     """
+    import requests
     files=[]
     
     for recs in coamps_files(start,stop,cache_dir,**kw):
         for field_name in recs:
             rec=recs[field_name]
             output_fn=rec['local']
-            files.append(output_fn)
             if os.path.exists(output_fn):
+                files.append(output_fn)
                 log.debug("Skip %s"%os.path.basename(output_fn))
                 continue
 
@@ -139,7 +153,11 @@ def fetch_coamps_wind(start,stop, cache_dir, **kw):
 
             output_dir=os.path.dirname(output_fn)
             os.path.exists(output_dir) or os.makedirs(output_dir)
-            utils.download_url(rec['url'],output_fn,on_abort='remove')
+            try:
+                utils.download_url(rec['url'],output_fn,on_abort='remove')
+                files.append(output_fn)
+            except requests.HTTPError:
+                log.error("Failed to download %s, will move on"%rec['url'])
             
             time.sleep(2) # be a little nice.
     return files
@@ -149,7 +167,9 @@ def coamps_press_windxy_dataset(bounds,start,stop,cache_dir):
                           fields=['wnd_utru','wnd_vtru','pres_msl'])
 
 def coamps_dataset(bounds,start,stop,cache_dir,
-                   fields=['wnd_utru','wnd_vtru','pres_msl']):
+                   fields=['wnd_utru','wnd_vtru','pres_msl'],
+                   missing='omit',
+                   fetch=True):
     """
     Downloads COAMPS winds for the given period (see fetch_coamps_wind),
     trims to the bounds xxyy, and returns an xarray Dataset.
@@ -159,11 +179,18 @@ def coamps_dataset(bounds,start,stop,cache_dir,
       wnd_utru => wind_u
       wnd_vtru => wind_v
       pres_msl => pres
+
+    missing:'omit' - if any of the fields are missing for a timestep, omit that timestep.
+        None: will raise an error when GdalGrid fails.
+        may in the future also have 'nan' which would fill that variable with nan.
+
+    fetch: if False, rely on cached data.
     """
     fields=list(fields)
     fields.sort()
-    
-    fetch_coamps_wind(start,stop,cache_dir,fields=fields)
+
+    if fetch:
+        fetch_coamps_wind(start,stop,cache_dir,fields=fields)
 
     pad=10e3
     crop=[bounds[0]-pad,bounds[1]+pad,
@@ -189,6 +216,16 @@ def coamps_dataset(bounds,start,stop,cache_dir,
             ds=xr.Dataset()
             ds['time']=timestamp
 
+            # check to see that all files exists:
+            # this will log the missing urls, which can then be added to the missing
+            # list above if they are deemed really missing
+            missing_urls=[ recs[field_name]['url']
+                           for field_name in fields
+                           if not os.path.exists(recs[field_name]['local'])]
+            if len(missing_urls)>0 and missing=='omit':
+                log.warning("Missing files for time %s: %s"%(timestamp_str,", ".join(missing_urls)))
+                continue
+            
             for i,field_name in enumerate(fields):
                 # load the grib file
                 raw=field.GdalGrid(recs[field_name]['local'])

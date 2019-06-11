@@ -2111,7 +2111,7 @@ class SuntansModel(dfm.HydroModel):
             return self.extract_station_map(xy=xy,ll=ll,chain_count=chain_count)
         assert False,"How did we get here"
         
-    def extract_station_map(self,xy=None,ll=None,chain_count=1):
+    def extract_station_map(self,xy=None,ll=None,chain_count=1,data_vars=None):
         """
         Return a dataset for a single point in the model
         xy: native model coordinates, [Nstation,2]
@@ -2120,6 +2120,7 @@ class SuntansModel(dfm.HydroModel):
           1=>no chaining just this model.  None or 0:
           chain all runs possible.  Otherwise, go back max
           number of runs up to chain_count
+        data_vars: list of variables to include, otherwise all.
 
         This version pulls output from map files
         """
@@ -2173,7 +2174,7 @@ class SuntansModel(dfm.HydroModel):
         # workaround for cases where numsides was not held constant
         max_numsides=0
         min_numsides=1000000
-        
+
         for run in runs:
             model_out=None
             for proc,map_fn in enumerate(run.map_outputs()):
@@ -2192,6 +2193,9 @@ class SuntansModel(dfm.HydroModel):
 
                     # allocate output variables:
                     for d in map_ds.data_vars:
+                        if data_vars and d not in data_vars:
+                            log.debug('Skipping variable %s'%d)
+                            continue
                         if 'Nc' in map_ds[d].dims:
                             # put station first
                             new_dims=['station']
@@ -2225,7 +2229,9 @@ class SuntansModel(dfm.HydroModel):
                     # extracted will have 'station' in the wrong place. transpose
                     dims=['proc_station'] + [d for d in extracted.dims if d!='proc_station']
                     extractedT=extracted.transpose(*dims)
-                    model_out[d].values[proc_stations,...] = extractedT.values
+                    # this line is 90% of the time:
+                    ext_vals=extractedT.values
+                    model_out[d].values[proc_stations,...] = ext_vals
                     
                     #for station in lin_idx,arr_idx in enumerate(np.ndindex(stn_shape)):
                     #    if matches[lin_idx][0]!=proc: continue
@@ -2239,13 +2245,17 @@ class SuntansModel(dfm.HydroModel):
                 # limit to non-overlapping
                 time_sel=model_out.time.values>dss[-1].time.values[-1]
                 model_out=model_out.isel(time=time_sel)
-            max_numsides=max(max_numsides,model_out.dims['numsides'])
-            min_numsides=min(min_numsides,model_out.dims['numsides'])
+            if 'numsides' in model_out.dims:
+                max_numsides=max(max_numsides,model_out.dims['numsides'])
+                min_numsides=min(min_numsides,model_out.dims['numsides'])
             dss.append(model_out)
-            
-        if max_numsides!=min_numsides:
-            log.warning("numsides varies %d to %d over restarts.  Kludge around"%(min_numsides,max_numsides))
-            dss=[ ds.isel(numsides=slice(0,min_numsides)) for ds in dss]
+
+        if 'numsides' in model_out.dims:
+            if max_numsides!=min_numsides:
+                log.warning("numsides varies %d to %d over restarts.  Kludge around"%
+                            (min_numsides,max_numsides))
+                dss=[ ds.isel(numsides=slice(0,min_numsides)) for ds in dss]
+                
         combined_ds=xr.concat(dss,dim='time',data_vars='minimal',coords='minimal')
 
         # copy from matches

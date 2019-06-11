@@ -53,6 +53,9 @@ import glob
 import netCDF4
 import numpy as np
 import xarray as xr
+import logging
+
+log=logging.getLogger('dfm_to_ptm')
 
 try:
     profile
@@ -60,39 +63,35 @@ except NameError:
     def profile(x):
         return x
 
-from stompy import utils
-import stompy.model.delft.io as dio
-from stompy.model.delft import dfm_grid
-from stompy.grid import unstructured_grid
-import stompy.model.delft.waq_scenario as waq
+from ... import utils
+from ... import io as dio
+from . import dfm_grid
+from ...grid import unstructured_grid
+from . import waq_scenario as waq
+from . import dflow_model as dfm
+
 
 class DFlowToPTMHydro(object):
     overwrite=False
     time_slice=slice(None)
-
     grd_fn=None
-
     write_nc=True
 
     def __init__(self,mdu_path,output_fn,**kwargs):
-        self.__dict__.update(kwargs)
+        utils.set_keywords(self,kwargs)
 
         self.mdu_path=mdu_path
         self.output_fn=output_fn
 
-        self.mdu=dio.MDUFile(mdu_path)
+        self.model=dfm.DFlowModel.load(mdu_path)
 
+        self.nprocs=self.model.num_procs
+        if self.nprocs>1:
+            log.warning("Brave - trying an MPI run")
+
+        self.open_dwaq_output()
+        
         # check the naming of DFM output files
-        dfm_out_dir=self.mdu.output_dir()
-
-        map_file_serial=os.path.join( dfm_out_dir,
-                                      self.mdu.name+"_map.nc")
-        if os.path.exists(map_file_serial):
-            self.nprocs=1
-            self.map_file=map_file_serial
-        else:
-            raise Exception("Not ready for MPI runs")
-
         self.open_dflow_output()
 
         if self.grd_fn is not None:
@@ -110,11 +109,26 @@ class DFlowToPTMHydro(object):
                 # run.
                 self.close()
 
+    def open_dwaq_output(self):
+        # for consistency, always go straight to an aggregated run,
+        # even it is really single processor
+        # use the global grid for "aggregation" shp.
+        
+        self.waq=waq.HydroMultiAggregator(run_prefix=self.model.mdu.name,
+                                          path=self.model.run_dir,
+                                          agg_shp=self.model.grid)
+        assert self.nprocs==self.waq.infer_nprocs(),"Failed to determine number of processors"
+        
     def open_dflow_output(self):
         """
         open dfm netcdf output as (1) original (2) with renames,
         and (3) as unstructured_grid
         """
+        # HERE - this only works with serial runs.
+        #   maybe I can use the info already assembled in waq to merge
+        #   things here?
+        
+        
         # incoming dataset from DFM:
         self.map_ds=xr.open_dataset(self.map_file)
         # Additionally trim to subset of times here:

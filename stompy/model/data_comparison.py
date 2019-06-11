@@ -67,7 +67,8 @@ def combine_sources(all_sources,dt=np.timedelta64(900,'s'),min_period=True):
     return combined
 
 
-def assemble_comparison_data(models,observations,model_labels=None):
+def assemble_comparison_data(models,observations,model_labels=None,
+                             extract_options={}):
     """
     Extract data from one or more model runs to match one or more observations
     
@@ -89,13 +90,13 @@ def assemble_comparison_data(models,observations,model_labels=None):
     model_data=[] # a data array per model
     for model,label in zip(models,model_labels):
         if base_obs.name=='water_level':
-            ds=model.extract_station(ll=[base_obs.lon,base_obs.lat])
+            ds=model.extract_station(ll=[base_obs.lon,base_obs.lat],**extract_options)
             da=ds['eta']
             da.name='water_level' # having the same name helps later
         elif base_obs.name=='flow':
             assert False,"this has not been written yet"
             # extract_section currently only for DFM, and only by name
-            ds=model.extract_section(ll=[base_obs.lon,base_obs.lat])
+            ds=model.extract_section(ll=[base_obs.lon,base_obs.lat],**extract_options)
             da=ds['cross_section_discharge'] # that's a DFM name...
             da.name='flow' # having the same name helps later
         else:
@@ -122,7 +123,7 @@ def calc_metrics(x,ref):
     x, ref: DataArrays with common time dimension
     """
     metrics={}
-    metrics['bias']=(x-ref).mean()
+    metrics['bias']=np.nanmean( (x-ref).values )
     valid=np.isfinite( (x+ref).values )
     metrics['r'] = np.corrcoef( x.values[valid],ref.values[valid])[0,1]
     metrics['lag']= utils.find_lag_xr(x,ref) 
@@ -224,14 +225,23 @@ def calibration_figure_3panel(all_sources,combined=None,
             mask= (dn<dn[0]+2*cutoff) | (dn>dn[-1]-2*cutoff)
             x_lp[mask]=np.nan
             return x_lp
-        for i in range(len(combined.source)):
-            ax.plot(t,lp(combined.isel(source=i).values)-offsets[i],
-                    label=combined.label.isel(source=i).item(),
-                    **styles[i])
-        #ax.legend(fontsize=8)
 
-    # ts_ax.set_title(model.run_dir)
+        has_lp_data=False
+        for i in range(len(combined.source)):
+            y=lp(combined.isel(source=i).values)-offsets[i]
+            if np.any(np.isfinite(y)):
+                has_lp_data=True
+                ax.plot(t,y,
+                        label=combined.label.isel(source=i).item(),
+                        **styles[i])
+
     fix_date_labels(ts_ax)
-    fix_date_labels(lp_ax)
+    if has_lp_data:
+        fix_date_labels(lp_ax)
+    else:
+        lp_ax.xaxis.set_visible(0)
+        lp_ax.yaxis.set_visible(0)
+        lp_ax.text(0.5,0.5,"Insufficient data for low-pass",transform=lp_ax.transAxes,
+                   ha='center',va='center')
 
     return fig

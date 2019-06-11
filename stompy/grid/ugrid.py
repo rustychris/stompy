@@ -18,6 +18,7 @@ import pytz
 from ..io import qnc
 import xarray as xr
 from .. import utils
+import time
 
 def ncslice(ncvar,**kwargs):
     """
@@ -514,7 +515,7 @@ class UgridXr(object):
                 pass
         raise Exception("Failed to find vertical dimension")
 
-    def get_cell_velocity(self,time_slice,face_slice=slice(None)):
+    def get_cell_velocity(self,time_slice,face_slice=None):
         """ Return 2-vector valued velocity.
         OLD: ordering of dimensions is same as in the netcdf variables, with
              velocity component at the end
@@ -525,22 +526,30 @@ class UgridXr(object):
         # time_slice used to be time_step
         mesh_name = self.mesh_name
 
-        slices={self.time_dim:time_slice,
-                self.face_dim:face_slice}
+        slices={self.time_dim:time_slice}
+        if face_slice is not None:
+            slices[self.face_dim]=face_slice
 
         u_slc=self.nc[self.face_u_vname].isel(**slices)
         v_slc=self.nc[self.face_v_vname].isel(**slices)
+        
+        # this is the area where it bogs down big time.
         # depending on the slices, some dimensions may have disappeared,
         # but force an ordering on whatever is left.
         new_dims=[d for d in [self.time_dim,self.face_dim,self.layer_dim]
                   if d in u_slc.dims]
-        u_comp=u_slc.transpose(*new_dims).values
-        v_comp=v_slc.transpose(*new_dims).values
-
+        if 0: 
+            u_comp=u_slc.transpose(*new_dims).values
+            v_comp=v_slc.transpose(*new_dims).values
+        else:
+            # Try a numpy approach.
+            tran=[u_slc.dims.index(nd) for nd in new_dims]
+            u_comp=u_slc.values.transpose(tran)
+            v_comp=v_slc.values.transpose(tran)
+            
         U=np.concatenate( (u_comp[...,None],
                            v_comp[...,None]),
                           axis=-1 )
-            
         return U
 
     def get_cell_scalar(self,label,time_step):
