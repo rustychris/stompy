@@ -1521,12 +1521,13 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         """
         e2c=self.edge_to_cells()
         to_flip=np.nonzero( (e2c[:,0]<0) & (e2c[:,1]>=0) )[0]
-        self.log.info("Will flip %d edges"%len(to_flip))
-        for j in to_flip:
-            rec=self.edges[j]
-            self.modify_edge( j=j,
-                              nodes=[rec['nodes'][1],rec['nodes'][0]],
-                              cells=[rec['cells'][1],rec['cells'][0]] )
+        if len(to_flip):
+            self.log.info("Will flip %d edges"%len(to_flip))
+            for j in to_flip:
+                rec=self.edges[j]
+                self.modify_edge( j=j,
+                                  nodes=[rec['nodes'][1],rec['nodes'][0]],
+                                  cells=[rec['cells'][1],rec['cells'][0]] )
 
     def renumber_nodes_ordering(self):
         return np.argsort(self.nodes['deleted'],kind='mergesort')
@@ -2129,7 +2130,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         cxy /= 6*A[:,None]
         cxy += refs
 
-        cxy[g.cells['deleted'],:]=np.nan
+        cxy[self.cells['deleted'],:]=np.nan
 
         return cxy
 
@@ -4221,7 +4222,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
     def shortest_path(self,n1,n2,return_type='nodes',
                       edge_weight=None,max_return=None,
-                      edge_selector=lambda j: True,
+                      edge_selector=lambda j,direc: True,
                       directed=False,
                       traverse='nodes'):
         """ dijkstra on the edge graph from n1 to n2
@@ -4230,7 +4231,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
           'nodes': list of node indexes
           'edges' or 'sides': array of edge indices
           'cost': just the total cost
-        selector: given an edge index, return True if the edge should be considered
+        selector: given an edge index and direction, return True if the edge should be considered.
         edge_weight: None: use euclidean distance, otherwise function taking an
           edge index and returning its weight.
 
@@ -4238,8 +4239,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         in that case, return values will be a list of (n,value) tuples, in order
         of smallest to largest cost.
 
-        if directed=True, then edge_weight and edge_selector take an additional
-        direction argument, +1 for 'forward' on an edge, -1 for 'backward'.
+        directed is no longer necessary, and edge_weight and edge_selector now always take
+        direction (+1 for 'forward' on an edge, -1 for 'backward') as a second argument.  
+        For nondirected graphs simply ignore the 
+        direction.
 
         If max_return is not None, it sets the maximum number of nodes in n2 to return.
         If n2 is a single scalar index, then the return value is just the requested value
@@ -4297,20 +4300,18 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
             if traverse=='nodes':
                 for j in self.node_to_edges(n=best):
-                    if edge_selector(j):
-                        ne1,ne2=self.edges['nodes'][j]
-                        if ne1==best:
-                            nbrs.append( (ne2,j,1) )
-                        else:
-                            nbrs.append( (ne1,j,-1) )
+                    ne1,ne2=self.edges['nodes'][j]
+                    if ne1==best and edge_selector(j,1):
+                        nbrs.append( (ne2,j,1) )
+                    elif edge_selector(j,-1):
+                        nbrs.append( (ne1,j,-1) )
             elif traverse=='cells':
                 for j in self.cell_to_edges(best):
-                    if edge_selector(j):
-                        c1,c2=e2c[j]
-                        if c1==best and c2>=0:
-                            nbrs.append( (c2,j,1) )
-                        elif c2==best and c1>=0:
-                            nbrs.append( (c1,j,-1) )
+                    c1,c2=e2c[j]
+                    if c1==best and c2>=0 and edge_selector(j,1):
+                        nbrs.append( (c2,j,1) )
+                    elif c2==best and c1>=0 and edge_selector(j,-1):
+                        nbrs.append( (c1,j,-1) )
                         
             for nbr,j,direc in nbrs:
                 if nbr in done:
@@ -4318,10 +4319,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
                 if edge_weight is None:
                     dist = mag( x[nbr] - x[best] )
-                elif directed:
-                    dist = edge_weight(j,direc)
                 else:
-                    dist = edge_weight(j)
+                    dist = edge_weight(j,direc)
                 if not np.isfinite(dist):
                     continue # second way of ignoring edges
 
@@ -4345,7 +4344,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                         break
                     else:
                         path.append(pred)
-                result['path']=np.array(path[::-1]) # reverse it so it goes from n1 to n2
+                path=np.array(path[::-1]) # reverse it so it goes from n1 to n2
+                result['path']=path
 
             if return_type in ['nodes','cells']:
                 return_value=path
