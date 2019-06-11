@@ -2028,7 +2028,11 @@ def download_url(url,local_file,log=None,on_abort='pass',**extra_args):
             # Throw an error for bad status codes
             # 2019-03-26 RH: are there cases where we *don't* want
             #    to do this?
-            r.raise_for_status()
+            try:
+                r.raise_for_status()
+            except:
+                print(r.url)
+                raise
 
             with open(local_file,'wb') as fp:
                 for chunk in r.iter_content(chunk_size=1024):

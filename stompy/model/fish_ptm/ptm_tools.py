@@ -270,6 +270,49 @@ class PtmState(object):
         return datetime(hdr['year'],hdr['month'],hdr['day'],hdr['hour'],hdr['minute']),particles
 
 
+class PtmConcentration(object):
+    """ Read time series concentration field output, e.g.
+    instantaneous concentration and deposited
+    """
+    hdr_dtype=np.dtype( [('npoly','<i4'),('part_mass','<f4'), ('nodata','<f4'),
+                         ('month','<i4'), ('day','<i4'), ('year','<i4'), ('hour','<f4')] )
+    conc_dtype=np.dtype([('i','<i4'),('conc','<f4'),('vol','<f4')])
+    
+    def __init__(self,fn):
+        self.fn=fn
+        self.stride=0 # initilized below
+        # go ahead and read the first record to know how large the records are.
+        self.fp=open(self.fn,'rb')
+
+        hdr=self.read_hdr()
+        self.npoly=hdr['npoly']
+        self.stride=self.hdr_dtype.itemsize + hdr['npoly']*self.conc_dtype.itemsize
+        self.nsteps=os.stat(self.fn).st_size / self.stride
+        
+    def __del__(self):
+        if self.fp is not None:
+            self.fp.close()
+            self.fp=None
+        
+    def seek_step(self,step):
+        if self.stride==0:
+            assert step==0
+        assert step<self.nsteps,"Cannot seek to %d, only %d available"%(step,self.nsteps)
+        self.fp.seek(step*self.stride)
+        
+    def read_hdr(self):
+        # read first frame
+        hdr=np.fromfile(self.fp, count=1, dtype=self.hdr_dtype)[0]
+        return hdr
+    
+    def read_data(self):
+        return np.fromfile(self.fp,count=self.npoly,dtype=self.conc_dtype)
+    
+    def read_timestep(self,step):
+        self.seek_step(step)
+        hdr=self.read_hdr()
+        data=self.read_data()
+        return hdr,data
             
 def shp2pol(shpfile,outdir):
     """
