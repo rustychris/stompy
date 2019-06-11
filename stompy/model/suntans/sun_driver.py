@@ -451,6 +451,10 @@ class SuntansModel(dfm.HydroModel):
     # single-core). 
     use_edge_depths=False # write depth data per-edge in a separate file.
 
+    def __init__(self):
+        super(SuntansModel,self).__init__()
+        self.load_template(os.path.join(os.path.dirname(__file__),"data","suntans.dat"))
+        
     @property
     def time0(self):
         self.config['starttime']
@@ -520,18 +524,25 @@ class SuntansModel(dfm.HydroModel):
         grid.orient_edges()
         super(SuntansModel,self).set_grid(grid)
 
+        # 2019-05-29: trying to transition to using z for elevation, since
+        # 'depth' has a positive-down connotation
+        
         # make sure we have the fields expected by suntans
-        if 'depth' not in grid.cells.dtype.names:
-            if 'depth' in grid.nodes.dtype.names:
-                cell_depth=grid.interp_node_to_cell(grid.nodes['depth'])
+        if 'z_bed' not in grid.cells.dtype.names:
+            if 'depth' in grid.cells.dtype.names:
+                self.log.warning("For now, assuming that cells['depth'] is positive up")
+                cell_z_bed=grid.cells['depth']
+            elif 'z_bed' in grid.nodes.dtype.names:
+                cell_z_bed=grid.interp_node_to_cell(grid.nodes['z_bed'])
                 # and avoid overlapping names
-                grid.delete_node_field('depth')
-            elif 'depth' in grid.edges.dtype.names:
-                raise Exception("Not implemented interpolating edge to cell bathy")
+                grid.delete_node_field('z_bed')
+            elif 'depth' in grid.nodes.dtype.names:
+                cell_z_bed=grid.interp_node_to_cell(grid.nodes['depth'])
+                self.log.warning("For now, assuming that nodes['depth'] is positive up")
             else:
-                self.log.warning("No depth information in grid.  Creating zero-depth")
-                cell_depth=np.zeros(grid.Ncells(),np.float64)
-            grid.add_cell_field('depth',cell_depth)
+                self.log.warning("No depth information in grid nodes or cells.  Creating zero-depth")
+                cell_z_bed=np.zeros(grid.Ncells(),np.float64)
+            grid.add_cell_field('z_bed',cell_z_bed)
 
         # with the current suntans version, depths are on cells, but model driver
         # code in places wants an edge depth.  so copy those here.
@@ -540,7 +551,7 @@ class SuntansModel(dfm.HydroModel):
         nc1[nc1<0]=nc2[nc1<0] ; nc2[nc2<0]=nc1[nc2<0]
         # edge depth is shallower of neighboring cells
         # these depths are still positive up, though.
-        edge_depth=np.maximum(grid.cells['depth'][nc1],grid.cells['depth'][nc2])
+        edge_depth=np.maximum(grid.cells['z_bed'][nc1],grid.cells['z_bed'][nc2])
 
         if 'edge_depth' in grid.edges.dtype.names:
             deep_edges=(grid.edges['edge_depth']<edge_depth)
@@ -632,7 +643,7 @@ class SuntansModel(dfm.HydroModel):
 
         # hacked in support to read cell depths
         cell_depth_fn=self.file_path('depth')+"-voro"
-        if ( ('depth' not in g.cells.dtype.names)
+        if ( ('z_bed' not in g.cells.dtype.names)
              and
              (os.path.exists(cell_depth_fn)) ):
             self.log.info("Will read cell depths, too")
@@ -647,9 +658,10 @@ class SuntansModel(dfm.HydroModel):
                 self.log.warning("Will forge ahead nevertheless")
             # on disk these are positive down, but model driver convention is positive up
             # (despite being called depth...)
-            g.add_cell_field('depth',-cell_xyz[:,2])
+            g.add_cell_field('z_bed',-cell_xyz[:,2]) 
+            g.add_cell_field('depth',-cell_xyz[:,2]) # will be phased out
             
-        # hacked  in support to read depth on edges
+        # hacked in support to read depth on edges
         edge_depth_fn=self.file_path('depth')+"-edge"
         if ( ('edge_depth' not in g.edges.dtype.names)
              and
@@ -662,7 +674,8 @@ class SuntansModel(dfm.HydroModel):
             assert np.allclose(edge_xyz[:,:2], g.edges_center()),"%s edge locations don't match"%edge_depth_fn
             # on disk these are positive down, but model driver convention is positive up
             # (despite being called depth...)
-            g.add_edge_field('edge_depth',-edge_xyz[:,2])
+            g.add_edge_field('edge_depth',-edge_xyz[:,2]) # will be phased out
+            g.add_edge_field('edge_z_bed',-edge_xyz[:,2])
         
         self.set_grid(g)
             
@@ -981,8 +994,8 @@ class SuntansModel(dfm.HydroModel):
                 z_bed=self.grid.cell_depths()[cell_index]
 
         Nk=int(self.config['Nkmax'])
-        z_min=self.grid.cells['depth'].min() # bed
-        z_max=self.grid.cells['depth'].max() # surface
+        z_min=self.grid.cells['z_bed'].min() # bed
+        z_max=self.grid.cells['z_bed'].max() # surface
 
         r=float(self.config['rstretch'])
 
@@ -1291,15 +1304,15 @@ class SuntansModel(dfm.HydroModel):
             return
         else:
             return super(SuntansModel,self).dredge_boundary(linestring,dredge_depth,
-                                                            edge_field='edge_depth',
-                                                            cell_field='depth')
+                                                            edge_field='edge_z_bed',
+                                                            cell_field='z_bed')
     def dredge_discharge(self,point,dredge_depth):
         if self.restart is not None:
             return
         else:
             return super(SuntansModel,self).dredge_discharge(point,dredge_depth,
-                                                             edge_field='edge_depth',
-                                                             cell_field='depth')
+                                                             edge_field='edge_z_bed',
+                                                             cell_field='z_bed')
         
     def write_flow_bc(self,bc):
         da=bc.data()
@@ -1423,14 +1436,18 @@ class SuntansModel(dfm.HydroModel):
             self.config['maxFaces']=max_faces
 
         if self.coriolis_f=='auto':
-            xy_ctr=self.grid.nodes['x'].mean(axis=0)
-            ll_ctr=self.native_to_ll(xy_ctr)
-            lat=ll_ctr[1]
-            # f=2*Omega*sin(phi)
-            Omega=7.2921e-5 # rad/s
-            f=2*Omega*np.sin(lat*np.pi/180.)
-            self.config['Coriolis_f']="%.5e"%f
-            log.debug("Using %.2f as latitude for Coriolis => f=%s"%(lat,self.config['Coriolis_f']))
+            if self.projection is None:
+                log.warning("No projection and coriolis_f is 'auto'.  No coriolis!")
+                self.config['Coriolis_f']=0.0
+            else:
+                xy_ctr=self.grid.nodes['x'].mean(axis=0)
+                ll_ctr=self.native_to_ll(xy_ctr)
+                lat=ll_ctr[1]
+                # f=2*Omega*sin(phi)
+                Omega=7.2921e-5 # rad/s
+                f=2*Omega*np.sin(lat*np.pi/180.)
+                self.config['Coriolis_f']="%.5e"%f
+                log.debug("Using %.2f as latitude for Coriolis => f=%s"%(lat,self.config['Coriolis_f']))
         elif self.coriolis_f is not None:
             self.config['Coriolis_f']=self.coriolis_f
 
@@ -1472,7 +1489,7 @@ class SuntansModel(dfm.HydroModel):
         cell_xy=self.grid.cells_center()
 
         # make depth positive down
-        z=-(self.grid.cells['depth'] + self.z_offset)
+        z=-(self.grid.cells['z_bed'] + self.z_offset)
 
         min_depth=0+float(self.config['minimum_depth'])
         shallow=z<min_depth
@@ -1549,7 +1566,7 @@ class SuntansModel(dfm.HydroModel):
         ds['xp']=('Np',),self.grid.nodes['x'][:,0]
         ds['yp']=('Np',),self.grid.nodes['x'][:,1]
 
-        depth=-(self.grid.cells['depth'] + self.z_offset)
+        depth=-(self.grid.cells['z_bed'] + self.z_offset)
         ds['dv']=('Nc',),depth.clip(float(self.config['minimum_depth']),np.inf)
 
         # really ought to set attrs for everybody, but sign of depth is
@@ -1737,7 +1754,7 @@ class SuntansModel(dfm.HydroModel):
         of this method.
         """
         if int(self.config['outputNetcdf']):
-            if int(self.config['mergeArrays']):
+            if self.config['mergeArrays'] is None or int(self.config['mergeArrays']):
                 # in this case the outputs are chunked in time
                 # with names like Estuary_SUNTANS.nc_0000.nc
                 #  i.e. <outputNetcdfFile>_<seqN>.nc
@@ -1930,7 +1947,10 @@ class SuntansModel(dfm.HydroModel):
             edge_depth_fn=self.file_path('depth')+"-edge.%d"%p
             if os.path.exists(edge_depth_fn):
                 edge_xyz=np.loadtxt(edge_depth_fn)
-                sub_g.add_edge_field('edge_depth',edge_xyz[:,2])
+                # 2019-05-29: this did not have a negation.  probably that was wrong.
+                # transition away from edge_depth, anyway.
+                # sub_g.add_edge_field('edge_depth',edge_xyz[:,2])
+                sub_g.add_edge_field('edge_z_bed',-edge_xyz[:,2])
             
             self._subdomain_grids[p]=sub_g
         return self._subdomain_grids[p]

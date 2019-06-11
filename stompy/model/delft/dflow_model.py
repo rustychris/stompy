@@ -332,7 +332,7 @@ class BC(object):
     _data_stop =None
     @property
     def data_start(self):
-        if self._data_start is None:
+        if self._data_start is None and self.model is not None:
             return self.transform_time_input(self.model.run_start-self.pad)
         else:
             return self._data_start
@@ -342,7 +342,7 @@ class BC(object):
 
     @property
     def data_stop(self):
-        if self._data_stop is None:
+        if self._data_stop is None and self.model is not None:
             return self.transform_time_input(self.model.run_stop+self.pad)
         else:
             return self._data_stop
@@ -523,7 +523,7 @@ class Lag(BCFilter):
         return da
     
 class Transform(BCFilter):
-    def __init__(self,fn=None, fn_da=None):
+    def __init__(self,fn=None, fn_da=None, units=None):
         """
         fn: a function which takes the data values and returns
         transformed data values.
@@ -531,14 +531,19 @@ class Transform(BCFilter):
         returns a transformed data array.
         this will apply both, but either can be omitted from 
         the parameters.  fn_da is applied first.
+
+        units: if fn changes the units, specify the new units here
         """
         self.fn=fn
         self.fn_da=fn_da
+        self.units=units
     def transform_output(self,da):
         if self.fn_da:
             da=self.fn_da(da)
         if self.fn:
             da.values[:]=self.fn(da.values)
+            if self.units is not None:
+                da.attrs['units']=self.units
         return da
 
 class FillGaps(BCFilter):
@@ -561,11 +566,15 @@ class FillGaps(BCFilter):
             log.warning("FillGaps called with no input data")
             da=xr.DataArray(self.large_gap_value)
             return da
-        log.warning("FillGaps code incomplete")
+        if not np.any(np.isnan(da.values)):
+            return da
+        else:
+            # This is not smart!  it doesn't use time, just linearly interpolates
+            # overgaps based on index.
+            da_filled=da.copy()
+            da_filled.values[:] = utils.fill_invalid(da_filled.values)
 
-        raise Exception("Not yet implemented")
-        # probably do something with utils.fill_invalid.
-        return da
+            return da_filled
     
 class RoughnessBC(BC):
     shapefile=None
@@ -2265,6 +2274,29 @@ class NwisStageBC(NwisBC,StageBC):
         ds['z'].attrs['units']='m'
         return ds
 
+class NwisScalarBC(NwisBC,ScalarBC):
+    product_id=63680 # 63680: turbidity, FNU
+    
+    def src_data(self):
+        ds=self.fetch_for_period(self.data_start,self.data_stop)
+        # ideally wouldn't be necessary, but a bit safer to ignore metadata/coordinates
+        scalar_name=[n for n in ds.data_vars if n not in ['tz_cd','datenum','time']][0]
+        return ds[scalar_name]
+    def write_bokeh(self,**kw):
+        defaults=dict(title="Scalar: %s (%s, product %s)"%(self.name,self.station,self.product_id))
+        defaults.update(kw)
+        super(NwisScalarBC,self).write_bokeh(**defaults)
+    def fetch_for_period(self,period_start,period_stop):
+        """
+        Download or load from cache, take care of any filtering, unit conversion, etc.
+        Returns a dataset with a 'z' variable, and with time as UTC
+        """
+        from ...io.local import usgs_nwis
+        ds=usgs_nwis.nwis_dataset(station=self.station,start_date=period_start,
+                                  end_date=period_stop,
+                                  products=[self.product_id],
+                                  cache_dir=self.cache_dir)
+        return ds
 
 class NwisFlowBC(NwisBC,FlowBC):
     product_id=60 # discharge

@@ -178,6 +178,10 @@ def nwis_dataset(station,start_date,end_date,products,
     dataset.load() # force read into memory before closing files
     for d in datasets:
         d.close()
+
+    for meta in ['datenum','tz_cd']:
+        if meta in dataset.data_vars:
+            dataset=dataset.set_coords(meta)
     return dataset
 
 
