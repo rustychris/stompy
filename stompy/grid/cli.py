@@ -58,7 +58,7 @@ ReadGrid.formats['sms']=['SMS grd',
 class Dualify(Op):
     def run(self,args):
         g=stack.pop()
-        gd=g.create_dual(center='circumcenter',create_cells=True)
+        gd=g.create_dual(center='circumcenter',create_cells=True,remove_disconnected=True)
         stack.append(gd)
 
 # TODO: switch format handling to be more like ReadGrid

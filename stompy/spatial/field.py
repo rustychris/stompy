@@ -41,7 +41,7 @@ except ImportError:
     from matplotlib import delaunay
 
 from . import wkb2shp
-from ..utils import array_append
+from ..utils import array_append, isnat
 
 try:
     from matplotlib import cm
@@ -3159,12 +3159,24 @@ class CompositeField(Field):
                  priority_field='priority',
                  data_mode='data_mode',
                  alpha_mode='alpha_mode',
-                 shp_data=None):
+                 shp_data=None,
+                 shp_query=None,
+                 target_date=None):
         self.shp_fn = shp_fn
         if shp_fn is not None: # read from shapefile
-            self.sources,self.projection=wkb2shp.shp2geom(shp_fn,return_srs=True)
+            self.sources,self.projection=wkb2shp.shp2geom(shp_fn,return_srs=True,query=shp_query)
         else:
             self.sources=shp_data
+
+        if target_date is not None:
+            selA=np.array([ isnat(d) or d<=target_date
+                            for d in self.sources['start_date']] )
+            selB=np.array([ isnat(d) or d>target_date
+                            for d in self.sources['end_date']] )
+            orig_count=len(self.sources)
+            self.sources=self.sources[selA&selB]
+            new_count=len(self.sources)
+            log.info(f"Date filter selected {new_count} of {orig_count} sources")
 
         if data_mode is not None:
             self.data_mode=self.sources[data_mode]
