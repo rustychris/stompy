@@ -93,9 +93,10 @@ def fetch_one_day(t,output_fn,lon_range,lat_range):
         ncss_base_url="http://ncss.hycom.org/thredds/ncss/GLBv0.08/expt_92.8"
     elif t>=datetime.datetime(2017,6,1,12,0) and t<=datetime.datetime(2017,10,1,9,0):
         ncss_base_url="http://ncss.hycom.org/thredds/ncss/GLBv0.08/expt_57.7"
-    elif t>=datetime.datetime(2017,10,1,12,0) and t<=datetime.datetime(2018,3,20,9,0):
+    elif t>=datetime.datetime(2017,10,1,12,0) and t<=datetime.datetime(2018,3,17,9,0):
+        # previously had 2018-03-20 09:00 as the end, but looks like it is earlier
         ncss_base_url="http://ncss.hycom.org/thredds/ncss/GLBv0.08/expt_92.9"
-    elif t>=datetime.datetime(2018,3,20,0,0): #  and t<=datetime.datetime(2018,3,20,9,0):
+    elif t>=datetime.datetime(2018,3,17,0,0): 
         # New - testing!
         ncss_base_url="http://ncss.hycom.org/thredds/ncss/GLBv0.08/expt_93.0"
     else:
@@ -130,6 +131,8 @@ def fetch_one_day(t,output_fn,lon_range,lat_range):
     try:
         utils.download_url(ncss_base_url,local_file=output_fn,
                            log=logging,params=params,timeout=1800)
+    except KeyboardInterrupt:
+        raise
     except:
         logging.error("fetching hycom:", exc_info=True)
         valid=False
