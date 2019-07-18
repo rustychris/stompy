@@ -2120,3 +2120,11 @@ def set_keywords(obj,kw):
         except AttributeError:
             raise Exception("Setting attribute %s failed because it doesn't exist on %s"%(k,obj))
         setattr(obj,k,kw[k])
+
+def runfile(fn):
+    """
+    Run a python script.  Sets __file__ appropriately.  Globals
+    """
+    with open(fn) as fp:
+        code = compile(fp.read(),fn,'exec')
+        exec(code,globals(),dict(__file__=fn))
