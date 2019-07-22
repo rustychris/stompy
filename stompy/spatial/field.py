@@ -41,7 +41,7 @@ except ImportError:
     from matplotlib import delaunay
 
 from . import wkb2shp
-from ..utils import array_append, isnat
+from ..utils import array_append, isnat, circumcenter, dist
 
 try:
     from matplotlib import cm
@@ -591,7 +591,8 @@ class XYZField(Field):
         return SimpleGrid(extents=[xmin,xmax,ymin,ymax],
                           F=newF,projection=self.projection())
 
-    def to_grid(self,nx=2000,ny=2000,interp='linear',bounds=None,dx=None,dy=None,aspect=1.0):
+    def to_grid(self,nx=2000,ny=2000,interp='linear',bounds=None,dx=None,dy=None,
+                aspect=1.0,max_radius=None):
         """ use the delaunay based griddata() to interpolate this field onto
         a rectilinear grid.  In theory interp='linear' would give bilinear
         interpolation, but it tends to complain about grid spacing, so best to stick
@@ -600,6 +601,10 @@ class XYZField(Field):
 
         Here we use a specialized implementation that passes the extent/stride array
         to interper, since lin_interper requires this.
+
+        interp='qhull': use scipy's delaunay/qhull interface.  this can
+        additionally accept a radius which limits the output to triangles
+        with a smaller circumradius.
         """
         if bounds is None:
             xmin,xmax,ymin,ymax = self.bounds()
@@ -626,6 +631,9 @@ class XYZField(Field):
             interper = self.nn_interper(aspect=aspect)
         elif interp=='linear':
             interper = self.lin_interper(aspect=aspect)
+        elif interp=='qhull':
+            interper = self.qhull_interper(max_radius=max_radius)
+            
         try:
             griddedF = interper[aspect*ymin:aspect*ymax:ny*1j,xmin:xmax:nx*1j]
         except TypeError: # newer interpolation doesn't have [y,x] notation
@@ -638,6 +646,31 @@ class XYZField(Field):
 
         return SimpleGrid(extents=[xmin,xmax,ymin,ymax],F=griddedF)
 
+    def qhull_interper(self,max_radius=None):
+        from scipy.spatial import Delaunay
+        from scipy.interpolate import LinearNDInterpolator
+        tri=Delaunay(self.X)
+        if max_radius is not None:
+            tris=tri.simplices
+            ccs=circumcenter( tri.points[tri.simplices[:,0]],
+                              tri.points[tri.simplices[:,1]],
+                              tri.points[tri.simplices[:,2]] )
+            rad=dist(ccs-tri.points[tri.simplices[:,0]])
+            bad=rad>max_radius
+        else:
+            bad=None
+        lin_nd=LinearNDInterpolator(tri,self.F)
+
+        def interper(X,Y,lin_nd=lin_nd,bad=bad,tri=tri):
+            XY=np.stack((X,Y),axis=-1)
+            XYr=XY.reshape([-1,2])
+            simps=tri.find_simplex(XYr)
+            result=lin_nd(XYr)
+            if bad is not None:
+                result[(simps<0)|(bad[simps])]=np.nan
+            return result.reshape(X.shape)
+        return interper
+    
     def crop(self,rect):
         xmin,xmax,ymin,ymax = rect
 
