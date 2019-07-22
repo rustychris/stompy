@@ -39,7 +39,7 @@ class RtreeQgis(object):
             self.insert(feat_id,rect=rect_xxyy)
             
     def nearest(self, rect, count):
-        results = self.qsi.nearestNeighbor(qc.QgsPoint(rect[0],rect[2]), count)
+        results = self.qsi.nearestNeighbor(qc.QgsPointXY(rect[0],rect[2]), count)
         return results
 
     def intersects(self,xxyy):
@@ -50,11 +50,11 @@ class RtreeQgis(object):
         return results
     
     def make_feature(self,feat_id,rect):
-        feat = qc.QgsFeature()
-        feat.setFeatureId(feat_id)
+        feat = qc.QgsFeature(feat_id)
+        # feat.setFeatureId(feat_id)
         if rect[0] != rect[1] or rect[2]!=rect[3]:
             print( "WARNING: can only deal with point geometries right now" )
-        gPnt = qc.QgsGeometry.fromPoint(qc.QgsPoint(rect[0],rect[2]))
+        gPnt = qc.QgsGeometry.fromPointXY(qc.QgsPointXY(rect[0],rect[2]))
         feat.setGeometry(gPnt)
         return feat
 
