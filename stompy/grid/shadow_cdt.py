@@ -530,3 +530,13 @@ class ShadowCGALCDT(object):
         ax.add_collection(ccoll)
         ax.axis('equal')
         
+
+
+def shadow_cdt_factory(g):
+    if has_CGAL:
+        klass=ShadowCGALCDT
+    else:
+        klass=ShadowCDT
+    return klass(g)
+
+        
