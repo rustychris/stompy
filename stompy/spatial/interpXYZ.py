@@ -406,14 +406,22 @@ class idw(object):
     def __init__(self,XYin,XYout,**kwargs):
         self.__dict__.update(kwargs)
 
-        # Compute the spatial tree
-        kd = memo_kdtree(XYin)
+        # recenter the coordinates
+        ctr=XYin.mean(axis=0)
 
+        # Compute the spatial tree
+        kd = memo_kdtree(XYin-ctr)
+
+        # recenter, taking care to center lon modulo 360.
+        XYout=XYout-ctr
+        XYout[:,0] = (XYout[:,0]+180.)%360 - 180
+        
         # Perform query on all of the points in the grid
         dist,self.ind=kd.query(XYout,distance_upper_bound=self.maxdist,k=self.NNear)
 
         # Calculate the weights
-        self.W = 1/dist**self.p
+        eps=1e-10
+        self.W = 1/(dist+eps)**self.p
         Wsum = np.sum(self.W,axis=1)
 
         for ii in range(self.NNear):

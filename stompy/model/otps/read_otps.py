@@ -56,14 +56,23 @@ def model_path(model_name,data_path=None):
 
     return model_file
 
-otis_constits = { 'M2':{'index':1,'omega':1.405189e-04,'v0u':1.731557546},\
-     'S2':{'index':2,'omega':1.454441e-04,'v0u':0.000000000},\
-     'N2':{'index':3,'omega':0.00013787970,'v0u':6.050721243},\
-     'K2':{'index':4,'omega':0.0001458423,'v0u':3.487600001},\
-     'K1':{'index':5,'omega':7.292117e-05,'v0u':0.173003674},\
-     'O1':{'index':6,'omega':6.759774e-05,'v0u':1.558553872},\
-     'P1':{'index':7,'omega':7.252295e-05,'v0u':6.110181633},\
-     'Q1':{'index':8,'omega':6.495854e-05,'v0u':5.877717569}}
+otis_constits ={
+    'M2':{'index':1,'omega':1.405189e-04,'v0u':1.731557546},
+    'S2':{'index':2,'omega':1.454441e-04,'v0u':0.000000000},
+    'N2':{'index':3,'omega':0.00013787970,'v0u':6.050721243},
+    'K2':{'index':4,'omega':0.0001458423,'v0u':3.487600001},
+    'K1':{'index':5,'omega':7.292117e-05,'v0u':0.173003674},
+    'O1':{'index':6,'omega':6.759774e-05,'v0u':1.558553872},
+    'P1':{'index':7,'omega':7.252295e-05,'v0u':6.110181633},
+    'Q1':{'index':8,'omega':6.495854e-05,'v0u':5.877717569},
+    # RH: trying to add some extras..
+    # The omega should be okay, but these v0u are off maybe
+    # 10%.
+    #    UPDATE: values pulled from constit.m from TMD
+    'M4':{ 'index':9, 'omega':2.810377e-04, 'v0u':3.463115091},
+    'MS4':{'index':10, 'omega':2.85963e-04, 'v0u':1.731557546},
+    'MN4':{'index':11,'omega':2.783984e-04, 'v0u':1.499093481}
+}
 
 def tide_pred(modfile,lon,lat,time,z=None,conlist=None):
     """
@@ -299,7 +308,12 @@ def extract_HC(modfile,lon,lat,z=None,conlist=None):
     # X,Y are the source data, valid at mask
     from ...spatial.interpXYZ import interpXYZ # implemented in this file, just for IDW method.
 
-    F= interpXYZ(np.vstack((X[mask],Y[mask])).T,np.vstack((lon,lat)).T,method='idw',NNear=3,p=1.0)
+    # best guess at distance limit to make sure it's actually hitting the grid.
+    dx=np.median(np.diff(X,axis=1))
+    dy=np.median(np.diff(Y,axis=0))
+    
+    F= interpXYZ(np.vstack((X[mask],Y[mask])).T,np.vstack((lon,lat)).T,method='idw',NNear=3,p=1.0,
+                 maxdist=5*(dx**2+dy**2)**0.5)
 
     # Interpolate the model depths onto the points if z is none
     if z == None:
@@ -572,6 +586,8 @@ def get_OTPS_constits(hfile):
         for vv in otis_constits:
             if otis_constits[vv]['index']==ii:
                 conList.append(vv)
+    if len(conList)!=ncon:
+        logging.warning("Failed to find all tidal constituents. OTPS WILL NOT BE GOOD")
 
     return conList
 
