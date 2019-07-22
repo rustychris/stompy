@@ -127,7 +127,10 @@ def resample_linearring(points,density,closed_ring=1,return_sources=False):
         scale = density( last_point )
         npoints_at_scale = round( total_distance_left/scale )
 
-        if npoints_at_scale <= 1:
+        if (npoints_at_scale <= 1):
+            if not closed_ring:
+                new_points.append( points[-1] )
+                sources.append(len(points)-1)
             break
 
         this_step_length = total_distance_left / npoints_at_scale
