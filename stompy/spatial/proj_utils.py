@@ -10,6 +10,13 @@ import numpy as np
 def to_srs(s):
     if not isinstance(s,osr.SpatialReference):
         srs = osr.SpatialReference() ; srs.SetFromUserInput(s)
+        # recent osr uses lat/long ordering, but that breaks a lot
+        # of code.  This call says use long/lat, and assume that
+        # if it doesn't exist it's an old version and doesn't matter.
+        try:
+            srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+        except AttributeError:
+            pass
         return srs
     else:
         return s
