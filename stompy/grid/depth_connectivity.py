@@ -21,6 +21,8 @@ import numpy as np
 import pdb
 from scipy.ndimage import label
 
+from .. import utils
+
 if 1:
     debug=0
 else:
@@ -406,4 +408,59 @@ def edge_connection_depth(g,dem,edge_mask=None,centers='circumcenter'):
 
     return edge_elevations
 
+    
+def poly_mean_elevation(dem,pnts):
+    # asserts/assumes that the extents are multiples of dx,dy.
+    dx=dem.dx ; dy=dem.dy
+    dxy=np.array([dx,dy])
+    
+    # protects from roundoff cases
+    pad=1
+    ll = np.floor(pnts.min(axis=0) / dxy - pad) * dxy
+    ur = np.ceil(pnts.max(axis=0) / dxy + pad) * dxy
+    xxyy = [ll[0],ur[0],ll[1],ur[1]]
 
+    # crop first - much faster
+    tile=dem.crop(xxyy)
+
+    # Some of the above is for precise usage of SimpleGrid.
+    # but in some cases we're dealing with a MultiRasterField, and the
+    # local resolution is coarser:
+    dx=tile.dx ; dy=tile.dy
+    
+    if tile is None:
+        return np.nan
+
+    # if the tile is not fully populated, also give up
+    if ( (tile.extents[0]>xxyy[0]) or
+         (tile.extents[1]<xxyy[1]) or
+         (tile.extents[2]>xxyy[2]) or
+         (tile.extents[3]<xxyy[3]) ):
+        print("Tile clipped by edge of DEM")
+        return np.nan
+
+    tile_origin = np.array( [ tile.extents[0], tile.extents[2]] )
+    tile_dxy = np.array( [tile.dx,tile.dy] )
+
+    def xy_to_ij(xy):
+        return (( xy - tile_origin ) / tile_dxy).astype(np.int32)
+
+    hull_ijs = xy_to_ij(pnts)
+
+    # blank out the dem outside the two cells
+    ny, nx = tile.F.shape
+    valid = points_to_mask(hull_ijs,nx,ny)
+    return tile.F[valid].mean()
+    
+
+def cell_mean_depth(g,dem):
+    """
+    Calculate "true" mean depth for each cell, at the resolution of
+    the DEM.  This does not split pixels, though.
+    """
+    cell_z_bed=np.nan*np.ones(g.Ncells())
+    
+    for c in utils.progress(range(g.Ncells())):
+        cell_z_bed[c]=poly_mean_elevation(dem, g.nodes['x'][ g.cell_to_nodes(c) ])
+        
+    return cell_z_bed
