@@ -4,6 +4,7 @@ Tools related to comparing time series, typically model-obs or model-model.
 import numpy as np
 import xarray as xr
 import matplotlib.pyplot as plt
+import logging as log
 import matplotlib.gridspec as gridspec
 from stompy import filters
 from matplotlib import dates
@@ -30,7 +31,7 @@ def period_intersection(sources):
 
 def combine_sources(all_sources,dt=np.timedelta64(900,'s'),min_period=True):
     """
-    Resample multiple time series to common timebase.
+    Resample multiple DataArray time series to common timebase.
     all_sources: list of xr.DataArray()
     dt: each input is resample at this time step.
     min_period: True => use the 
@@ -46,6 +47,10 @@ def combine_sources(all_sources,dt=np.timedelta64(900,'s'),min_period=True):
     resample_bins=np.arange(utils.floor_dt64(t_min,dt),
                             utils.ceil_dt64(t_max,dt)+dt,
                             dt)
+
+    if len(resample_bins)==0:
+        log.warning("No overlap between sources")
+        return None
     bin_labels=resample_bins[:-1]
 
     # All data arrays get renamed to the field name of the first one
@@ -55,8 +60,11 @@ def combine_sources(all_sources,dt=np.timedelta64(900,'s'),min_period=True):
         # groupby_bins allows for specifying the exact bins and labels,
         # simplifying concatenation below.
         da=da.rename(field_name)
+        # dim='time' is needed for vector-valued data to indicate not to
+        # take the mean across vector components, just within bins on the
+        # time axis
         da_r=(da.groupby_bins(da.time,resample_bins,labels=bin_labels)
-              .mean()
+              .mean(dim='time')
               .rename(time_bins='time')
               .to_dataset())
         return da_r
@@ -143,6 +151,7 @@ def calibration_figure_3panel(all_sources,combined=None,
                               metric_x=1,metric_ref=0,
                               offset_source=0,scatter_x_source=0,
                               num=None,trim_time=False,
+                              lowpass=True,
                               styles=None):
     """
     all_sources: list of DataArrays to compare.
@@ -151,6 +160,9 @@ def calibration_figure_3panel(all_sources,combined=None,
     metric_x: index of the 'model' data in combined.
     metric_ref: index of the 'observed' data in combined.
     scatter_x_ref: which item in combined to use for the x axis of the scatter.
+
+    lowpass: if True, the lower left panel is a lowpass of the data, otherwise
+    it will be used for the text metrics instead of overlaying them on the scatter.
     
     These default to having the reference observations as the first element, and the
     primary model output second.
@@ -205,15 +217,20 @@ def calibration_figure_3panel(all_sources,combined=None,
         
     # Metrics
     if metric_x is not None:
-        ax=scat_ax # text on same plot as scatter
+        if lowpass:
+            ax=scat_ax # text on same plot as scatter
+        else:
+            ax=lp_ax
         metrics=calc_metrics(x=combined.isel(source=metric_x),
                              ref=combined.isel(source=metric_ref))
         lines=["Ampl: %.3f"%metrics['amp'],
-               "Lag: %.1f min"%( metrics['lag_s']/60.)]
+               "Lag: %.1f min"%( metrics['lag_s']/60.),
+               "R: %.2f"%( metrics['r'] ) ]
         ax.text(0.05,0.95,"\n".join(lines),va='top',transform=ax.transAxes)
 
     # Lowpass:
-    if 1:
+    has_lp_data=False
+    if lowpass:
         ax=lp_ax
         t=combined.time.values
 
@@ -226,7 +243,6 @@ def calibration_figure_3panel(all_sources,combined=None,
             x_lp[mask]=np.nan
             return x_lp
 
-        has_lp_data=False
         for i in range(len(combined.source)):
             y=lp(combined.isel(source=i).values)-offsets[i]
             if np.any(np.isfinite(y)):
@@ -234,14 +250,17 @@ def calibration_figure_3panel(all_sources,combined=None,
                 ax.plot(t,y,
                         label=combined.label.isel(source=i).item(),
                         **styles[i])
-
     fix_date_labels(ts_ax)
+    # zoom to common period
+    ts_ax.axis(xmin=combined.time.values[0],
+               xmax=combined.time.values[-1])
+    
     if has_lp_data:
         fix_date_labels(lp_ax)
     else:
         lp_ax.xaxis.set_visible(0)
         lp_ax.yaxis.set_visible(0)
-        lp_ax.text(0.5,0.5,"Insufficient data for low-pass",transform=lp_ax.transAxes,
-                   ha='center',va='center')
-
+        if lowpass:
+            lp_ax.text(0.5,0.5,"Insufficient data for low-pass",transform=lp_ax.transAxes,
+                       ha='center',va='center')
     return fig

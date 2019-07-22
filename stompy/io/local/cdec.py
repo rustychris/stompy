@@ -1,3 +1,8 @@
+"""
+Download and parse data from CDEC, California Data Exchange Center, cdec.water.ca.gov
+
+cdec_dataset(...) is the main entry point.
+"""
 import datetime
 import os
 import logging
