@@ -751,9 +751,20 @@ class SuntansModel(dfm.HydroModel):
         log.info("Writing config to %s"%self.config_filename)
         self.config.write_config(self.config_filename)
 
+    def write_monitor(self):
+        if not self.mon_points: return
+
+        xys=[ np.array(feat['geom']) for feat in self.mon_points]
+        valid_xys=[xy
+                   for xy in xys
+                   if self.grid.select_cells_nearest(xy,inside=True) is not None]
+        np.savetxt( os.path.join(self.run_dir,self.config['DataLocations']),
+                    np.array(valid_xys) )
+
     def write(self):
         self.update_config()
         self.write_config()
+        self.write_monitor()
         self.write_extra_files()
         self.write_forcing()
         # Must come after write_forcing() to allow BCs to modify grid
@@ -1451,6 +1462,14 @@ class SuntansModel(dfm.HydroModel):
         elif self.coriolis_f is not None:
             self.config['Coriolis_f']=self.coriolis_f
 
+        if len(self.mon_points):
+            self.config['numInterpPoints']=1
+            self.config['DataLocations']='profile_locs.dat'
+            self.config['NkmaxProfs']=0 # all layers
+            self.config['ProfileDataFile']="profdata.dat"
+            # could also make sure that config['ProfileVariables'] has a default like 'hu'
+            #   and ntoutProfs has a reasonable value.
+
     def restart_copier(self,src,dst):
         """
         src: source file for copy, relative to present working dir
@@ -1989,8 +2008,10 @@ class SuntansModel(dfm.HydroModel):
                     point_ds['y_sample']=pnt[1]
                     point_datasets[pnti]=point_ds
         # drop xy points that didn't hit a cell
+        print("HERE")
         point_datasets=[p for p in point_datasets if p is not None]
         if len(point_datasets)==0: # transect doesn't intersect grid at all.
+            log.debug("Transect points do not intersect model")
             return None
         transect=xr.concat(point_datasets,dim='sample')
         renames=dict(Nk='layer',Nkw='interface',
