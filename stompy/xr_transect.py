@@ -114,9 +114,11 @@ def get_dx_sample(tran):
     return tran['dx_sample']
 
 def depth_int(tran,v):
-    # integrate the variable named by v in the vertical
-    # note that regardless of the order or sign of the vertical
-    # coordinate, this will use non-negative values of dz.
+    """
+    integrate the variable named by v in the vertical
+    note that regardless of the order or sign of the vertical
+    coordinate, this will use non-negative values of dz.
+    """
     if isinstance(v,six.string_types):
         v=tran[v]
     z_dz=get_z_dz(tran)
@@ -128,11 +130,47 @@ def depth_int(tran,v):
     return sign*(v*z_dz).sum(dim=vert_dim(tran))
 
 def depth_avg(tran,v):
-    # average the variable named by v in the vertical
+    """
+    average the variable named by v in the vertical.
+    """
     integrated=depth_int(tran,v)
-    depth = depth_int(tran,1)
+    # tempting to define depth as depth_int(tran,1), but
+    # if, for example, z_dz is horizontally constant and
+    # valid elements are denoted just by finite tran[v], that
+    # would fail.
+    depth = depth_int(tran,1*np.isfinite(tran[v]))
     return integrated/depth
 
+def d_dz(tran,fld):
+    """
+    Calculate depth-averaged vertical gradient of a tran[fld].
+    Plenty of room for improvement -- this approach fits a line
+    to the distribution of fld in each water column.
+    zero-thickness layers are ignored, but there no weighting of
+    thicker layers versus thinner layers.  TODO.
+    """
+    gradients=[]
+    scal,z,dz=xr.broadcast(tran[fld], tran.z_ctr, tran.z_dz)
+
+    x_dim=[d for d in scal.dims if d!='layer'][0]
+    
+    for i in range(tran.dims[x_dim]):
+        col_sel={x_dim:i}
+        col_scal=scal.isel(col_sel)
+        col_z=z.isel(col_sel)
+        col_dz=dz.isel(col_sel)
+        valid=np.isfinite(col_scal) & (col_dz != 0.0)
+        if valid.sum()==0:
+            gradients.append(np.nan)
+        elif valid.sum()==1:
+            gradients.append(0) # arguably also nan
+        else:
+            mb=np.polyfit(col_z[valid],col_scal[valid],1)
+            gradients.append(mb[0])
+            
+    grad=xr.DataArray(np.array(gradients),dims=(x_dim))
+    return grad
+ 
 def lateral_int(tran,v):
     """
     tran: xarray dataset transect
@@ -375,9 +413,16 @@ def section_hydro_to_transect(filename,name=None,index=None):
 
     return section_hydro_parsed_to_transect(section,filename)
 
-def resample_z(tran,new_z,save_original=None):
+def resample_z(tran,new_z,save_original=None,new_z_positive='same'):
     """
     Resample z coordinate to the given vector new_z [N].
+    
+    new_z_positive: dictates sign of new_z.
+      'same': it's the same as tran.z_ctr
+      'up': positive up
+      'down': positive down
+
+    the current handling for order of z is not good.
     """
     # had been a comment about resampling to positive up, but the code
     # doesn't actually do that.  instead, assumes that new_z is the
@@ -386,6 +431,10 @@ def resample_z(tran,new_z,save_original=None):
 
     z_dim='layer'
 
+    z_ctr_pos=tran.z_ctr.attrs.get('positive','up')
+    if new_z_positive!='same' and (new_z_positive!=z_ctr_pos):
+        new_z=-new_z
+    
     ds['sample']=tran['sample']
     ds['z_ctr']=(z_dim,),new_z
     ds['z_dz']=(z_dim,),utils.center_to_interval(new_z)
@@ -448,6 +497,7 @@ def resample_z(tran,new_z,save_original=None):
             # pdb.set_trace()
             index=list(index)
             index[z_num]=slice(None)
+            index=tuple(index)
             my_src_z=src_z.values[index]
             my_src_dz=src_dz.values[index] # this has a nan
             my_src=var.values[index]
@@ -787,10 +837,10 @@ def plot_scalar_polys(tran,v,ax=None,xform=None,**kw):
     X=x.values
     Y=y.values
     Dz=dz.values
-
+    
     if ('positive' in y.attrs) and (y.attrs['positive']=='down'):
         Y=-Y
-
+        
     # I think Dz is getting contaminated at the top/bottom
     # Expands the vertical coordinate in the vertical
     Ybot=Y-0.5*Dz
@@ -837,6 +887,12 @@ def plot_scalar_polys(tran,v,ax=None,xform=None,**kw):
 plot_scalar=plot_scalar_polys
 
 def contour(tran,v,*args,**kwargs):
+    contour_like(tran,v,'contour',*args,**kwargs)
+
+def contourf(tran,v,*args,**kwargs):
+    contour_like(tran,v,'contourf',*args,**kwargs)
+    
+def contour_like(tran,v,meth,*args,**kwargs):
     if isinstance(v,six.string_types):
         v=tran[v]
 
@@ -844,15 +900,14 @@ def contour(tran,v,*args,**kwargs):
     if 'ax' in kwargs:
         ax=kwargs.pop('ax')
     else:
-        ax=plt.gca()
+        ax=lplt().gca()
     # x is always full, but y can have nan, and that triggers a warning.
     # appears to be okay to just fill with 0.
     yvals=y.values.copy()
     yvals[np.isnan(yvals)]=0.0
-    return ax.contour(x.values,
-                      yvals,
-                      scal.values,
-                      *args,**kwargs)
+
+    f=getattr(ax,meth)
+    return f(x.values,yvals,scal.values,*args,**kwargs)
 
 # Code related to averaging multiple transects
 def transects_to_segment(trans,unweight=True,ax=None):

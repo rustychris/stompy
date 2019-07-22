@@ -2,6 +2,7 @@
 Tools related to comparing time series, typically model-obs or model-model.
 """
 import numpy as np
+import pandas as pd
 import xarray as xr
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
@@ -37,15 +38,26 @@ def combine_sources(all_sources,dt=np.timedelta64(900,'s'),min_period=True):
     """
     # For many plots and metrics need a common timeline -- 
     # Get them on common time frames
+    empty=[len(da)==0 for da in all_sources]
+    
     if min_period:
+        if np.any(empty):
+            print("Empty time series")
+            return None
         t_min,t_max=period_intersection(all_sources)
     else:
+        if np.all(empty):
+            print("All empty time series")
+            return None
         t_min,t_max=period_union(all_sources)
         
     dt=np.timedelta64(900,"s")  # compare at 15 minute intervals.
     resample_bins=np.arange(utils.floor_dt64(t_min,dt),
                             utils.ceil_dt64(t_max,dt)+dt,
                             dt)
+    if len(resample_bins)<2:
+        print("No overlapping data")
+        return None
     bin_labels=resample_bins[:-1]
 
     # All data arrays get renamed to the field name of the first one
@@ -83,8 +95,15 @@ def assemble_comparison_data(models,observations,model_labels=None,
         if len(models)==1:
             model_labels=["Model"]
         else:
-            model_labels=["Model %d"%(i+1) for i,mod in enumerate(models)]
-
+            model_labels=[]
+            for m in i,models in enumerate(models):
+                try:
+                    model_labels.append( model.label )
+                except AttributeError:
+                    model_labels.append("Model %d"%(i+1))
+    else:
+        assert len(model_labels)>=len(models),"Not enough model labels supplied"
+    
     # Extract relevant variable and location from model
     base_obs=observations[0] # defines the variable and location for extracting model data
     model_data=[] # a data array per model
@@ -129,15 +148,19 @@ def calc_metrics(x,ref):
     metrics['lag']= utils.find_lag_xr(x,ref) 
     metrics['lag_s']=metrics['lag']/np.timedelta64(1,'s')
     metrics['amp']=np.std(x.values[valid]) / np.std(ref.values[valid])
+
+    metrics['wilmott']=utils.model_skill(x.values,ref.values)
+    metrics['murphy']=utils.murphy_skill(x.values,ref.values)
+    
     return metrics    
 
 
-def fix_date_labels(ax):
+def fix_date_labels(ax,nticks=3):
     xfmt = dates.DateFormatter('%Y-%m-%d')
     xax=ax.xaxis
     xax.set_major_formatter(xfmt)
-    xax.set_major_locator(dates.AutoDateLocator(minticks=3,maxticks=4,
-                                                interval_multiples=True))
+    xax.set_major_locator(dates.AutoDateLocator(minticks=nticks,maxticks=nticks+1,
+                                                interval_multiples=False))
     
 def calibration_figure_3panel(all_sources,combined=None,
                               metric_x=1,metric_ref=0,
@@ -157,12 +180,21 @@ def calibration_figure_3panel(all_sources,combined=None,
 
     trim_time: truncate all sources to the shortest common time period
     """
-    gs = gridspec.GridSpec(2, 3)
+    N=np.arange(len(all_sources))
+    if metric_ref<0:
+        metric_ref=N[metric_ref]
+    if scatter_x_source<0:
+        scatter_x_source=N[scatter_x_source]
+        
+    gs = gridspec.GridSpec(5, 3)
     fig=plt.figure(figsize=(9,7),num=num)
-    ts_ax = fig.add_subplot(gs[0, :])
-    lp_ax = fig.add_subplot(gs[1, :-1])
-    scat_ax=fig.add_subplot(gs[1, 2])
+    ts_ax = fig.add_subplot(gs[:-3, :])
+    lp_ax = fig.add_subplot(gs[-3:-1, :-1])
+    scat_ax=fig.add_subplot(gs[-3:-1, 2])
+    txt_ax= fig.add_subplot(gs[-1,:])
 
+    labels=list(combined.label.values)
+    
     if trim_time:
         t_min,t_max=period_intersection(all_sources)
         new_sources=[]
@@ -175,7 +207,11 @@ def calibration_figure_3panel(all_sources,combined=None,
         combined=combine_sources(all_sources)
         
     offsets=combined.mean(dim='time').values
-    offsets-=offsets[offset_source]
+    if offset_source is not None:
+        offsets-=offsets[offset_source]
+    else:
+        # no offset to means.
+        offsets*=0
 
     if styles is None:
         styles=[{}]*len(all_sources)
@@ -184,7 +220,7 @@ def calibration_figure_3panel(all_sources,combined=None,
         ax=ts_ax
         for src_i,src in enumerate(all_sources):
             ax.plot(src.time,src.values-offsets[src_i],
-                    label=combined.label.isel(source=src_i).item(),
+                    label=labels[src_i],
                     **styles[src_i])
         ax.legend(fontsize=8,loc='upper left')
 
@@ -201,16 +237,42 @@ def calibration_figure_3panel(all_sources,combined=None,
             ax.plot(combined.isel(source=scatter_x_source)-offsets[scatter_x_source],
                     combined.isel(source=i)-offsets[i],
                     '.',ms=1.5,**kw)
-        ax.set_xlabel(combined.label.isel(source=scatter_x_source).item())
+        ax.set_xlabel(labels[scatter_x_source])
         
     # Metrics
     if metric_x is not None:
-        ax=scat_ax # text on same plot as scatter
-        metrics=calc_metrics(x=combined.isel(source=metric_x),
-                             ref=combined.isel(source=metric_ref))
-        lines=["Ampl: %.3f"%metrics['amp'],
-               "Lag: %.1f min"%( metrics['lag_s']/60.)]
-        ax.text(0.05,0.95,"\n".join(lines),va='top',transform=ax.transAxes)
+        ax=txt_ax
+
+        if metric_x=='all':
+            metric_x=[i for i in range(len(all_sources)) if i!=metric_ref]
+        else:
+            metric_x=np.atleast_1d(metric_x)
+
+        df=pd.DataFrame()
+        recs=[]
+        for mx in metric_x:
+            rec=calc_metrics(x=combined.isel(source=mx)-offsets[mx],
+                             ref=combined.isel(source=metric_ref)-offsets[metric_ref])
+            rec['bias']+=offsets[mx] - offsets[metric_ref]
+            recs.append(rec)
+        df=pd.DataFrame(recs)
+        df['label']=[labels[i] for i in metric_x]
+        del df['lag']
+        df=df.set_index('label')
+        with pd.option_context('expand_frame_repr', False,
+                               'precision',3):
+            tbl=str(df)
+            
+        plt.setp(list(ax.spines.values()),visible=0)
+        ax.xaxis.set_visible(0)
+        ax.yaxis.set_visible(0)
+        
+        #lines=["Ampl: %.3f"%metrics['amp'],
+        #       "Lag: %.1f min"%( metrics['lag_s']/60.),
+        #       "Bias: %.2f"%metrics['bias'] ]
+        #ax.text(0.05,0.95,"\n".join(lines),va='top',transform=ax.transAxes)w
+        ax.text(0.05,0.95,tbl,va='top',transform=ax.transAxes,
+                family='monospace',fontsize=8)
 
     # Lowpass:
     if 1:
@@ -231,17 +293,16 @@ def calibration_figure_3panel(all_sources,combined=None,
             y=lp(combined.isel(source=i).values)-offsets[i]
             if np.any(np.isfinite(y)):
                 has_lp_data=True
-                ax.plot(t,y,
-                        label=combined.label.isel(source=i).item(),
-                        **styles[i])
+                ax.plot(t,y,label=labels[i],**styles[i])
 
-    fix_date_labels(ts_ax)
+    fix_date_labels(ts_ax,4)
     if has_lp_data:
-        fix_date_labels(lp_ax)
+        fix_date_labels(lp_ax,2)
     else:
         lp_ax.xaxis.set_visible(0)
         lp_ax.yaxis.set_visible(0)
         lp_ax.text(0.5,0.5,"Insufficient data for low-pass",transform=lp_ax.transAxes,
                    ha='center',va='center')
-
+    fig.subplots_adjust(hspace=0.4)
+    txt_ax.patch.set_visible(0)
     return fig

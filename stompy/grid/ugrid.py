@@ -601,8 +601,8 @@ class UgridXr(object):
         for the range specified by ztop,zbottom, and dz.
 
         range is specified by 2 of the 3 of ztop, zbottom, dz, all non-negative.
-        ztop: distance from freesurface
-        zbottom: distance from bed
+        ztop: dimensional distance from freesurface, 
+        zbottom: dimensional distance from bed
         dz: thickness
 
         if the result would be an empty region, return nans.
@@ -621,6 +621,7 @@ class UgridXr(object):
 
         if self.face_eta_vname is None:
             self.face_eta_vname=self.find_var(standard_name='sea_surface_height_above_geoid')
+            assert self.face_eta_vname is not None,"Failed to discern eta variable"
         surface=self.face_eta_vname
 
         face_select={face_dim:face_slice}
@@ -636,20 +637,18 @@ class UgridXr(object):
             self.face_depth_vname=self.find_var(stanford_name=["sea_floor_depth_below_geoid",
                                                                "sea_floor_depth"],
                                                 location='face') # ala 'Mesh_depth'
-
+        
         depth=self.face_depth_vname
-        bed = self.nc[depth].isel(**face_select).values
+        assert depth is not None,"Failed to find depth variable"
+        
+        bed = self.nc[depth].isel(**face_select)
         if self.nc[depth].attrs.get('positive')=='down':
             log.debug("Cell depth is positive-down")
             bed=-bed
         else:
             log.debug("Cell depth is positive-up, or at least that is the assumption")
 
-        # expand bed to include a time dimension so that in the code below
-        # h and bed have the same form, even though bed is not changing in time
-        # but h is.
-        if h.ndim>bed.ndim:
-            bed=bed[...,None] * np.ones_like(h)
+        h,bed=xr.broadcast(h,bed)
         
         # for now, can only handle an array of cells - i.e. if you want
         # a single face, it's still going to process an array, just with
@@ -674,7 +673,7 @@ class UgridXr(object):
             else:
                 raise Exception("Not smart enough about layer_bounds to do this")
         else:
-            dz_single=0-bed.min() # assumes typ eta of 0.  only matters for 2D
+            dz_single=0-bed.values.min() # assumes typ eta of 0.  only matters for 2D
             layer_interfaces=utils.center_to_edge(layer_vals,dx_single=dz_single)
             layer_bounds=np.concatenate( (layer_interfaces[:-1, None],
                                           layer_interfaces[1:, None]),

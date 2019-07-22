@@ -11,7 +11,7 @@ import numpy as np
 import datetime
 from matplotlib.dates import date2num, num2date
 
-from ... import utils
+from ... import utils, memoize
 from ..delft import dflow_model as dfm
 from ..delft import dfm_grid
 from ...grid import unstructured_grid
@@ -551,16 +551,16 @@ class SuntansModel(dfm.HydroModel):
         nc1[nc1<0]=nc2[nc1<0] ; nc2[nc2<0]=nc1[nc2<0]
         # edge depth is shallower of neighboring cells
         # these depths are still positive up, though.
-        edge_depth=np.maximum(grid.cells['z_bed'][nc1],grid.cells['z_bed'][nc2])
+        edge_z_bed=np.maximum(grid.cells['z_bed'][nc1],grid.cells['z_bed'][nc2])
 
-        if 'edge_depth' in grid.edges.dtype.names:
-            deep_edges=(grid.edges['edge_depth']<edge_depth)
+        if 'edge_z_bed' in grid.edges.dtype.names:
+            deep_edges=(grid.edges['edge_z_bed']<edge_z_bed)
             if np.any(deep_edges):
                 self.log.info("%d edges had a specified depth deeper than neighboring cells.  Replaced them"%
                               deep_edges.sum())
-            grid.edges['edge_depth'][deep_edges]=edge_depth[deep_edges]
+            grid.edges['edge_z_bed'][deep_edges]=edge_z_bed[deep_edges]
         else:        
-            grid.add_edge_field('edge_depth',edge_depth)
+            grid.add_edge_field('edge_z_bed',edge_z_bed)
         
         if 'mark' not in grid.edges.dtype.names:
             mark=np.zeros( grid.Nedges(), np.int32)
@@ -584,7 +584,7 @@ class SuntansModel(dfm.HydroModel):
         Suntans implementation relies on set_grid() having set edge depths
         to be the min. of neighboring cells
         """
-        z=self.grid.edges['edge_depth'][j]
+        z=self.grid.edges['edge_z_bed'][j]
 
         if datum is not None:
             if datum=='eta0':
@@ -663,7 +663,7 @@ class SuntansModel(dfm.HydroModel):
             
         # hacked in support to read depth on edges
         edge_depth_fn=self.file_path('depth')+"-edge"
-        if ( ('edge_depth' not in g.edges.dtype.names)
+        if ( ('edge_z_bed' not in g.edges.dtype.names)
              and
              (os.path.exists(edge_depth_fn)) ):
             self.log.info("Will read edge depths, too")
@@ -673,8 +673,9 @@ class SuntansModel(dfm.HydroModel):
                                                                                                         g.Nedges())
             assert np.allclose(edge_xyz[:,:2], g.edges_center()),"%s edge locations don't match"%edge_depth_fn
             # on disk these are positive down, but model driver convention is positive up
-            # (despite being called depth...)
-            g.add_edge_field('edge_depth',-edge_xyz[:,2]) # will be phased out
+            # (despite being called depth...)  -- in the process of using edge_z_bed in the driver r
+            # script to make the sign convention more apparent.
+            # g.add_edge_field('edge_depth',-edge_xyz[:,2]) # being phased out
             g.add_edge_field('edge_z_bed',-edge_xyz[:,2])
         
         self.set_grid(g)
@@ -715,11 +716,23 @@ class SuntansModel(dfm.HydroModel):
         return a list of up to count (None: unlimited) Model instances
         in forward chronological order of consecutive restarts.
         load_grid: defaults to *not* loading the grid of the earlier runs.
+        The last item is always self.
+
+        count: either the count of how many runs to return, or a np.datetime64
+          such that we'll go back to a run covering that date if possible.
+          if this is a tuple of datetimes, only return the runs covering that time
+          range.
         """
         runs=[self]
         run=self
         while 1:
-            if count and len(runs)>=count:
+            if isinstance(count,np.datetime64):
+                if runs[0].run_start <=count:
+                    break
+            elif isinstance(count,tuple):
+                if runs[0].run_start < count[0]:
+                    break
+            elif count and len(runs)>=count:
                 break
             run.infer_restart()
             if run.restart and run.restart is not True:
@@ -727,6 +740,12 @@ class SuntansModel(dfm.HydroModel):
                 runs.insert(0,run)
             else:
                 break
+
+        if isinstance(count,tuple):
+            # Trim runs coming after the requested period
+            runs=[run for run in runs if run.run_start<count[1]]
+            if len(runs)==0:
+                log.warning("chain_restarts wound up with zero runs for count=%s"%str(count))
         return runs
 
     def load_template(self,fn):
@@ -1509,8 +1528,8 @@ class SuntansModel(dfm.HydroModel):
             edge_xy=self.grid.edges_center()
 
             # make depth positive down
-            z=-(self.grid.edges['edge_depth'] + self.z_offset)
-            edge_xyz=np.c_[edge_xy,z]
+            edge_depth=-(self.grid.edges['edge_z_bed'] + self.z_offset)
+            edge_xyz=np.c_[edge_xy,edge_depth]
             np.savetxt(edge_depth_fn,edge_xyz) # space separated
 
     def grid_as_dataset(self):
@@ -1815,7 +1834,7 @@ class SuntansModel(dfm.HydroModel):
             pdata['ntout_profs'] =(), hdr_ints[4]
 
             pdata['dt'] =(), np.fromfile(fp,np.float64,1)[0]
-            pdata['dzz'] = np.fromfile(fp,np.float64,pdata['nkmax_profs'].item() )
+            pdata['dzz'] = ('layer',),np.fromfile(fp,np.float64,pdata['nkmax_profs'].item() )
             pdata['all_indices'] = np.fromfile(fp,np.int32,pdata['num_total_data_points'].item())
             dataxy = np.fromfile(fp,np.float64,2*pdata['num_total_data_points'].item())
             pdata['request_xy'] =('request','xy'), dataxy.reshape( (-1,2) )
@@ -1886,7 +1905,9 @@ class SuntansModel(dfm.HydroModel):
         # no caching at this point..
         return data
 
-    def monitor_output(self):
+    monitor_nodata=999999
+    monitor_dv=None # caches dv_from_map results
+    def monitor_output(self,nan_nodata=False,dv_from_map=False):
         """
         Return xarray Dataset including the monitor output
         """
@@ -1914,6 +1935,11 @@ class SuntansModel(dfm.HydroModel):
                     dims=('time','profile','layer')
                 # May need to use a different layer dimension for w...
                 # print("%s:  raw data shape: %s  dims: %s"%(scalar,str(raw_data.shape),dims))
+                if nan_nodata and np.any(raw_data==self.monitor_nodata):
+                    # this can significantly slow down the process if ultimately we're
+                    # only going to use a small slice of the data
+                    raw_data=np.where(raw_data==self.monitor_nodata,
+                                      np.nan,raw_data)
                 pdata[file_to_var[scalar]]=dims,raw_data
 
         # This may need some tweaking, but it's a start.
@@ -1921,6 +1947,27 @@ class SuntansModel(dfm.HydroModel):
         # but note that this isn't necessarily exact.
         dt_prof=np.timedelta64( int( pdata['ntout_profs']*pdata['dt']*1e6),'us')
         pdata['time']=('time',),(self.run_start + dt_prof*np.arange(pdata.dims['time']))
+
+        if dv_from_map:
+            if self.monitor_dv is None:
+                if 0: # read from map file, but that may not be valid until end of run
+                    print("Loading dv for monitor data - should happen once!")
+                    self.monitor_dv=self.extract_station_map(xy=pdata.prof_xy.values[:,:],data_vars='dv')
+                else: # read from subdomain grids.
+                    mon_dv=np.zeros(pdata.dims['profile'],np.float64)
+                    mon_dv[:]=np.nan
+
+                    for proc in range(self.num_procs):
+                        gsub=self.subdomain_grid(proc)
+                        for i,xy in enumerate(pdata.prof_xy.values):
+                            c=gsub.select_cells_nearest(xy,inside=True)
+                            if c is not None:
+                                mon_dv[i]=gsub.cells[c]['dv']
+                    assert np.all(np.isfinite(mon_dv)),"Failed to get depths for all profile locatins"
+                    self.monitor_dv=xr.Dataset()
+                    self.monitor_dv['dv']=('profile',),mon_dv
+                                
+            pdata['dv']=('profile',),self.monitor_dv['dv'].values
                 
         # Total hack for convenience -- add a closest_to([x,y]) method to extract a single
         # profile.
@@ -1951,11 +1998,127 @@ class SuntansModel(dfm.HydroModel):
                 # transition away from edge_depth, anyway.
                 # sub_g.add_edge_field('edge_depth',edge_xyz[:,2])
                 sub_g.add_edge_field('edge_z_bed',-edge_xyz[:,2])
-            
+            if ('dv' in sub_g.cells.dtype.names) and ('z_bed' not in sub_g.cells.dtype.names):
+                sub_g.add_cell_field('z_bed',-sub_g.cells['dv'])
+
             self._subdomain_grids[p]=sub_g
         return self._subdomain_grids[p]
+    
+    @memoize.imemoize(lru=64)
+    def extract_transect_monitor(self,xy=None,ll=None,time=None,
+                                 time_mode='inner',dv_from_map=False,
+                                 dzmin_surface=None):
+        """
+        In progress alternate approach for transects.
+        xy: [N,2] location of vertical profiles making up the transect
+        ll: like xy, but lon/lat to be converted via self.ll_to_native
+        time: can be used to pull a specific time for each xy (with time_mode='inner').
+        
+        time_mode: for now, only 'inner'.  May be expanded to control whether
+         time is used orthogonal to xy, or parallel (i.e. for each xy, do we pull
+         one corresponding time from time, or pull all of the time for each).
+        """
+        if xy is None:
+            xy=self.ll_to_native(ll)
 
-    def extract_transect(self,xy,time=slice(None),dx=None,
+        if time_mode=='outer':
+            assert time.ndim==0,"Not ready for array-valued time with time_mode='outer'"
+        
+        def xyt():
+            if time_mode=='inner':
+                for loc,t in zip(xy,time):
+                    yield loc,t
+            else:
+                for loc in xy:
+                    yield loc,time
+
+        stns=[]
+        for loc,t in xyt():
+            if time_mode=='inner':
+                # then each location has a single time associated with it
+                # we can narrow extract_station in that case.
+                t_slice=(t,t)
+            else:
+                # potentially a range of times
+                # this should also a work when time is a scalar datetime64.
+                t_slice=(t.min(),t.max())
+
+            stn=self.extract_station_monitor(xy=loc,chain_count=t_slice,
+                                             dv_from_map=dv_from_map)
+            if np.isscalar(t):
+                if (t<stn.time.values[0]) or (t>stn.time.values[-1]):
+                    log.info(f"Requested time {t} is outside the range of the model output")
+                    return None
+                ti=utils.nearest(stn.time.values,t)
+                stn=stn.isel(time=ti)
+            stns.append(stn)
+
+        tran=xr.concat(stns,dim='time')
+        
+        # now cleanup nan/nodata
+        for v in tran.data_vars:
+            if not np.issubdtype(tran[v].dtype,np.floating): continue
+            missing=tran[v].values==self.monitor_nodata
+            tran[v].values[missing]=np.nan
+
+        xy=np.c_[ tran.station_x,tran.station_y ]
+        tran=tran.rename(time='sample')
+        tran['d_sample']=('sample',),utils.dist_along(xy)
+
+        if 'dzz' in tran:
+            assert 'eta' in tran,"Not ready for transect processing without eta"
+            dzz_2d,eta_2d=xr.broadcast(tran.dzz,tran.eta)                
+            z_max=eta_2d
+            
+            #Not ready for this.
+            if 'dv' in tran:
+                _,dv_2d=xr.broadcast(eta_2d,tran.dv)
+                z_min=-dv_2d
+            else:
+                z_min=-np.inf
+                
+            tran['z_bot']=-dzz_2d.cumsum(dim='layer')
+            tran['z_top']=tran.z_bot+dzz_2d
+            tran['z_bot']=tran.z_bot.clip(z_min,z_max)
+            tran['z_top']=tran.z_top.clip(z_min,z_max)
+            tran['z_ctr']=0.5*(tran.z_bot+tran.z_top)
+            # to be consistent with xr_transect, and np.diff(z_ctr),
+            # z_dz is _negative_
+            tran['z_dz'] =(tran.z_bot-tran.z_top)
+        if dzmin_surface is not None:
+            self.adjust_transect_for_dzmin_surface(tran,dzmin_surf=dzmin_surface)
+        return tran
+
+    def adjust_transect_for_dzmin_surface(self,tran,update_vars=['salt','temp'],dzmin_surf=0.25):
+        """
+        janky - it is not always clear in the output which layers are valid, versus when a layer
+        was really thin and was coalesced with the next layer down.  This method
+        takes an xr_transect style transect, finds thin surface layers and copies the values from
+        lower down up to the surface cells.
+        This currently probably doesn't work for velocity, just scalar.
+
+        extract_transect_monitor will call this automatically if dzmin_surface is specified.
+        """
+        from ... import xr_transect
+        z_dz=xr_transect.get_z_dz(tran) 
+        for samp_i in range(tran.dims['sample']):
+            eta=tran.eta.isel(sample=samp_i)
+            k_update=[]
+            for k in range(tran.dims['layer']):
+                if z_dz[samp_i,k]==0.0: 
+                    continue # truly dry
+                elif tran.eta[samp_i] - tran.z_bot[samp_i,k] < dzmin_surf:
+                    print(f"[sample {samp_i},k {k}] too thin")
+                    k_update.append(k)
+                else:
+                    # valid layer
+                    for ku in k_update:
+                        for v in update_vars:
+                            tran[v].values[samp_i,ku] = tran[v].values[samp_i,k]
+                    break
+    
+    
+    def extract_transect(self,xy=None,ll=None,time=slice(None),dx=None,
                          vars=['uc','vc','Ac','dv','dzz','eta','w']):
         """
         xy: [N,2] coordinates defining the line of the transect
@@ -1965,13 +2128,26 @@ class SuntansModel(dfm.HydroModel):
         returns xr.Dataset, unless xy does not intersect the grid at all,
         in which case None is returned.
         """
+        if xy is None:
+            xy=self.ll_to_native(ll)
         if dx is not None:
             xy=linestring_utils.upsample_linearring(xy,dx,closed_ring=False)
         proc_point_cell=np.zeros( [self.num_procs,len(xy)], np.int32)-1
         point_datasets=[None]*len(xy)
-        
-        for proc in range(self.num_procs):
-            sub_g=self.subdomain_grid(proc)
+
+        good_vars=None  # set on-demand below
+
+        merged=int(self.config['mergeArrays'])>0
+        def gen_sources(): # iterator over proc,sub_g,map_fn
+            if merged:
+                map_fn=self.map_outputs()[0]
+                g=unstructured_grid.UnstructuredGrid.from_ugrid(map_fn)
+                yield [0,g,map_fn]
+            else:
+                for proc in range(self.num_procs):
+                    yield proc,self.subdomain_grid(proc),self.map_outputs()[proc]
+            
+        for proc,sub_g,map_fn in gen_sources():
             ds=None
             for pnti,pnt in enumerate(xy):
                 if point_datasets[pnti] is not None:
@@ -1980,17 +2156,22 @@ class SuntansModel(dfm.HydroModel):
                 if c is not None:
                     proc_point_cell[proc,pnti]=c
                     if ds is None:
-                        ds=xr.open_dataset(self.map_outputs()[proc])
+                        ds=xr.open_dataset(map_fn)
                         # doctor up the Nk dimensions
                         ds['Nkf']=ds['Nk'] # copy the variable
                         del ds['Nk'] # delete old variable, leaving Nk as just a dimension
-                    point_ds=ds[vars].isel(time=time,Nc=c)
+                        if good_vars is None:
+                            # drop any variables that don't appear in the output
+                            good_vars=[v for v in vars if v in ds]
+                        
+                    point_ds=ds[good_vars].isel(time=time,Nc=c)
                     point_ds['x_sample']=pnt[0]
                     point_ds['y_sample']=pnt[1]
                     point_datasets[pnti]=point_ds
         # drop xy points that didn't hit a cell
         point_datasets=[p for p in point_datasets if p is not None]
         if len(point_datasets)==0: # transect doesn't intersect grid at all.
+            print("No intersecting points")
             return None
         transect=xr.concat(point_datasets,dim='sample')
         renames=dict(Nk='layer',Nkw='interface',
@@ -2005,14 +2186,26 @@ class SuntansModel(dfm.HydroModel):
             Vu_int[np.isnan(Vu_int)]=0.0
             transect['Vu']=('sample','layer'), 0.5*(Vu_int[:,1:] + Vu_int[:,:-1])
 
-
         # construct layer-center depths
-        dzz=transect.dzz.values.copy() # sample, Nk
-        z_bot=transect['eta'].values[:,None] - dzz.cumsum(axis=1)
-        z_top=z_bot+dzz
-        z_ctr=0.5*(z_top+z_bot)
-        z_ctr[dzz==0.0]=np.nan # indicate no data
+        if 'dzz' not in transect:
+            # fabricate a dzz
+            eta_2d,dv_2d,z_w_2d=xr.broadcast( transect['eta'], transect['dv'], -ds['z_w'])
+            z_w_2d=z_w_2d.clip(-dv_2d,eta_2d)
+            z_bot=z_w_2d.isel(Nkw=slice(1,None))
+            z_top=z_w_2d.isel(Nkw=slice(None,-1))
+            # must use values to avoid xarray getting smart with aligning axes.
+            dzz=z_top.values-z_bot.values
+            z_ctr=0.5*(z_bot.values+z_top.values)
+            z_ctr[dzz==0.0]=np.nan
+        else:
+            dzz=transect.dzz.values.copy() # sample, Nk
+            z_bot=transect['eta'].values[:,None] - dzz.cumsum(axis=1)
+            z_top=z_bot+dzz
+            z_ctr=0.5*(z_top+z_bot)
+            z_ctr[dzz==0.0]=np.nan # indicate no data
+
         transect['z_ctr']=('sample','layer'), z_ctr
+        
 
         # first, the interior interfaces
         def choose_valid(a,b):
@@ -2046,7 +2239,8 @@ class SuntansModel(dfm.HydroModel):
             self.warn_initial_water_level+=1
             return 0.0
 
-    def extract_station_monitor(self,xy=None,ll=None,chain_count=1):
+    def extract_station_monitor(self,xy=None,ll=None,chain_count=1,
+                                dv_from_map=False):
         """
         Return a dataset for a single point in the model
         xy: native model coordinates, [Nstation,2]
@@ -2055,16 +2249,35 @@ class SuntansModel(dfm.HydroModel):
           1=>no chaining just this model.  None or 0:
           chain all runs possible.  Otherwise, go back max
           number of runs up to chain_count
+          if chain_count is a np.datetime64, go back enough restarts to 
+          get to that date (see chain_restarts())
+          if chain_count is a tuple of datetime64, only consider restarts covering
+          that period.
 
         This version pulls output from history files
-        """
-        assert chain_count==1,"Not implemented for chaining runs"
-        mon=self.monitor_output()
-        if mon is None:
-            return None # maybe profile output wasn't enabled.
 
+        if dv_from_map is True, additionally pulls dv from map output.
+        """
         if xy is None:
             xy=self.ll_to_native(ll)
+
+        if chain_count!=1:
+            restarts=self.chain_restarts(count=chain_count,load_grid=False)
+            # dv should be constant, so only load it on self.
+            dss=[mod.extract_station_monitor(xy=xy,ll=ll,chain_count=1,
+                                             dv_from_map=False)
+                 for mod in restarts]
+            chained=xr.concat(dss,dim='time',data_vars='minimal')
+            if dv_from_map:
+                # just to get dv...
+                me=self.extract_station_monitor(xy=xy,ll=ll,chain_count=1,
+                                                dv_from_map=True)
+                chained['dv']=me.dv
+            return chained
+
+        mon=self.monitor_output(dv_from_map=dv_from_map)
+        if mon is None:
+            return None # maybe profile output wasn't enabled.
 
         xy=np.asarray(xy)
         orig_ndim=xy.ndim
@@ -2076,7 +2289,7 @@ class SuntansModel(dfm.HydroModel):
         num_stations=len(xy)
 
         stations=[]
-        
+
         for stn in range(num_stations):
             dists=utils.dist(xy[stn,:],mon.prof_xy.values)
             best=np.argmin(dists)
@@ -2095,7 +2308,7 @@ class SuntansModel(dfm.HydroModel):
 
         return combined_ds
         
-    def extract_station(self,xy=None,ll=None,chain_count=1,source='auto'):
+    def extract_station(self,xy=None,ll=None,chain_count=1,source='auto',dv_from_map=False):
         """
         See extract_station_map, extract_station_monitor for details.
         Will try monitor output if it exists, otherwise map output.
@@ -2104,7 +2317,8 @@ class SuntansModel(dfm.HydroModel):
         If a specific source is chosen and doesn't exist, returns None
         """
         if source in ['auto','monitor']:
-            ds=self.extract_station_monitor(xy=xy,ll=ll,chain_count=chain_count)
+            ds=self.extract_station_monitor(xy=xy,ll=ll,chain_count=chain_count,
+                                            dv_from_map=dv_from_map)
             if (ds is not None) or (source=='monitor'):
                 return ds
         if source in ['auto','map']:

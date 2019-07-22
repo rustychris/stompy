@@ -84,7 +84,7 @@ def memoize(lru=None,cache_dir=None,key_method='pickle'):
         if cache_dir is not None:
             if not os.path.exists(cache_dir):
                 os.makedirs(cache_dir)
-
+        
         @functools.wraps(obj)
         def memoizer(*args, **kwargs):
             recalc= memoizer.recalculate or memoize.recalculate
@@ -94,7 +94,6 @@ def memoize(lru=None,cache_dir=None,key_method='pickle'):
                 key = memoize_key_str(args,**kwargs)
             else:
                 key=key_method(args,**kwargs)
-                # raise Exception("Bad key_method %s"%key_method)
             value_src=None
 
             if cache_dir is not None:
@@ -134,6 +133,48 @@ def memoize(lru=None,cache_dir=None,key_method='pickle'):
     return memoize1
 memoize.recalculate=False # force recalculation, still store in cache.
 memoize.disabled = False  # ignore the cache entirely, don't save new result
+
+
+def imemoize(lru=None,key_method='pickle'):
+    """
+    like memoize, but specific to instance methods, and keeps the 
+    cache on the instance.
+
+    add as a decorator to instance methods to cache results.
+
+    key_method: 'pickle' use the hash of the pickle of the inputs.  overkill,
+      but highly unlikely to get false hits.
+      'str': use the hash of the str-ified parameters
+      callable: pass key_method(*args,**kwargs) will be the key
+    """
+    def memoize1(obj,key_method=key_method):
+        @functools.wraps(obj)
+        def memoizer(self,*args, **kwargs):
+            if key_method=='pickle':
+                key = memoize_key(args,**kwargs)
+            elif key_method=='str':
+                key = memoize_key_str(args,**kwargs)
+            else:
+                key=key_method(args,**kwargs)
+                
+            try:
+                cache=self._memocache
+            except AttributeError:
+                if lru is not None:
+                    cache = LRUDict(size_limit=lru)
+                else:
+                    cache = {}
+                self._memocache=cache
+            
+            if key not in cache:
+                value = obj(self,*args,**kwargs)
+                cache[key]=value
+            else:
+                value = cache[key]
+            return value
+        return memoizer
+    return memoize1
+
 
 # returns a memoize which bases all relative path cache_dirs from
 # a given location.  If the given location is a file, then use the dirname

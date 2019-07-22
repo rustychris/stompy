@@ -15,6 +15,8 @@ from ...spatial import wkb2shp
 #import soda.utils.othertime
 
 class PtmBin(object):
+    # when True, load particle data as memory map rather than np.fromstring.
+    use_memmap=True
     def __init__(self,fn,release_name=None):
         self.fn = fn
 
@@ -121,8 +123,11 @@ class PtmBin(object):
         part_size = 2*4 + 3*8
 
         # print "reading %d particles"%Npart
-
-        data = np.fromstring( self.fp.read( part_size * Npart), dtype=part_dtype)
+        if self.use_memmap:
+            data=np.memmap( self.fn,dtype=part_dtype, offset=self.fp.tell(),
+                            mode='r',shape=(Npart,) )
+        else:
+            data = np.fromstring( self.fp.read( part_size * Npart), dtype=part_dtype)
         return dnum,data
 
     def readTime(self):

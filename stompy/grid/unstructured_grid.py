@@ -3662,7 +3662,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         tri=self.mpl_triangulation()
         return ax.tricontourf(tri,values,*args,**kwargs)
 
-    def smooth_matrix(self):
+    def smooth_matrix(self,f=1.0):
         """
         Smoothing on the grid.  Returns a sparse matrix suitable for repeated
         application to a cell-centered scalar field, each time replacing
@@ -3673,6 +3673,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         diffusivities.
 
         This is *not* a proper, finite volume diffusion.  It does not conserve mass.
+
+        f: diffusion factor.  1 means replaces each cell with the average of its neighbors.
+          0.5 would be to 50% original value, 50% average of neighbors.
         """
         from scipy import sparse
         from scipy.sparse import linalg
@@ -3680,7 +3683,6 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         N=self.Ncells()
         D=sparse.dok_matrix((N,N),np.float64)
 
-        f=1.
         for c in range(self.Ncells()):
             nbrs=np.array( self.cell_to_cells(c) )
             nbrs=nbrs[nbrs>=0]

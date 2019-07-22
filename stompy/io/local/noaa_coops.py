@@ -119,7 +119,8 @@ def coops_dataset(station,start_date,end_date,products,
 
 def coops_dataset_product(station,product,
                           start_date,end_date,days_per_request='M',
-                          cache_dir=None,refetch_incomplete=True):
+                          cache_dir=None,refetch_incomplete=True,
+                          clip=True):
     """
     Retrieve a single data product from a single station.
     station: string or numeric identifier for COOPS station
@@ -144,6 +145,8 @@ def coops_dataset_product(station,product,
       with respect to the start_date and end_date, attempt to fetch it again.  Not that incomplete
       here is meant for realtime data which has not yet been recorded, so the test is only
       between end_date and the last time stamp of retrieved data.
+
+    clip: if true, return only data within the requested window, even if more data was fetched.
     """
     fmt_date=lambda d: utils.to_datetime(d).strftime("%Y%m%d %H:%M")
     base_url="https://tidesandcurrents.noaa.gov/api/datagetter"
@@ -243,11 +246,17 @@ def coops_dataset_product(station,product,
         return None 
 
     if len(datasets)>1:
-        dataset=xr.concat( datasets, dim='time')
+        # data_vars='minimal' is needed to keep lat/lon from being expanded
+        # along the time axis.
+        dataset=xr.concat( datasets, dim='time',data_vars='minimal')
     else:
         dataset=datasets[0].copy(deep=True)
     # better not to leave these lying around open
     for d in datasets:
         d.close()
+
+    if clip:
+        time_sel=(dataset.time.values>=start_date) & (dataset.time.values<end_date)
+        dataset=dataset.isel(time=time_sel)
         
     return dataset

@@ -286,7 +286,15 @@ def within(item,ends,as_slice=False,fmt='auto'):
         return slice(*np.searchsorted(item,ends))
 
 def within_2d(vecs,xxyy):
-    return within(vecs[:,0],xxyy[:2],fmt='mask') & within(vecs[:,1],xxyy[2:],fmt='mask')
+    """
+    Return a bit mask for points falling within a bounding rectangle.
+    Nothing clever, just a minor bit of shorthand.
+
+    vecs: [...,2] array of xy coordinates.
+    xxyy: bounding box, [xmin,xmax,ymin,ymax]
+    """
+    vecs=np.asanyarray(vecs)
+    return within(vecs[...,0],xxyy[:2],fmt='mask') & within(vecs[...,1],xxyy[2:],fmt='mask')
 
 
 def expand_xyxy(xyxy,factor):
@@ -961,6 +969,24 @@ def model_skill(xmodel,xobs,ignore_nan=True):
     skill = 1 - num / den
     return skill
 
+def murphy_skill(xmodel,xobs,xref=None,ignore_nan=True):
+    """
+    Murphy Skill metric
+    """
+    if ignore_nan:
+        sel=np.isfinite(xmodel+xobs)
+    else:
+        sel=slice(None)
+
+    m=xmodel[sel]
+    o=xobs[sel]
+    if xref is None:
+        xref=o.mean()
+        
+    ms=1 - np.mean( (m-o)**2 )/np.mean( (xref-o)**2 )
+    
+    return ms
+
 
 def find_lag_xr(data,ref):
     """ Report lag in time of data (xr.DataArray) with respect
@@ -1318,7 +1344,7 @@ def to_datetime(x):
             ts = (x - np.datetime64('1970-01-01T00:00:00Z')) / np.timedelta64(1, 's')
             return datetime.datetime.utcfromtimestamp(ts)
     else:
-        if np.issubdtype(x.dtype,np.float):
+        if np.issubdtype(x.dtype,np.floating):
             return num2date(x)
         if np.issubdtype(x.dtype,np.datetime64):
             ts = (x - np.datetime64('1970-01-01T00:00:00Z')) / np.timedelta64(1, 's')
