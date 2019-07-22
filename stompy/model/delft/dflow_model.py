@@ -61,14 +61,7 @@ class BC(object):
         self.filters=[]
 
         utils.set_keywords(self,kw)
-        # above line should replace this stanza:
-        #   for k in kw:
-        #       try:
-        #           getattr(self,k)
-        #       except AttributeError:
-        #           raise Exception("Setting attribute %s failed because it doesn't exist on %s"%(k,self))
-        #       self.__dict__[k]=kw[k]
-
+        
         for f in self.filters:
             f.setup(self)
 
@@ -1101,8 +1094,11 @@ class HydroModel(object):
         nodes_to_dredge=np.unique(nodes_to_dredge)
 
         if edge_field:
-            g.edges[edge_field][feat_edges] = np.minimum(g.edges[edge_field][feat_edges],
-                                                         dredge_depth)
+            if edge_field in g.edges.dtype.names:
+                g.edges[edge_field][feat_edges] = np.minimum(g.edges[edge_field][feat_edges],
+                                                             dredge_depth)
+            else:
+                log.warning(f'No edge bathymetry ({edge_field}) to dredge.  Ignoring')
         if node_field:
             g.nodes[node_field][nodes_to_dredge] = np.minimum(g.nodes[node_field][nodes_to_dredge],
                                                               dredge_depth)
@@ -2782,14 +2778,20 @@ class DFlowModel(HydroModel):
         assert len(fns)==1
         return fns[0]
 
-    def extract_section(self,name=None,chain_count=1):
+    def extract_section(self,name=None,chain_count=1,refresh=False):
         """
         Return xr.Dataset for monitored cross section.
         currently only supports selection by name.  may allow for 
         xy, ll in the future.
+
+        refresh: force a close/open on the netcdf.
         """
         
         his=xr.open_dataset(self.his_output())
+        if refresh:
+            his.close()
+            his=xr.open_dataset(self.his_output())
+            
         names=his.cross_section_name.values
         try:
             names=[n.decode() for n in names]
@@ -2803,8 +2805,13 @@ class DFlowModel(HydroModel):
         # the parts that are not relevant to the cross section.
         return his.isel(cross_section=idx)
 
-    def extract_station(self,xy=None,ll=None,name=None):
+    def extract_station(self,xy=None,ll=None,name=None,refresh=False):
         his=xr.open_dataset(self.his_output())
+        
+        if refresh:
+            his.close()
+            his=xr.open_dataset(self.his_output())
+        
         if name is not None:
             names=his.station_name.values
             try:
