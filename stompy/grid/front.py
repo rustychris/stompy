@@ -494,13 +494,17 @@ class WallStrategy(Strategy):
         # at 90, we can try, but a bisect would be better.
         # at 180, this is the only option.
         return (180-theta) / 180
-
-    def execute(self,site):
+    def new_point(self,site):
         na,nb,nc= site.abc
         grid=site.grid
         b,c = grid.nodes['x'][ [nb,nc] ]
         bc=c-b
-        new_x = b + utils.rot(np.pi/3,bc)
+        return b + utils.rot(np.pi/3,bc)
+    def execute(self,site):
+        na,nb,nc= site.abc
+        grid=site.grid
+        
+        new_x = self.new_point(site)
         nd=grid.add_node(x=new_x,fixed=site.af.FREE)
 
         # new_c=grid.add_cell_and_edges( [nb,nc,nd] )
@@ -515,6 +519,24 @@ class WallStrategy(Strategy):
         return {'nodes': [nd],
                 'cells': [new_c] }
 
+class WallCloseStrategy(WallStrategy):
+    """
+    Wall, but with a very close-in initial guess point
+    """
+    def metric(self,site):
+        # always try regular Wall first.
+        return 0.5+super(WallCloseStrategy,self).metric(site)
+        
+    def new_point(self,site):
+        na,nb,nc= site.abc
+        grid=site.grid
+        b,c = grid.nodes['x'][ [nb,nc] ]
+        bc=c-b
+        usual_x=b + utils.rot(np.pi/3,bc)
+        midpoint=0.5*(b+c)
+        alpha=0.95
+        return alpha*midpoint + (1-alpha)*usual_x
+    
 class BisectStrategy(Strategy):
     """ 
     Add three edges and two new triangles.  
@@ -561,7 +583,6 @@ class BisectStrategy(Strategy):
                 'cells': [new_c1,new_c2],
                 'edges': [j_cd,j_bd,j_ad] }
     
-
 class ResampleStrategy(Strategy):
     """ TESTING: resample one step beyond.
     """
@@ -1022,6 +1043,7 @@ class NonLocalStrategy(Strategy):
 
 
 Wall=WallStrategy()
+WallClose=WallCloseStrategy()
 Cutoff=CutoffStrategy()
 Join=JoinStrategy()
 Bisect=BisectStrategy()
@@ -1084,7 +1106,7 @@ class TriangleSite(FrontSite):
         return ax.plot( points[:,0],points[:,1],'r-o' )[0]
     def actions(self):
         theta=self.internal_angle
-        return [Wall,Cutoff,Join,Bisect,NonLocal,Resample]
+        return [Wall,WallClose,Cutoff,Join,Bisect,NonLocal,Resample]
 
     def resample_neighbors(self):
         """ may update site! used to be part of AdvancingFront, but
@@ -1359,12 +1381,12 @@ class AdvancingFront(object):
         return g
 
     def shadow_cdt_factory(self,g):
-        try:
-            klass=shadow_cdt.ShadowCGALCDT
-        except AttributeError:
-            klass=shadow_cdt.ShadowCDT
-
-        return klass(g)
+        """ 
+        Create a shadow CDT for the given grid.
+        This extra level of indirection is to facilitate
+        testing of one method vs the other in subclasses.
+        """
+        return shadow_cdt.shadow_cdt_factory(g)
 
     def initialize_boundaries(self,upsample=True):
         """
@@ -1744,8 +1766,8 @@ class AdvancingFront(object):
                 # This used to set fixed=SLIDE, but since there is no additional
                 # topology attached to nnew, it probably makes more sense for it
                 # to be HINT. changed 2018-02-26
-                jnew,nnew = self.grid.split_edge(j,x=new_x,ring_f=new_f,oring=oring+1,
-                                                 fixed=self.HINT)
+                jnew,nnew,j_next = self.grid.split_edge(j,x=new_x,ring_f=new_f,oring=oring+1,
+                                                        fixed=self.HINT)
         except self.cdt.IntersectingConstraints as exc:
             self.log.info("resample - slide() failed. will return node at original loc")
             self.grid.revert(cp)
