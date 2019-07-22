@@ -74,30 +74,40 @@ def merge_lines(layer=None,segments=None):
 
     progress_message("Reading features")
 
-    if layer:
-        layer.ResetReading()
-    else:
-        next_seg = lambda it=enumerate(segments): six.next(it)
 
-    while 1:
-        if layer:
-            feat = layer.GetNextFeature()
-            if not feat:
-                break
-            fid = feat.GetFID()
-            geo = feat.GetGeometryRef() # should be a linestring
-
-            if geo.GetGeometryName() != 'LINESTRING':
-                raise Exception("All features must be linestrings")
-
-            # read the points into a numpy array:
-            points = np.array(shapely.wkb.loads(geo.ExportToWkb()).coords)
+    def seg_iter():
+        if not layer:
+            for fid,seg in enumerate(segments):
+                yield fid,seg
         else:
-            try:
-                fid,points = next_seg()
-            except StopIteration:
-                break
+            layer.ResetReading()
+            while 1:
+                feat = layer.GetNextFeature()
+                if not feat:
+                    return
+                fid = feat.GetFID()
+                geo = feat.GetGeometryRef() # should be a linestring
+                if geo is None:
+                    log.warning("Missing geometry - will skip")
+                    continue
 
+                geom=shapely.wkb.loads(geo.ExportToWkb())
+                
+                if geom.type == 'MultiLineString':
+                    geolist=geom.geoms
+                else:
+                    geolist=[geom]
+
+                for sub_idx,one_geom in enumerate(geolist):
+                    if one_geom.type != 'LineString':
+                        raise Exception("All (sub)features must be linestrings (fid=%s, %s)"%(fid,one_geom.type))
+
+                    # read the points into a numpy array:
+                    points = np.array(one_geom.coords)
+                    # use tuples to keep sub-features distinct
+                    yield (fid,sub_idx),points
+        
+    for fid,points in seg_iter():
         features[fid] = points
 
         start_point = tuple(points[0])
@@ -119,7 +129,6 @@ def merge_lines(layer=None,segments=None):
     # almost every point has exactly two features - perfect!
 
     progress_message("%i possible matched features"%len(endpoints))
-
 
     # toss out endpoints that don't have exactly two matches:
     endpoint_list = []

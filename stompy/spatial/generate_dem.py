@@ -118,7 +118,7 @@ if __name__=='__main__':
     parser.add_argument("-q", "--query",help="Query to select subset of features",default=None)
     parser.add_argument("-d", "--date",help="Target date",default=None,type=np.datetime64)
     parser.add_argument("-g", "--grid",help="Mask region by grid outline",default=None)
-    parser.add_argument("--buffer",help="Buffer distnace beyond grid",default=100.0)
+    parser.add_argument("--buffer",help="Buffer distance beyond grid",default=100.0)
 
     args=parser.parse_args()
 
