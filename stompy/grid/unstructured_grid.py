@@ -180,6 +180,15 @@ class HalfEdge(object):
         """
         return self.grid.edges['nodes'][self.j, [self.orient, 1-self.orient]]
 
+    def normal(self):
+        """
+        Unit vector perpendicular to edge, pointing toward cell.  
+        """
+        # for orient==0, the sign of the normal is opposite of the grid's
+        # edge normal (grid normal is from c1 to c2, but here orient=0 means
+        # towards c1).
+        return self.grid.edges_normals(self.j) * (-1)**(1-self.orient)
+
     @staticmethod
     def from_nodes(grid,rev,fwd):
         j=grid.nodes_to_edge(rev,fwd)
@@ -1155,7 +1164,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 for field in src_data.dtype.names:
                     if field.startswith('_'):
                         continue # presumed to be private, probably auto-calculated.
-                    if field in ['cells','nodes','edges','deleted']:
+                    if field in ['cells','nodes','edges','deleted','face_x','face_y']:
                         continue # already included
                     if src_data[field].ndim != 1:
                         continue # not smart enough for that yet
@@ -1485,6 +1494,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         """
         # will need to get fancier to discern vector dtypes
         # assert data.ndim==1  - maybe no need to be smart?
+        data=np.asarray(data)
         if name in np.dtype(self.cell_dtype).names:
             if on_exists == 'fail':
                 raise GridException("Node field %s already exists"%name)
@@ -2078,10 +2088,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         though subsetting with ids is not optimized with the python method.
         """
         if method=='py':
-            cxy=self.cells_centroid_py()
-            if ids is not None:
-                cxy=cxy[ids]
-            return cxy
+            return self.cells_centroid_py(ids)
         else:
             return self.cells_centroid_shapely(ids=ids)
         
@@ -2101,20 +2108,28 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 centroids[ci]= np.array(self.cell_polygon(c).centroid)
         return centroids
 
-    def cells_centroid_py(self):
+    def cells_centroid_py(self,ids=None):
         """
         Vectorized python calculation of centroids.  Returns centroids
         [Ncells,{x,y}], with nan for deleted cells.
+        if ids is included, return only the values for the given list of
+        cells
         """
-        A=self.cells_area()
-        cxy=np.zeros( (self.Ncells(),2), np.float64)
+        A=self.cells_area(sel=ids)
+        cxy=np.zeros( (len(A),2), np.float64)
 
-        refs=self.nodes['x'][self.cells['nodes'][:,0]]
+        if ids is None:
+            sel=slice(None)
+        else:
+            sel=ids
+
+        nodes=self.cells['nodes'][sel,:]
+        refs=self.nodes['x'][self.cells['nodes'][sel,0]]
 
         # replace missing nodes with first node
-        cnodes=np.where( self.cells['nodes']>=0,
-                         self.cells['nodes'],
-                         self.cells['nodes'][:,0][:,None] )
+        cnodes=np.where( nodes>=0,
+                         nodes,
+                         nodes[:,0][:,None] )
         all_pnts=self.nodes['x'][cnodes] - refs[:,None,:]
 
         i=np.arange(cnodes.shape[1])
@@ -2130,7 +2145,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         cxy /= 6*A[:,None]
         cxy += refs
 
-        cxy[self.cells['deleted'],:]=np.nan
+        cxy[self.cells['deleted'][sel],:]=np.nan
 
         return cxy
 
@@ -2697,6 +2712,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         merge_thresh: if non-negative, check new cells for being joined
         with neighbors to make near-orthogonal quads. a threshold of 0.1
         is reasonable.
+
+        returns 3-tuple:
+          j_new - the edge created by splitting j
+          n_new - new node at the split
+          edges_next_split - list of edge indices that could be split next
+          (special case for strip of quads)
         """
         # This edge will get a point inserted at the midpoint
         if j is None:
@@ -2718,6 +2739,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             kw['x']=x
         j_new,n_new=self.split_edge_basic(j,**kw)
 
+        # edges that would be the logical next edge to split if this
+        # split is propagating across a series of quads. 0,1 or 2
+        # edge indexes
+        edges_next_split=[]
         for c_nbr in c_nbrs:
             # the new ring of nodes, with n_new in the right spot
             nodes=list(c_nbr['nodes'])
@@ -2751,6 +2776,11 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 mid=rolled[2:-1]
                 if len(mid)>1:
                     new_cells.append(mid+[n_new]) # poly_mid
+                    if len(mid)==2: # special case for quads, queue up next splits
+                        j_next=self.nodes_to_edge(mid[0],mid[1])
+                        if j_next is not None:
+                            logging.info("Queueing up next edge for split %d"%j_next)
+                            edges_next_split.append(j_next)
 
             for new_cell in new_cells:
                 self.add_cell_and_edges(nodes=new_cell)
@@ -2758,7 +2788,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         if merge_thresh>=0:
             self.automerge_cells(n_new,thresh=merge_thresh)
 
-        return j_new,n_new
+        return j_new,n_new,edges_next_split
 
     def automerge_cells(self,n,thresh=0.1):
         """
@@ -2811,6 +2841,109 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             self.log.info("auto-merging j=%d"%j)
             self.merge_cells(j)
 
+    def add_quad_from_edge(self,j,orthogonal='edge'):
+        """
+        Add a quad extending from the given edge, with some heuristics 
+        on where to place the new node.
+        returns {'j_next':next edge up for a step}
+
+        orthogonal: 
+          'edge': make the new edge perpendicular to the sequence of edges
+           we're running along.  If you're paving a long row, this is probably
+           better as it avoids the flip-flop trapezoids
+          'cell': make the new cell orthogonal.  For a single new quad, this
+           will give a perfectly orthogonal cell.
+        """
+        nodes=self.edges['nodes'][j]
+        cells=self.edge_to_cells(j)
+        if (cells<0).sum()!=1:
+            raise self.GridException("Must have exactly one side edge unpaved")
+
+        he=self.halfedge(j,0)
+        if he.cell()>=0:
+            he=he.opposite()
+        assert he.cell()<0
+
+        he_fwd=he.fwd()
+        he_rev=he.rev()
+
+        a,b,c,d=abcd=[he_rev.node_rev(),
+                      he.node_rev(),
+                      he.node_fwd(),
+                      he_fwd.node_fwd()]
+
+        pnts=self.nodes['x'][abcd]
+        dpnts=np.diff(pnts,axis=0)
+        angles=np.arctan2(dpnts[:,1],dpnts[:,0])
+        int_angles=np.diff(angles)
+
+        # wrap it to be in [-180,180]
+        int_angles=(int_angles+np.pi)%(2*np.pi) - np.pi
+
+        # In creating the new point, the most obvious choices are to
+        # make a trapezoid and the remaining faces are symmetric.
+        # there is a choice of which edges to make parallel.  The 
+        # more common usage is probably adding a row along the
+        # length of a channel, so the selected edge is one of the symmetric
+        # edges, not the parallel edge
+
+        j_next=None
+
+        min_int_angle=60*np.pi/180.
+        if (int_angles[0]>int_angles[1]) and (int_angles[0]>min_int_angle):
+            # quad will be a,b,c,N
+            # calculate new 'd'
+            # start with symmetric trapezoid
+            if orthogonal=='edge':
+                z=he_rev.rev().node_rev()
+                if z==b:
+                    orthogonal='cell' # can't do edge, fall through.
+                else:
+                    # unit vector at point a along which we place the
+                    # new node.
+                    a_perp=to_unit(he_rev.rev().normal() + he_rev.normal())
+                    # distance perpendicular to ab
+                    width= np.dot( he_rev.normal(), pnts[2]-pnts[1])
+                    a_dist=width/np.dot( a_perp, he_rev.normal())
+                    new_x_d=pnts[0]+a_perp*a_dist
+            if orthogonal=='cell':
+                new_x_d=pnts[2]+pnts[0]-pnts[1] # parallelogram
+                para=to_unit(pnts[0]-pnts[1])
+                new_x_d-= 2 * para*np.dot(para,pnts[2]-pnts[1])
+                
+            new_x=new_x_d
+            new_n=self.add_node(x=new_x)
+            self.add_edge(nodes=[new_n,c])
+            j_next=self.add_edge(nodes=[new_n,a])
+            self.add_cell(nodes=[a,b,c,new_n])
+
+        elif (int_angles[1]>int_angles[0]) and (int_angles[1]>min_int_angle):
+            if orthogonal=='edge':
+                e=he_fwd.fwd().node_fwd()
+                if e==c:
+                    orthogonal='cell' # folds back on itself.  no go.
+                else:
+                    d_perp=to_unit(he_fwd.fwd().normal() + he_fwd.normal())
+                    width=np.dot(he_fwd.normal(), pnts[1]-pnts[2])
+                    d_dist=width/np.dot( d_perp, he_fwd.normal())
+                    new_x_a=pnts[3]+d_perp*d_dist
+
+            if orthogonal=='cell':
+                # quad will be N,b,c,d
+                # calculate new 'a'
+                new_x_a=pnts[1]+pnts[3]-pnts[2] # parallelogram
+                para=to_unit(pnts[3]-pnts[2])
+                new_x_a-=2 * para*np.dot(para,pnts[1]-pnts[2])
+                
+            new_x=new_x_a
+            new_n=self.add_node(x=new_x)
+            self.add_edge(nodes=[new_n,b])
+            j_next=self.add_edge(nodes=[new_n,d])
+            self.add_cell(nodes=[new_n,b,c,d])
+
+        return dict(j_next=j_next)
+
+            
     def merge_cells(self,j=None,x=None):
         """
         Given an edge or point near an edge midpoint,
@@ -3797,7 +3930,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         if sel is None:
             recalc=np.nonzero( np.isnan(self.cells['_area']) & (~self.cells['deleted']))[0]
         else:
-            recalc=sel.ravel()
+            recalc=np.asarray(sel).ravel()
 
         for c in recalc:
             self.cells['_area'][c] = signed_area(self.nodes['x'][self.cell_to_nodes(c)])
@@ -4637,6 +4770,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     break
             hits=results
 
+        # this is only necessary with spatial indexes that don't deal with
+        # deletion.  bandaid.
+        Nc=self.Ncells()
+        hits=[hit for hit in hits
+              if (hit<Nc) and not self.cells['deleted'][hit]]
+                
         if inside: # check whether the point is truly inside the cell
             # -- using shapely to determine contains, may be slower than matplotlib
             #  pnt=geometry.Point(xy[0],xy[1])
@@ -5299,7 +5438,11 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         """
         add nodes,edges and cells defining a quad grid.
         centerline: [N,2] centerline points, already at desired resolution.
-        profile: function(x,s) => [M] values for lateral spacing.
+        profile: function(x,s,perp) => [M] values for lateral spacing.
+          x: [x,y] point on centerline
+          s: nondimensional location on centerline, 0 to 1
+          perp: unit normal perpendicular to left of centerline
+
         add_streamwise: d_lat,d_long will be set for nodes and cells, holding
          dimensional streamwise coordinates
 
@@ -5318,9 +5461,6 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             self.add_node_field('d_long',zero,on_exists='pass')
 
         nx=len(centerline)
-        prof0=profile(x=centerline[0],s=0)
-        ny=len(prof0)
-        node_ids=np.zeros( (nx,ny), int)-1
 
         centerline_s=dist_along(centerline)
 
@@ -5332,11 +5472,15 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         center_norms=np.c_[ -center_deltas[:,1], center_deltas[:,0] ]
         center_norms=to_unit(center_norms)
 
+        prof0=profile(x=centerline[0],s=0,perp=center_norms[0])
+        ny=len(prof0)
+        node_ids=np.zeros( (nx,ny), int)-1
+        
         # create the nodes
         for xi in range(nx):
             ctr=centerline[xi]
             s=centerline_s[xi]
-            prof=profile(x=ctr,s=s)
+            prof=profile(x=ctr,s=s,perp=center_norms[xi])
 
             for yi in range(ny):
                 X=ctr+prof[yi]*center_norms[xi]
