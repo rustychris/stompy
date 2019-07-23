@@ -1000,6 +1000,8 @@ class HydroModel(object):
                 os.makedirs(path)
         elif mode=='existing':
             assert os.path.exists(path),"Directory %s does not exist"%path
+        else:
+            raise Exception("Did not understand create mode: %s"%mode)
 
     def set_run_dir(self,path,mode='create'):
         """
@@ -1857,7 +1859,7 @@ class HycomMultiScalarBC(HycomMultiBC):
         self.init_bathy()
 
         # Initialize per-edge details
-        self.model.grid._edge_depth=self.model.grid.edges['edge_depth']
+        self.model.grid._edge_depth=self.model.grid.edges['edge_z_bed']
         layers=self.model.layer_data(with_offset=True)
 
         # In order to get valid data even when the hydro model has a cell
@@ -2028,7 +2030,7 @@ class HycomMultiVelocityBC(HycomMultiBC):
         # log.info("populate_values: eta is %s"%eta)
         
         # Initialize per-edge details
-        self.model.grid._edge_depth=self.model.grid.edges['edge_depth']
+        self.model.grid._edge_depth=self.model.grid.edges['edge_z_bed']
         layers=self.model.layer_data(with_offset=True)
 
         for i,sub_bc in enumerate(self.sub_bcs):
@@ -2826,8 +2828,18 @@ class DFlowModel(HydroModel):
             raise Exception("Only picking by name has been implemented for DFM output")
         
         # this has a bunch of extra cruft -- some other time remove
-        # the parts that are not relevant to the cross section.
-        return his.isel(stations=idx)
+        # the parts that are not relevant to the station
+        ds=his.isel(stations=idx)
+        # When runs are underway, some time values beyond the current point in the
+        # run are set to t0.  Remove those.
+        non_increasing=(ds.time.values[1:] <= ds.time.values[:-1])
+        if np.any(non_increasing):
+            # e.g. time[1]==time[0]
+            # then diff(time)[0]==0
+            # nonzero gives us 0, and the correct slice is [:1]
+            stop=np.nonzero(non_increasing)[0][0]
+            ds=ds.isel(time=slice(None,stop+1))
+        return ds
 
 
 import sys

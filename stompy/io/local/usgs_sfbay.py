@@ -244,6 +244,12 @@ ftype:easy
 from .common import periods
 
 def query_usgs_sfbay(period_start, period_end, cache_dir=None, days_per_request='M'):
+    """
+    Download (and locally cache) data from the monthly cruises of the USGS R/V Polaris 
+    and R/V Peterson.
+
+    Returns data as pandas DataFrame.
+    """
     # Handle longer periods:
     if days_per_request is not None:
         logging.info("Will break that up into pieces")
@@ -253,7 +259,6 @@ def query_usgs_sfbay(period_start, period_end, cache_dir=None, days_per_request=
             if df is not None:
                 dfs.append(df)
         return pd.concat(dfs)
-    logging.info("Fetch %s -- %s"%(period_start,period_end))
     
     params=[]
 
@@ -310,6 +315,7 @@ def query_usgs_sfbay(period_start, period_end, cache_dir=None, days_per_request=
         cache_file=None
 
     def fetch():
+        logging.info("Fetch %s -- %s"%(period_start,period_end))
         url="https://sfbay.wr.usgs.gov/cgi-bin/sfbay/dataquery/query16.pl"
         result=requests.post(url,params)
         text=result.text
@@ -328,6 +334,7 @@ def query_usgs_sfbay(period_start, period_end, cache_dir=None, days_per_request=
                 fp.write(data2)
         else:
             # print("Reading from cache")
+            logging.info("Cached %s -- %s"%(period_start,period_end))
             with open(cache_file,'rt') as fp:
                 data2=fp.read()
                 
@@ -335,6 +342,13 @@ def query_usgs_sfbay(period_start, period_end, cache_dir=None, days_per_request=
     if len(df)==0:
         return None
 
+    # get a real timestamp per station.
+    minutes=df.Time.values%100
+    hours=df.Time.values//100
+    time_of_day=(hours*3600+minutes*60).astype(np.int32) * np.timedelta64(1,'s')
+    df['time']=df['Date']+time_of_day
+    del df['Time']
+    
     # merge in lat/lon
     lonlats=[station_number_to_lonlat(s) for s in df['Station Number']]
     lonlats=np.array(lonlats)
@@ -343,3 +357,82 @@ def query_usgs_sfbay(period_start, period_end, cache_dir=None, days_per_request=
     
     return df
 
+
+def usgs_sfbay_dataset(start_date, end_date,
+                       cache_dir=None, days_per_request='M'):
+    """
+    Like query_usgs_sfbay, but return xarray Dataset
+    Also convert time to UTC (and save original time to time_local).
+    """
+    polaris=query_usgs_sfbay(period_start=start_date,
+                             period_end=end_date,
+                             cache_dir=cache_dir,
+                             days_per_request=days_per_request)
+    
+    hier=polaris.set_index(['Date','Station Number','Depth'])
+
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+
+
+    ds=xr.Dataset.from_dataframe(hier)
+    ds=ds.rename({'Station Number':'station','Depth':'depth','Date':'cruise'})
+    ds['date']=ds['cruise']
+
+    ds=ds.set_coords(['Julian Date','Days since 1/1/1990','Decimal Date','time',
+                      'Distance from 36','longitude','latitude'])
+    
+    def agg_field(ds,fld,agg):
+        with warnings.catch_warnings():
+            # ignore RuntimeWarning due to all-nan slices
+            # and FutureWarning for potential NaT!=NaT comparison
+            warnings.simplefilter('ignore')
+            vmin=ds[fld].min(dim=agg)
+            vmax=ds[fld].max(dim=agg)
+            # funny comparisons to check for either nan/nat or that they
+            # are equal.
+            if np.any( (vmin==vmin) & (vmin!=vmax) ):
+                print("Will not group %s"%fld)
+            else:
+                ds[fld]=vmin
+
+    # fields that only vary by cruise:
+    agg=['station','depth']
+    for fld in ['Julian Date','Days since 1/1/1990','Decimal Date']:
+        agg_field(ds,fld,agg)
+
+    # fields that vary only by station
+    agg=['cruise','depth']
+    for fld in ['Distance from 36','longitude','latitude']:
+        agg_field(ds,fld,agg)
+
+    # field that do not vary with depth
+    agg=['depth']
+    for fld in ['time', # maybe?
+                'Measured Extinction Coefficient',
+                'Calculated Extinction Coefficient']:
+        agg_field(ds,fld,agg)
+
+    # Convert times to utc
+    ds['time_local']=ds['time'].copy()
+    ds.time_local.attrs['timezone']='America/Los (PST/PDT)'
+    
+    import pytz, datetime
+    local = pytz.timezone ("America/Los_Angeles")
+
+    def loc_to_utc(t):
+        if utils.isnat(t): return t
+        naive = utils.to_datetime(t)
+        local_dt = local.localize(naive, is_dst=None)
+        utc_dt = local_dt.astimezone(pytz.utc)
+        return utils.to_dt64(utc_dt)
+
+    tloc=ds.time_local.values
+    tutc=ds.time.values
+    for idx in np.ndindex(tloc.shape):
+        tutc[idx]=loc_to_utc(tloc[idx])
+    ds.time.attrs['timezone']='UTC'
+
+    return ds
