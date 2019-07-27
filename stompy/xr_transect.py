@@ -133,12 +133,15 @@ def depth_avg(tran,v):
     """
     average the variable named by v in the vertical.
     """
+    if isinstance(v,six.string_types):
+        v=tran[v]
+    
     integrated=depth_int(tran,v)
     # tempting to define depth as depth_int(tran,1), but
     # if, for example, z_dz is horizontally constant and
     # valid elements are denoted just by finite tran[v], that
     # would fail.
-    depth = depth_int(tran,1*np.isfinite(tran[v]))
+    depth = depth_int(tran,1*np.isfinite(v))
     return integrated/depth
 
 def d_dz(tran,fld):
@@ -615,7 +618,7 @@ def resample_d(tran,new_xy,save_original=None):
             index=list(index)
             index[sample_num]=slice(None)
 
-            my_src=cast(var.values[index])
+            my_src=cast(var.values[tuple(index)])
             if not np.issubdtype(my_src.dtype,np.floating):
                 print("Variable %s will be treated as a category"%var.name)
                 my_dst=my_src[selectors]
@@ -630,7 +633,7 @@ def resample_d(tran,new_xy,save_original=None):
                 my_dst[bad]=np.nan
                 my_dst[~bad]=my_dst[~bad]/weight_sum[~bad]
 
-            new_val[index]=my_dst
+            new_val[tuple(index)]=my_dst
 
         ds[v_dest]=dims,uncast(new_val)
 

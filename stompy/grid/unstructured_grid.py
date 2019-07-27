@@ -4000,7 +4000,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         edge_hits=boundary_edges[hits]
         return edge_hits
 
-    def select_edges_intersecting(self,geom,invert=False,mask=slice(None)):
+    def select_edges_intersecting(self,geom,invert=False,mask=slice(None),
+                                  by_center=False):
         """
         geom: a shapely geometry
         returns: bitmask over edges, with non-deleted, selected edges set and others False.
@@ -4008,12 +4009,19 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         mask: bitmask or index array to limit the selection to a subset of edges.
         note that the return value is still a bitmask over the whole set of edges, not just
         those in the mask
+        by_center: test the midpoint, rather than the line segment
         """
         sel = np.zeros(self.Nedges(),np.bool8) # initialized to False
+        if by_center:
+            centers=self.edges_center()
+            
         for j in np.arange(self.Nedges())[mask]:
             if self.edges['deleted'][j]:
                 continue
-            edge_line = geometry.LineString(self.nodes['x'][self.edges['nodes'][j]])
+            if by_center:
+                edge_line = geometry.Point(centers[j])
+            else:
+                edge_line = geometry.LineString(self.nodes['x'][self.edges['nodes'][j]])
             sel[j] = geom.intersects(edge_line)
             if invert:
                 sel[j] = ~sel[j]

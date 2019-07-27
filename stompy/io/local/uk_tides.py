@@ -18,14 +18,14 @@ def get_tide_gauges_json(cache_dir):
     if cache_dir is not None:
         cache_fn=os.path.join(cache_dir,"uk_tides/stations.json")
         if os.path.exists(cache_fn):
-            log.info("Tide gauge list from cache (%s)"%cache_fn)
+            log.debug("Tide gauge list from cache (%s)"%cache_fn)
             with open(cache_fn,'rt') as fp:
                 return fp.read()
     else:
         cache_fn=None
 
     all_stations=root+"/id/stations?type=TideGauge"
-    log.info("Fetching tide gauge list")
+    log.debug("Fetching tide gauge list")
     res=requests.get(all_stations)
 
     if cache_fn is not None:
@@ -111,10 +111,10 @@ def fetch_tides(start_date,end_date,cache_dir,
             cache_fn=None
 
         ds=None
-        log.info("cache_fn: %s"%cache_fn)
+        log.debug("cache_fn: %s"%cache_fn)
         
         if (cache_fn is not None) and os.path.exists(cache_fn):
-            log.info("Cached   %s -- %s"%(interval_start,interval_end))
+            log.debug("Cached   %s -- %s"%(interval_start,interval_end))
             ds=xr.open_dataset(cache_fn)
         elif cache_only:
             continue

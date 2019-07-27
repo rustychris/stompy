@@ -592,8 +592,8 @@ class SuntansModel(dfm.HydroModel):
         return z
 
         
-    @staticmethod
-    def load(fn,load_grid=True,load_met=False,load_ic=False,load_bc=False):
+    @classmethod
+    def load(cls,fn,load_grid=True,load_met=False,load_ic=False,load_bc=False):
         """
         Open an existing model setup, from path to its suntans.dat
         return None if run could not be loaded.
@@ -602,7 +602,7 @@ class SuntansModel(dfm.HydroModel):
         load_ic: likewise for initial conditions
         load_bc: likewise for boundary conditions
         """
-        model=SuntansModel()
+        model=cls()
         if os.path.isdir(fn):
             fn=os.path.join(fn,'suntans.dat')
         if not os.path.exists(fn):
