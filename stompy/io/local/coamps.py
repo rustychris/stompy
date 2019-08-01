@@ -149,7 +149,7 @@ def fetch_coamps_wind(start,stop, cache_dir, **kw):
                 log.debug("Skip %s"%os.path.basename(output_fn))
                 continue
 
-            log.info("Fetch %s"%os.path.basename(output_fn))
+            log.warning("Fetch %s"%os.path.basename(output_fn))
 
             output_dir=os.path.dirname(output_fn)
             os.path.exists(output_dir) or os.makedirs(output_dir)
@@ -159,7 +159,7 @@ def fetch_coamps_wind(start,stop, cache_dir, **kw):
             except requests.HTTPError:
                 log.error("Failed to download %s, will move on"%rec['url'])
             
-            time.sleep(2) # be a little nice.
+            time.sleep(1) # be a little nice.  not as nice as it used to be.
     return files
 
 def coamps_press_windxy_dataset(bounds,start,stop,cache_dir):
