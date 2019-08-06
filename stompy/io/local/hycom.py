@@ -70,7 +70,7 @@ def hycom_bathymetry(t,cache_dir):
 
     ds=xr.open_dataset(local_fn)
     # make it look like the older file
-    invalid=ds.depth.values>1e6
+    invalid=1e6<np.where( np.isnan(ds.depth.values),0,ds.depth.values)
     ds.depth.values[invalid]=np.nan
     ds['bathymetry']=ds['depth']
     return ds
