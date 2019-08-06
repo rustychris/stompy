@@ -25,7 +25,10 @@ def fetch_range(lon_range, lat_range, time_range, cache_dir):
     # deprecated
     #times=pd.DatetimeIndex(start=time_range[0],end=time_range[1],freq='D')
     # modern call
-    times=pd.date_range(start=time_range[0],end=time_range[1],freq='D')
+    
+    times=pd.date_range(start=utils.floor_dt64(time_range[0],np.timedelta64(24,'h')),
+                        end=utils.ceil_dt64(time_range[1],np.timedelta64(24,'h')),
+                        freq='D')
 
     last_ds=None
     lon_slice=None
