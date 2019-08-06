@@ -25,7 +25,7 @@ class PtmConfig(object):
         fns.sort()
         return fns
         
-    def text(self):
+    def config_text(self):
         self.lines=[]
         self.add_global()
         self.add_transects()
@@ -213,5 +213,34 @@ PARTICLE GROUP INFORMATION
 
     def write(self):
         os.path.exists(self.run_dir) or os.makedirs(self.run_dir)
+        self.write_config()
+        self.write_method()
+    def write_config(self):
         with open(os.path.join(self.run_dir,"FISH_PTM.inp"),'wt') as fp:
-            fp.write(self.text())
+            fp.write(self.config_text())
+
+    def method_text(self):
+        return """\
+ MAX_HORIZONTAL_ADVECTION_SUBSTEPS = 10
+ MAX_HORIZONTAL_DIFFUSION_SUBSTEPS = 10
+ GRID_TYPE = 'unstructured'
+ ADVECTION_METHOD = 'streamline'
+   NORMAL_VELOCITY_GRADIENT = 'constant'
+ VERT_COORD_TYPE = 'z-level'
+ HORIZONTAL_DIFFUSION_METHOD = 'constant'
+   CONSTANT_HORIZONTAL_EDDY_DIFFUSIVITY = 0.01
+ VERTICAL_ADVECTION_METHOD = 'streamline'
+ MIN_VERTICAL_EDDY_DIFFUSIVITY = 0.00001
+ MAX_VERTICAL_EDDY_DIFFUSIVITY = 0.10000
+ MAX_VERTICAL_DIFFUSION_SUBSTEPS = 100
+ MIN_VERTICAL_DIFFUSION_TIME_STEP = 1.0
+ RANDOM_NUMBER_DISTRIBUTION = 'normal'
+ SPECIFY_RANDOM_SEED = 'true'
+   SPECIFIED_RANDOM_SEED = 1
+ REMOVE_DEAD_PARTICLES = 'false'
+ SUBGRID_BATHY = 'false'
+            
+"""
+    def write_method(self):
+        with open(os.path.join(self.run_dir,'FISH_PTM_method.inp'),'wt') as fp:
+            fp.write(self.method_text())
