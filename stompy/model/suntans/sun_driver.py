@@ -979,6 +979,7 @@ class SuntansModel(dfm.HydroModel):
                         self.config['netcdfBdyFile'])
         if not os.path.exists(fn): return False
         self.bc_ds=xr.open_dataset(fn)
+        return self.bc_ds
 
     def write_met_ds(self):
         fn=os.path.join(self.run_dir,

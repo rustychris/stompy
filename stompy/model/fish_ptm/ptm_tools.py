@@ -64,6 +64,12 @@ class PtmBin(object):
         if the beginning of that timestep is at or beyond the end of the file
         return False, signifying that ts does not exist.
         """
+        
+        if ts<0:
+            nsteps=self.count_timesteps()
+            ts=nsteps+ts
+            assert ts>=0
+            
         if ts not in self.offsets:
             for ts_scan in range(1,ts+1):
                 if ts_scan not in self.offsets:

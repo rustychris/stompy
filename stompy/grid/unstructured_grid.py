@@ -32,7 +32,7 @@ from matplotlib.path import Path
 
 from ..spatial import gen_spatial_index, proj_utils
 from ..utils import (mag, circumcenter, circular_pairs,signed_area, poly_circumcenter,
-                     orient_intersection,array_append,within_2d, to_unit,
+                     orient_intersection,array_append,within_2d, to_unit, progress,
                      dist_along, recarray_add_fields,recarray_del_fields)
 
 try:
@@ -81,7 +81,13 @@ def request_square(ax,max_bounds=None):
     # Maybe this is better?  But it artificially squeezes the
     # plot box sometimes.
     # plt.setp(ax,aspect=1.0,adjustable='box-forced')
-    plt.setp(ax,aspect=1.0,adjustable='datalim')
+
+    #plt.setp(ax,aspect=1.0,adjustable='datalim')
+    # this is rearing its head again.  see this thread:
+    # https://github.com/matplotlib/matplotlib/issues/11416
+    # not sure if there is a nice way around it at this point.
+    
+    plt.setp(ax,aspect='equal')
     if max_bounds is not None:
         bounds=ax.axis()
         if ( (bounds[0]>=max_bounds[0]) and
@@ -3795,7 +3801,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         tri=self.mpl_triangulation()
         return ax.tricontourf(tri,values,*args,**kwargs)
 
-    def smooth_matrix(self,f=1.0):
+    def average_matrix(self,f=1.0,normalize='area'):
         """
         Smoothing on the grid.  Returns a sparse matrix suitable for repeated
         application to a cell-centered scalar field, each time replacing
@@ -3809,6 +3815,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         f: diffusion factor.  1 means replaces each cell with the average of its neighbors.
           0.5 would be to 50% original value, 50% average of neighbors.
+
         """
         from scipy import sparse
         from scipy.sparse import linalg
@@ -3822,6 +3829,104 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             D[c,c]=1-f
             for nbr in nbrs:
                 D[c,nbr] = f/float(len(nbrs))
+
+        return D.tocsr()
+
+    def smooth_matrix(self,f=0.5,K='scaled',dx='grid',V='grid',A='grid',dt=None):
+        """
+        Smoothing on the grid following finite volume diffusion.
+        Returns a sparse matrix suitable for repeated
+        application to a cell-centered scalar field, each time replacing
+        a cell with the average of its neighbors.
+
+        f: in the default case, a non-dimensional time step
+        dx: either an array of cell spacings, 'grid' to pull cell spacings from the
+          grid, or None to use 1.0.
+        V: either an array of cell 'volumes', 'grid' to pull cell *area* from the grid, 
+          or None to use 1.0.
+        A: either an array of flux 'areas', 'grid' to pull edge *length* from the grid,
+          or None to use 1.0.
+        dt: user supplied time step.
+        
+        The default choices will create a matrix suitable for smoothing a 2D concentration
+        field.  K will be scaled such that coarse regions of the grid have a higher effective
+        diffusion coefficient.
+
+        No attempt is made to include depth information -- to properly diffuse a 3D scalar
+        field requires passing in the proper depth-inclusive values for V and A.
+        """
+        from scipy import sparse
+        from scipy.sparse import linalg
+
+        Nc=self.Ncells()
+        Nj=self.Nedges()
+        D=sparse.dok_matrix((Nc,Nc),np.float64)
+
+        e2c=self.edge_to_cells()
+        all_j=np.arange(Nj)
+        internal=np.all(e2c>=0,axis=1)
+
+        # the pure smoothing case
+        # this is already more mass conservative than the simple averaging, as
+        # fluxes at least balance.
+        if isinstance(dx,np.ndarray):
+            pass # user supplied data
+        elif dx is None:
+            dx=np.ones(Nj,np.float64)
+        elif dx=='grid':
+            cc=self.cells_center()
+            dx=np.ones(Nj,np.float64)
+            dx[internal]=mag(cc[e2c[internal,0]] - cc[e2c[internal,1]])
+        else:
+            raise Exception("did not understand dx argument %s"%str(dx))
+
+        if isinstance(A,np.ndarray):
+            pass
+        elif A=='dx':
+            A=dx
+        elif A=='grid':
+            A=self.edges_length()
+        elif A is None:
+            A=np.ones(Nj,np.float64)
+        else:
+            raise Exception("did not understand A argument %s"%str(A))
+
+        if isinstance(V,np.ndarray):
+            pass
+        elif V=='grid':
+            V=self.cells_area()
+        elif V is None:
+            V=np.ones(Nc,np.float64)
+        else:
+            raise Exception("Did not understand V argument %s"%str(V))
+
+        if isinstance(K,np.ndarray):
+            pass
+        elif K=='scaled':
+            K=np.ones(Nj,np.float64)
+            # some judgement call here in whether to scale with the average of the
+            # volumes, or minimum.
+            K[internal]=0.5*dx[internal]*(V[e2c[internal,0]] + V[e2c[internal,1]])/A[internal]
+        elif K is None:
+            K=np.ones(Nj,np.float64)
+
+        if dt is None:
+            dt=float(f)/self.max_sides # eh
+
+        for c in range(self.Ncells()):
+            D[c,c]=1
+
+        for j in progress(all_j[internal]):
+            nc1,nc2=e2c[j]
+            fac=dt*K[j]*A[j]/dx[j]
+            D[nc1,nc1] += -fac/V[nc1]
+            D[nc2,nc2] += -fac/V[nc2]
+            D[nc1,nc2] += fac/V[nc1]
+            D[nc2,nc1] += fac/V[nc2]
+
+        for c in range(self.Ncells()):
+            if D[c,c]<0:
+                print("Matrix is not positive-definite. May be unstable - decrease f.")
 
         return D.tocsr()
 

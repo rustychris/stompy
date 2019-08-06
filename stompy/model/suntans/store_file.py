@@ -2,6 +2,7 @@
 Adaptation of sunreader.StoreFile, to work with updated SuntansModel
 class.
 """
+import logging as log
 from ... import utils
 import numpy as np
 
@@ -26,7 +27,11 @@ class StoreFile(object):
         else:
             self.fn=filename
 
-        self.fp = open(self.fn,'rb+')
+        try:
+            self.fp = open(self.fn,'rb+')
+        except OSError:
+            log.warning("Could not open %s for update, will try read-only"%self.fn)
+            self.fp = open(self.fn,'rb')
 
         # lazy loading of the strides, in case we just want the
         # timestep
