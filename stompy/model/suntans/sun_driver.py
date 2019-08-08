@@ -646,7 +646,7 @@ class SuntansModel(dfm.HydroModel):
         if ( ('z_bed' not in g.cells.dtype.names)
              and
              (os.path.exists(cell_depth_fn)) ):
-            self.log.info("Will read cell depths, too")
+            self.log.debug("Will read cell depths, too")
             cell_xyz=np.loadtxt(cell_depth_fn)
             assert cell_xyz.shape[0]==g.Ncells(),"%s didn't have the right number of cells (%d vs %d)"%(cell_depth_fn,
                                                                                                         cell_xyz.shape[0],
@@ -666,7 +666,7 @@ class SuntansModel(dfm.HydroModel):
         if ( ('edge_z_bed' not in g.edges.dtype.names)
              and
              (os.path.exists(edge_depth_fn)) ):
-            self.log.info("Will read edge depths, too")
+            self.log.debug("Will read edge depths, too")
             edge_xyz=np.loadtxt(edge_depth_fn)
             assert edge_xyz.shape[0]==g.Nedges(),"%s didn't have the right number of edges (%d vs %d)"%(edge_depth_fn,
                                                                                                         edge_xyz.shape[0],
