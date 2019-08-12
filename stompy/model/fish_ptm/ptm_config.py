@@ -9,7 +9,8 @@ class PtmConfig(object):
     """
     run_dir=None    
     end_time=None
-    def __init__(self):
+    def __init__(self,**kw):
+        utils.set_keywords(self,kw)
         self.regions=[]
         self.releases=[]
         self.groups=[]
