@@ -529,6 +529,7 @@ def nearest(A,x,max_dx=None):
     if max_dx is given, then return -1 for items where the nearest
     match was more than max_dx away
     """
+    A=np.asarray(A)
     N=len(A)
     xi_right=np.searchsorted(A,x).clip(0,N-1) # the index of the value to the right of x
     xi_left=(xi_right-1).clip(0,N-1)
