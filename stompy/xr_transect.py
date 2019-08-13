@@ -1110,14 +1110,25 @@ def calc_secondary_strength(tran,name='secondary'):
     if tran.z_dz.mean()>0:
         flip_sgn*=-1
 
+    import pdb
+    pdb.set_trace()
     for samp in tran.sample:
         valid_left=np.isfinite(tran.U.isel(sample=samp,xy=0))
         u_left=tran.Uroz.isel(sample=samp,roz=1)[valid_left]
         u_left_sort=np.sort(u_left)
         mid_idx=np.searchsorted(u_left_sort,0)
-        circ_velocity[samp]=flip_sgn*u_left[:mid_idx].mean()
+        if mid_idx>0:
+            circ_velocity[samp]=flip_sgn*u_left[:mid_idx].mean()
+        else:
+            pass # leave as zero
     if name is not None:
         tran[name]=('sample',),circ_velocity
         tran[name].attrs['units']='m s-1'
         tran[name].attrs['description']='Average left-ward velocity in upper water column'
+    if np.any(np.isnan(circ_velocity)):
+        import pdb
+        pdb.set_trace()
+    print("Circulation velocity")
+    for s in tran.sample:
+        print(f" {circ_velocity[samp]}",end="")
     return circ_velocity

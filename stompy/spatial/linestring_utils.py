@@ -1,6 +1,7 @@
 # import field
 from numpy import *
 from numpy.linalg import norm
+import logging as log
 import numpy as np
 
 def as_density(d):
@@ -195,6 +196,13 @@ def left_normals(linestring):
     vecs=np.r_[a_diffs,ctr_diffs,z_diffs]
     left_vecs=np.c_[ -vecs[:,1], vecs[:,0] ]
     mags=np.sqrt( (left_vecs**2).sum(axis=1) )
-    return left_vecs/mags[:,None]
+    bad=mags==0
+    if np.any(bad):
+        mags[bad]=1.
+        log.warning("left_normals: repeated points in linestring")
+        raise Exception("Why is this happening")
+    normals=left_vecs/mags[:,None]
+    normals[bad,:]=np.nan
+    return normals
 
 

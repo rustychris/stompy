@@ -2016,14 +2016,24 @@ def nan_cov(m,rowvar=1,demean=False):
 
     return c
 
-def remove_repeated(A):
+def remove_repeated(A,axis=0):
     """
     A: numpy 1D array
     return A, without repeated element values.
     """
-    A=np.asarray(A)
-    return np.concatenate( ( A[:1], A[1:][ np.diff(A)!=0 ] ) )
-
+    assert axis==0,"Only ready for axis==0"
+    if A.ndim==1:
+        # easy case
+        A=np.asarray(A)
+        return np.concatenate( ( A[:1], A[1:][ np.diff(A)!=0 ] ) )
+    else:
+        # too lazy to be efficient right now.
+        valid=np.ones(A.shape[0],np.bool8)
+        for i in range(1,A.shape[0]):
+            if np.all( A[i,...]==A[i-1,...] ):
+                valid[i]=False
+        return A[valid,...]
+        
 
 def download_url(url,local_file,log=None,on_abort='pass',**extra_args):
     """

@@ -2189,7 +2189,6 @@ class SuntansModel(dfm.HydroModel):
                     point_ds['y_sample']=pnt[1]
                     point_datasets[pnti]=point_ds
         # drop xy points that didn't hit a cell
-        print("HERE")
         point_datasets=[p for p in point_datasets if p is not None]
         if len(point_datasets)==0: # transect doesn't intersect grid at all.
             log.debug("Transect points do not intersect model")
