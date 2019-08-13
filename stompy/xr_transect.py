@@ -200,6 +200,13 @@ def Qleft(tran):
 
     # unit normals left of transect:
     left_normal=linestring_utils.left_normals(np.c_[tran.x_sample,tran.y_sample])
+    # in some cases there are repeated points in x,y, leading to nan here.
+    utils.fill_invalid(left_normal[:,0])
+    utils.fill_invalid(left_normal[:,1])
+    # re-normalize magnitudes
+    mags=utils.mag(left_normal).clip(1e-5,np.inf)
+    left_normal /= mags[:,None]
+    
     # flow per-width normal to transect:
     qnorm=np.sum( (quv.values * left_normal),axis=1 )
 
