@@ -1347,16 +1347,35 @@ class HydroModel(object):
                                 ref_time=ref_time,
                                 columns=columns)
 
+    # having these classes as attributes reduces headaches in importing,
+    # and provides another chance for a model subclass to provide a different
+    # implementation.
+    FlowBC=FlowBC
+    SourceSinkBC=SourceSinkBC
+    StageBC=StageBC
+    WindBC=WindBC
+    RoughnessBC=RoughnessBC
+    ScalarBC=ScalarBC
     def add_FlowBC(self,**kw):
-        self.add_bcs(FlowBC(model=self,**kw))
+        bc=FlowBC(model=self,**kw)
+        self.add_bcs(bc)
+        return bc
     def add_SourceSinkBC(self,*a,**kw):
-        self.add_bcs(SourceSinkBC(*a,model=self,**kw))
+        bc=SourceSinkBC(*a,model=self,**kw)
+        self.add_bcs(bc)
+        return bc
     def add_StageBC(self,**kw):
-        self.add_bcs(StageBC(model=self,**kw))
+        bc=StageBC(model=self,**kw)
+        self.add_bcs(bc)
+        return bc
     def add_WindBC(self,**kw):
-        self.add_bcs(WindBC(model=self,**kw))
+        bc=WindBC(model=self,**kw)
+        self.add_bcs(bc)
+        return bc
     def add_RoughnessBC(self,**kw):
-        self.add_bcs(RoughnessBC(model=self,**kw))
+        bc=RoughnessBC(model=self,**kw)
+        self.add_bcs(bc)
+        return bc
     # def add_Structure(self,**kw): # only for DFM now.
 
     def add_bcs(self,bcs):

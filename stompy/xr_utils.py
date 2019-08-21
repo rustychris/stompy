@@ -4,6 +4,7 @@ log=logging.getLogger('xr_utils')
 from collections import OrderedDict
 
 import xarray as xr
+import six
 import numpy as np
 
 def gradient(ds,varname,coord):
@@ -402,3 +403,22 @@ def concat_permissive(srcs,**kw):
 
     return xr.concat(expanded_srcs,**kw)
 
+def structure_to_dataset(arr,dim,extra={}):
+    """
+    Convert a numpy structure array to a dataset.
+    arr: structure array.
+    dim: name of the array dimension.  can be a tuple with multiple dimension
+      names if arr.ndim>1.
+    extra: dict optionally mapping specific fields to additional dimensions
+     within that field.
+    """
+    if isinstance(dim,six.string_types):
+        dim=(dim,)
+    ds=xr.Dataset()
+    for fld in arr.dtype.names:
+        if fld in extra:
+            extra_dims=extra[fld]
+        else:
+            extra_dims=['d%02d'%d for d in arr[fld].shape[1:]]
+        ds[fld]=dim+tuple(extra_dims),arr[fld]
+    return ds

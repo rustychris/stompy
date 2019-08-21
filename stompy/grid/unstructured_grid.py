@@ -4358,6 +4358,66 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     sel.append(c)
         return sel
 
+    def points_to_cells(self,points,method='point_index'):
+        """
+        Map a large number of points to the containing cells.
+        This can achieve some significant speedups, but much is
+        in the details.
+        """
+        cells=-np.ones(len(points),np.int32)
+
+        if method=='cell_index':
+            # and compare to building a finite-rectangle index for
+            # the cells
+            boxes=np.zeros( (self.Ncells(),4), np.float64)
+            paths=[None]*self.Ncells()
+
+            # the setup part:
+            for c in range(self.Ncells()):
+                p=paths[c]=self.cell_path(c)
+                verts=p.vertices
+                boxes[c,:]=[verts[:,0].min(), verts[:,0].max(),
+                            verts[:,1].min(), verts[:,1].max()]
+            cell_index=gen_spatial_index.RectIndex(zip(range(self.Ncells()),
+                                                       boxes,
+                                                       [None]*self.Ncells()),
+                                                   interleaved=False)
+            for p,x in utils.progress(enumerate(points)):
+                for c in cell_index.intersection([x[0],x[0],x[1],x[1]]):
+                    if paths[c].contains_point(x):
+                        cells[p]=c
+                        break
+        elif method=='point_index':
+            xxyy=np.c_[points[:,0], points[:,0], points[:,1], points[:,1]]
+            # building in one go is several times faster than incremental.
+            self.log.info("Building point index (%d points)"%len(points))
+            idx=gen_spatial_index.PointIndex(zip(range(len(points)),
+                                                 xxyy,
+                                                 [None]*len(points)),
+                                             interleaved=False)
+            self.log.info("Querying point index (%d cells)"%self.Ncells())
+            for c in range(self.Ncells()):
+                p=self.cell_path(c)
+                verts=p.vertices
+                box=[verts[:,0].min(), verts[:,0].max(),
+                     verts[:,1].min(), verts[:,1].max()]
+                for hit in idx.intersection(box):
+                    if p.contains_point(points[hit]):
+                        cells[hit]=c
+        elif method=='cells_nearest':
+            for i in progress(range(len(points))):
+                # this step is the slowest.
+                # inverting the loop to be over cells, and check all points against
+                # a single cell at a time was equally slow with 500k points and 50k
+                # cells.
+                c=self.select_cells_nearest(points[i], inside=True)
+                if c is None: continue
+                cells[i]=c
+        else:
+            raise Exception("bad method %s"%method)
+            
+        return cells
+
     def select_cells_by_cut(self,line,start=0,side='left',delta=1.0):
         """
         Split the cells by a linestring.  By default, returns
