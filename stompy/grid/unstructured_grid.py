@@ -3487,7 +3487,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         self.delete_node(n_del)
 
     #-# Plotting
-    def plot_boundary(self,select_by='mark',**kwargs):
+    def plot_boundary(self,select_by='cells',**kwargs):
         """
         select_by: 'mark' chooses boundary edges by non-zero edge mark.
         'cells' choose boundary edges by a negative cell neighbor

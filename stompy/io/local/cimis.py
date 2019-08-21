@@ -48,14 +48,19 @@ def cimis_json_to_xr(data):
         print("No data")
         return None
 
-    df['Date']= ( ('time',), [ "%s %s"%(rec['Date'],rec['Hour'])
-                               for rec in records] )
-
-    # annoying convention where midnight is 2400.
-    datetimes=[ (datetime.datetime.strptime(s.replace('2400','0000'),
-                                            '%Y-%m-%d %H%M')
-                 + datetime.timedelta(days=int(s.endswith('2400'))))
-                for s in df.Date.values]
+    if records[0]['Scope']=='daily':
+        df['Date']= ( ('time',), [ rec['Date']
+                                   for rec in records] )
+        datetimes=[ datetime.datetime.strptime(s,"%Y-%m-%d")
+                    for s in df.Date.values ]
+    else: # hourly
+        df['Date']= ( ('time',), [ "%s %s"%(rec['Date'],rec['Hour'])
+                                   for rec in records] )
+        # annoying convention where midnight is 2400.
+        datetimes=[ (datetime.datetime.strptime(s.replace('2400','0000'),
+                                                '%Y-%m-%d %H%M')
+                     + datetime.timedelta(days=int(s.endswith('2400'))))
+                    for s in df.Date.values]
     dt64s=[utils.to_dt64(dt) for dt in datetimes]
     df['time']=('time',),dt64s
 
@@ -211,11 +216,19 @@ def cimis_fetch_to_xr(stations,
             log.warning("Requesting %s to %s"%(interval_start,interval_end))
             req=requests.get(url,params=dict(appKey=cimis_key,
                                              targets=",".join(stations), 
-                                             startDate=interval_start,
-                                             endDate=interval_end,
+                                             startDate=begin_str,
+                                             endDate=end_str,
                                              unitOfMeasure='M', # metric please
-                                             dataItems=",".join( fields ) ))
-            ds=cimis_json_to_xr(req.json())
+                                             # is this causing problems?
+                                             dataItems=",".join( fields )
+            ))
+            try:
+                ds=cimis_json_to_xr(req.json())
+            except Exception:
+                log.warning("While requesting from:")
+                log.warning(req.url)
+                raise
+            
             if cache_fn is not None:
                 ds.to_netcdf(cache_fn)
             time.sleep(1.0) # be kind
