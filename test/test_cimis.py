@@ -29,3 +29,5 @@ def test_cimis():
     df2=cimis.cimis_fetch_to_xr(171,period[0],period[1],station_meta=True,
                                 days_per_request='10D',cache_dir=cache_dir)
     print("Done")
+    return df2
+    
