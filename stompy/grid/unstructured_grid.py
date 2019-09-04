@@ -514,7 +514,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             for vname in nc.variables.keys():
                 if nc[vname].attrs.get('cf_role',None) == 'mesh_topology':
                     meshes.append(vname)
-            assert len(meshes)==1
+            if len(meshes)!=1:
+                raise GridException("Could not uniquely determine mesh variable")
             mesh_name=meshes[0]
 
         mesh = nc[mesh_name]
@@ -6674,13 +6675,13 @@ def cleanup_dfm_multidomains(grid):
     geometries left behind.
     Grid doesn't have to have been read as a DFMGrid.
     """
-    log.info("Regenerating edges")
+    grid.log.info("Regenerating edges")
     grid.make_edges_from_cells()
-    log.info("Removing orphaned nodes")
+    grid.log.info("Removing orphaned nodes")
     grid.delete_orphan_nodes()
-    log.info("Removing duplicate nodes")
+    grid.log.info("Removing duplicate nodes")
     grid.merge_duplicate_nodes()
-    log.info("Renumbering nodes")
+    grid.log.info("Renumbering nodes")
     grid.renumber_nodes()
-    log.info("Extracting grid boundary")
+    grid.log.info("Extracting grid boundary")
     return grid
