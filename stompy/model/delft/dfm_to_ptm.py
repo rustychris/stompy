@@ -89,16 +89,16 @@ class DFlowToPTMHydro(object):
         if self.nprocs>1:
             log.warning("Brave - trying an MPI run")
 
-        self.open_dwaq_output()
-        
         # check the naming of DFM output files
         self.open_dflow_output()
+
+        # this relies on some info from open_dflow_output
+        self.open_waq_output()
 
         if self.grd_fn is not None:
             self.write_grd(self.grd_fn)
 
         if self.write_nc:
-            self.open_waq_output()
             self.initialize_output()
             try:
                 self.initialize_output_variables()
@@ -109,16 +109,6 @@ class DFlowToPTMHydro(object):
                 # run.
                 self.close()
 
-    def open_dwaq_output(self):
-        # for consistency, always go straight to an aggregated run,
-        # even it is really single processor
-        # use the global grid for "aggregation" shp.
-        
-        self.waq=waq.HydroMultiAggregator(run_prefix=self.model.mdu.name,
-                                          path=self.model.run_dir,
-                                          agg_shp=self.model.grid)
-        assert self.nprocs==self.waq.infer_nprocs(),"Failed to determine number of processors"
-        
     def open_dflow_output(self):
         """
         open dfm netcdf output as (1) original (2) with renames,
@@ -128,9 +118,11 @@ class DFlowToPTMHydro(object):
         #   maybe I can use the info already assembled in waq to merge
         #   things here?
         
-        
         # incoming dataset from DFM:
-        self.map_ds=xr.open_dataset(self.map_file)
+        map_fns=self.model.map_outputs()
+        assert len(map_fns)==1,"Not ready for multi processor or time-divided output"
+        self.map_ds=xr.open_dataset(map_fns[0])
+        
         # Additionally trim to subset of times here:
         subset_ds=self.map_ds.isel(time=self.time_slice)
 
@@ -234,7 +226,7 @@ class DFlowToPTMHydro(object):
                                                  'long_name':'Mean elevation of bed in face'})
 
         # recreate edge bed level based on a constant bedlevtype
-        bedlevtype=int(self.mdu['geometry','BedLevType'])
+        bedlevtype=int(self.model.mdu['geometry','BedLevType'])
         if bedlevtype==3:
             edge_z=self.map_ds.mesh2d_node_z.values[self.g.edges['nodes']].mean(axis=1)
         elif bedlevtype==4:
@@ -379,9 +371,15 @@ class DFlowToPTMHydro(object):
         time_string_var[:]=time_string_array.T
 
     def open_waq_output(self):
-        self.hyd_fn=os.path.join(self.mdu.base_path,
-                                 "DFM_DELWAQ_%s"%self.mdu.name,
-                                 "%s.hyd"%self.mdu.name)
+        # non-working multiprocessor code
+        #     self.hyd=waq.HydroMultiAggregator(run_prefix=self.model.mdu.name,
+        #                                       path=self.model.run_dir,
+        #                                       agg_shp=self.model.grid)
+        #     assert self.nprocs==self.waq.infer_nprocs(),"Failed to determine number of processors"
+        
+        self.hyd_fn=os.path.join(self.model.mdu.base_path,
+                                 "DFM_DELWAQ_%s"%self.model.mdu.name,
+                                 "%s.hyd"%self.model.mdu.name)
         self.hyd=waq.HydroFiles(self.hyd_fn)
 
         self.hyd.infer_2d_links()

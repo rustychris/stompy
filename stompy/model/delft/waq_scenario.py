@@ -5096,7 +5096,8 @@ class HydroMultiAggregator(DwaqAggregator):
         max_nprocs=1024
         for p in range(1+max_nprocs):
             if not os.path.exists(self.sub_dir(p)):
-                assert p>0
+                if p==0:
+                    raise WaqException("Failed to find any subdomains -- may be a serial run")
                 return p
         else:
             raise Exception("Really - there are more than %d subdomains?"%max_nprocs)
