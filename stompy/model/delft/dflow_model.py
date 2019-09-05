@@ -1100,7 +1100,7 @@ class HydroModel(object):
                 g.edges[edge_field][feat_edges] = np.minimum(g.edges[edge_field][feat_edges],
                                                              dredge_depth)
             else:
-                log.warning(f'No edge bathymetry ({edge_field}) to dredge.  Ignoring')
+                log.warning('No edge bathymetry (%s) to dredge.  Ignoring'%edge_field)
         if node_field:
             g.nodes[node_field][nodes_to_dredge] = np.minimum(g.nodes[node_field][nodes_to_dredge],
                                                               dredge_depth)
