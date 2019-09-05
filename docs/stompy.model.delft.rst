@@ -140,6 +140,14 @@ stompy\.model\.delft\.test\_waq\_scenario module
     :undoc-members:
     :show-inheritance:
 
+stompy\.model\.delft\.waq\_hydro\_editor module
+-----------------------------------------
+
+.. automodule:: stompy.model.delft.waq_hydro_editor
+    :members:
+    :undoc-members:
+    :show-inheritance:
+       
 stompy\.model\.delft\.waq\_process module
 -----------------------------------------
 

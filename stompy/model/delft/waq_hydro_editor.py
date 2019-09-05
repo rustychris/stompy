@@ -1,3 +1,45 @@
+"""
+Command line interface to several manipulations of D-WAQ formatted 
+hydrodynamic data.
+
+Typical invocation:
+
+  python -m stompy.model.delft.waq_hydro_editor -h
+
+(to get help message).
+
+  python -m stompy.model.delft.waq_hydro_editor -i path/to/com-foo.hyd -a agg.shp -o output_agg/output
+
+Read existing, serial DWAQ hydro, aggregate according to polygons in agg.shp, and write to output_agg/
+
+  python -m stompy.model.delft.waq_hydro_editor -i output_agg/com-output.hyd -c
+
+Check DWAQ hydro for continuity.  Relative errors are typically around 1e-8, which is machine precision
+for the 32-bit floats that are used. Aggregated, spliced and low-pass hydro can accumulate larger errors,
+especially in the presence of wetting and drying.
+
+  python -m stompy.model.delft.waq_hydro_editor -i path/com-input.hyd -l -o output_lp/output
+
+Remove tides, write to output_lp.  Currently the interval for the lowpass is not exposed on the command
+line, and the filter is hard-wired to be a Butterworth IIR filter.
+
+  python -m stompy.model.delft.waq_hydro_editor -m path/to/flowfm.mdu -s -o output_splice/output
+
+Splice a multiprocessor run into a single D-WAQ hydro dataset.  Note that in the case of an MPI run,
+the original D-Flow FM mdu file is specified with -m, instead of providing the hyd file.
+
+
+Caveats:
+
+* Lowpass loads the entire dataset into RAM, so it cannot handle large or very long simulations as input.
+* While it should be possible to use this script with DFM output in MapFormat=1 or MapFormat=4, there are some
+  subtle differences.  It was originally written for MapFormat=1, and more recently adapted to handle 
+  MapFormat=4.
+* There are some places where the code makes assumptions about undocumented details of the DFM output.  It has
+  been developed against rev 53925, which is probably ca. late 2017.
+
+"""
+
 import logging as log
 import argparse
 import numpy as np
@@ -11,11 +53,13 @@ from ...spatial import wkb2shp
 # Clean inputs
 def clean_shapefile(shp_in):
     """
-    break multipolygons into individual polygons.
-    shp_in: path to aggregation polygon shapefile.
-    returns either shp_in, unchanged, if there were no changes needed, or
-      writes a new shapefile with suffix -cleaned.shp, which has edits
-      to shp_in.
+    Break multipolygons into individual polygons.
+    :param shp_in: path to aggregation polygon shapefile.
+    :type shp_in: str
+
+    :return: either shp_in, unchanged, if there were no changes needed, or
+    writes a new shapefile with suffix -cleaned.shp, which has edits
+    to shp_in.
     """
     geoms=wkb2shp.shp2geom(shp_in)
 
