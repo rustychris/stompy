@@ -169,4 +169,11 @@ if not mpi_model.is_completed():
 
 waq_hydro_editor.main(args=["-m","run-dfm-test-mpi/flowfm.mdu","-s","-o","output_splice/output"])
 
-# Getting pretty far, but again missing FlowLink.
+##
+
+# this does trip a warning -- seems the relative errors are sometimes 1e-8, sometimes as bad
+# as 1e-4.
+waq_hydro_editor.main(args=["-i","output_splice/com-output.hyd","-c"]) 
+
+##
+

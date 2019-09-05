@@ -103,8 +103,9 @@ def main(args=None):
         dest_grid=model.grid
         hydro_out=waq.HydroMultiAggregator(run_prefix=run_prefix,
                                            path=run_dir,
-                                           agg_shp=dest_grid)
-        
+                                           agg_shp=dest_grid,
+                                           agg_boundaries=False)
+
     if args.continuity:
         def err_callback(time_index,summary):
             log.info("Time index: %d: max volume error: %.3e  relative error: %.3e"%( time_index,
