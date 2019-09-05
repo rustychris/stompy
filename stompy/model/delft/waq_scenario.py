@@ -2408,12 +2408,14 @@ class DwaqAggregator(Hydro):
     def dfm_map_file(self,p):
         """
         Try to infer the name of the dfm map output for processor p, and
-        if it exists, return that path
+        if it exists, return that path.
         """
-        map_fn=os.path.join(self.path,"DFM_OUTPUT_%s"%self.run_prefix,"%s_%04d_map.nc"%(self.run_prefix,p))
+        assert p==0,"For HydroAggregator, only serial runs are supported."
+        map_fn=self.hydro_in.hyd_path.replace("DFM_DELWAQ_","DFM_OUTPUT_").replace('.hyd','_map.nc')
         if os.path.exists(map_fn):
             return map_fn
         else:
+            self.log.warning("Tried to find DFM map output at %s, but it wasn't there"%map_fn)
             return None
     
     _flowgeoms_xr=None
@@ -2466,7 +2468,9 @@ class DwaqAggregator(Hydro):
 
             # special handling for other dimensions
             if 'nFlowElem' not in fg.dims and 'nmesh2d_face' in fg.dims:
-                fg['nFlowElem']=fg['nmesh2d_face']
+                # helps down the line to make this its own dimension, not just reuse
+                # the dimension from nmesh2d_face.
+                fg['nFlowElem']=('nFlowElem',),fg['nmesh2d_face'].values
             
             if ('NetNode_x' in fg) and ('NetElemNode' in fg['NetNode_x'].dims):
                 self.log.info("Trying to triage bad dimensions in NetCDF (probably ddcouplefm output)")
@@ -2488,17 +2492,87 @@ class DwaqAggregator(Hydro):
                     
             if self.nprocs==1:
                 elem_dim='nFlowElem'
-                link_dim='nFlowLink'
                 n_elem=len(fg[elem_dim])
-                n_link=len(fg[link_dim])
                 if 'FlowElemGlobalNr' not in fg:
                     self.log.info("Synthesizing multi domain data for single domain run")
                     fg['FlowElemGlobalNr']=(elem_dim,),1+np.arange(n_elem,dtype=np.int32)
                 if 'FlowElemDomain' not in fg:
                     fg['FlowElemDomain']  =(elem_dim,),np.zeros(n_elem,np.int32)
                 if 'FlowLinkDomain' not in fg:
-                    fg['FlowLinkDomain']  =(link_dim,),np.zeros(n_link,np.int32)
-            
+                    link_dim='nFlowLink'
+                    if link_dim in fg:
+                        n_link=len(fg[link_dim])
+                        fg['FlowLinkDomain']  =(link_dim,),np.zeros(n_link,np.int32)
+                    else:
+                        # when FlowLink is not present, go ahead and create it, by
+                        # looking at edge_type==1 or 2, which should encompass all edges
+                        # with flow.
+                        edge_type=fg.mesh2d_edge_type.values
+                        # array that is indexed by flowlink, and returns the
+                        # edge index.
+                        # generally it could be more complicated, but 
+                        # based on a single comparison between two runs, exactly the same
+                        # except for MapFormat, the FlowLinks are in the same order
+                        # as the edges, it's just that the edges have the extra closed_boundary
+                        # edges.
+                        self.flowlink_to_edge=np.nonzero( (edge_type==1)|(edge_type==2) )[0]
+                        
+                        n_flowlinks=len(self.flowlink_to_edge)
+                        self.log.warning('Fabricating FlowLinkDomain from edge_type')
+                        fg['FlowLinkDomain'] = (link_dim,), np.zeros(n_flowlinks,np.int32)
+
+                        # Fill in more FlowLink fields --
+                        fg['FlowLink_xu']=(link_dim,), fg.mesh2d_edge_x.values[self.flowlink_to_edge]
+                        fg['FlowLink_yu']=(link_dim,), fg.mesh2d_edge_y.values[self.flowlink_to_edge]
+
+                        # fabricating FlowLink.  This is more complicated because of how boundaries
+                        # are handled.  Tested to some degree, but this is getting into DFM details
+                        # that may not be documented or guaranteed to stay the same.
+                        # Starting point - just the subset of edges that are flow links
+                        FlowLink=fg.mesh2d_edge_faces.values[self.flowlink_to_edge,:]
+                        # swap out nan for -1 and switch to integers
+                        FlowLink[ np.isnan(FlowLink) ] = -1
+                        # somehow in this case the boundary elements are coming in as 0, while in
+                        # testing external to this code they were nan.
+                        # try to hedge by assuming any index less than start_index is a boundary,
+                        # and default to start_index of 1 since that is what DFM has generally used
+                        # here.  The general UGRID/CF default is 0, but there is a better chance
+                        # of somebody dropping the attribute, than of DFM silently switching to
+                        # the default value.
+                        start_index=fg.mesh2d_edge_faces.attrs.get('start_index',1)
+                        FlowLink[ FlowLink<start_index ] = -1
+                        
+                        FlowLink=FlowLink.astype(np.int32)
+                        # Which links are boundary links?
+                        # The ordering of elements for links gets screwy. Format=1 this is
+                        # moot, since it already includes FlowLinks.  Format=4, it seems that
+                        # flowgeom files get nan-valued boundary elements placed in the second
+                        # column.  but a map file from the same run doesn't constrain the ordering
+                        # and the 0-valued boundary elements can appear in either column.
+                        # so this code tries to accommodate both, while still including some
+                        # sanity checks
+                        bc_links=(FlowLink.min(axis=1)<0)
+                        bc_link_flip=FlowLink[:,1]<0
+                        # map files may not need all links flipped.
+                        FlowLink[bc_link_flip]=FlowLink[bc_link_flip,::-1]
+                        # minor sanity check
+                        assert np.all(FlowLink[:,1]>=start_index),"Bad assumption on boundary links"
+                        
+                        # and boundary elements get numbered beyond the number of regular elements.
+                        FlowLink[bc_links,0]=fg.dims['nmesh2d_face'] + 1 + np.arange(bc_links.sum())
+
+                        assert np.all(FlowLink[:,0]>=start_index),"Missed some boundary links??"
+                                      
+                        fg['FlowLink'] = (link_dim,'nFlowLinkPts'), FlowLink
+
+                        # type 2 is flow link between 2D elements. Will have to change if/when we get into
+                        # mixed 1D/2D/3D grids.
+                        fg['FlowLinkType']=(link_dim,), 2*np.ones(n_flowlinks,np.int32)
+                        # ignore FlowLink_lonu, FlowLink_latu
+                        
+                        print("FlowLink near end of open_flowgeom_ds(%d), id(fg)=%s"%(p,id(fg)))
+                        print(fg.FlowLink)
+                        
             self._flowgeoms_xr[p] = fg
             
         return self._flowgeoms_xr[p]
@@ -5091,6 +5165,17 @@ class HydroMultiAggregator(DwaqAggregator):
             self._hyds[p]=HydroFiles(os.path.join(self.sub_dir(p),
                                                   "%s_%04d.hyd"%(self.run_prefix,p)))
         return self._hyds[p]
+    
+    def dfm_map_file(self,p):
+        """
+        Try to infer the name of the dfm map output for processor p, and
+        if it exists, return that path
+        """
+        map_fn=os.path.join(self.path,"DFM_OUTPUT_%s"%self.run_prefix,"%s_%04d_map.nc"%(self.run_prefix,p))
+        if os.path.exists(map_fn):
+            return map_fn
+        else:
+            return None
 
     def infer_nprocs(self):
         max_nprocs=1024

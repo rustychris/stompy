@@ -1,9 +1,10 @@
+
 import logging as log
 import argparse
 import matplotlib
 import os
 import datetime
-import .waq_scenario as waq
+from . import waq_scenario as waq
 from ...spatial import wkb2shp
 
 # Clean inputs
@@ -35,12 +36,12 @@ def clean_shapefile(shp_in):
         return cleaned
     else:
         return shp_in
-
-if __name__ == '__main__':
+    
+def main(args=None):
     parser=argparse.ArgumentParser(description='Manipulate transport data in D-WAQ format.')
 
     parser.add_argument("-a", "--aggregate", help="Path to shapefile definining aggregation polygons",default=None,type=str)
-    parser.add_argument("-h", "--hyd", help="Path to hyd file for input", default=None,type=str,required=True)
+    parser.add_argument("-i", "--hyd", help="Path to hyd file for input", default=None,type=str,required=True)
     parser.add_argument("-o", "--output", help="Path to hyd file output", default="output/output.hyd")
 
     # these options copied in from another script, here just for reference, and possible consistency
@@ -53,63 +54,58 @@ if __name__ == '__main__':
     #parser.add_argument("-d", "--data",help="Input data",nargs='+')
     #parser.add_argument("-i", "--interval",help="Time step in output, suffix 's' for seconds, 'D' for days", default='1D')
 
-    args=parser.parse_args()
+    args=parser.parse_args(args=args)
 
     # For now, all operations starts with reading the existing hydro
-    hydro_orig=waq.HydroFiles(hyd_fn)
+    hydro_orig=waq.HydroFiles(args.hyd)
 
     # both specifies that the operation is aggregation, and what the aggregation geometry
     # is
     if args.aggregate: 
+        # split multipolygons to multiple polygons
+        agg_shp=clean_shapefile(args.aggregate)    
+
+        # create object representing aggregated hydrodynamics
+        # sparse_layers: for z-layer inputs this can be True, in which cases cells are only output for the
+        #    layers in which they are above the bed.  Usually a bad idea.  Parts of DWAQ assume
+        #    each 2D cell exists across all layers
+        # agg_boundaries: if True, multiple boundary inputs entering a single aggregated cell will be
+        #   merged into a single boundary input.  Generally best to keep this as False.
+        hydro_out=waq.HydroAggregator(hydro_in=hydro_orig,
+                                      agg_shp=agg_shp,
+                                      sparse_layers=False,
+                                      agg_boundaries=False)
+
+    # The code to write dwaq hydro is wrapped up in the code to write a dwaq model inp file,
+    # so we pretend to set up a dwaq simulation, even though the goal is just to write
+    # the hydro.
+    if args.output is not None:
+        output_fn=args.output
+        name=os.path.basename(output_fn.replace('.hyd',''))
+
+        # Define the subset of timesteps to write out, in this case the
+        # whole run.
+        sec=datetime.timedelta(seconds=1)
+        start_time=hydro_out.time0+hydro_out.t_secs[ 0]*sec
+        stop_time =hydro_out.time0+hydro_out.t_secs[-1]*sec
+
+        # probably would have been better to just pass name, desc, base_path in here,
+        # rather than using a shell subclass.
+        writer=waq.Scenario(name=name,
+                            desc=(name,agg_shp,'aggregated'),
+                            hydro=hydro_out,
+                            start_time=start_time,
+                            stop_time=stop_time,
+                            base_path=os.path.dirname(output_fn))
+
+        # This step is super slow.  Watch the output directory for progress.
+        # Takes ~20 hours on HPC for the full wy2013 run.
+        writer.cmd_write_hydro()
+    else:
+        log.info("No output file given -- will not write out results.")
+
+
+if __name__ == '__main__':
+    main()
+    
         
-
-
-
-#----------
-
-
-
-# Processing:
-
-# remove multipolygons from inputs 
-shp=clean_shapefile(agg_grid_shp)    
-
-# create object representing aggregated hydrodynamics
-# sparse_layers: for z-layer inputs this can be True, in which cases cells are only output for the
-#    layers in which they are above the bed.  Usually a bad idea.  Parts of DWAQ assume
-#    each 2D cell exists across all layers
-# agg_boundaries: if True, multiple boundary inputs entering a single aggregated cell will be
-#   merged into a single boundary input.  Generally best to keep this as False.
-hydro_agg=waq.HydroAggregator(hydro_in=hydro_orig,
-                              agg_shp=shp,
-                              sparse_layers=False,
-                              agg_boundaries=False)
-
-
-# The code to write dwaq hydro is wrapped up in the code to write a dwaq model inp file,
-# so we pretend to set up a dwaq simulation, even though the goal is just to write
-# the hydro.
-name=os.path.basename(output_fn.replace('.hyd',''))
-class Writer(waq.Scenario):
-    name=name
-    desc=(name,
-          agg_grid_shp,
-          'aggregated')
-    # output directory inferred from output hyd path
-    base_path=os.path.dirname(output_fn)
-
-# Define the subset of timesteps to write out, in this case the
-# whole run.
-sec=datetime.timedelta(seconds=1)
-start_time=hydro_agg.time0+hydro_agg.t_secs[ 0]*sec
-stop_time =hydro_agg.time0+hydro_agg.t_secs[-1]*sec
-
-# probably would have been better to just pass name, desc, base_path in here,
-# rather than using a shell subclass.
-writer=Writer(hydro=hydro_agg,
-              start_time=start_time,
-              stop_time=stop_time)
-
-# This step is super slow.  Watch the output directory for progress.
-# Takes ~20 hours on HPC for the full wy2013 run.
-writer.cmd_write_hydro()
