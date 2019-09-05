@@ -24,9 +24,7 @@ dflow_model.DFlowModel.dfm_bin_dir=dfm_bin_dir
 dflow_model.DFlowModel.mpi_bin_dir=dfm_bin_dir
 
 ## 
-def base_model(force=True):
-    run_dir='run-dfm_to_ptm'
-    
+def base_model(force=True,num_procs=1,run_dir='run-dfm-test'):
     if not force and dflow_model.DFlowModel.run_completed(run_dir):
         model=dflow_model.DFlowModel.load(run_dir)
         return model
@@ -42,9 +40,9 @@ def base_model(force=True):
     model.load_template('dflow-template.mdu')
     model.set_grid(g)
 
-    model.num_procs=1
+    model.num_procs=num_procs
 
-    model.set_run_dir('run-dfm_to_ptm', mode='pristine')
+    model.set_run_dir(run_dir, mode='pristine')
     model.run_start=np.datetime64("2018-01-01 00:00")
     model.run_stop =np.datetime64("2018-01-03 00:00")
     dt=np.timedelta64(300,'s')
@@ -66,6 +64,8 @@ def base_model(force=True):
     model.write()
 
     return model
+
+##
 
 # Get a well-behaved small hydro run:
 model=base_model(force=False)
@@ -112,19 +112,13 @@ assert os.path.exists(hyd_path)
 
 ##
 
-# Build up the command to test:
-if 0:
-    cmd="python -m stompy.model.delft.waq_hydro_editor -i %s -a %s"%(hyd_path,agg_shp_fn)
-    subprocess.run(cmd,shell=True)
-
-##
-
 from stompy.model.delft import waq_hydro_editor, waq_scenario
 
 six.moves.reload_module(waq_scenario)
 six.moves.reload_module(waq_hydro_editor)
 
-waq_hydro_editor.main(args=["-i",hyd_path,"-a",agg_shp_fn])
+## 
+waq_hydro_editor.main(args=["-i",hyd_path,"-a",agg_shp_fn,"-o","output_agg/output"])
 
 # gets a ways, but then it's not quite finding the boundary elements?
 # sub_geom just has 0 for all of the boundary elements -- (waq_scenario:4723)
@@ -135,69 +129,44 @@ waq_hydro_editor.main(args=["-i",hyd_path,"-a",agg_shp_fn])
 
 ##
 
-# So now running into an issue that we don't have FlowLink.
-# already figured out that the number of flow links is
-# the edge type 1 and 2 edges.
-# but how are they ordered?
-fg1=xr.open_dataset('run-dfm_to_ptm-map3/DFM_DELWAQ_flowfm/flowfm_waqgeom.nc')
-map1=xr.open_dataset('run-dfm_to_ptm-map3/DFM_OUTPUT_flowfm/flowfm_map.nc')
+# Continuity check
 
-fg4=xr.open_dataset('run-dfm_to_ptm/DFM_DELWAQ_flowfm/flowfm_waqgeom.nc')
-map4=xr.open_dataset('run-dfm_to_ptm/DFM_OUTPUT_flowfm/flowfm_map.nc')
+# With data stored as float32, 1e-8 relative error is machine precision.
+waq_hydro_editor.main(args=["-i",hyd_path,"-c"]) # the original run
+# aggregated accumulates some additional error - 1e-6 is not alarming.
+waq_hydro_editor.main(args=["-i","output_agg/com-output.hyd","-c"]) # aggregated run
 
 ##
 
-# How does the ordering of edges vary?
-map4.mesh2d_edge_faces
-fg4.mesh2d_edge_faces
+# De-tide the original
+waq_hydro_editor.main(args=["-i",hyd_path,"-l","-o","output_lp/output"])
 
-for label,ds in [('Map output, format=4',map4),
-                 ('flowgeom, format=4',fg4)]:
-    print(label)
-    print(f"   nan? {np.isnan(ds.mesh2d_edge_faces.values).sum(axis=0)}")
-    print(f"   0?   {(ds.mesh2d_edge_faces.values==0).sum(axis=0)}")
+##
 
-for label,ds in [('Map output, format=1',map1),
-                 ('flowgeom, format=1',fg1)]:
-    print(label)
-    print(f"   nan? {np.isnan(ds.FlowLink.values).sum(axis=0)}")
-    print(f"   0?   {(ds.FlowLink.values==0).sum(axis=0)}")
+# Accumulates a bit more error than the original, but still 1e-6 or so
+waq_hydro_editor.main(args=["-i","output_lp/com-output.hyd","-c"]) # lowpass run
 
-## 
-# Are face indices the same between these? yes
-assert np.allclose(fg1.FlowElem_xcc.values,fg4.mesh2d_face_x.values)
-assert np.allclose(fg1.FlowElem_ycc.values,fg4.mesh2d_face_y.values)
+##
 
+# De-tide the aggregated
+waq_hydro_editor.main(args=["-i","output_agg/com-output.hyd","-l","-o","output_agg_lp/output"])
 
-# pull out the face
-edge_type=fg4.mesh2d_edge_type.values
-flow_edges=(edge_type==1) | (edge_type==2)
+##
 
-FlowLink_xu=fg4.mesh2d_edge_x.values[flow_edges]
-FlowLink_yu=fg4.mesh2d_edge_y.values[flow_edges]
+# still about 1e-6 errors.
+waq_hydro_editor.main(args=["-i","output_agg_lp/com-output.hyd","-c"]) 
 
-# these succeed
-assert np.allclose( fg1.FlowLink_xu.values, FlowLink_xu )
-assert np.allclose( fg1.FlowLink_yu.values, FlowLink_yu )
+##
 
-flowlink_to_edge=np.nonzero( (edge_type==1)|(edge_type==2) )[0]
+six.moves.reload_module(waq_scenario)
+six.moves.reload_module(waq_hydro_editor)
 
-# fabricating FlowLink
-FlowLink=fg4.mesh2d_edge_faces.values[flowlink_to_edge,:]
-# 
-FlowLink[ np.isnan(FlowLink) ] = -1
-FlowLink=FlowLink.astype(np.int32)
-bc_links=(FlowLink[:,1]<0)
-assert np.all(FlowLink[:,0]>=0) # not sure if that 0- or 1-based
-# Boundary links get flipped to have the outside fake element first.
-FlowLink[bc_links]=FlowLink[bc_links,::-1]
-FlowLink[bc_links,0]=fg4.dims['nmesh2d_face'] + 1 + np.arange(bc_links.sum())
+# splicing of mpi runs:
+mpi_model=base_model(force=False,run_dir='run-dfm-test-mpi',num_procs=4)
+if not mpi_model.is_completed():
+    mpi_model.partition()
+    mpi_model.run_model()
 
-assert np.all(fg1.FlowLink.values==FlowLink)
-FlowLinkType=2*np.ones(len(flowlink_to_edge))
+waq_hydro_editor.main(args=["-m","run-dfm-test-mpi/flowfm.mdu","-s","-o","output_splice/output"])
 
-assert np.all( fg1.FlowLinkType.values==FlowLinkType)
-# don't care about lon/lat.
-#     FlowLink_lonu                (nFlowLink) float64 ...
-#     FlowLink_latu                (nFlowLink) float64 ...
-
+# Getting pretty far, but again missing FlowLink.

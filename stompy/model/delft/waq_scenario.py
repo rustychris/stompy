@@ -241,6 +241,11 @@ class Hydro(object):
     # used as the default for parameters, too.
     enable_write_symlink=True
 
+    # Checks are only present in a few places, but generally, write*()
+    # methods should fail if files already exist and overwrite is not
+    # true.
+    overwrite=True
+
     @property
     def fn_base(self): # base filename for output. typically com-<scenario name>
         return 'com-{}'.format(self.scenario.name)
@@ -255,17 +260,7 @@ class Hydro(object):
 
     def __init__(self, **kws):
         self.log=logging.getLogger(self.__class__.__name__)
-
-        for k, v in kws.items():
-            # if k in self.__dict__ or k in self.__class__.__dict__:
-            #     self.__dict__[k]=v
-            # else:
-            #     raise Exception("Unknown keyword option: %s=%s"%(k,v))
-            try:
-                getattr(self,k)
-                setattr(self, k, v)
-            except AttributeError:
-                raise Exception("Unknown keyword option: %s=%s"%(k, v))
+        utils.set_keywords(self,kws)
 
     @property
     def t_dn(self):
@@ -1100,8 +1095,11 @@ class Hydro(object):
         fn=fn or os.path.join( self.scenario.base_path,
                                self.fn_base+".hyd")
         if os.path.exists(fn):
-            self.log.warning("hyd file %s already exists.  Not overwriting!"%fn)
-            return
+            if self.overwrite:
+                os.unlink(fn)
+            else:
+                self.log.warning("hyd file %s already exists.  Not overwriting!"%fn)
+                return
         
         name=self.scenario.name
 
@@ -2095,6 +2093,13 @@ class HydroFiles(Hydro):
 
         dest=os.path.join(self.scenario.base_path,
                           self.flowgeom_filename)
+        if os.path.exists(dest) or os.path.lexists(dest):
+            if self.overwrite:
+                self.log.warning("Removing old geom file %s"%dest)
+                os.unlink(dest)
+            else:
+                raise Exception("Overwrite is not true, and geometry file %s already exists"%dest)
+                
         if self.enable_write_symlink:
             rel_symlink(orig,dest)
         else:
@@ -2431,6 +2436,11 @@ class DwaqAggregator(Hydro):
         if p not in self._flowgeoms_xr:
             hyd=self.open_hyd(p)
             flowgeom_fn=hyd.get_path('grid-coordinates-file')
+            # some information is here, but not in the map file,
+            # so always try to open this, and optionally try to open the map, too.
+            fg_ds=ds=xr.open_dataset(flowgeom_fn)
+            map_ds=None
+            
             if self.flowgeom_use_dfm_map:
                 if p==0:
                     msg=self.log.info
@@ -2440,9 +2450,12 @@ class DwaqAggregator(Hydro):
                 map_fn=self.dfm_map_file(p)
                 if map_fn:
                     msg("Yes - will load %s"%map_fn)
-                    flowgeom_fn=map_fn
-            fg=xr.open_dataset(flowgeom_fn)
-
+                    map_ds=xr.open_dataset(map_fn)
+                    
+                # when map is available, use it, but remember fg_ds is also still around for
+                # things like global element number
+                ds=map_ds
+            
             # if this is ugrid output, include copies of some variables to their pre-ugrid
             # names
             for old,new in [ ('NetNode_x','mesh2d_node_x'),
@@ -2457,123 +2470,138 @@ class DwaqAggregator(Hydro):
                              ('FlowElem_bl','mesh2d_flowelem_bl'),
                              ('FlowElem_bac','mesh2d_flowelem_ba')
                              ]:
-                if new in fg and old not in fg:
-                    # also some of those index fields are saved as float(?!)
-                    if old in ['FlowElemDomain','FlowElemGlobalNr','NetElemNode']:
-                        data=fg[new]
-                        data.values[ np.isnan(data.values) ]=-999999
-                        fg[old]=data.astype(np.int32)
-                    else:
-                        fg[old]=fg[new] # should just be a shallow copy.  cheap.
+                if old in ds: continue
+                
+                if new in ds:
+                    data=ds[new] # should just be a shallow copy.  cheap.
+                elif old in fg_ds:
+                    # waqgeom / flowgeom might have it?
+                    data=fg_ds[old].copy()
+                elif new in fg_ds:
+                    # waqgeom / flowgeom might have the new version.
+                    data=fg_ds[new].copy()
+                else:
+                    # still no source for this. move on.
+                    continue 
+                    
+                # also some of those index fields are saved as float(?!)
+                if old in ['FlowElemDomain','FlowElemGlobalNr','NetElemNode']:
+                    data.values[ np.isnan(data.values) ]=-999999
+                    data=data.astype(np.int32)
+
+                ds[old]=data
 
             # special handling for other dimensions
-            if 'nFlowElem' not in fg.dims and 'nmesh2d_face' in fg.dims:
+            if 'nFlowElem' not in ds.dims and 'nmesh2d_face' in ds.dims:
                 # helps down the line to make this its own dimension, not just reuse
                 # the dimension from nmesh2d_face.
-                fg['nFlowElem']=('nFlowElem',),fg['nmesh2d_face'].values
+                ds['nFlowElem']=('nFlowElem',),ds['nmesh2d_face'].values
             
-            if ('NetNode_x' in fg) and ('NetElemNode' in fg['NetNode_x'].dims):
+            if ('NetNode_x' in ds) and ('NetElemNode' in ds['NetNode_x'].dims):
                 self.log.info("Trying to triage bad dimensions in NetCDF (probably ddcouplefm output)")
-                netnode_x=fg.NetNode_x.values
-                netnode_y=fg.NetNode_y.values
-                netnode_z=fg.NetNode_z.values
+                netnode_x=ds.NetNode_x.values
+                netnode_y=ds.NetNode_y.values
+                netnode_z=ds.NetNode_z.values
 
-                del fg['NetNode_x']
-                del fg['NetNode_y']
-                del fg['NetNode_z']
+                del ds['NetNode_x']
+                del ds['NetNode_y']
+                del ds['NetNode_z']
 
-                netelemnode = fg.NetElemNode.values
-                del fg['NetElemNode']
+                netelemnode = ds.NetElemNode.values
+                del ds['NetElemNode']
 
-                fg['NetNode_x']=('nNetNode',),netnode_x
-                fg['NetNode_y']=('nNetNode',),netnode_y
-                fg['NetNode_z']=('nNetNode',),netnode_z
-                fg['NetElemNode']=('nNetElem','nNetElemMaxNode'),netelemnode
+                ds['NetNode_x']=('nNetNode',),netnode_x
+                ds['NetNode_y']=('nNetNode',),netnode_y
+                ds['NetNode_z']=('nNetNode',),netnode_z
+                ds['NetElemNode']=('nNetElem','nNetElemMaxNode'),netelemnode
                     
             if self.nprocs==1:
                 elem_dim='nFlowElem'
-                n_elem=len(fg[elem_dim])
-                if 'FlowElemGlobalNr' not in fg:
+                n_elem=len(ds[elem_dim])
+                if 'FlowElemGlobalNr' not in ds:
                     self.log.info("Synthesizing multi domain data for single domain run")
-                    fg['FlowElemGlobalNr']=(elem_dim,),1+np.arange(n_elem,dtype=np.int32)
-                if 'FlowElemDomain' not in fg:
-                    fg['FlowElemDomain']  =(elem_dim,),np.zeros(n_elem,np.int32)
-                if 'FlowLinkDomain' not in fg:
-                    link_dim='nFlowLink'
-                    if link_dim in fg:
-                        n_link=len(fg[link_dim])
-                        fg['FlowLinkDomain']  =(link_dim,),np.zeros(n_link,np.int32)
-                    else:
-                        # when FlowLink is not present, go ahead and create it, by
-                        # looking at edge_type==1 or 2, which should encompass all edges
-                        # with flow.
-                        edge_type=fg.mesh2d_edge_type.values
-                        # array that is indexed by flowlink, and returns the
-                        # edge index.
-                        # generally it could be more complicated, but 
-                        # based on a single comparison between two runs, exactly the same
-                        # except for MapFormat, the FlowLinks are in the same order
-                        # as the edges, it's just that the edges have the extra closed_boundary
-                        # edges.
-                        self.flowlink_to_edge=np.nonzero( (edge_type==1)|(edge_type==2) )[0]
-                        
-                        n_flowlinks=len(self.flowlink_to_edge)
-                        self.log.warning('Fabricating FlowLinkDomain from edge_type')
-                        fg['FlowLinkDomain'] = (link_dim,), np.zeros(n_flowlinks,np.int32)
+                    ds['FlowElemGlobalNr']=(elem_dim,),1+np.arange(n_elem,dtype=np.int32)
+                if 'FlowElemDomain' not in ds:
+                    ds['FlowElemDomain']  =(elem_dim,),np.zeros(n_elem,np.int32)
+                    
+            # This had been just for nprocs==1.  But it's needed for MPI, too.
+            if 'FlowLink' not in ds:
+                link_dim='nFlowLink'
 
-                        # Fill in more FlowLink fields --
-                        fg['FlowLink_xu']=(link_dim,), fg.mesh2d_edge_x.values[self.flowlink_to_edge]
-                        fg['FlowLink_yu']=(link_dim,), fg.mesh2d_edge_y.values[self.flowlink_to_edge]
+                # when FlowLink is not present, go ahead and create it, by
+                # looking at edge_type==1 or 2, which should encompass all edges
+                # with flow.
+                edge_type=ds.mesh2d_edge_type.values
+                
+                # array that is indexed by flowlink, and returns the
+                # edge index.
+                # generally it could be more complicated, but 
+                # based on a single comparison between two runs, exactly the same
+                # except for MapFormat, the FlowLinks are in the same order
+                # as the edges, it's just that the edges have the extra closed_boundary
+                # edges.
+                self.flowlink_to_edge=np.nonzero( (edge_type==1)|(edge_type==2) )[0]
+                n_flowlinks=len(self.flowlink_to_edge)
 
-                        # fabricating FlowLink.  This is more complicated because of how boundaries
-                        # are handled.  Tested to some degree, but this is getting into DFM details
-                        # that may not be documented or guaranteed to stay the same.
-                        # Starting point - just the subset of edges that are flow links
-                        FlowLink=fg.mesh2d_edge_faces.values[self.flowlink_to_edge,:]
-                        # swap out nan for -1 and switch to integers
-                        FlowLink[ np.isnan(FlowLink) ] = -1
-                        # somehow in this case the boundary elements are coming in as 0, while in
-                        # testing external to this code they were nan.
-                        # try to hedge by assuming any index less than start_index is a boundary,
-                        # and default to start_index of 1 since that is what DFM has generally used
-                        # here.  The general UGRID/CF default is 0, but there is a better chance
-                        # of somebody dropping the attribute, than of DFM silently switching to
-                        # the default value.
-                        start_index=fg.mesh2d_edge_faces.attrs.get('start_index',1)
-                        FlowLink[ FlowLink<start_index ] = -1
-                        
-                        FlowLink=FlowLink.astype(np.int32)
-                        # Which links are boundary links?
-                        # The ordering of elements for links gets screwy. Format=1 this is
-                        # moot, since it already includes FlowLinks.  Format=4, it seems that
-                        # flowgeom files get nan-valued boundary elements placed in the second
-                        # column.  but a map file from the same run doesn't constrain the ordering
-                        # and the 0-valued boundary elements can appear in either column.
-                        # so this code tries to accommodate both, while still including some
-                        # sanity checks
-                        bc_links=(FlowLink.min(axis=1)<0)
-                        bc_link_flip=FlowLink[:,1]<0
-                        # map files may not need all links flipped.
-                        FlowLink[bc_link_flip]=FlowLink[bc_link_flip,::-1]
-                        # minor sanity check
-                        assert np.all(FlowLink[:,1]>=start_index),"Bad assumption on boundary links"
-                        
-                        # and boundary elements get numbered beyond the number of regular elements.
-                        FlowLink[bc_links,0]=fg.dims['nmesh2d_face'] + 1 + np.arange(bc_links.sum())
+                # Fill in FlowLink-related fields --
+                ds['FlowLink_xu']=(link_dim,), ds.mesh2d_edge_x.values[self.flowlink_to_edge]
+                ds['FlowLink_yu']=(link_dim,), ds.mesh2d_edge_y.values[self.flowlink_to_edge]
 
-                        assert np.all(FlowLink[:,0]>=start_index),"Missed some boundary links??"
-                                      
-                        fg['FlowLink'] = (link_dim,'nFlowLinkPts'), FlowLink
+                # fabricating FlowLink.  This is more complicated because of how boundaries
+                # are handled.  Tested to some degree, but this is getting into DFM details
+                # that may not be documented or guaranteed to stay the same.
+                # Starting point - just the subset of edges that are flow links
+                FlowLink=ds.mesh2d_edge_faces.values[self.flowlink_to_edge,:]
+                # swap out nan for -1 and switch to integers
+                FlowLink[ np.isnan(FlowLink) ] = -1
+                # somehow in this case the boundary elements are coming in as 0, while in
+                # testing external to this code they were nan.
+                # try to hedge by assuming any index less than start_index is a boundary,
+                # and default to start_index of 1 since that is what DFM has generally used
+                # here.  The general UGRID/CF default is 0, but there is a better chance
+                # of somebody dropping the attribute, than of DFM silently switching to
+                # the default value.
+                start_index=ds.mesh2d_edge_faces.attrs.get('start_index',1)
+                FlowLink[ FlowLink<start_index ] = -1
 
-                        # type 2 is flow link between 2D elements. Will have to change if/when we get into
-                        # mixed 1D/2D/3D grids.
-                        fg['FlowLinkType']=(link_dim,), 2*np.ones(n_flowlinks,np.int32)
-                        # ignore FlowLink_lonu, FlowLink_latu
+                FlowLink=FlowLink.astype(np.int32)
+                # Which links are boundary links?
+                # The ordering of elements for links gets screwy. Format=1 this is
+                # moot, since it already includes FlowLinks.  Format=4, it seems that
+                # flowgeom files get nan-valued boundary elements placed in the second
+                # column.  but a map file from the same run doesn't constrain the ordering
+                # and the 0-valued boundary elements can appear in either column.
+                # so this code tries to accommodate both, while still including some
+                # sanity checks
+                bc_links=(FlowLink.min(axis=1)<0)
+                bc_link_flip=FlowLink[:,1]<0
+                # map files may not need all links flipped.
+                FlowLink[bc_link_flip]=FlowLink[bc_link_flip,::-1]
+                # minor sanity check
+                assert np.all(FlowLink[:,1]>=start_index),"Bad assumption on boundary links"
+
+                # and boundary elements get numbered beyond the number of regular elements.
+                FlowLink[bc_links,0]=ds.dims['nmesh2d_face'] + 1 + np.arange(bc_links.sum())
+
+                assert np.all(FlowLink[:,0]>=start_index),"Missed some boundary links??"
+
+                ds['FlowLink'] = (link_dim,'nFlowLinkPts'), FlowLink
+
+                # type 2 is flow link between 2D elements. Will have to change if/when we get into
+                # mixed 1D/2D/3D grids.
+                ds['FlowLinkType']=(link_dim,), 2*np.ones(n_flowlinks,np.int32)
+                # ignore FlowLink_lonu, FlowLink_latu
+
+                print("FlowLink near end of open_flowgeom_ds(%d), id(ds)=%s"%(p,id(ds)))
+                print(ds.FlowLink)
+
+                if 'FlowLinkDomain' not in ds:
+                    # use the element domains, grabbing the internal/2nd flow element from
+                    # each link.
+                    # remember that FlowLink has 1-based numbering
+                    ds['FlowLinkDomain']  =(link_dim,),ds['FlowElemDomain'].values[FlowLink[:,1]-start_index]
                         
-                        print("FlowLink near end of open_flowgeom_ds(%d), id(fg)=%s"%(p,id(fg)))
-                        print(fg.FlowLink)
-                        
-            self._flowgeoms_xr[p] = fg
+            self._flowgeoms_xr[p] = ds
             
         return self._flowgeoms_xr[p]
 
@@ -2813,8 +2841,8 @@ class DwaqAggregator(Hydro):
             ccx=g_centroids[:,0]
             ccy=g_centroids[:,1]
 
-            dom_id=nc.FlowElemDomain.values
-            global_ids=nc.FlowElemGlobalNr.values - 1  # make 0-based
+            dom_id=nc.FlowElemDomain.values.astype(np.int32)
+            global_ids=(nc.FlowElemGlobalNr.values - 1).astype(np.int32)  # make 0-based
 
             try:
                 areas=nc.FlowElem_bac.values
@@ -5391,7 +5419,10 @@ class FilterHydroBC(Hydro):
     Subclass of Hydro which shifts tidal fluxes into changing volumes, with
     only subtidal fluxes.
     """
-    def __init__(self,original,lp_secs=86400*36./24,selection='boundary'):
+    lp_secs=86400*36./24
+    selection='boundary'
+    
+    def __init__(self,original,**kws):
         """
         selection: which exchanges will be filtered.  
            'boundary': only open boundaries
@@ -5399,10 +5430,9 @@ class FilterHydroBC(Hydro):
            bool array: length Nexchanges, with True meaning it will get filtered.
            int array:  indices of exchanges to be filtered.
         """
-        super(FilterHydroBC,self).__init__()
         self.orig=original
-        self.selection=selection
-        self.lp_secs=float(lp_secs)
+        super(FilterHydroBC,self).__init__(**kws)
+        self.lp_secs=float(self.lp_secs) # just to be sure
         self.apply_filter()
 
     # awkward handling of scenario - it gets set by the scenario, so we have
@@ -5442,6 +5472,10 @@ class FilterHydroBC(Hydro):
     bnd_filename = forwardTo('orig','bnd_filename')
     write_boundary_links = forwardTo('orig','write_boundary_links')
 
+    # butter: Butterworth filter.  Good frequency response, but can have some overshoots
+    #  when cells dry up, leading to negative volume.
+    filter_type='butter' # or 'fir'
+
     _pad=None
     @property
     def pad(self):
@@ -5458,18 +5492,31 @@ class FilterHydroBC(Hydro):
         return self._dt
             
     def lowpass(self,data):
-        pad =self.pad
-        npad=len(pad)
-        
-        flow_padded=np.concatenate( ( pad, 
-                                      data,
-                                      pad) )
-        lp_flows=filters.lowpass(flow_padded,
-                                 cutoff=self.lp_secs,dt=self.dt)
-        lp_flows=lp_flows[npad:-npad] # trim the pad
+        if self.filter_type=='butter':
+            # For butterworth pad out the ends
+            pad =self.pad
+            npad=len(pad)
+
+            flow_padded=np.concatenate( ( pad, 
+                                          data,
+                                          pad) )
+            lp_flows=filters.lowpass(flow_padded,
+                                     cutoff=self.lp_secs,dt=self.dt)
+            lp_flows=lp_flows[npad:-npad] # trim the pad
+        elif self.filter_type=='fir':
+            # try no padding here
+            lp_flows=filters.lowpass_fir(data,winsize=int(self.lp_secs/self.dt))
+        else:
+            raise Exception('Bad filter type: %s'%self.filter_type)
         return lp_flows
     
     def apply_filter(self):
+        """
+        Filters all of the hydro information.  Note that this is not smart about
+        loading only a small part of the data, and thus won't work when
+        applied to a large dataset.  Generally better to aggregated some and
+        then apply this.
+        """
         self.filt_volumes=np.array( [self.orig.volumes(t) for t in self.orig.t_secs] )
         self.filt_flows  =np.array( [self.orig.flows(t)   for t in self.orig.t_secs] )
         self.filt_areas  =np.array( [self.orig.areas(t)   for t in self.orig.t_secs] )
@@ -5525,6 +5572,11 @@ class FilterHydroBC(Hydro):
     # actually, well, it may be that planform_areas must be positive, but exchange
     # areas can be zero.  Since those are closely linked, it's easiest and doesn't 
     # seem to break anything to enforce a min_area here.
+
+    # If true, volumes which go negative and have no boundary exchange to adjust
+    # will just get their volume increased by whatever amount necessary to be
+    # non-negative over time.
+    force_min_volume=True
     def adjust_negative_volumes(self):
         has_negative=np.nonzero( np.any(self.filt_volumes<self.min_volume,axis=0 ) )[0]
         dt=np.median(np.diff(self.t_secs))
@@ -5536,6 +5588,12 @@ class FilterHydroBC(Hydro):
             if len(bc_exchs)==0:
                 # will lead to a failure 
                 self.log.warning("Segment with negative volume has no boundary exchanges")
+                if self.force_min_volume:
+                    V_add=self.min_volume-self.filt_volumes[:,seg].min()
+                    self.log.warning("Forcing minimum volume. Adding %.3e  Original volumes max: %.3e, mean %.3e"%
+                                     (V_add, self.orig_volumes[:,seg].max(),self.orig_volumes[:,seg].mean()))
+                    self.filt_volumes[:,seg]+=V_add
+                
                 continue
             elif len(bc_exchs)>1:
                 self.log.info("Segment with negative volume has multiple BC exchanges.  Choosing the first")

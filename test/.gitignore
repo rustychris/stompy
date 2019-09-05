@@ -12,3 +12,6 @@ smoothed-shoreline.*
 tom.log
 
 uk_tides
+dwaq_aggregation.*
+output*
+run-dfm*
