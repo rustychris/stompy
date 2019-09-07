@@ -137,6 +137,10 @@ waq_hydro_editor.main(args=["-i",hyd_path,"-c"]) # the original run
 waq_hydro_editor.main(args=["-i","output_agg/com-output.hyd","-c"]) # aggregated run
 
 ##
+from stompy.model.delft import waq_hydro_editor, waq_scenario
+
+six.moves.reload_module(waq_scenario)
+six.moves.reload_module(waq_hydro_editor)
 
 # De-tide the original
 waq_hydro_editor.main(args=["-i",hyd_path,"-l","-o","output_lp/output"])

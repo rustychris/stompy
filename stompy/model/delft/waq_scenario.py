@@ -1523,6 +1523,18 @@ class Hydro(object):
                 ngroups+=1
         return groups
 
+    # Data formats on disk
+    def flo_dtype(self):
+        return np.dtype([ ('tstamp','<i4'),
+                          ('flow','<f4',self.n_exch) ])
+    def are_dtype(self):
+        return np.dtype([ ('tstamp','<i4'),
+                          ('area','<f4',self.n_exch) ])
+    def vol_dtype(self):
+        return np.dtype([ ('tstamp','<i4'),
+                          ('volume','<f4',self.n_seg) ])
+
+    
 def parse_datetime(s):
     """ 
     parse YYYYMMDDHHMMSS style dates.
@@ -1887,9 +1899,7 @@ class HydroFiles(Hydro):
 
         if memmap and self._flows_mmap is not False:
             if self._flows_mmap is None:
-                dtype=[ ('tstamp','<i4'),
-                        ('flow','<f4',self.n_exch) ]
-                self._flows_mmap=np.memmap(flo_fn, dtype,
+                self._flows_mmap=np.memmap(flo_fn, self.flo_dtype(),
                                            mode='r')
             if ti>=len(self._flows_mmap):
                 self.log.warning("Flow data ends early by %d steps"%(len(self.t_secs)-1-ti))
@@ -5421,6 +5431,18 @@ class FilterHydroBC(Hydro):
     """
     lp_secs=86400*36./24
     selection='boundary'
+
+    # for large inputs, use memmap.
+    # apply_filter() will create temporary files, and put the names
+    # here.  then write*() can just move these files.
+    use_memmap=True
+    tmp_flo_fn=None
+    tmp_vol_fn=None
+    tmp_are_fn=None
+    # the corresponding mmap objects
+    new_flo_mmap=None
+    new_vol_mmap=None
+    new_are_mmap=None
     
     def __init__(self,original,**kws):
         """
@@ -5509,20 +5531,58 @@ class FilterHydroBC(Hydro):
         else:
             raise Exception('Bad filter type: %s'%self.filter_type)
         return lp_flows
-    
+
     def apply_filter(self):
         """
         Filters all of the hydro information.  Note that this is not smart about
         loading only a small part of the data, and thus won't work when
-        applied to a large dataset.  Generally better to aggregated some and
-        then apply this.
+        applied to a large dataset.  Better to aggregate some and
+        then apply the lowpass.
         """
-        self.filt_volumes=np.array( [self.orig.volumes(t) for t in self.orig.t_secs] )
-        self.filt_flows  =np.array( [self.orig.flows(t)   for t in self.orig.t_secs] )
-        self.filt_areas  =np.array( [self.orig.areas(t)   for t in self.orig.t_secs] )
-        self.orig_volumes=self.filt_volumes.copy()
-        self.orig_flows  =self.filt_flows.copy()
-        
+        if self.use_memmap:
+            # for this to work, the source data needs to be sitting on disk where
+            # it can be memory-mapped.
+            # would be better to make this part of HydroFiles
+            assert isinstance(self.orig,HydroFiles),"Memmap only works with HydroFiles"
+            flo_fn=self.orig.get_path('flows-file')
+            flo_mmap=np.memmap(flo_fn, self.orig.flo_dtype(), mode='r')
+            vol_fn=self.orig.get_path('volumes-file')
+            vol_mmap=np.memmap(vol_fn, self.orig.vol_dtype(), mode='r')
+            are_fn=self.orig.get_path('areas-file')
+            are_mmap=np.memmap(are_fn, self.orig.are_dtype(), mode='r')
+
+            self.orig_volumes=vol_mmap['volume']
+            self.orig_flows  =flo_mmap['flow']
+            self.orig_areas  =are_mmap['area']
+
+            # To modify these, have to create new file
+            self.tmp_flo_fn="tmp.flo"
+            self.tmp_vol_fn="tmp.vol"
+            self.tmp_are_fn="tmp.are"
+
+            self.log.info("Copying flo file")
+            shutil.copyfile(flo_fn,self.tmp_flo_fn)
+            self.log.info("Copying vol file")
+            shutil.copyfile(vol_fn,self.tmp_vol_fn)
+            self.log.info("Copying are file") # eventually gets modified
+            shutil.copyfile(are_fn,self.tmp_are_fn)
+
+            self.new_flo_mmap=np.memmap(self.tmp_flo_fn, self.flo_dtype(), mode='r+')
+            self.filt_flows=self.new_flo_mmap['flow']
+
+            self.new_vol_mmap=np.memmap(self.tmp_vol_fn, self.vol_dtype(), mode='r+')
+            self.filt_volumes=self.new_vol_mmap['volume']
+
+            self.new_are_mmap=np.memmap(self.tmp_are_fn, self.are_dtype(), mode='r+')
+            self.filt_areas =self.new_are_mmap['area']
+        else:
+            # old way - uses tons of RAM.  all of the RAM.
+            self.filt_volumes=np.array( [self.orig.volumes(t) for t in self.orig.t_secs] )
+            self.filt_flows  =np.array( [self.orig.flows(t)   for t in self.orig.t_secs] )
+            self.filt_areas  =np.array( [self.orig.areas(t)   for t in self.orig.t_secs] )
+            self.orig_volumes=self.filt_volumes.copy()
+            self.orig_flows  =self.filt_flows.copy()
+
         dt=np.median(np.diff(self.t_secs))
         pointers=self.pointers
 
@@ -5774,9 +5834,35 @@ class FilterHydroBC(Hydro):
         self.orig.infer_2d_links()
         self.n_2d_links=self.orig.n_2d_links
         self.exch_to_2d_link=self.orig.exch_to_2d_link
-        self.links=self.orig.links 
+        self.links=self.orig.links
 
+    # overload these in the case of memory mapped files
+    def write_flo(self):
+        self.copy_mmap_or_delegate("tmp_flo_fn","new_flo_mmap",
+                                   super(FilterHydroBC,self).write_flo,
+                                   self.flo_filename)
+    def write_vol(self):
+        self.copy_mmap_or_delegate("tmp_vol_fn","new_vol_mmap",
+                                   super(FilterHydroBC,self).write_vol,
+                                   self.vol_filename)
+    def write_are(self):
+        self.copy_mmap_or_delegate("tmp_are_fn","new_are_mmap",
+                                   super(FilterHydroBC,self).write_are,
+                                   self.are_filename)
 
+    def copy_mmap_or_delegate(self,fn_attr,mmap_attr,deleg,new_fn):
+        tmp_fn=getattr(self,fn_attr)
+        if self.use_memmap and tmp_fn is not None:
+            assert os.path.exists(tmp_fn),"Hmm - should have memory mapped but %s is not there"%tmp_fn
+            delattr(self,mmap_attr)
+            setattr(self,mmap_attr,None)
+            os.rename(tmp_fn,new_fn)
+            return
+        self.log.warning("Filter Hydro could not simply rename mapped file")
+        # Make it easier to catch this condition while developing
+        raise Exception("During testing this shouldn't happen")
+        deleg()
+        
 class FilterAll(FilterHydroBC):
     """ Minor specialization when you want filter everything - i.e. turn a tidal
     run into a subtidal run.
@@ -5850,6 +5936,9 @@ class FilterAll(FilterHydroBC):
     def add_parameters(self,hyd):
         hyd=super(FilterAll,self).add_parameters(hyd)
 
+        self.log.warning('During dev of memory-mapping, ignore parameters')
+        return hyd
+    
         for key,param in iteritems(self.orig.parameters()):
             self.log.info('Original -> filtered parameter %s'%key)
             # overwrite vertdisper
