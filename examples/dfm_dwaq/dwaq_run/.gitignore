@@ -1,0 +1,16 @@
+*.wrk
+*.his
+*.lsp
+*.lst
+*.seg
+*.map
+*.mon
+bloominp.d09
+com-*
+delwaq.rtn
+delwaq2.out
+dwaq_map.nc
+flowgeom.nc
+memory_map.out
+tbd-surf.par
+*-timers.out

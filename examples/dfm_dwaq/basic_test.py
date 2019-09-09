@@ -9,17 +9,15 @@ sets up a tracer run with a spatially-variable initial
 condition and runs it for the duration of the hydro.
 """
 import numpy as np
-import six
 import matplotlib.pyplot as plt
 import xarray as xr
 from stompy.grid import unstructured_grid
 import stompy.plot.cmap as scmap
+
 import stompy.model.delft.waq_scenario as dwaq
 import stompy.model.delft.dflow_model as dfm
 
-## 
-six.moves.reload_module(dfm)
-six.moves.reload_module(dwaq)
+##
 
 # put machine specific paths and settings in local_config.py
 import local_config
@@ -96,7 +94,7 @@ def base_model(force=True,num_procs=1,run_dir='dfm_run'):
 
     return model
 
-# Get a well-behaved small hydro run:
+# Run/load small hydro run:
 model=base_model(force=False)
 
 ##
@@ -170,15 +168,21 @@ grid_ds=unstructured_grid.UnstructuredGrid.from_ugrid(ds)
 ## 
 # Plot that up:
 
+tracers=['dye1','unity','boundary_dye']
+
 fig=plt.figure(1)
 fig.clf()
 fig.set_size_inches([10,4],forward=True)
-fig,axs=plt.subplots(1,3,num=1)
+
+fig,axs=plt.subplots(1,len(tracers),num=1)
 
 cmap=scmap.load_gradient('turbo.cpt')
 
+for ax,scal in zip(axs,tracers):
+    ax.text(0.05,0.95,scal,transform=ax.transAxes,va='top')
+
 for ti in range(len(ds.time)):
-    for ax,scal in zip(axs,['dye1','unity','boundary_dye']):
+    for ax,scal in zip(axs,tracers):
         ax.collections=[]
         ccoll=grid_ds.plot_cells(values=ds[scal].isel(time=ti,layer=0),ax=ax,cmap=cmap,
                                  clim=[0,1])
