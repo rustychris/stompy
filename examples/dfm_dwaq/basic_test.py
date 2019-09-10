@@ -8,6 +8,7 @@ release simulation.
 sets up a tracer run with a spatially-variable initial
 condition and runs it for the duration of the hydro.
 """
+import os
 import numpy as np
 import matplotlib.pyplot as plt
 import xarray as xr
