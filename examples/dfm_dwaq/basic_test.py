@@ -191,4 +191,4 @@ for ti in range(len(ds.time)):
     plt.draw()
     plt.pause(0.05)
 
-
+ds.close() # keeping this open can interfere with deleting or overwriting the netcdf file.
