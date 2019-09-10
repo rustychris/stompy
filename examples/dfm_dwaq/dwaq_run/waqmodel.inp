@@ -1,0 +1,179 @@
+1000 132 ';'    ; width of input and output, comment
+;
+; Type of DELWAQ input file:
+; DELWAQ_VERSION_4.91
+; Option for printing the report: verbose
+; PRINT_OUTPUT_OPTION_4
+
+; first block: identification
+'DWAQ'
+'n/a'
+'n/a'
+'T0: 2018/01/01-00:00:00  (scu=       1s)'
+;
+; substances file: n/a
+; hydrodynamic file: n/a
+;
+; areachar.dat: n/a
+;
+  3  0    ; number of active and inactive substances
+
+; Index  Name
+       1  'dye1'
+       2  'unity'
+       3  'boundary_dye'
+;
+#1 ; delimiter for the first block
+; 
+; second block of model input (timers)
+; 
+; integration timers 
+; 
+ 86400  'ddhhmmss' 'ddhhmmss' ; system clock in sec, aux in days
+ 15.60    ; integration option
+ 2018/01/01-02:00:00      ; start time 
+ 2018/01/03-00:00:00       ; stop time 
+ 0                  ; constant timestep 
+ 0003000      ; time step
+;
+
+ 1     ; monitoring points/areas used
+ 1   ; number of monitoring points/areas
+
+'dummy' 1 1
+ 2     ; monitoring transects not used;
+
+; start time      stop time     time step 
+ 2018/01/01-02:00:00       2018/01/03-00:00:00       00003000      ; monitoring
+ 2018/01/01-02:00:00       2018/01/03-00:00:00       00003000      ; map, dump
+ 2018/01/01-02:00:00       2018/01/03-00:00:00       00003000      ; history
+
+;
+#2 ; delimiter for the second block
+; 
+; third block of model input (grid layout)
+ 2401      ; number of segments
+MULTIGRID
+  ZMODEL NOLAY 1
+END_MULTIGRID       ; multigrid block
+ 2        ; grid layout not used
+;
+; features
+INCLUDE 'com-waqmodel.atr'  ; attributes file
+;
+; volumes
+;
+-2  ; first volume option
+'com-waqmodel.vol'  ; volumes file
+;
+#3 ; delimiter for the third block
+; 
+; fourth block of model input (transport)
+ 4714  ; exchanges in direction 1
+ 0  ; exchanges in direction 2
+ 0  ; exchanges in direction 3
+; 
+  0 ; dispersion arrays ; dispersions
+  0 ; velocity arrays ; velocities
+; 
+ 1  ; first form is used for input 
+ 0  ; exchange pointer option
+'com-waqmodel.poi'  ; pointers file
+; 
+ 1  ; first dispersion option nr - these constants will be added in.
+ 1.0 1.0 1.0   ; scale factors in 3 directions
+ 0.0 0.0 0.0 ; dispersion in x,y,z directions
+
+; 
+ -2  ; first area option
+'com-waqmodel.are'  ; area file
+; 
+ -2  ; first flow option
+'com-waqmodel.flo'  ; flow file
+; Velocities
+
+; Lengths
+  1  ; length vary
+ 0   ; length option
+'com-waqmodel.len'  ; length file
+;
+#4 ; delimiter for the fourth block
+; 
+; fifth block of model input (boundary condition)
+'boundary 1' 'boundary 1' 'inflow'
+'boundary 2' 'boundary 2' 'inflow'
+'boundary 3' 'boundary 3' 'inflow'
+'boundary 4' 'boundary 4' 'inflow'
+'boundary 5' 'boundary 5' 'inflow'
+'boundary 6' 'boundary 6' 'inflow'
+'boundary 7' 'boundary 7' 'inflow'
+'boundary 8' 'boundary 8' 'inflow'
+'boundary 9' 'boundary 9' 'inflow'
+'boundary 10' 'boundary 10' 'inflow'
+;
+; Thatcher-Harleman timelags
+0 ; no lags
+        
+ITEM
+  'inflow'
+CONCENTRATION
+   'boundary_dye'
+INCLUDE 'forcing/waqmodel-forcing-001.dat' ; external time series data
+;
+ #5 ; delimiter for the fifth block
+; 
+; sixth block of model input (discharges, withdrawals, waste loads)
+   0 ; number of waste loads/continuous releases
+
+
+;
+ #6 ; delimiter for the sixth block
+; seventh block of model input (process parameters)
+CONSTANTS  'ONLY_ACTIVE'  DATA 1.00000e+00
+CONSTANTS  'ACTIVE_DYNDEPTH'  DATA 1.00000e+00
+CONSTANTS  'ACTIVE_TOTDEPTH'  DATA 1.00000e+00
+PARAMETERS 'SURF' ALL BINARY_FILE 'waqmodel-surf.par'
+SEG_FUNCTIONS 'tau' LINEAR ALL BINARY_FILE 'waqmodel-tau.seg'
+SEG_FUNCTIONS 'temp' LINEAR ALL BINARY_FILE 'waqmodel-temp.seg'
+SEG_FUNCTIONS 'salinity' LINEAR ALL BINARY_FILE 'waqmodel-salinity.seg'
+#7 ; delimiter for the seventh block; 
+; eighth block of model input (initial conditions) 
+ MASS/M2 ; unit for inactive substances
+ 1 ; initial conditions follow
+TRANSPOSE
+1 ; without defaults
+1.0 ; scaling for all substances
+INCLUDE 'initial-dye1.dat' ; spatially varying for dye1
+ 2401*1.000000 ; default for unity
+ 2401*0.000000 ; default for boundary_dye
+;
+ #8 ; delimiter for the eighth block;
+ ; ninth block of model input (specification of output)
+1 ; output information in this file
+ 2 ; all substances and extra output, monitor
+ 2 ; number of extra
+  'LocalDepth'  ' '
+  'SURF'  ' '
+  3 ; only extras, grid dump output
+2 ; number of extra
+  'LocalDepth' 
+  'SURF' 
+ 2 ; all substances and extra output, history
+ 2 ; number of extra
+  'LocalDepth'  ' '
+  'SURF'  ' '
+ 2 ; all substances and extra output, map
+ 3 ; number of extra
+  'LocalDepth' 
+  'SURF' 
+  'TotalDepth' 
+1 ; binary history file
+1 ; binary map file    
+0 ; nefis history file 
+0 ; nefis map file     
+; 
+ #9 ; delimiter for the ninth block;
+; Statistical output - if any
+; INCLUDE 'tut_fti_waq.stt' 
+; 
+ #10 ; delimiter for the tenth block 

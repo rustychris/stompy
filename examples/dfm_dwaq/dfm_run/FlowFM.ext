@@ -1,0 +1,5 @@
+QUANTITY=dischargebnd
+FILENAME=inflow.pli
+FILETYPE=9
+METHOD=3
+OPERAND=O

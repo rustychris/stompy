@@ -1,0 +1,19 @@
+import stompy.model.delft.waq_scenario as dwaq
+import stompy.model.delft.dflow_model as dfm
+
+import os
+
+DELFT_SRC="/home/rusty/src/dfm/1.5.4/lnx64"
+DELFT_SHARE=os.path.join(DELFT_SRC,"share","delft3d")
+DELFT_LIB=os.path.join(DELFT_SRC,"lib")
+
+def install():
+    os.environ['DELFT_SRC']=DELFT_SRC
+    os.environ['DELFT_SHARE']=DELFT_SHARE
+    # not great - really should check what's already in there.
+    os.environ['LD_LIBRARY_PATH']=DELFT_LIB
+
+    dfm_bin_dir=os.path.join(os.environ['DELFT_SRC'],"bin")
+    dfm.DFlowModel.dfm_bin_dir=dfm_bin_dir
+    dfm.DFlowModel.mpi_bin_dir=dfm_bin_dir
+    

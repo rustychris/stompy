@@ -142,6 +142,13 @@ from stompy.model.delft import waq_hydro_editor, waq_scenario
 six.moves.reload_module(waq_scenario)
 six.moves.reload_module(waq_hydro_editor)
 
+# With the memory mapping, it does much better.
+# it is slow, and at least during the volume adjustment phase
+# it is still using 37% of the RAM on HPC (46GB?)
+# actually, this may be whatever happens after the volume adjustment
+# phase. it's whatever is mucking with the area file.  that's the
+# file that's been modified most recently.
+
 # De-tide the original
 waq_hydro_editor.main(args=["-i",hyd_path,"-l","-o","output_lp/output"])
 
