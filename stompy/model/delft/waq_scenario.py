@@ -2152,7 +2152,7 @@ class HydroFiles(Hydro):
                 return None
             try:
                 self._grid=unstructured_grid.UnstructuredGrid.from_ugrid(orig)
-            except (IndexError,AssertionError):
+            except (IndexError,AssertionError,unstructured_grid.GridException):
                 self.log.warning("Grid wouldn't load as ugrid, trying dfm grid")
                 dg=dfm_grid.DFMGrid(orig)
                 self._grid=dg
@@ -4799,6 +4799,23 @@ class DwaqAggregator(Hydro):
                         x0=x[0]
                         elt_inside=sub_g.select_cells_nearest(x[0],inside=True)
                         elt_outside=None # subdomains don't have these in FlowLink
+
+                        # RH 2019-09-10: this stanza is new. previously, there was a bug
+                        # here as this if clause did not set link1, which was then used
+                        # below. when reading spliced hydro for a second aggregation step,
+                        # it was failing, but it appeared that sub_geom.FlowLink 
+                        # actually had all the data, and could have been matched to bc_elt_pos+1.
+                        # so try that, but it's possible it will break again when splicing.
+                        link1,fromto=np.nonzero( sub_geom.FlowLink.values==bc_elt_pos+1)
+                        if len(link1)!=1:
+                            print("Trouble finding the FlowLink which goes with this [src] bc element")
+                            print("  link1: %s"%link1)
+                        link1=link1[0]
+                        fromto=fromto[0]
+                        # if all is well, elt_inside from above should match with what's in FlowLink.
+                        # I don't think elt_outside really matters
+                        assert sub_geom.FlowLink.values[link1,1-fromto]-1 == elt_inside,"Sanity comparison on source element failed"
+                        
                     else:
                         # print("Horizontal bnd entry")
                         link1,fromto=np.nonzero( sub_geom.FlowLink.values==bc_elt_pos+1)
@@ -5306,7 +5323,8 @@ class HydroMultiAggregator(DwaqAggregator):
                         # the aggregated output includes these source links in FlowLink
                         # but the source domains do not
                         # Can it be found based on coordinate?
-                        # Not an exact match.
+                        # Not an exact match. Note that some changes in this stanza were made
+                        # above in the HydroAggregator code.
                         x0=x[0]
                         elt_inside=sub_g.select_cells_nearest(x[0],inside=True)
                         elt_outside=None # subdomains don't have these in FlowLink
@@ -9514,6 +9532,17 @@ END_MULTIGRID"""%num_layers
     def hydro(self,value):
         self.set_hydro(value)
 
+    @classmethod
+    def load(cls,path):
+        """
+        Working towards a similar ability as in DFlowModel, where an existing
+        run can be loaded.
+        """
+        model=cls(base_path=path)
+        model.overwrite=False
+        # currently very little here...
+        return model
+        
     def set_hydro(self,hydro):
         self._hydro=hydro
 
