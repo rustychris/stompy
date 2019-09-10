@@ -2484,9 +2484,9 @@ class DwaqAggregator(Hydro):
                     msg("Yes - will load %s"%map_fn)
                     map_ds=xr.open_dataset(map_fn)
                     
-                # when map is available, use it, but remember fg_ds is also still around for
-                # things like global element number
-                ds=map_ds
+                    # when map is available, use it, but remember fg_ds is also still around for
+                    # things like global element number
+                    ds=map_ds
             
             # if this is ugrid output, include copies of some variables to their pre-ugrid
             # names
@@ -2736,7 +2736,7 @@ class DwaqAggregator(Hydro):
             else:
                 raise Exception("Could't find face dimension")
             max_elts_2d_per_proc=max(max_elts_2d_per_proc,len(nc[ncell]))
-            if 'nFlowLink' in nc:
+            if 'nFlowLink' in nc.dims:
                 nlinks_here=len(nc['nFlowLink'])
             elif 'mesh2d_face_links' in nc:
                 nlinks_here=nc['mesh2d_face_links'].max()
