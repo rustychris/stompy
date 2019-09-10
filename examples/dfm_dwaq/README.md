@@ -13,3 +13,18 @@ The D-WAQ tracer run includes three tracers:
 At the end of the simulation the three tracers look like:
 
 ![sample output](sample_output.png)
+
+Relevant files:
+
+`basic_test.py`: The full script
+ 
+`local_config.py.in`: Copy this to local_config.py, and edit to set paths to dflowfm, delwaq1, and delwaq2.
+ 
+`dflow-template.mdu`: Template values for configuring the DFM run.  These can be overwritten in the script,
+  but for parameters that don't need to change programmatically put them here.
+
+`dfm_run`: The full DFM output is not in the repository, but some of the key files are here for perusing
+  without having to run the script.
+  
+`dwaq_run`: The full DWAQ output not in the repository, but some of the key files are here for perusing
+  without having to run the script.
