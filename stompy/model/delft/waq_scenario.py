@@ -5592,7 +5592,7 @@ class FilterHydroBC(Hydro):
         # out with 0s:
         # npad=int(5*self.lp_secs / dt)
         
-        for j in self.exchanges_to_filter():
+        for j in utils.progress(self.exchanges_to_filter()):
             # j: index into self.pointers.  
             segA,segB=pointers[j,:2]
 
