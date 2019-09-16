@@ -188,6 +188,11 @@ def cimis_fetch_to_xr(stations,
 
     stations=[str(s) for s in stations] 
 
+    interval_dt64=np.timedelta64(int(days_per_request[:-1]), days_per_request[-1])
+    # quantize to standard t0
+    start_date=utils.floor_dt64( utils.to_dt64(start_date), interval_dt64)
+    end_date=utils.ceil_dt64( utils.to_dt64(end_date), interval_dt64)
+    
     start_date,end_date=[ utils.to_datetime(d).strftime('%Y-%m-%d')
                           for d in (start_date,end_date) ]
 
@@ -229,11 +234,12 @@ def cimis_fetch_to_xr(stations,
                 log.warning(req.url)
                 raise
             
-            if cache_fn is not None:
+            if (ds is not None) and (cache_fn is not None):
                 ds.to_netcdf(cache_fn)
             time.sleep(1.0) # be kind
-            
-        all_ds.append(ds)
+
+        if ds is not None:
+            all_ds.append(ds)
 
     if len(all_ds)==1:
         ds=all_ds[0]

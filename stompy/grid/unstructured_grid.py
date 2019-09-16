@@ -514,7 +514,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             for vname in nc.variables.keys():
                 if nc[vname].attrs.get('cf_role',None) == 'mesh_topology':
                     meshes.append(vname)
-            assert len(meshes)==1
+            if len(meshes)!=1:
+                raise GridException("Could not uniquely determine mesh variable")
             mesh_name=meshes[0]
 
         mesh = nc[mesh_name]
@@ -1185,7 +1186,13 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     ds[out_field] = (dim_name,),src_data[field]
         ds.to_netcdf(fn)
 
-    def write_dfm(self,nc_fn,overwrite=False):
+    def write_dfm(self,nc_fn,overwrite=False,node_elevation=None):
+        """
+        nc_fn: netcdf file to write to
+        overwrite: if True, allow overwriting an existing file
+        node_depth: if specified, the field used for node elevations, assumed positive-up.
+          if None, will check for 'node_z_bed' and 'depth' as fields for nodes.
+        """
         # use outdated netcdf wrapper
         # TODO: migrate the xarray or netCDF4
         from ..io import qnc
@@ -1260,9 +1267,15 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             wgs.comment = ""
             wgs.value = "value is equal to EPSG code"
 
-        if 'depth' in self.nodes.dtype.names:
+        if node_elevation is None:
+            if 'node_z_bed' in self.nodes.dtype.names:
+                node_elevation='node_z_bed'
+            elif 'depth' in self.nodes.dtype.names:
+                node_elevation='depth'
+                
+        if node_elevation in self.nodes.dtype.names:
             node_z = nc.createVariable('NetNode_z','f8',('nNetNode'))
-            node_z[:] = self.nodes['depth'][:]
+            node_z[:] = self.nodes[node_elevation][:]
             node_z.units = "m"
             node_z.positive = "up"
             node_z.standard_name = "sea_floor_depth"
@@ -6674,13 +6687,13 @@ def cleanup_dfm_multidomains(grid):
     geometries left behind.
     Grid doesn't have to have been read as a DFMGrid.
     """
-    log.info("Regenerating edges")
+    grid.log.info("Regenerating edges")
     grid.make_edges_from_cells()
-    log.info("Removing orphaned nodes")
+    grid.log.info("Removing orphaned nodes")
     grid.delete_orphan_nodes()
-    log.info("Removing duplicate nodes")
+    grid.log.info("Removing duplicate nodes")
     grid.merge_duplicate_nodes()
-    log.info("Renumbering nodes")
+    grid.log.info("Renumbering nodes")
     grid.renumber_nodes()
-    log.info("Extracting grid boundary")
+    grid.log.info("Extracting grid boundary")
     return grid

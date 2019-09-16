@@ -3,6 +3,7 @@ Test setup for DFM/DWAQ => PTM conversion with wetting and drying
 in 2D
 """
 import os
+import xarray as xr
 from stompy.grid import unstructured_grid
 import numpy as np
 from stompy.model.delft import dflow_model, dfm_to_ptm
@@ -53,16 +54,13 @@ def base_model():
 
 model=base_model()
 
-
 share_bin_dir=dfm_bin_dir
 
 model.partition()
 model.run_model()
 
 ##
-six.moves.reload_module(dfm_to_ptm)
 
-import os
 ptm_out_dir='ptm_out'
 os.path.exists(ptm_out_dir) or os.makedirs(ptm_out_dir)
 
@@ -77,13 +75,6 @@ converter=dfm_to_ptm.DFlowToPTMHydro(model.mdu.filename,hydro_out_fn,grd_fn=grd_
 
 hydro_nc=xr.open_dataset(hydro_out_fn)
 grd=unstructured_grid.PtmGrid(grd_fn)
-
-
-##
-
-plt.figure(1).clf()
-grd.plot_edges()
-plt.axis('equal')
 
 ## 
 # reconstruct continuity check per notes,

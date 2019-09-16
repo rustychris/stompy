@@ -1100,7 +1100,7 @@ class HydroModel(object):
                 g.edges[edge_field][feat_edges] = np.minimum(g.edges[edge_field][feat_edges],
                                                              dredge_depth)
             else:
-                log.warning(f'No edge bathymetry ({edge_field}) to dredge.  Ignoring')
+                log.warning('No edge bathymetry (%s) to dredge.  Ignoring'%edge_field)
         if node_field:
             g.nodes[node_field][nodes_to_dredge] = np.minimum(g.nodes[node_field][nodes_to_dredge],
                                                               dredge_depth)
@@ -1429,8 +1429,9 @@ class HydroModel(object):
         """
         Return the bed elevation for edge j, in meters, positive=up.
         """
-        z=self.grid.nodes['depth'][ self.grid.edges['nodes'][j] ].min()
+        z=self.grid.nodes['node_z_bed'][ self.grid.edges['nodes'][j] ].min()
         if z>0:
+            # this probably isn't a good warning for DFM grids, just for SUNTANS
             log.warning("Edge %d has positive depth %.2f"%(j,z))
 
         if datum is not None:
@@ -2404,6 +2405,25 @@ class DFlowModel(HydroModel):
         utils.touch(bc_fn)
         super(DFlowModel,self).write_forcing()
 
+    def set_grid(self,grid):
+        super(DFlowModel,self).set_grid(grid)
+
+        # Specific to d-flow -- see if it's necessary to copy node-based depth
+        # to node_z_bed.
+        # Used to be that 'depth' was used as a node field, and it was implicitly
+        # positive-up.  trying to shift away from 'depth' being a positive-up
+        # quantity, and instead use 'z_bed' and specifically 'node_z_bed'
+        # for a node-centered, positive-up bathymetry value.
+        node_fields=self.grid.nodes.dtype.names
+        
+        if 'node_z_bed' not in node_fields:
+            if 'z_bed' in node_fields:
+                self.grid.add_node_field('node_z_bed',self.grid.nodes['z_bed'])
+                self.log.info("Duplicating z_bed to node_z_bed for less ambiguous naming")
+            elif 'depth' in node_fields:
+                self.grid.add_node_field('node_z_bed',self.grid.nodes['depth'])
+                self.log.info("Duplicating depth to node_z_bed for less ambiguous naming, and assuming it was already positive-up")
+        
     default_grid_target_filename='grid_net.nc'
     def grid_target_filename(self):
         """
@@ -2423,11 +2443,11 @@ class DFlowModel(HydroModel):
             return os.path.basename(grid_fn)
         
     def dredge_boundary(self,linestring,dredge_depth):
-        super(DFlowModel,self).dredge_boundary(linestring,dredge_depth,node_field='depth',
+        super(DFlowModel,self).dredge_boundary(linestring,dredge_depth,node_field='node_z_bed',
                                                edge_field=None,cell_field=None)
         
     def dredge_discharge(self,point,dredge_depth):
-        super(DFlowModel,self).dredge_discharge(point,dredge_depth,node_field='depth',
+        super(DFlowModel,self).dredge_discharge(point,dredge_depth,node_field='node_z_bed',
                                                 edge_field=None,cell_field=None)
         
     def write_grid(self):
@@ -2438,7 +2458,7 @@ class DFlowModel(HydroModel):
         the grid (dredging boundaries)
         """
         dest=os.path.join(self.run_dir, self.mdu['geometry','NetFile'])
-        dfm_grid.write_dfm(self.grid,dest,overwrite=True)
+        self.grid.write_dfm(dest,overwrite=True,)
 
     def ext_force_file(self):
         return self.mdu.filepath(('external forcing','ExtForceFile'))
@@ -2518,8 +2538,11 @@ class DFlowModel(HydroModel):
         if not os.path.exists(fn):
             return False
         model=cls.load(fn)
-        result=(model is not None) and model.is_completed()
-        model.close()
+        if model is not None:
+            result=model.is_completed()
+            model.close()
+        else:
+            result=False
         return result
     def is_completed(self):
         """
@@ -2532,7 +2555,10 @@ class DFlowModel(HydroModel):
         if self.num_procs>1:
             dia_fn=root_fn+'_0000.dia'
         else:
-            dia_fn=root_fn+'.dia'
+            # for serial runs, the dia file ends up in the DFM output folder
+            dia_fn=os.path.join(self.run_dir,
+                                "DFM_OUTPUT_%s"%self.mdu.name,
+                                "%s.dia"%self.mdu.name)
 
         assert dia_fn!=self.mdu.filename,"Probably case issues with %s"%dia_fn
 
@@ -2701,7 +2727,10 @@ class DFlowModel(HydroModel):
         handle the actual work of writing flow and stage BCs.
         quantity: 'stage','flow','source'
         """
-        bc_id=bc.name+"_" + quantity
+        # 2019-09-09 RH: the automatic suffix is a bit annoying. it is necessary
+        # when adding scalars, but for any one BC, only one of stage, flow or source
+        # would be present.  Try dropping the suffix here.
+        bc_id=bc.name # +"_" + quantity
 
         #self.write_pli()
         assert bc.geom.type=='LineString'
@@ -2799,6 +2828,12 @@ class DFlowModel(HydroModel):
         assert len(fns)==1
         return fns[0]
 
+    def hyd_output(self):
+        """ Path to DWAQ-format hyd file """
+        return os.path.join( self.run_dir,
+                             "DFM_DELWAQ_%s"%self.mdu.name,
+                             "%s.hyd"%self.mdu.name )
+                             
     def extract_section(self,name=None,chain_count=1,refresh=False):
         """
         Return xr.Dataset for monitored cross section.
