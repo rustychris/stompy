@@ -148,6 +148,9 @@ def coops_dataset_product(station,product,
 
     clip: if true, return only data within the requested window, even if more data was fetched.
     """
+    start_date=utils.to_dt64(start_date)
+    end_date=utils.to_dt64(end_date)
+    
     fmt_date=lambda d: utils.to_datetime(d).strftime("%Y%m%d %H:%M")
     base_url="https://tidesandcurrents.noaa.gov/api/datagetter"
 

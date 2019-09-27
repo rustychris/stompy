@@ -744,6 +744,17 @@ class Hydro(object):
             self.seg_k=seg_k
         return self.seg_to_2d_element
 
+    def segment_select(self,element,k):
+        """
+        Identify segment IDs by element and layer. This was referenced
+        in some Load code, but somehow did not exist in hydro. May be expanded in the
+        future to allow other means of identifying segments.
+        returns an array of segment ids
+        """
+        self.infer_2d_elements()
+        idxs=np.nonzero( (self.seg_to_2d_element==element) & (self.seg_k==k) )[0]
+        return idxs
+    
     def extrude_element_to_segment(self,V):
         """ V: [n_2d_elements] array
         returns [n_seg] array
@@ -1137,7 +1148,11 @@ class Hydro(object):
 
         scu=self.scenario.scu
 
-        time_start,time_stop,timedelta = self.timeline_scen()
+        # If symlinking, we want to report the full time period.
+        if self.enable_write_symlink:
+            time_start,time_stop,timedelta=self.timeline_data()
+        else:
+            time_start,time_stop,timedelta = self.timeline_scen()
             
         timestep = timedelta_to_waq_timestep(timedelta)
 
@@ -2162,7 +2177,7 @@ class HydroFiles(Hydro):
         super(HydroFiles,self).add_parameters(hyd)
 
         # can probably add bottomdept,depth,salinity.
-        print("Incoming parameters are %s"%list(hyd.keys()))
+        self.log.debug("Incoming parameters are %s"%list(hyd.keys()))
         
         # do NOT include surfaces-files here - it's a different format.
         for var,key in [('vertdisper','vert-diffusion-file'),
@@ -2171,7 +2186,7 @@ class HydroFiles(Hydro):
                         ('salinity','salinity-file')]:
             fn=self.get_path(key)
             if os.path.exists(fn):
-                print("%s does exist, so will add it to the parameters"%fn)
+                self.log.debug("%s does exist, so will add it to the parameters"%fn)
                 hyd[var]=ParameterSpatioTemporal(seg_func_file=fn,
                                                  hydro=self)
         return hyd
@@ -7092,7 +7107,7 @@ class ParameterSpatioTemporal(Parameter):
     def write_supporting_try_symlink(self):
         if self.seg_func_file is not None:
             dst=self.supporting_path
-            if os.path.exists(dst):
+            if os.path.lexists(dst):
                 if self.scenario.overwrite:
                     os.unlink(dst)
                 else:
@@ -7358,7 +7373,9 @@ class DispArray(object):
         name: label for the dispersion array, max len 20 char
         substances: list of substance names or patterns for which this array applies.
           can be a str, which is coerced to [str].  Interpreted as regular expression.
-        data: working on it.
+        data: currently only a single time step is supported, so data is an array of
+         dispersion coefficients, per exchange.
+
         """
         if name is not None:
             self.name=name[:20]
@@ -7688,7 +7705,17 @@ END_MULTIGRID"""%num_layers
         self.loads.append(load)
         return load
     
-    def add_monitor_from_shp(self,shp_fn,naming='elt_layer'):
+    def add_monitor_from_shp(self,shp_fn,naming='elt_layer',point_layers=True):
+        """
+        For each feature in the shapefile, add a monitor area.
+        shp_fn: path to shapefile
+        naming: generally, a field name from the shapefile giving the name of the monitor area.
+          special case when point_layers is True and the shapefile has points, naming can
+          be "elt_layer" in which case individual segments are monitored separately, and
+          named like elt123_layer45.
+        """
+        assert self.hydro,"Set hydro before calling add_monitor_from_shp"
+
         locations=wkb2shp.shp2geom(shp_fn)
         self.hydro.infer_2d_elements()
 
@@ -7700,11 +7727,8 @@ END_MULTIGRID"""%num_layers
 
         for i,rec in enumerate(locations):
             geom=rec['geom']
-            # for starters, only points are allowed, but it could
-            # be extended to handle lines for transects and polygons
-            # for horizontal integration
 
-            if geom.type=='Point':
+            if point_layers and (geom.type=='Point'):
                 xy=np.array(geom.coords)[0]
                 # would be better to have select_cells_nearest use
                 # centroids instead of circumcenters, but barring
@@ -7720,34 +7744,45 @@ END_MULTIGRID"""%num_layers
                 for layer,seg in enumerate(segs):
                     if naming=='elt_layer':
                         name="elt%d_layer%d"%(elt,layer)
-                        if name not in names:
-                            new_areas.append( (name,[seg] ) )
-                            names[name]=True
-            elif geom.type=='Polygon':
+                    else:
+                        name="%s_layer%d"%(rec[naming],layer)
+                    if name not in names:
+                        new_area=(name,[seg])
+                        self.monitor_areas = self.monitor_areas + (new_area,)
+                        names[name]=True
+                    else:
+                        self.log.warning("Duplicate requests to monitor %s"%name)
+            else:
                 try:
                     name=rec[naming]
                 except:
-                    name="polygon%d"%i
-                    
-                # bitmask over 2D elements
-                self.log.info("Selecting elements in polygon '%s'"%name)
-                # better to go by center, so that non-intersecting polygons
-                # yield non-intersecting sets of elements and segments
-                elt_sel=g.select_cells_intersecting(geom,by_center=True) # few seconds
+                    name="mon%d"%len(self.monitor_areas)
+                self.add_monitor_for_geometry(name=name,geom=geom)
+                
+    def add_monitor_for_geometry(self,name,geom):
+        """
+        Add a monitor area for elements intersecting the shapely geometry geom.
+        """
+        # make sure the name is unique
+        for n,segs in self.monitor_areas:
+            assert name!=n
+        
+        g=self.hydro.grid()
+        # bitmask over 2D elements
+        self.log.info("Selecting elements in polygon '%s'"%name)
+        # better to go by center, so that non-intersecting polygons
+        # yield non-intersecting sets of elements and segments
+        # 2019-09-12: use centroid instead of center in case the grid has weird geometry
+        elt_sel=g.select_cells_intersecting(geom,by_center='centroid') # few seconds
 
-                # extend to segments:
-                seg_sel=elt_sel[ self.hydro.seg_to_2d_element ] & (self.hydro.seg_to_2d_element>=0)         
+        # extend to segments:
+        seg_sel=elt_sel[ self.hydro.seg_to_2d_element ] & (self.hydro.seg_to_2d_element>=0)         
+        segs=np.nonzero( seg_sel )[0]
 
-                segs=np.nonzero( seg_sel )[0]
+        new_area= (name,segs) 
 
-                assert name not in names
-                new_areas.append( (name,segs) )
-                names[name]=True
-            else:
-                self.log.warning("Not ready to handle geometry type %s"%geom.type)
-
-        self.log.info("Added %d monitored segments from %s"%(len(new_areas),shp_fn))
-        self.monitor_areas = self.monitor_areas + tuple(new_areas)
+        self.log.info("Added %d monitored segments for %s"%(len(segs),name))
+        self.monitor_areas = self.monitor_areas + ( new_area, )
 
     def add_transects_from_shp(self,shp_fn,naming='count',clip_to_poly=True,
                                on_boundary='warn_and_skip'):
@@ -9533,7 +9568,7 @@ END_MULTIGRID"""%num_layers
         self.set_hydro(value)
 
     @classmethod
-    def load(cls,path):
+    def load(cls,path,load_hydro=True):
         """
         Working towards a similar ability as in DFlowModel, where an existing
         run can be loaded.
@@ -9541,6 +9576,15 @@ END_MULTIGRID"""%num_layers
         model=cls(base_path=path)
         model.overwrite=False
         # currently very little here...
+
+        if load_hydro:
+            # Try to guess what the right hyd file is
+            hyds=glob.glob(os.path.join(path,"*.hyd"))
+            if len(hyds)==1:
+                model.hydro=HydroFiles(hyd_path=hyds[0])
+            else:
+                log.info("Could not detect a load-able hyd file")
+            
         return model
         
     def set_hydro(self,hydro):
@@ -9659,9 +9703,17 @@ END_MULTIGRID"""%num_layers
         self.loads.append(load)
         return load
     
-    def add_monitor_from_shp(self,shp_fn,naming='elt_layer'):
+    def add_monitor_from_shp(self,shp_fn,naming='elt_layer',point_layers=True):
+        """
+        For each feature in the shapefile, add a monitor area.
+        shp_fn: path to shapefile
+        naming: generally, a field name from the shapefile giving the name of the monitor area.
+          special case when point_layers is True and the shapefile has points, naming can
+          be "elt_layer" in which case individual segments are monitored separately, and
+          named like elt123_layer45.
+        """
         assert self.hydro,"Set hydro before calling add_monitor_from_shp"
-        
+
         locations=wkb2shp.shp2geom(shp_fn)
         self.hydro.infer_2d_elements()
 
@@ -9673,11 +9725,8 @@ END_MULTIGRID"""%num_layers
 
         for i,rec in enumerate(locations):
             geom=rec['geom']
-            # for starters, only points are allowed, but it could
-            # be extended to handle lines for transects and polygons
-            # for horizontal integration
 
-            if geom.type=='Point':
+            if point_layers and (geom.type=='Point'):
                 xy=np.array(geom.coords)[0]
                 # would be better to have select_cells_nearest use
                 # centroids instead of circumcenters, but barring
@@ -9693,34 +9742,45 @@ END_MULTIGRID"""%num_layers
                 for layer,seg in enumerate(segs):
                     if naming=='elt_layer':
                         name="elt%d_layer%d"%(elt,layer)
-                        if name not in names:
-                            new_areas.append( (name,[seg] ) )
-                            names[name]=True
-            elif geom.type=='Polygon':
+                    else:
+                        name="%s_layer%d"%(rec[naming],layer)
+                    if name not in names:
+                        new_area=(name,[seg])
+                        self.monitor_areas = self.monitor_areas + (new_area,)
+                        names[name]=True
+                    else:
+                        self.log.warning("Duplicate requests to monitor %s"%name)
+            else:
                 try:
                     name=rec[naming]
                 except:
-                    name="polygon%d"%i
-                    
-                # bitmask over 2D elements
-                self.log.info("Selecting elements in polygon '%s'"%name)
-                # better to go by center, so that non-intersecting polygons
-                # yield non-intersecting sets of elements and segments
-                elt_sel=g.select_cells_intersecting(geom,by_center=True) # few seconds
+                    name="mon%d"%len(self.monitor_areas)
+                self.add_monitor_for_geometry(name=name,geom=geom)
+                
+    def add_monitor_for_geometry(self,name,geom):
+        """
+        Add a monitor area for elements intersecting the shapely geometry geom.
+        """
+        # make sure the name is unique
+        for n,segs in self.monitor_areas:
+            assert name!=n
+        
+        g=self.hydro.grid()
+        # bitmask over 2D elements
+        self.log.info("Selecting elements in polygon '%s'"%name)
+        # better to go by center, so that non-intersecting polygons
+        # yield non-intersecting sets of elements and segments
+        # 2019-09-12: use centroid instead of center in case the grid has weird geometry
+        elt_sel=g.select_cells_intersecting(geom,by_center='centroid') # few seconds
 
-                # extend to segments:
-                seg_sel=elt_sel[ self.hydro.seg_to_2d_element ] & (self.hydro.seg_to_2d_element>=0)         
+        # extend to segments:
+        seg_sel=elt_sel[ self.hydro.seg_to_2d_element ] & (self.hydro.seg_to_2d_element>=0)         
+        segs=np.nonzero( seg_sel )[0]
 
-                segs=np.nonzero( seg_sel )[0]
+        new_area= (name,segs) 
 
-                assert name not in names
-                new_areas.append( (name,segs) )
-                names[name]=True
-            else:
-                self.log.warning("Not ready to handle geometry type %s"%geom.type)
-
-        self.log.info("Added %d monitored segments from %s"%(len(new_areas),shp_fn))
-        self.monitor_areas = self.monitor_areas + tuple(new_areas)
+        self.log.info("Added %d monitored segments for %s"%(len(segs),name))
+        self.monitor_areas = self.monitor_areas + ( new_area, )
 
     def add_transects_from_shp(self,shp_fn,naming='count',clip_to_poly=True,
                                on_boundary='warn_and_skip'):
@@ -9924,6 +9984,31 @@ END_MULTIGRID"""%num_layers
             nef.close()
         return nc
 
+    def hist_ds(self):
+        """
+        Shifting to a slightly more standarized way of accessing history output
+        """
+        # this is the file that we postprocess and write out
+        hist_nc_fn=os.path.join(self.base_path,'dwaq_hist.nc')
+
+        if not os.path.exists(hist_nc_fn):
+            self.cmd_write_his_nc()
+            
+        assert os.path.exists(hist_nc_fn),"Trouble writing history nc file"
+        return xr.open_dataset(hist_nc_fn)
+
+    def map_ds(self):
+        """
+        Shifting to a slightly more standarized way of accessing map output
+        """
+        map_nc_fn=os.path.join(self.base_path,"dwaq_map.nc")
+        
+        if not os.path.exists(map_nc_fn):
+            self.cmd_write_map_nc()
+            
+        assert os.path.exists(map__nc_fn),"Trouble writing map nc file"
+        return xr.open_dataset(map_nc_fn)
+    
     # try to find the common chunks of code between writing ugrid
     # nc output and the history output
     def ugrid_map(self,nef=None,nc_kwargs={}):
@@ -10440,10 +10525,27 @@ END_MULTIGRID"""%num_layers
     def cmd_write_nc(self):
         """ Transcribe binary or NEFIS to NetCDF for a completed DWAQ run 
         """
-        self.write_nefis_his_nc()
+        self.cmd_write_his_nc()
+        self.cmd_write_map_nc()
+        
+    def cmd_write_his_nc(self):
+        self.write_binary_his_nc() or self.write_nefis_his_nc()
+        
+    def cmd_write_map_nc(self):
         # binary is faster and doesn't require dwaq libraries, but
         # does not know about units.
         self.write_binary_map_nc() or self.write_nefis_map_nc()
+
+    def write_binary_his_nc(self):
+        """ If binary history output is present, write that out to netcdf, otherwise
+        return False
+        """
+        his_fn=os.path.join(self.base_path,self.name+".his")
+        his_nc_fn=os.path.join(self.base_path,'dwaq_hist.nc')
+        
+        if not os.path.exists(his_fn): return False
+        ds=dio.his_file_xarray(his_fn)
+        ds.to_netcdf(his_nc_fn)
         
     def write_nefis_his_nc(self):
         nc2_fn=os.path.join(self.base_path,'dwaq_hist.nc')
