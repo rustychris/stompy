@@ -26,22 +26,26 @@ except ImportError:
 def nwis_dataset_collection(stations,*a,**k):
     """
     Fetch from multiple stations, glue together to a combined dataset.
-    The rest of the options are the same as for nwis_dataset()
+    The rest of the options are the same as for nwis_dataset().
+
+    Stations for which no data was found are omitted in the results.
     """
     ds_per_site=[]
     for station in stations:
         ds=nwis_dataset(station,*a,**k)
+        if ds is None:
+            continue
         ds['site']=('site',),[station]
         ds_per_site.append(ds)
 
     # And now glue those all together, but no filling of gaps yet.
-    # would need to add 'site' as a dimension on data variables for this to work
-    # dataset=ds_per_gage[0]
-    #for other in ds_per_gage[1:]:
-    #    dataset=dataset.combine_first(other)
 
     # As cases of missing data come up, this will have to get smarter about padding
     # individual sites.
+    if len(ds_per_site)==0:
+        # Annoying, but if no stations exist, just return None
+        return None
+    
     collection=xr.concat( ds_per_site, dim='site')
     for ds in ds_per_site:
         ds.close() # free up FDs
