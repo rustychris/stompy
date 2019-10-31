@@ -81,7 +81,9 @@ def coamps_files(start,stop,cache_dir,fields=['wnd_utru','wnd_vtru','pres_msl'])
                                         run_start.month,
                                         run_start.day,
                                         run_start.hour)
-            base_url=("http://www.usgodae.org/pub/outgoing/fnmoc/models/"
+            # 2019-10-12: appears to have changed to https, though the certificate
+            # is not valid.
+            base_url=("https://www.usgodae.org/pub/outgoing/fnmoc/models/"
                       "coamps/calif/cencoos/cencoos_4km/%04d/%s/")%(run_start.year,run_tag)
             
             recs=dict()
@@ -154,10 +156,13 @@ def fetch_coamps_wind(start,stop, cache_dir, **kw):
             output_dir=os.path.dirname(output_fn)
             os.path.exists(output_dir) or os.makedirs(output_dir)
             try:
-                utils.download_url(rec['url'],output_fn,on_abort='remove')
+                # 2019-10-12: certificate doesn't match, so don't verify.
+                utils.download_url(rec['url'],output_fn,on_abort='remove',verify=False)
                 files.append(output_fn)
-            except requests.HTTPError:
-                log.error("Failed to download %s, will move on"%rec['url'])
+            except (requests.HTTPError,requests.ConnectionError) as exc:
+                # 2019-10-12: getting ConnectionError - not sure if this is
+                # a different failure mode, or different version of requests.
+                log.error("Failed to download %s, will move on (%s)"%(rec['url'],exc))
             
             time.sleep(1) # be a little nice.  not as nice as it used to be.
     return files
