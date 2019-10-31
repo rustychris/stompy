@@ -11,8 +11,7 @@ import numpy as np
 from datetime import datetime
 import matplotlib.pyplot as plt
 from ...spatial import wkb2shp
-#from soda.utils.particles import ParticleAge
-#import soda.utils.othertime
+import pandas as pd
 
 class PtmBin(object):
     # when True, load particle data as memory map rather than np.fromstring.
@@ -195,6 +194,24 @@ class PtmBin(object):
             ax.set_aspect('equal')
             ax.axis(zoom)
 
+class ReleaseLog(object):
+    def __init__(self,fn):
+        self.data=pd.read_csv(fn,sep='\s+',
+                              names=['id','gid','x','y','z','k','cell','date','time'],
+                              parse_dates=[ ['date','time'] ])
+        self.intervals=self.to_intervals(self.data)
+    def to_intervals(self,data):
+        # group by interval
+        grped=data.groupby('date_time')
+        intervals=pd.DataFrame()
+        intervals['time']=grped['date_time'].first()
+        intervals['id_min']=grped['id'].min()
+        intervals['id_max']=grped['id'].max()
+        intervals['gid_min']=grped['gid'].min()
+        intervals['gid_max']=grped['gid'].max()
+        intervals['count']=grped['id'].size()
+        return intervals
+    
 class PtmState(object):
     """
     Probably ought to share some code with PtmBin.  

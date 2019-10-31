@@ -22,3 +22,17 @@ def test_load_shp_query():
                                   query=query)
         assert len(feats)>len(feat_sel)
 
+if 0:
+    # Doesn't work.
+    def test_write_gpkg():
+        from shapely import geometry
+
+        geoms=[ geometry.Point( -120.0, 37.0 ),
+                geometry.Point( -121.0, 37.5 ) ]
+        if os.path.exists('test.gpkg'):
+            import shutil
+            shutil.rmtree('test.gpkg')
+        wkb2shp.wkb2shp("test.gpkg",geoms,driver='GPKG',srs_text='WGS84',
+                        layer_name='points')
+
+
