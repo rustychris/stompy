@@ -1349,6 +1349,69 @@ class Hydro(object):
         np.savetxt(os.path.join(path,'exch_to_2d_link.csv'),
                    self.exch_to_2d_link,fmt='%d')
 
+    def flowlink_to_edge(self,g):
+        """
+        Create a sparse matrix that maps a per-flowlink, signed quantity (i.e. flow)
+        to the edges of g. BC flows entering at the boundary are handled, but
+        internal outfalls are ignored.
+        """
+        from scipy import sparse
+        self.infer_2d_links()
+        M=sparse.dok_matrix( (g.Nedges(),self.n_2d_links), np.float64)
+        e2c=g.edge_to_cells()
+        geom=self.get_geom()
+
+        cc=g.cells_center()
+        elem_xy=np.c_[ geom.FlowElem_xcc.values,
+                       geom.FlowElem_ycc.values ]
+
+        def elt_to_cell(elt):
+            # in general elts are preserved as the same cell index,
+            # and this is actually more robust then the geometry
+            # check because of some non-orthogonal cells that have
+            # a circumcenter outside the corresponding cell.
+            if utils.dist(elem_xy[elt] - cc[elt])<2.0:
+                return elt
+            # in a few cases the circumcenter is not inside the cell,
+            # so better to select the nearest circumcenter than the
+            # cell containing it.
+            c=g.select_cells_nearest(elem_xy[elt],inside=False)
+            assert c is not None
+            return c
+        
+        for link,(eltA,eltB) in utils.progress(enumerate(self.links)):
+            assert eltB>=0
+            cB=elt_to_cell(eltB)
+            
+            if eltA<0: # eltA<0 means it's a boundary.
+                # so find a boundary edge for that cell
+                for j in g.cell_to_edges(cB):
+                    if e2c[j,0]<0:
+                        sgn=1
+                        break
+                    elif e2c[j,1]<0:
+                        sgn=-1
+                        break
+                else:
+                    print("Link %d -- %d does not map to a grid boundary, likely a discharge, and will be ignored."%(eltA,eltB))
+                    # This is probably a discharge. Ignore it.
+                    continue
+            else:
+                cA=elt_to_cell(eltA)
+                j=g.cells_to_edge(cA,cB)
+                if j is None:
+                    raise Exception("%d to %d was not an edge in the grid"%(eltA,eltB))
+                if (e2c[j,0]==cA) and (e2c[j,1]==cB):
+                    # positive DWAQ flow is A->B
+                    # positive edge normal for grid is the same
+                    sgn=1
+                elif (e2c[j,1]==cA) and (e2c[j,0]==cB):
+                    sgn=-1
+                else:
+                    raise Exception("Bad match on link->edge")
+            M[j,link]=sgn
+        return M
+                
     def path_to_transect_exchanges(self,xy,on_boundary='warn_and_skip'):
         """
         xy: [N,2] points.
@@ -5991,8 +6054,8 @@ class FilterAll(FilterHydroBC):
     def add_parameters(self,hyd):
         hyd=super(FilterAll,self).add_parameters(hyd)
 
-        self.log.warning('During dev of memory-mapping, ignore parameters')
-        return hyd
+        #self.log.warning('During dev of memory-mapping, ignore parameters')
+        #return hyd
     
         for key,param in iteritems(self.orig.parameters()):
             self.log.info('Original -> filtered parameter %s'%key)
