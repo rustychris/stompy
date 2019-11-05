@@ -11,8 +11,7 @@ import numpy as np
 from datetime import datetime
 import matplotlib.pyplot as plt
 from ...spatial import wkb2shp
-#from soda.utils.particles import ParticleAge
-#import soda.utils.othertime
+import pandas as pd
 
 class PtmBin(object):
     # when True, load particle data as memory map rather than np.fromstring.
@@ -195,6 +194,82 @@ class PtmBin(object):
             ax.set_aspect('equal')
             ax.axis(zoom)
 
+    # -- caching of particle -> cell mapping
+    def grid_to_cell_cache_fn(self,grid):
+        grid_key=memoize.memoize_key( grid.nodes['x'][ grid.cells['nodes'].clip(-1) ] )
+        return self.fn+".cells-"+grid_key+".nc"
+
+    def precompute_cells(self,grid,force=False):
+        """
+        The cached cell info is about 15% the size of the original
+        bin.out file. ad-hoc binary and netcd yield about the same
+        file size.
+
+        grid: UnstructuredGrid. Will compute the cell index (or -1)
+           for each particle at each time step.
+
+        currently mapping a grid to a cache name is somewhat expensive,
+         so if extensive access to cached data in performance critical
+         sections are needed, this will need an option to directly
+         specify the grid_key.
+
+        force: when False, use cached data when possible, otherwise
+          recompute.
+
+        returns the cached filename, a netcdf file.
+        """
+        cell_cache_fn=grid_to_cell_cache_fn(self,grid)
+        if not force and os.path.exists(cell_cache_fn):
+            return cell_cache_fn
+
+        n_steps=self.count_timesteps()
+        dnums=[]
+        xys=[]
+
+        # loop once to gather all points
+        for ts in utils.progress(range(n_steps)):
+            dnum,parts=pbf.read_timestep(ts)
+            if ts%100==0:
+                print(f"{ts} {dnum} {len(parts)}")
+            dnums.append(dnum)
+            xys.append( parts['x'][:,:2].copy() )
+        all_xy=np.concatenate(xys)
+
+        # compute cells:
+        t=time.time()
+        # be sure to insert these as regular int
+        all_cell=grid.points_to_cells(all_xy)
+        elapsed=time.time() - t
+        print("Python mapping time: %.3fs"%elapsed)
+
+        ds=xr.Dataset()
+        ds['cell']=('particle_loc',),all_cell.astype(np.int32)
+        ds['dnum']=('time',),utils.to_dt64(np.array(dnums))
+        counts=np.array( [len(xy) for xy in xys] )
+        ds['count']=('time',),counts
+        ds['offset']=('time',),np.cumsum(counts)-counts
+        ds.to_netcdf(cell_cache_fn,mode='w')
+
+        return cell_cache_fn
+
+class ReleaseLog(object):
+    def __init__(self,fn):
+        self.data=pd.read_csv(fn,sep='\s+',
+                              names=['id','gid','x','y','z','k','cell','date','time'],
+                              parse_dates=[ ['date','time'] ])
+        self.intervals=self.to_intervals(self.data)
+    def to_intervals(self,data):
+        # group by interval
+        grped=data.groupby('date_time')
+        intervals=pd.DataFrame()
+        intervals['time']=grped['date_time'].first()
+        intervals['id_min']=grped['id'].min()
+        intervals['id_max']=grped['id'].max()
+        intervals['gid_min']=grped['gid'].min()
+        intervals['gid_max']=grped['gid'].max()
+        intervals['count']=grped['id'].size()
+        return intervals
+    
 class PtmState(object):
     """
     Probably ought to share some code with PtmBin.  

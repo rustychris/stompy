@@ -2037,6 +2037,9 @@ class SuntansModel(dfm.HydroModel):
         time_mode: for now, only 'inner'.  May be expanded to control whether
          time is used orthogonal to xy, or parallel (i.e. for each xy, do we pull
          one corresponding time from time, or pull all of the time for each).
+
+        if time is not covered by the output, or the run has no monitor output,
+        will return None.
         """
         if xy is None:
             xy=self.ll_to_native(ll)
@@ -2065,6 +2068,9 @@ class SuntansModel(dfm.HydroModel):
 
             stn=self.extract_station_monitor(xy=loc,chain_count=t_slice,
                                              dv_from_map=dv_from_map)
+            if stn is None:
+                log.warning('Found no monitor data for %s. Skip transect'%str(t_slice))
+                return None
             if np.isscalar(t):
                 if (t<stn.time.values[0]) or (t>stn.time.values[-1]):
                     log.info(f"Requested time {t} is outside the range of the model output")
@@ -2137,12 +2143,13 @@ class SuntansModel(dfm.HydroModel):
                             tran[v].values[samp_i,ku] = tran[v].values[samp_i,k]
                     break
     
-    
     def extract_transect(self,xy=None,ll=None,time=slice(None),dx=None,
                          vars=['uc','vc','Ac','dv','dzz','eta','w']):
         """
         xy: [N,2] coordinates defining the line of the transect
-        time: time index or slice to extract
+        time: if an integer or slice of integers, interpret as index
+          into time dimension. otherwise try to convert to datetime64, 
+          and then index into time coordinate.
         dx: omit to use xy as is, or a length scale for resampling xy
 
         returns xr.Dataset, unless xy does not intersect the grid at all,
@@ -2166,7 +2173,36 @@ class SuntansModel(dfm.HydroModel):
             else:
                 for proc in range(self.num_procs):
                     yield proc,self.subdomain_grid(proc),self.map_outputs()[proc]
-            
+
+        def time_to_isel(ds,times,mode='nearest'):
+            """
+            return an argument suitable for isel, to pull one or more time steps
+            from ds. 
+            ds: dataset with time dimension
+            times: integer, datetime64, or slice thereof.
+            mode: 'nearest' map a time to the nearest matching time
+                  'before' map a time to the matching or preceding time step
+                  'after' map a timem to the following time step.
+            """
+            if isinstance(times,slice):
+                return slice(time_to_isel(ds,times.start,mode='before'),
+                             time_to_isel(ds,times.stop,mode='after'))
+            else:
+                if np.issubdtype(type(times),np.integer):
+                    # already an index
+                    return times
+                else:
+                    dns=utils.to_dnum(ds.time.values)
+                    dn=utils.to_dnum(times)
+                    if mode=='nearest':
+                        return utils.nearest(dns,dn)
+                    elif mode=='before':
+                        return np.searchsorted(dns,dn)
+                    elif mode=='after':
+                        return np.searchsorted(dns,dn,side='right')
+                    else:
+                        raise Exception("Bad mode: %s"%mode)
+                    
         for proc,sub_g,map_fn in gen_sources():
             ds=None
             for pnti,pnt in enumerate(xy):
@@ -2183,8 +2219,8 @@ class SuntansModel(dfm.HydroModel):
                         if good_vars is None:
                             # drop any variables that don't appear in the output
                             good_vars=[v for v in vars if v in ds]
-                        
-                    point_ds=ds[good_vars].isel(time=time,Nc=c)
+                    time_idx=time_to_isel(ds,time)
+                    point_ds=ds[good_vars].isel(time=time_idx,Nc=c)
                     point_ds['x_sample']=pnt[0]
                     point_ds['y_sample']=pnt[1]
                     point_datasets[pnti]=point_ds
@@ -2277,6 +2313,9 @@ class SuntansModel(dfm.HydroModel):
         This version pulls output from history files
 
         if dv_from_map is True, additionally pulls dv from map output.
+
+        if no data matches the time range of chain_count, or profile output     
+        wasn't enable, returns None.
         """
         if xy is None:
             xy=self.ll_to_native(ll)
@@ -2287,6 +2326,8 @@ class SuntansModel(dfm.HydroModel):
             dss=[mod.extract_station_monitor(xy=xy,ll=ll,chain_count=1,
                                              dv_from_map=False)
                  for mod in restarts]
+            if len(dss)==0:
+                return None
             chained=xr.concat(dss,dim='time',data_vars='minimal')
             if dv_from_map:
                 # just to get dv...

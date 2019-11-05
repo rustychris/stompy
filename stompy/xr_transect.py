@@ -1066,6 +1066,17 @@ def average_transects(trans,dz=None,dx=None,resample_x=True,resample_z=True,
 
     returns a new Dataset.
     """
+    # Get representative range of timestamps, before resample_to_common
+    # screws up the time dimension.
+    min_time=None
+    max_time=None
+    for ds in trans:
+        if 'time' in ds:
+            ds_min=ds.time.values.min()
+            ds_max=ds.time.values.max()
+            min_time=min( min_time or ds_min, ds_min)
+            max_time=max( max_time or ds_max, ds_max)
+    
     trans=resample_to_common(trans,dz=dz,dx=dx,resample_x=resample_x,resample_z=resample_z,
                              seg=seg)
 
@@ -1078,6 +1089,11 @@ def average_transects(trans,dz=None,dx=None,resample_x=True,resample_z=True,
     for var in ds_average.data_vars:
         ds_average[var].attrs.update(trans[0][var].attrs)
 
+    if min_time is not None:
+        ds_average['start_time']=(),min_time
+        ds_average['end_time']=(),max_time
+        # easier than a proper average, and probably just as useful.
+        ds_average['time']=(),min_time+(max_time-min_time)/2
     return ds_average
 
 def calc_secondary_strength(tran,name='secondary'):

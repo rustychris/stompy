@@ -124,8 +124,8 @@ def coops_dataset_product(station,product,
     """
     Retrieve a single data product from a single station.
     station: string or numeric identifier for COOPS station
-    product: string identifying the variable to retrieve.  See all_products at 
-    the top of this file.
+    product: string identifying the variable to retrieve, such as "water_level".
+      See all_products at the top of this file.
     start_date,end_date: period to retrieve, as python datetime, matplotlib datenum,
     or numpy datetime64.
     days_per_request: batch the requests to fetch smaller chunks at a time.

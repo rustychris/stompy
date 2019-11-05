@@ -369,7 +369,12 @@ def usgs_sfbay_dataset(start_date, end_date,
                              cache_dir=cache_dir,
                              days_per_request=days_per_request)
     
-    hier=polaris.set_index(['Date','Station Number','Depth'])
+    #hier=polaris.set_index(['Date','Station Number','Depth'])
+    # there were 10 rows, 2017-04-04, stations 35 and 36, with duplicate
+    # entries. Like they measured the same location, same day, 1 hour apart.
+    hier=polaris.groupby(['Date','Station Number','Depth']).first()
+    if len(hier) != len(polaris):
+        logging.warning("After grouping by date, station and depth, there were some duplicates.")
 
     import warnings
 

@@ -9,6 +9,7 @@ import logging as log
 import matplotlib.gridspec as gridspec
 from stompy import filters
 from matplotlib import dates
+from scipy.stats import spearmanr
 
 from .. import (xr_utils, utils)
 
@@ -150,12 +151,14 @@ def calc_metrics(x,ref):
     metrics['bias']=np.nanmean( (x-ref).values )
     valid=np.isfinite( (x+ref).values )
     metrics['r'] = np.corrcoef( x.values[valid],ref.values[valid])[0,1]
-    metrics['lag']= utils.find_lag_xr(x,ref) 
-    metrics['lag_s']=metrics['lag']/np.timedelta64(1,'s')
+    if 'time' in x.dims and 'time' in ref.dims:
+        metrics['lag']= utils.find_lag_xr(x,ref) 
+        metrics['lag_s']=metrics['lag']/np.timedelta64(1,'s')
     metrics['amp']=np.std(x.values[valid]) / np.std(ref.values[valid])
 
     metrics['wilmott']=utils.model_skill(x.values,ref.values)
     metrics['murphy']=utils.murphy_skill(x.values,ref.values)
+    metrics['spearman_rho'],metrics['spearman_p']=spearmanr(x.values,ref.values)
     
     return metrics    
 

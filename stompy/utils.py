@@ -2042,6 +2042,9 @@ def download_url(url,local_file,log=None,on_abort='pass',**extra_args):
     on_abort: if an exception is raised during download, 'pass'
       leaves partial files in tact, 'remove' deletes partial files
     extra_args: keyword arguments passed on to requests.get or ftplib.FTP()
+      useful options here:
+        verify=False: if an https server has a bad certificate but you want
+           to proceed anyway.
     """
     parsed=six.moves.urllib_parse.urlparse(url)
 

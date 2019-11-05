@@ -31,7 +31,9 @@ def wkb2shp(shp_name,
             field_gen = lambda f: {},
             fields = None,
             overwrite=False,
-            geom_type=None):
+            geom_type=None,
+            driver=None,
+            layer_name=None):
     """
     Save data to a shapefile.
 
@@ -50,7 +52,19 @@ def wkb2shp(shp_name,
 
     srs_text: sets the projection information when writing the shapefile.  Expects
     a string, for example 'EPSG:3095'  or 'WGS84'.
+
+    driver: Directly specify an alternative driver, such as GPKG. if None, assumed
+      shapefile, unless shp_name is 'memory' in which case create an in-Memory
+      layer.
+      for GPKG, the optional layer_name argument can be used to name the layer
+      which would default to the basename of the shp_name otherwise
     """
+    if layer_name is None:
+        layer_name=shp_name
+        
+    if driver=='GPKG':
+        drv = ogr.GetDriverByName('GPKG')
+        new_ds = drv.CreateDataSource(shp_name)
     if shp_name.lower()=='memory':
         drv = ogr.GetDriverByName('Memory')
         new_ds = drv.CreateDataSource("mem_" + uuid.uuid1().hex)
@@ -141,7 +155,7 @@ def wkb2shp(shp_name,
         geom_type = int(types.max())
         # print "Chose geometry type to be %s"%ogr2text[geom_type]
 
-    new_layer = new_ds.CreateLayer(shp_name,
+    new_layer = new_ds.CreateLayer(layer_name,
                                    srs=srs,
                                    geom_type=geom_type)
 
