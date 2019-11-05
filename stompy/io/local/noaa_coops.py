@@ -236,6 +236,9 @@ def coops_dataset_product(station,product,
 
             ds=coops_json_to_ds(data,params)
             if cache_fn is not None:
+                if os.path.exists(cache_fn):
+                    # simply overwriting often does not work, so try removing first
+                    os.unlink(cache_fn)
                 ds.to_netcdf(cache_fn)
 
         if len(datasets)>0:
