@@ -4344,15 +4344,18 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         geom: a shapely geometry
         invert: select cells which do not intersect.
         as_type: 'mask' returns boolean valued mask, 'indices' returns array of indices
-        by_center: if true, test against the cell center.  By default, tests against the
+        by_center: if True, test against the cell center.  By default, tests against the
         finite cell.
+         if 'centroid', test against the centroid
         """
         if as_type is 'mask':
             sel = np.zeros(self.Ncells(),np.bool8) # initialized to False
         else:
             sel = []
 
-        if by_center:
+        if by_center=='centroid':
+            centers=self.cells_centroid()
+        elif by_center:
             centers=self.cells_center()
 
         for c in range(self.Ncells()):

@@ -3211,7 +3211,7 @@ class CompositeField(Field):
             orig_count=len(self.sources)
             self.sources=self.sources[selA&selB]
             new_count=len(self.sources)
-            log.info(f"Date filter selected {new_count} of {orig_count} sources")
+            log.info("Date filter selected %s of %s sources"%(new_count,orig_count))
 
         if data_mode is not None:
             self.data_mode=self.sources[data_mode]
