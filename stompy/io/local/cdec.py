@@ -9,12 +9,10 @@ import logging
 import re
 import six
 
-#from six.moves import cPickle
-
 import numpy as np
 import xarray as xr
 import pandas as pd
-from pandas.compat import StringIO
+from six.moves import StringIO
 import requests
 
 log=logging.getLogger('cdec')
