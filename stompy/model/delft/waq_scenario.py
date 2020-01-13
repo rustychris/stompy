@@ -4476,27 +4476,23 @@ class DwaqAggregator(Hydro):
 
     def add_parameters(self,hparams):
         hparams=super(DwaqAggregator,self).add_parameters(hparams)
-        
         hyd0=self.open_hyd(0)
-        # 2017-01-5: used to call temperature 'temperature', but for dwaq it should
-        #            be temp.
 
         # new approach - use unaggregated parameter objects.
         hyd0_params=hyd0.parameters(force=False)
 
-        # could also loop over the parameters that hyd0 has, and just be sure
-        # step over the ones that will be replaced, like surf.
-
-        for pname in ['VertDisper','salinity','temp']:
-            # see if the first processor has it
-            if pname in hyd0_params:
-                hyd0_param=hyd0_params[pname]
-                # in the past, used the label to grab this from each unaggregated
-                # source.
-                # now we use the parameter name
-                hparams[pname]=ParameterSpatioTemporal(func_t=self.seg_func(param_name=pname),
-                                                       times=hyd0_param.times,
-                                                       hydro=self)
+        for pname in hyd0_params:
+            if pname.lower() in ['surf','bottomdept']:
+                self.log.info("Original hydro has parameter %s, but it will not be copied to aggregated"%pname)
+                continue
+            
+            hyd0_param=hyd0_params[pname]
+            # in the past, used the label to grab this from each unaggregated
+            # source.
+            # now we use the parameter name
+            hparams[pname]=ParameterSpatioTemporal(func_t=self.seg_func(param_name=pname),
+                                                   times=hyd0_param.times,
+                                                   hydro=self)
 
         return hparams
 
@@ -4538,7 +4534,12 @@ class DwaqAggregator(Hydro):
             temp_file="'%s-temp.seg'"%name
         else:
             temp_file='none'
-            
+
+        if 'tau' in self.parameters():
+            tau_file="'%s-tau.seg'"%name
+        else:
+            tau_file='none'
+
         lines=[
             "file-created-by  SFEI, waq_scenario.py",
             "file-creation-date  %s"%( datetime.datetime.utcnow().strftime('%H:%M:%S, %d-%m-%Y') ),
@@ -4581,7 +4582,7 @@ class DwaqAggregator(Hydro):
             "vert-diffusion-file   '%s-vertdisper.seg'"%name,
             # not a segment function!
             "surfaces-file         '%s'"%self.surf_filename,
-            "shear-stresses-file   none",
+            "shear-stresses-file   %s"%tau_file,
             "hydrodynamic-layers",
             "\n".join( ["%.5f"%(1./n_layers)] * n_layers ),
             "end-hydrodynamic-layers",
@@ -7497,6 +7498,10 @@ def map_nef_names(nef):
 DEFAULT='_DEFAULT_'
 
 class Scenario(scriptable.Scriptable):
+    """
+    A class wrapper for a Delft D-Water Quality (DWAQ)
+    simulation.
+    """
     name="tbd" # this is used for the basename of the various files.
     desc=('line1','line2','line3')
 
