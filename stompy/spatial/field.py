@@ -1,7 +1,9 @@
 from __future__ import division
 from __future__ import print_function
 
-import numpy as np # to help in transition
+# still tracking down the last few calls missing the np. prefix,
+# leftover from 'from numpy import *'
+import numpy as np 
 
 import glob,types
 
@@ -2228,7 +2230,7 @@ class SimpleGrid(QuadrilateralGrid):
         """
 
         # Find pixels missing one or more neighbors:
-        valid = isfinite(self.F)
+        valid = np.isfinite(self.F)
         all_valid_nbrs = np.ones(valid.shape,'bool')
         all_valid_nbrs[:-1,:] &= valid[1:,:] # to the west
         all_valid_nbrs[1:,:] &=  valid[:-1,:] # to east
@@ -2409,7 +2411,7 @@ class SimpleGrid(QuadrilateralGrid):
         for col in range(len(X)):
             # print("%d/%d"%(col,len(X)))
             for row in range(len(Y)):
-                if isfinite(self.F[row,col]):
+                if np.isfinite(self.F[row,col]):
                     if straddle is None:
                         p = geometry.Point(X[col],Y[row])
                         if (not poly.contains(p)) ^ invert:# i hope that's the right logic
@@ -2443,7 +2445,7 @@ class SimpleGrid(QuadrilateralGrid):
                                ["COMPRESS=LZW"])
 
         # make nodata areas transparent:
-        frgba[:,:,3] = 255*isfinite(self.F)
+        frgba[:,:,3] = 255*np.isfinite(self.F)
 
         # top left x, w-e pixel resolution, rotation, top left y, rotation, n-s pixel resolution
         # Gdal wants pixel-edge extents, but what we store is pixel center extents...
@@ -3618,7 +3620,7 @@ class MultiRasterField(Field):
 
             # for the moment, keep the nearest interpolation
             edgeF[missing] = src.interpolate( X[missing],interpolation='linear' )
-            if all(isfinite(edgeF)):
+            if np.all(np.isfinite(edgeF)):
                 break
 
         edgeF = np.clip(edgeF,-np.inf,self.clip_max) # ??

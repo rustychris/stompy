@@ -672,10 +672,10 @@ def find_slack(jd,u,leave_mean=False,which='both'):
     dt=jd[1]-jd[0]
 
     u=filters.lowpass_fir(u,
-                            winsize=1+np.round(2./(dt*24)))
+                          winsize=1+np.round(2./(dt*24)))
     if not leave_mean:
         u-=filters.lowpass_fir(u,
-                                 winsize=1+np.round(33./(dt*24)))
+                               winsize=1+np.round(33./(dt*24)))
 
     missing=np.isnan(u)
     u[missing]=np.interp(jd[missing],
@@ -703,6 +703,21 @@ def find_slack(jd,u,leave_mean=False,which='both'):
 
 
 def hour_tide(jd,u=None,h=None,jd_new=None,leave_mean=False):
+    """
+    Calculate tide-hour from a time series of u (velocity, flood-positive)
+    or h (water level, i.e. positive-up).
+
+    jd: time in days, i.e. julian day, datenum, etc.
+    u: velocity, flood-positive
+    h: water level, positive up.
+    jd_new: if you want to evaluate the tidal hour at a different
+      (but overlapping) set of times.
+    leave_mean: by default, the time series mean is removed, but this 
+     can be disabled by passing True here.
+
+    the return values are between 0 and 12, with 0 being slack before
+    ebb (hmm - may need to verify that.).
+    """
     assert (u is None) != (h is None),"Must specify one of u,h"
     if h is not None:
         # abuse cdiff to avoid concatenate code here

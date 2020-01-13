@@ -613,6 +613,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         ug.filename=filename
         return ug
 
+    # COMING SOON
+    #@staticmethod
+    #def read_rgfgrid(grd_fn):
+    #    HERE
     @staticmethod
     def read_ras2d(hdf_fname, twod_area_name=None):
         """
@@ -1885,6 +1889,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             self.cells['edges'] = self.UNKNOWN # and no data here
             for i,cycle in enumerate(cycles):
                 self.cells['nodes'][i,:len(cycle)]=cycle
+            # This is now stale
+            self._cell_center_index=None
 
     def interp_cell_to_node(self,cval):
         result=np.zeros(self.Nnodes(),cval.dtype)
@@ -5935,13 +5941,23 @@ class UnTRIM08Grid(UnstructuredGrid):
         self.edges['depth_mean'][sel_edges] = edge_from_cell
         self.edges['depth_max'][sel_edges] = edge_from_cell
 
-    def infer_depths_cells_from_edges(self):
-        """ cell depths are set as deepest neighboring edge
+    def infer_depths_cells_from_edges(self,valid=None):
+        """ cell depths are set as max of neighboring edge depth.
+        sets cells['depth_mean'] and cells['depth_max']
+        both to the max depth of neighboring edge['depth_mean'].
+
+        valid: optional bitmask to consider only a subset of edges
         """
         sel_cells = np.nonzero(np.isnan(self.cells['depth_mean']))[0]
         # iterate, since number of sides varies
         edges = self.cells['edges'][sel_cells]
-        edge_depths = self.edges['depth_mean'][edges]
+
+        edge_depths=self.edges['depth_mean']
+        if valid is not None:
+            valid_depths=-np.inf*np.ones(self.Nedges())
+            valid_depths[valid]=edge_depths[valid]
+            edge_depths=valid_depths
+        edge_depths=edge_depths[edges]
         edge_depths[edges<0] = -np.inf # to avoid missing edges for triangles
 
         self.cells['depth_mean'][sel_cells] = edge_depths.max(axis=1)
