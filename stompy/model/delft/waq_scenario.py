@@ -4193,17 +4193,23 @@ class DwaqAggregator(Hydro):
             flows += Eflow.dot(p_flow)
         return flows
 
-    def segment_aggregator(self,t_sec,seg_fn,normalize=True,min_volume=0.00001):
+    def segment_aggregator(self,t_sec,seg_fn,normalize=True,min_volume=0.00001,
+                           nan_method='pass'):
         """ 
         Generic segment scalar aggregation
         t_sec: simulation time, integer seconds
-        seg_fn: lambda proc => scalar for each unaggregated segment
+        seg_fn: lambda proc => scalar for each unaggregated segment.  If this is a single
+        processor run, it's okay to pass the array directly.
+
         normalize: if True, divide by aggregated volume, otherwise just sum
         min_volume: if normalizing by volume, this volume is added, so that zero-volume
         inputs with valid scalars will produce valid output.  Note that this included 
         for all unaggregated segments - in cases where there are large numbers of 
         empty segments aggregated with a few small non-empty segments, then there will
         be some error.  but min_volume can be very small
+
+        nan_method: 'pass' does no special handling of nan in scalar. 'ignore' will
+          zero out the scalar and volume for segments with a nan scalar.
         """
         # volume-weighted averaging
         agg_scalars=np.zeros(self.n_seg,'f4')
@@ -4218,10 +4224,19 @@ class DwaqAggregator(Hydro):
             vols=hydp.volumes(t_sec)
             if min_volume>0:
                 vols=vols.clip(min_volume,np.inf)
-            scals=seg_fn(p) * np.ones_like(vols) # mult in case seg_fn returns a scalar
+
+            if self.nprocs==1 and not callable(seg_fn):
+                scals=seg_fn
+            else:
+                scals=seg_fn(p)
+            scals=scals * np.ones_like(vols) # mult in case seg_fn returns a scalar
 
             # inner loop on target segment
             S=self.seg_matrix[p]
+            if nan_method=='ignore':
+                invalid=np.isnan(scals)
+                vols=np.where( invalid, 0, vols)
+                scals=np.where( invalid, 0, scals)
             agg_scalars += S.dot( vols*scals )
             agg_volumes += S.dot( vols )
 
@@ -5035,13 +5050,16 @@ class HydroAggregator(DwaqAggregator):
 
     def grid(self):
         if self.agg_shp is not None:
-            g=unstructured_grid.UnstructuredGrid.from_shp(self.agg_shp)
-            self.log.info("Inferring grid from aggregation shapefile")
-            #NB: the edges here do *not* line up with links of the hydro.
-            # at some point it may be possible to adjust the aggregation
-            # shapefile to make these line up.
-            g.make_edges_from_cells()
-            return g
+            if isinstance(self.agg_shp,unstructured_grid.UnstructuredGrid):
+                return self.agg_shp
+            else:
+                g=unstructured_grid.UnstructuredGrid.from_shp(self.agg_shp)
+                self.log.info("Inferring grid from aggregation shapefile")
+                #NB: the edges here do *not* line up with links of the hydro.
+                # at some point it may be possible to adjust the aggregation
+                # shapefile to make these line up.
+                g.make_edges_from_cells()
+                return g
         else:
             return self.hydro_in.grid()
     
@@ -7428,7 +7446,7 @@ class DispArray(object):
     time[i4], [ndisp,nqt] matrix of 'f4' - for each time step.
     nqt is total number of exchanges.
     """
-    def __init__(self,name=None,substances=None,data=None):
+    def __init__(self,name=None,substances=None,data=None,times=None):
         """
         typ. usage:
         scenario.dispersions['subtidal_K']=DispArray(substances='.*',data=xxx)
@@ -7436,9 +7454,12 @@ class DispArray(object):
         name: label for the dispersion array, max len 20 char
         substances: list of substance names or patterns for which this array applies.
           can be a str, which is coerced to [str].  Interpreted as regular expression.
-        data: currently only a single time step is supported, so data is an array of
-         dispersion coefficients, per exchange.
-
+        Options for data, times:
+          constant in time: data is an array of dispersion coefficients, one per exchange.
+             times is None.
+          unsteady: data is a 2D array, [time,exchange], and times gives corresponding
+             timesteps in system time units, similar to ParameterSpatioTemporal, i.e. seconds since
+             reference time.
         """
         if name is not None:
             self.name=name[:20]
@@ -7448,6 +7469,8 @@ class DispArray(object):
             substances=[substances]
         self.patts=substances
         self.data=data
+        self.times=times
+        
     def matches(self,name):
         for patt in self.patts:
             if re.match(patt,name,flags=re.IGNORECASE):
@@ -7473,9 +7496,13 @@ class DispArray(object):
             # I didn't see this in the docs, but it's true of the 
             # .par files written by the GUI. probably this is to make the format
             # the same as a segment function with a single time step.
-            fp.write(np.array(0,dtype='i4').tobytes())
-            fp.write(self.data.astype('f4').tobytes())
-        
+            if self.times is None:  # Write constant in time.
+                fp.write(np.array(0,dtype='i4').tobytes())
+                fp.write(self.data.astype('f4').tobytes())
+            else:
+                for ti,t in enumerate(self.times):
+                    fp.write(np.array(t,dtype='i4').tobytes())
+                    fp.write(self.data[ti,:].astype('f4').tobytes())
 
 def map_nef_names(nef):
     subst_names=nef['DELWAQ_PARAMS'].getelt('SUBST_NAMES',[0])
@@ -9091,27 +9118,69 @@ INCLUDE '{self.atr_filename}'  ; attributes file
         if len(self.scenario.dispersions)==0:
             return ""
         else:
-            lines=[';Data option',
-                   '1 ; information is constant and provided without defaults']
-
+            # This code is currently limited to constant in time.
+            # for time-variable, the option here is not 1, but
+            # 3.
+            disps=self.scenario.dispersions.values()
+            
+            unsteady=np.array([d.times is not None for d in disps])
+            if unsteady.min()!=unsteady.max():
+                raise Exception("Multiple dispersion arrays specified, with some "
+                                "constant and some unsteady. It's just too much.")
+            unsteady=unsteady[0]
             hydro=self.scenario.hydro
 
-            # add x direction:
-            lines.append("1.0 ; scale factor for x")
-            disps=self.scenario.dispersions.values()
+            lines=['; Data option']
 
-            for exch_i in range(hydro.n_exch_x):
-                vals=[disp.data[exch_i] for disp in disps]
-                lines.append( " ".join(["%.3e"%v for v in vals]) )
+            if unsteady:
+                # page 81 of D-Water Quality Description Input File Manual (1.5.4)
+                lines.append( '3 ; information comes as time functions')
 
-            assert hydro.n_exch_y==0 # not implemented
-                
-            lines.append("1.0 ; scale factor for z")
+                if len(disps)>1:
+                    self.log.warning("Brave soul! Multiple dispersion arrays have not been tested")
+                    
+                for disp in disps:
+                    # RH: assuming that the multiple blocks correspond to potentially
+                    # multiple dispersion arrays. But not sure about that.  Manual
+                    # isn't clear, and there is at least the possibility of multiple
+                    # dispersion arrays in a single block (but that would further require
+                    # each to have the same time dimension).
+                    lines.append( '2 ; this block -- information at breakpoints with linear time interpolation')
+                    lines.append( '%d ; number of items, equals number of exchanges'%hydro.n_exch )
+                    
+                    lines.append( '; exchanges ids (all of them...)')
+                    all_j=np.arange(hydro.n_exch)+1
+                    per_line=10
+                    while all_j.size:
+                        lines.append( " ".join( [str(j) for j in all_j[:per_line]] ) )
+                        all_j=all_j[per_line:]
+                    lines.append( '%d ; number of breakpoints'%len(disp.times))
+                    # code below treats x and z separately. weird. not sure.
+                    # with all 3, I get an error here on the second value.  So try just one.
+                    # that runs. Appears to do the right thing.
+                    lines.append( '1.0 ; scale factors')
+                    for ti,t in enumerate(disp.times):
+                        lines.append( '%d ; time integer at breakpoint %d'%(t,ti) )
+                        for exch_i in range(hydro.n_exch):
+                            lines.append( "%.3e"%disp.data[ti,exch_i] )
+            else:
+                lines.append( '1 ; information is constant and provided without defaults')
 
-            for exch_i in range(hydro.n_exch_x+hydro.n_exch_y,hydro.n_exch):
-                vals=[disp.data[exch_i] for disp in disps]
-                lines.append( " ".join(["%.3e"%v for v in vals]) + "; from each array" )
-                
+                # add x direction:
+                lines.append("1.0 ; scale factor for x")
+
+                for exch_i in range(hydro.n_exch_x):
+                    vals=[disp.data[exch_i] for disp in disps]
+                    lines.append( " ".join(["%.3e"%v for v in vals]) + "; Kx")
+
+                assert hydro.n_exch_y==0 # not implemented
+
+                lines.append("1.0 ; scale factor for z")
+
+                for exch_i in range(hydro.n_exch_x+hydro.n_exch_y,hydro.n_exch):
+                    vals=[disp.data[exch_i] for disp in disps]
+                    lines.append( " ".join(["%.3e"%v for v in vals]) + "; Kz" )
+
             # Write them out to a separate text file
             disp_filename='dispersions.dsp'
             with open(os.path.join(self.scenario.base_path,disp_filename),'wt') as fp:
@@ -9642,14 +9711,17 @@ END_MULTIGRID"""%num_layers
 
         if load_hydro:
             # Try to guess what the right hyd file is
-            hyds=glob.glob(os.path.join(path,"*.hyd"))
-            if len(hyds)==1:
-                model.hydro=HydroFiles(hyd_path=hyds[0])
-            else:
-                log.info("Could not detect a load-able hyd file")
-            
+            model.load_hydro()
         return model
-        
+
+    def load_hydro(self):
+        hyds=glob.glob(os.path.join(self.base_path,"*.hyd"))
+        if len(hyds)==1:
+            self.hydro=HydroFiles(hyd_path=hyds[0])
+        else:
+            log.info("Could not detect a load-able hyd file")
+        return self.hydro
+    
     def set_hydro(self,hydro):
         self._hydro=hydro
 
@@ -10060,16 +10132,18 @@ END_MULTIGRID"""%num_layers
         assert os.path.exists(hist_nc_fn),"Trouble writing history nc file"
         return xr.open_dataset(hist_nc_fn)
 
+    def map_ds_path(self):
+        return os.path.join(self.base_path,"dwaq_map.nc")
+        
     def map_ds(self):
         """
         Shifting to a slightly more standarized way of accessing map output
         """
-        map_nc_fn=os.path.join(self.base_path,"dwaq_map.nc")
+        map_nc_fn=self.map_ds_path()
         
         if not os.path.exists(map_nc_fn):
             self.cmd_write_map_nc()
-            
-        assert os.path.exists(map__nc_fn),"Trouble writing map nc file"
+            assert os.path.exists(map_nc_fn),"Trouble writing map nc file"
         return xr.open_dataset(map_nc_fn)
     
     # try to find the common chunks of code between writing ugrid
@@ -10608,6 +10682,8 @@ END_MULTIGRID"""%num_layers
         
         if not os.path.exists(his_fn): return False
         ds=dio.his_file_xarray(his_fn)
+        if os.path.exists(his_nc_fn):
+            os.unlink(his_nc_fn)
         ds.to_netcdf(his_nc_fn)
         
     def write_nefis_his_nc(self):

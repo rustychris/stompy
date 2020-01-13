@@ -145,8 +145,19 @@ def assemble_comparison_data(models,observations,model_labels=None,
 
 def calc_metrics(x,ref):
     """
-    x, ref: DataArrays with common time dimension
+    x, ref: DataArrays with common dimension.
+
+    if that dimension is time, some additional time-series metrics
+    are calculated (namely lag).
+
+    straight arrays can be passed in, in which case no time-related
+    processing will be done.
     """
+    if not isinstance(x,xr.DataArray):
+        x=xr.DataArray(x)
+    if not isinstance(ref,xr.DataArray):
+        ref=xr.DataArray(ref)
+        
     metrics={}
     metrics['bias']=np.nanmean( (x-ref).values )
     valid=np.isfinite( (x+ref).values )

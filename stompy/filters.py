@@ -141,3 +141,23 @@ def lowpass_fir(x,winsize,ignore_nan=True,axis=-1,mode='same',use_fft=False,
         result[~has_weight]=0 # redundant, but in case of roundoff.
         result[weights<nan_weight_threshold]=np.nan
     return result
+
+# xarray time series versions:
+def lowpass_xr(da,cutoff,**kw):
+    """
+    Like lowpass(), but ds is a data array with a time coordinate,
+    and cutoff is a timedelta64.
+    """
+    data=da.values
+    time_secs=(da.time.values-da.time.values[0])/np.timedelta64(1,'s')
+    cutoff_secs=cutoff/np.timedelta64(1,'s')
+
+    axis=da.get_axis_num('time')
+    
+    data_lp=lowpass(data,time_secs,cutoff_secs,axis=axis,**kw)
+    da_lp=da.copy(deep=True)
+    da_lp.values[:]=data_lp
+    da_lp.attrs['comment']="lowpass at %g seconds"%(cutoff_secs)
+    return da_lp
+
+    
