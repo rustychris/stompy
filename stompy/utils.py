@@ -2130,7 +2130,15 @@ def call_with_path(cmd,path):
     finally:
         os.chdir(pwd)
 
-def progress(a,interval_s=5.0,msg="%s"):
+def progress(a,interval_s=5.0,msg="%s",func=log.info):
+    """
+    Print progress messages while iterating over a sequence a.
+
+    a: iterable
+    interval_s: progress will be printed every x seconds
+    msg: message format, with %s format string 
+    func: alternate display mechanism.  defaults log.info
+    """
     try:
         L=len(a) # may fail?
     except TypeError: # may be a generated
@@ -2144,7 +2152,7 @@ def progress(a,interval_s=5.0,msg="%s"):
                 txt=msg%("%d/%d"%(i,L))
             else:
                 txt=msg%("%d"%i)
-            log.info(txt)
+            func(txt)
             t0=t
         yield elt
 

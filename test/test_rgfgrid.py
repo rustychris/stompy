@@ -46,7 +46,7 @@ class RgfGrid(unstructured_grid.UnstructuredGrid):
     def __init__(self,grd_fn):
         super(RgfGrid,self).__init__()
         
-        tok=GrdTok(grd_fn)
+        tok=self.GrdTok(grd_fn)
 
         _,coord_sys=tok.read_key_value()
         _,missing_val=tok.read_key_value()
@@ -102,6 +102,25 @@ class RgfGrid(unstructured_grid.UnstructuredGrid):
         self.rowcol_to_node=node_idxs
         self.rowcol_to_cell=cell_idxs
         self.grd_filename=grd_fn
+    def read_enclosure(self,enc_fn):
+        """
+        Read the enclosure file. Saves the list of row/col indices, 0-based,
+        to self.enclosure.
+
+        Note that this is just for logical comparisons on the
+        grid, not for geographic representation. The range of indices is 1 greater
+        than the grid indices for nodes and 2 greater than grid indices for cells.
+        This is because the vertices of the enclosure are on "ghost" cell centers
+        outside the actual domain. 
+        """
+        with open(enc_fn,'rt') as fp:
+            ijs=[]
+            for line in fp:
+                line=line.strip().split('*')[0]
+                if not line: continue
+                row,col=[int(s) for s in line.split()]
+                ijs.append( [row,col] )
+        self.enclosure=np.array(ijs)-1
         
 ##
 
@@ -109,7 +128,8 @@ import glob
 #grd_fns=glob.glob('/home/rusty/tmp/ucb_model/Models/MouthVariation/EpMp/*.grd')
 #grids=[RgfGrid(fn) for fn in grd_fns]
 # grd_fn="data/WET.grd"
-grd_fn="/home/rusty/tmp/ucb_model/Models/MouthVariation/EpMp/PDO_EpMp.grd"
+grd_fn="/home/rusty/src/pescadero/data/ucb-model/MouthVariation/EpMp/PDO_EpMp.grd"
+enc_fn="/home/rusty/src/pescadero/data/ucb-model/MouthVariation/EpMp/PDO_EpMp.enc"
 grd=RgfGrid(grd_fn)
 
 
@@ -135,6 +155,20 @@ dep_node_centered=dep2d_centered[ grd.nodes['row'], grd.nodes['col']]
 
 grd.add_node_field('depth_node',dep_node_centered)
 
+grd.add_cell_field('depth_cell',grd.interp_node_to_cell(dep_node_centered))
+
+##
+
+# max row is 595, max col is 146
+# but that is one bigger than nodes.
+# Suggests that the "depth points" really are at the centers of cells.
+# Figure A.1 in the RGFgrid manual shows the enclosure polygon intersecting
+# the water level points.  There is a better figure in the Delft3D-Flow
+# manual.
+
+grd.write_cells_shp('/home/rusty/src/pescadero/data/ucb-model/epmp-pdo-cells.shp',
+                    extra_fields=[('depth',grd.cells['depth_cell'])])
+
 ##
 
 import matplotlib.pyplot as plt
@@ -150,3 +184,23 @@ plt.colorbar(ccoll)
 # HERE
 # Resolve the staggering question.  Might have to load this into Delta Shell
 # to figure it out.
+# But Delta Shell license is stale.
+
+# RGFGrid manual says that grd file gives the coordinates of the orthogonal
+# curvilinear grid at the "depth points"
+
+# the mdf file for PDO gives Mmax=595 Nmax=146 Kmax=1
+# D3D flow manual says that the number of cells in each direction is *2* less
+# than the max values.
+
+# That is consistent with my grd.rowcol_to_cell.shape == (144,593)
+# The enclosure polygon includes points that are not valid nodes of the grid,
+# so it is not necessarily surprising that it is larger.
+
+# D3D Flow manual says *.dep file should have entries for all Nmax x Mmax
+# The grd file gives dimensions 1 less than Nmax, Mmax.
+# In the example dep file they give in the manual, the last row and last
+# column are in fact missing values (-999).
+# That suggests my interpretation above is correct.
+# Appendix E of the manual mentions depth defined at the corners of the
+# control volume.
