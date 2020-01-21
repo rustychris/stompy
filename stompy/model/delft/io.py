@@ -1182,7 +1182,10 @@ class SectionedConfig(object):
     def parse_row(self,row):
         section_patt=r'^(\[[A-Za-z0-9 ]+\])([#;].*)?$'
         value_patt = r'^([A-Za-z0-9_ ]+)\s*=([^#;]*)([#;].*)?$'
-        blank_patt = r'^\s*([#;].*)?$'
+        # 2019-12-31: appears that some mdu's written by delta shell have
+        # lines near the top that are just an asterisk.  Assume
+        # those are comments
+        blank_patt = r'^\s*([\*#;].*)?$'
 
         m_sec = re.match(section_patt, row)
         if m_sec is not None:

@@ -148,6 +148,7 @@ def imemoize(lru=None,key_method='pickle'):
       callable: pass key_method(*args,**kwargs) will be the key
     """
     def memoize1(obj,key_method=key_method):
+
         @functools.wraps(obj)
         def memoizer(self,*args, **kwargs):
             if key_method=='pickle':
@@ -156,7 +157,10 @@ def imemoize(lru=None,key_method='pickle'):
                 key = memoize_key_str(args,**kwargs)
             else:
                 key=key_method(args,**kwargs)
-                
+
+            # to distinguish multiple methods
+            key=str(obj),key
+            
             try:
                 cache=self._memocache
             except AttributeError:
