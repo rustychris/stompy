@@ -744,6 +744,17 @@ class Hydro(object):
             self.seg_k=seg_k
         return self.seg_to_2d_element
 
+    def segment_select(self,element,k):
+        """
+        Identify segment IDs by element and layer. This was referenced
+        in some Load code, but somehow did not exist in hydro. May be expanded in the
+        future to allow other means of identifying segments.
+        returns an array of segment ids
+        """
+        self.infer_2d_elements()
+        idxs=np.nonzero( (self.seg_to_2d_element==element) & (self.seg_k==k) )[0]
+        return idxs
+    
     def extrude_element_to_segment(self,V):
         """ V: [n_2d_elements] array
         returns [n_seg] array
@@ -1137,7 +1148,11 @@ class Hydro(object):
 
         scu=self.scenario.scu
 
-        time_start,time_stop,timedelta = self.timeline_scen()
+        # If symlinking, we want to report the full time period.
+        if self.enable_write_symlink:
+            time_start,time_stop,timedelta=self.timeline_data()
+        else:
+            time_start,time_stop,timedelta = self.timeline_scen()
             
         timestep = timedelta_to_waq_timestep(timedelta)
 
@@ -1334,6 +1349,69 @@ class Hydro(object):
         np.savetxt(os.path.join(path,'exch_to_2d_link.csv'),
                    self.exch_to_2d_link,fmt='%d')
 
+    def flowlink_to_edge(self,g):
+        """
+        Create a sparse matrix that maps a per-flowlink, signed quantity (i.e. flow)
+        to the edges of g. BC flows entering at the boundary are handled, but
+        internal outfalls are ignored.
+        """
+        from scipy import sparse
+        self.infer_2d_links()
+        M=sparse.dok_matrix( (g.Nedges(),self.n_2d_links), np.float64)
+        e2c=g.edge_to_cells()
+        geom=self.get_geom()
+
+        cc=g.cells_center()
+        elem_xy=np.c_[ geom.FlowElem_xcc.values,
+                       geom.FlowElem_ycc.values ]
+
+        def elt_to_cell(elt):
+            # in general elts are preserved as the same cell index,
+            # and this is actually more robust then the geometry
+            # check because of some non-orthogonal cells that have
+            # a circumcenter outside the corresponding cell.
+            if utils.dist(elem_xy[elt] - cc[elt])<2.0:
+                return elt
+            # in a few cases the circumcenter is not inside the cell,
+            # so better to select the nearest circumcenter than the
+            # cell containing it.
+            c=g.select_cells_nearest(elem_xy[elt],inside=False)
+            assert c is not None
+            return c
+        
+        for link,(eltA,eltB) in utils.progress(enumerate(self.links)):
+            assert eltB>=0
+            cB=elt_to_cell(eltB)
+            
+            if eltA<0: # eltA<0 means it's a boundary.
+                # so find a boundary edge for that cell
+                for j in g.cell_to_edges(cB):
+                    if e2c[j,0]<0:
+                        sgn=1
+                        break
+                    elif e2c[j,1]<0:
+                        sgn=-1
+                        break
+                else:
+                    print("Link %d -- %d does not map to a grid boundary, likely a discharge, and will be ignored."%(eltA,eltB))
+                    # This is probably a discharge. Ignore it.
+                    continue
+            else:
+                cA=elt_to_cell(eltA)
+                j=g.cells_to_edge(cA,cB)
+                if j is None:
+                    raise Exception("%d to %d was not an edge in the grid"%(eltA,eltB))
+                if (e2c[j,0]==cA) and (e2c[j,1]==cB):
+                    # positive DWAQ flow is A->B
+                    # positive edge normal for grid is the same
+                    sgn=1
+                elif (e2c[j,1]==cA) and (e2c[j,0]==cB):
+                    sgn=-1
+                else:
+                    raise Exception("Bad match on link->edge")
+            M[j,link]=sgn
+        return M
+                
     def path_to_transect_exchanges(self,xy,on_boundary='warn_and_skip'):
         """
         xy: [N,2] points.
@@ -2162,7 +2240,7 @@ class HydroFiles(Hydro):
         super(HydroFiles,self).add_parameters(hyd)
 
         # can probably add bottomdept,depth,salinity.
-        print("Incoming parameters are %s"%list(hyd.keys()))
+        self.log.debug("Incoming parameters are %s"%list(hyd.keys()))
         
         # do NOT include surfaces-files here - it's a different format.
         for var,key in [('vertdisper','vert-diffusion-file'),
@@ -2171,7 +2249,7 @@ class HydroFiles(Hydro):
                         ('salinity','salinity-file')]:
             fn=self.get_path(key)
             if os.path.exists(fn):
-                print("%s does exist, so will add it to the parameters"%fn)
+                self.log.debug("%s does exist, so will add it to the parameters"%fn)
                 hyd[var]=ParameterSpatioTemporal(seg_func_file=fn,
                                                  hydro=self)
         return hyd
@@ -4115,17 +4193,23 @@ class DwaqAggregator(Hydro):
             flows += Eflow.dot(p_flow)
         return flows
 
-    def segment_aggregator(self,t_sec,seg_fn,normalize=True,min_volume=0.00001):
+    def segment_aggregator(self,t_sec,seg_fn,normalize=True,min_volume=0.00001,
+                           nan_method='pass'):
         """ 
         Generic segment scalar aggregation
         t_sec: simulation time, integer seconds
-        seg_fn: lambda proc => scalar for each unaggregated segment
+        seg_fn: lambda proc => scalar for each unaggregated segment.  If this is a single
+        processor run, it's okay to pass the array directly.
+
         normalize: if True, divide by aggregated volume, otherwise just sum
         min_volume: if normalizing by volume, this volume is added, so that zero-volume
         inputs with valid scalars will produce valid output.  Note that this included 
         for all unaggregated segments - in cases where there are large numbers of 
         empty segments aggregated with a few small non-empty segments, then there will
         be some error.  but min_volume can be very small
+
+        nan_method: 'pass' does no special handling of nan in scalar. 'ignore' will
+          zero out the scalar and volume for segments with a nan scalar.
         """
         # volume-weighted averaging
         agg_scalars=np.zeros(self.n_seg,'f4')
@@ -4140,10 +4224,19 @@ class DwaqAggregator(Hydro):
             vols=hydp.volumes(t_sec)
             if min_volume>0:
                 vols=vols.clip(min_volume,np.inf)
-            scals=seg_fn(p) * np.ones_like(vols) # mult in case seg_fn returns a scalar
+
+            if self.nprocs==1 and not callable(seg_fn):
+                scals=seg_fn
+            else:
+                scals=seg_fn(p)
+            scals=scals * np.ones_like(vols) # mult in case seg_fn returns a scalar
 
             # inner loop on target segment
             S=self.seg_matrix[p]
+            if nan_method=='ignore':
+                invalid=np.isnan(scals)
+                vols=np.where( invalid, 0, vols)
+                scals=np.where( invalid, 0, scals)
             agg_scalars += S.dot( vols*scals )
             agg_volumes += S.dot( vols )
 
@@ -4398,27 +4491,23 @@ class DwaqAggregator(Hydro):
 
     def add_parameters(self,hparams):
         hparams=super(DwaqAggregator,self).add_parameters(hparams)
-        
         hyd0=self.open_hyd(0)
-        # 2017-01-5: used to call temperature 'temperature', but for dwaq it should
-        #            be temp.
 
         # new approach - use unaggregated parameter objects.
         hyd0_params=hyd0.parameters(force=False)
 
-        # could also loop over the parameters that hyd0 has, and just be sure
-        # step over the ones that will be replaced, like surf.
-
-        for pname in ['VertDisper','salinity','temp']:
-            # see if the first processor has it
-            if pname in hyd0_params:
-                hyd0_param=hyd0_params[pname]
-                # in the past, used the label to grab this from each unaggregated
-                # source.
-                # now we use the parameter name
-                hparams[pname]=ParameterSpatioTemporal(func_t=self.seg_func(param_name=pname),
-                                                       times=hyd0_param.times,
-                                                       hydro=self)
+        for pname in hyd0_params:
+            if pname.lower() in ['surf','bottomdept']:
+                self.log.info("Original hydro has parameter %s, but it will not be copied to aggregated"%pname)
+                continue
+            
+            hyd0_param=hyd0_params[pname]
+            # in the past, used the label to grab this from each unaggregated
+            # source.
+            # now we use the parameter name
+            hparams[pname]=ParameterSpatioTemporal(func_t=self.seg_func(param_name=pname),
+                                                   times=hyd0_param.times,
+                                                   hydro=self)
 
         return hparams
 
@@ -4460,7 +4549,12 @@ class DwaqAggregator(Hydro):
             temp_file="'%s-temp.seg'"%name
         else:
             temp_file='none'
-            
+
+        if 'tau' in self.parameters():
+            tau_file="'%s-tau.seg'"%name
+        else:
+            tau_file='none'
+
         lines=[
             "file-created-by  SFEI, waq_scenario.py",
             "file-creation-date  %s"%( datetime.datetime.utcnow().strftime('%H:%M:%S, %d-%m-%Y') ),
@@ -4503,7 +4597,7 @@ class DwaqAggregator(Hydro):
             "vert-diffusion-file   '%s-vertdisper.seg'"%name,
             # not a segment function!
             "surfaces-file         '%s'"%self.surf_filename,
-            "shear-stresses-file   none",
+            "shear-stresses-file   %s"%tau_file,
             "hydrodynamic-layers",
             "\n".join( ["%.5f"%(1./n_layers)] * n_layers ),
             "end-hydrodynamic-layers",
@@ -4957,13 +5051,16 @@ class HydroAggregator(DwaqAggregator):
 
     def grid(self):
         if self.agg_shp is not None:
-            g=unstructured_grid.UnstructuredGrid.from_shp(self.agg_shp)
-            self.log.info("Inferring grid from aggregation shapefile")
-            #NB: the edges here do *not* line up with links of the hydro.
-            # at some point it may be possible to adjust the aggregation
-            # shapefile to make these line up.
-            g.make_edges_from_cells()
-            return g
+            if isinstance(self.agg_shp,unstructured_grid.UnstructuredGrid):
+                return self.agg_shp
+            else:
+                g=unstructured_grid.UnstructuredGrid.from_shp(self.agg_shp)
+                self.log.info("Inferring grid from aggregation shapefile")
+                #NB: the edges here do *not* line up with links of the hydro.
+                # at some point it may be possible to adjust the aggregation
+                # shapefile to make these line up.
+                g.make_edges_from_cells()
+                return g
         else:
             return self.hydro_in.grid()
     
@@ -5976,8 +6073,8 @@ class FilterAll(FilterHydroBC):
     def add_parameters(self,hyd):
         hyd=super(FilterAll,self).add_parameters(hyd)
 
-        self.log.warning('During dev of memory-mapping, ignore parameters')
-        return hyd
+        #self.log.warning('During dev of memory-mapping, ignore parameters')
+        #return hyd
     
         for key,param in iteritems(self.orig.parameters()):
             self.log.info('Original -> filtered parameter %s'%key)
@@ -7092,7 +7189,7 @@ class ParameterSpatioTemporal(Parameter):
     def write_supporting_try_symlink(self):
         if self.seg_func_file is not None:
             dst=self.supporting_path
-            if os.path.exists(dst):
+            if os.path.lexists(dst):
                 if self.scenario.overwrite:
                     os.unlink(dst)
                 else:
@@ -7350,7 +7447,7 @@ class DispArray(object):
     time[i4], [ndisp,nqt] matrix of 'f4' - for each time step.
     nqt is total number of exchanges.
     """
-    def __init__(self,name=None,substances=None,data=None):
+    def __init__(self,name=None,substances=None,data=None,times=None):
         """
         typ. usage:
         scenario.dispersions['subtidal_K']=DispArray(substances='.*',data=xxx)
@@ -7358,7 +7455,12 @@ class DispArray(object):
         name: label for the dispersion array, max len 20 char
         substances: list of substance names or patterns for which this array applies.
           can be a str, which is coerced to [str].  Interpreted as regular expression.
-        data: working on it.
+        Options for data, times:
+          constant in time: data is an array of dispersion coefficients, one per exchange.
+             times is None.
+          unsteady: data is a 2D array, [time,exchange], and times gives corresponding
+             timesteps in system time units, similar to ParameterSpatioTemporal, i.e. seconds since
+             reference time.
         """
         if name is not None:
             self.name=name[:20]
@@ -7368,6 +7470,8 @@ class DispArray(object):
             substances=[substances]
         self.patts=substances
         self.data=data
+        self.times=times
+        
     def matches(self,name):
         for patt in self.patts:
             if re.match(patt,name,flags=re.IGNORECASE):
@@ -7393,9 +7497,13 @@ class DispArray(object):
             # I didn't see this in the docs, but it's true of the 
             # .par files written by the GUI. probably this is to make the format
             # the same as a segment function with a single time step.
-            fp.write(np.array(0,dtype='i4').tobytes())
-            fp.write(self.data.astype('f4').tobytes())
-        
+            if self.times is None:  # Write constant in time.
+                fp.write(np.array(0,dtype='i4').tobytes())
+                fp.write(self.data.astype('f4').tobytes())
+            else:
+                for ti,t in enumerate(self.times):
+                    fp.write(np.array(t,dtype='i4').tobytes())
+                    fp.write(self.data[ti,:].astype('f4').tobytes())
 
 def map_nef_names(nef):
     subst_names=nef['DELWAQ_PARAMS'].getelt('SUBST_NAMES',[0])
@@ -7417,6 +7525,10 @@ def map_nef_names(nef):
 DEFAULT='_DEFAULT_'
 
 class Scenario(scriptable.Scriptable):
+    """
+    A class wrapper for a Delft D-Water Quality (DWAQ)
+    simulation.
+    """
     name="tbd" # this is used for the basename of the various files.
     desc=('line1','line2','line3')
 
@@ -7688,7 +7800,17 @@ END_MULTIGRID"""%num_layers
         self.loads.append(load)
         return load
     
-    def add_monitor_from_shp(self,shp_fn,naming='elt_layer'):
+    def add_monitor_from_shp(self,shp_fn,naming='elt_layer',point_layers=True):
+        """
+        For each feature in the shapefile, add a monitor area.
+        shp_fn: path to shapefile
+        naming: generally, a field name from the shapefile giving the name of the monitor area.
+          special case when point_layers is True and the shapefile has points, naming can
+          be "elt_layer" in which case individual segments are monitored separately, and
+          named like elt123_layer45.
+        """
+        assert self.hydro,"Set hydro before calling add_monitor_from_shp"
+
         locations=wkb2shp.shp2geom(shp_fn)
         self.hydro.infer_2d_elements()
 
@@ -7700,11 +7822,8 @@ END_MULTIGRID"""%num_layers
 
         for i,rec in enumerate(locations):
             geom=rec['geom']
-            # for starters, only points are allowed, but it could
-            # be extended to handle lines for transects and polygons
-            # for horizontal integration
 
-            if geom.type=='Point':
+            if point_layers and (geom.type=='Point'):
                 xy=np.array(geom.coords)[0]
                 # would be better to have select_cells_nearest use
                 # centroids instead of circumcenters, but barring
@@ -7720,34 +7839,45 @@ END_MULTIGRID"""%num_layers
                 for layer,seg in enumerate(segs):
                     if naming=='elt_layer':
                         name="elt%d_layer%d"%(elt,layer)
-                        if name not in names:
-                            new_areas.append( (name,[seg] ) )
-                            names[name]=True
-            elif geom.type=='Polygon':
+                    else:
+                        name="%s_layer%d"%(rec[naming],layer)
+                    if name not in names:
+                        new_area=(name,[seg])
+                        self.monitor_areas = self.monitor_areas + (new_area,)
+                        names[name]=True
+                    else:
+                        self.log.warning("Duplicate requests to monitor %s"%name)
+            else:
                 try:
                     name=rec[naming]
                 except:
-                    name="polygon%d"%i
-                    
-                # bitmask over 2D elements
-                self.log.info("Selecting elements in polygon '%s'"%name)
-                # better to go by center, so that non-intersecting polygons
-                # yield non-intersecting sets of elements and segments
-                elt_sel=g.select_cells_intersecting(geom,by_center=True) # few seconds
+                    name="mon%d"%len(self.monitor_areas)
+                self.add_monitor_for_geometry(name=name,geom=geom)
+                
+    def add_monitor_for_geometry(self,name,geom):
+        """
+        Add a monitor area for elements intersecting the shapely geometry geom.
+        """
+        # make sure the name is unique
+        for n,segs in self.monitor_areas:
+            assert name!=n
+        
+        g=self.hydro.grid()
+        # bitmask over 2D elements
+        self.log.info("Selecting elements in polygon '%s'"%name)
+        # better to go by center, so that non-intersecting polygons
+        # yield non-intersecting sets of elements and segments
+        # 2019-09-12: use centroid instead of center in case the grid has weird geometry
+        elt_sel=g.select_cells_intersecting(geom,by_center='centroid') # few seconds
 
-                # extend to segments:
-                seg_sel=elt_sel[ self.hydro.seg_to_2d_element ] & (self.hydro.seg_to_2d_element>=0)         
+        # extend to segments:
+        seg_sel=elt_sel[ self.hydro.seg_to_2d_element ] & (self.hydro.seg_to_2d_element>=0)         
+        segs=np.nonzero( seg_sel )[0]
 
-                segs=np.nonzero( seg_sel )[0]
+        new_area= (name,segs) 
 
-                assert name not in names
-                new_areas.append( (name,segs) )
-                names[name]=True
-            else:
-                self.log.warning("Not ready to handle geometry type %s"%geom.type)
-
-        self.log.info("Added %d monitored segments from %s"%(len(new_areas),shp_fn))
-        self.monitor_areas = self.monitor_areas + tuple(new_areas)
+        self.log.info("Added %d monitored segments for %s"%(len(segs),name))
+        self.monitor_areas = self.monitor_areas + ( new_area, )
 
     def add_transects_from_shp(self,shp_fn,naming='count',clip_to_poly=True,
                                on_boundary='warn_and_skip'):
@@ -8993,27 +9123,69 @@ INCLUDE '{self.atr_filename}'  ; attributes file
         if len(self.scenario.dispersions)==0:
             return ""
         else:
-            lines=[';Data option',
-                   '1 ; information is constant and provided without defaults']
-
+            # This code is currently limited to constant in time.
+            # for time-variable, the option here is not 1, but
+            # 3.
+            disps=self.scenario.dispersions.values()
+            
+            unsteady=np.array([d.times is not None for d in disps])
+            if unsteady.min()!=unsteady.max():
+                raise Exception("Multiple dispersion arrays specified, with some "
+                                "constant and some unsteady. It's just too much.")
+            unsteady=unsteady[0]
             hydro=self.scenario.hydro
 
-            # add x direction:
-            lines.append("1.0 ; scale factor for x")
-            disps=self.scenario.dispersions.values()
+            lines=['; Data option']
 
-            for exch_i in range(hydro.n_exch_x):
-                vals=[disp.data[exch_i] for disp in disps]
-                lines.append( " ".join(["%.3e"%v for v in vals]) )
+            if unsteady:
+                # page 81 of D-Water Quality Description Input File Manual (1.5.4)
+                lines.append( '3 ; information comes as time functions')
 
-            assert hydro.n_exch_y==0 # not implemented
-                
-            lines.append("1.0 ; scale factor for z")
+                if len(disps)>1:
+                    self.log.warning("Brave soul! Multiple dispersion arrays have not been tested")
+                    
+                for disp in disps:
+                    # RH: assuming that the multiple blocks correspond to potentially
+                    # multiple dispersion arrays. But not sure about that.  Manual
+                    # isn't clear, and there is at least the possibility of multiple
+                    # dispersion arrays in a single block (but that would further require
+                    # each to have the same time dimension).
+                    lines.append( '2 ; this block -- information at breakpoints with linear time interpolation')
+                    lines.append( '%d ; number of items, equals number of exchanges'%hydro.n_exch )
+                    
+                    lines.append( '; exchanges ids (all of them...)')
+                    all_j=np.arange(hydro.n_exch)+1
+                    per_line=10
+                    while all_j.size:
+                        lines.append( " ".join( [str(j) for j in all_j[:per_line]] ) )
+                        all_j=all_j[per_line:]
+                    lines.append( '%d ; number of breakpoints'%len(disp.times))
+                    # code below treats x and z separately. weird. not sure.
+                    # with all 3, I get an error here on the second value.  So try just one.
+                    # that runs. Appears to do the right thing.
+                    lines.append( '1.0 ; scale factors')
+                    for ti,t in enumerate(disp.times):
+                        lines.append( '%d ; time integer at breakpoint %d'%(t,ti) )
+                        for exch_i in range(hydro.n_exch):
+                            lines.append( "%.3e"%disp.data[ti,exch_i] )
+            else:
+                lines.append( '1 ; information is constant and provided without defaults')
 
-            for exch_i in range(hydro.n_exch_x+hydro.n_exch_y,hydro.n_exch):
-                vals=[disp.data[exch_i] for disp in disps]
-                lines.append( " ".join(["%.3e"%v for v in vals]) + "; from each array" )
-                
+                # add x direction:
+                lines.append("1.0 ; scale factor for x")
+
+                for exch_i in range(hydro.n_exch_x):
+                    vals=[disp.data[exch_i] for disp in disps]
+                    lines.append( " ".join(["%.3e"%v for v in vals]) + "; Kx")
+
+                assert hydro.n_exch_y==0 # not implemented
+
+                lines.append("1.0 ; scale factor for z")
+
+                for exch_i in range(hydro.n_exch_x+hydro.n_exch_y,hydro.n_exch):
+                    vals=[disp.data[exch_i] for disp in disps]
+                    lines.append( " ".join(["%.3e"%v for v in vals]) + "; Kz" )
+
             # Write them out to a separate text file
             disp_filename='dispersions.dsp'
             with open(os.path.join(self.scenario.base_path,disp_filename),'wt') as fp:
@@ -9533,7 +9705,7 @@ END_MULTIGRID"""%num_layers
         self.set_hydro(value)
 
     @classmethod
-    def load(cls,path):
+    def load(cls,path,load_hydro=True):
         """
         Working towards a similar ability as in DFlowModel, where an existing
         run can be loaded.
@@ -9541,8 +9713,20 @@ END_MULTIGRID"""%num_layers
         model=cls(base_path=path)
         model.overwrite=False
         # currently very little here...
+
+        if load_hydro:
+            # Try to guess what the right hyd file is
+            model.load_hydro()
         return model
-        
+
+    def load_hydro(self):
+        hyds=glob.glob(os.path.join(self.base_path,"*.hyd"))
+        if len(hyds)==1:
+            self.hydro=HydroFiles(hyd_path=hyds[0])
+        else:
+            log.info("Could not detect a load-able hyd file")
+        return self.hydro
+    
     def set_hydro(self,hydro):
         self._hydro=hydro
 
@@ -9659,9 +9843,17 @@ END_MULTIGRID"""%num_layers
         self.loads.append(load)
         return load
     
-    def add_monitor_from_shp(self,shp_fn,naming='elt_layer'):
+    def add_monitor_from_shp(self,shp_fn,naming='elt_layer',point_layers=True):
+        """
+        For each feature in the shapefile, add a monitor area.
+        shp_fn: path to shapefile
+        naming: generally, a field name from the shapefile giving the name of the monitor area.
+          special case when point_layers is True and the shapefile has points, naming can
+          be "elt_layer" in which case individual segments are monitored separately, and
+          named like elt123_layer45.
+        """
         assert self.hydro,"Set hydro before calling add_monitor_from_shp"
-        
+
         locations=wkb2shp.shp2geom(shp_fn)
         self.hydro.infer_2d_elements()
 
@@ -9673,11 +9865,8 @@ END_MULTIGRID"""%num_layers
 
         for i,rec in enumerate(locations):
             geom=rec['geom']
-            # for starters, only points are allowed, but it could
-            # be extended to handle lines for transects and polygons
-            # for horizontal integration
 
-            if geom.type=='Point':
+            if point_layers and (geom.type=='Point'):
                 xy=np.array(geom.coords)[0]
                 # would be better to have select_cells_nearest use
                 # centroids instead of circumcenters, but barring
@@ -9693,34 +9882,45 @@ END_MULTIGRID"""%num_layers
                 for layer,seg in enumerate(segs):
                     if naming=='elt_layer':
                         name="elt%d_layer%d"%(elt,layer)
-                        if name not in names:
-                            new_areas.append( (name,[seg] ) )
-                            names[name]=True
-            elif geom.type=='Polygon':
+                    else:
+                        name="%s_layer%d"%(rec[naming],layer)
+                    if name not in names:
+                        new_area=(name,[seg])
+                        self.monitor_areas = self.monitor_areas + (new_area,)
+                        names[name]=True
+                    else:
+                        self.log.warning("Duplicate requests to monitor %s"%name)
+            else:
                 try:
                     name=rec[naming]
                 except:
-                    name="polygon%d"%i
-                    
-                # bitmask over 2D elements
-                self.log.info("Selecting elements in polygon '%s'"%name)
-                # better to go by center, so that non-intersecting polygons
-                # yield non-intersecting sets of elements and segments
-                elt_sel=g.select_cells_intersecting(geom,by_center=True) # few seconds
+                    name="mon%d"%len(self.monitor_areas)
+                self.add_monitor_for_geometry(name=name,geom=geom)
+                
+    def add_monitor_for_geometry(self,name,geom):
+        """
+        Add a monitor area for elements intersecting the shapely geometry geom.
+        """
+        # make sure the name is unique
+        for n,segs in self.monitor_areas:
+            assert name!=n
+        
+        g=self.hydro.grid()
+        # bitmask over 2D elements
+        self.log.info("Selecting elements in polygon '%s'"%name)
+        # better to go by center, so that non-intersecting polygons
+        # yield non-intersecting sets of elements and segments
+        # 2019-09-12: use centroid instead of center in case the grid has weird geometry
+        elt_sel=g.select_cells_intersecting(geom,by_center='centroid') # few seconds
 
-                # extend to segments:
-                seg_sel=elt_sel[ self.hydro.seg_to_2d_element ] & (self.hydro.seg_to_2d_element>=0)         
+        # extend to segments:
+        seg_sel=elt_sel[ self.hydro.seg_to_2d_element ] & (self.hydro.seg_to_2d_element>=0)         
+        segs=np.nonzero( seg_sel )[0]
 
-                segs=np.nonzero( seg_sel )[0]
+        new_area= (name,segs) 
 
-                assert name not in names
-                new_areas.append( (name,segs) )
-                names[name]=True
-            else:
-                self.log.warning("Not ready to handle geometry type %s"%geom.type)
-
-        self.log.info("Added %d monitored segments from %s"%(len(new_areas),shp_fn))
-        self.monitor_areas = self.monitor_areas + tuple(new_areas)
+        self.log.info("Added %d monitored segments for %s"%(len(segs),name))
+        self.monitor_areas = self.monitor_areas + ( new_area, )
 
     def add_transects_from_shp(self,shp_fn,naming='count',clip_to_poly=True,
                                on_boundary='warn_and_skip'):
@@ -9924,6 +10124,33 @@ END_MULTIGRID"""%num_layers
             nef.close()
         return nc
 
+    def hist_ds(self):
+        """
+        Shifting to a slightly more standarized way of accessing history output
+        """
+        # this is the file that we postprocess and write out
+        hist_nc_fn=os.path.join(self.base_path,'dwaq_hist.nc')
+
+        if not os.path.exists(hist_nc_fn):
+            self.cmd_write_his_nc()
+            
+        assert os.path.exists(hist_nc_fn),"Trouble writing history nc file"
+        return xr.open_dataset(hist_nc_fn)
+
+    def map_ds_path(self):
+        return os.path.join(self.base_path,"dwaq_map.nc")
+        
+    def map_ds(self):
+        """
+        Shifting to a slightly more standarized way of accessing map output
+        """
+        map_nc_fn=self.map_ds_path()
+        
+        if not os.path.exists(map_nc_fn):
+            self.cmd_write_map_nc()
+            assert os.path.exists(map_nc_fn),"Trouble writing map nc file"
+        return xr.open_dataset(map_nc_fn)
+    
     # try to find the common chunks of code between writing ugrid
     # nc output and the history output
     def ugrid_map(self,nef=None,nc_kwargs={}):
@@ -10440,10 +10667,29 @@ END_MULTIGRID"""%num_layers
     def cmd_write_nc(self):
         """ Transcribe binary or NEFIS to NetCDF for a completed DWAQ run 
         """
-        self.write_nefis_his_nc()
+        self.cmd_write_his_nc()
+        self.cmd_write_map_nc()
+        
+    def cmd_write_his_nc(self):
+        self.write_binary_his_nc() or self.write_nefis_his_nc()
+        
+    def cmd_write_map_nc(self):
         # binary is faster and doesn't require dwaq libraries, but
         # does not know about units.
         self.write_binary_map_nc() or self.write_nefis_map_nc()
+
+    def write_binary_his_nc(self):
+        """ If binary history output is present, write that out to netcdf, otherwise
+        return False
+        """
+        his_fn=os.path.join(self.base_path,self.name+".his")
+        his_nc_fn=os.path.join(self.base_path,'dwaq_hist.nc')
+        
+        if not os.path.exists(his_fn): return False
+        ds=dio.his_file_xarray(his_fn)
+        if os.path.exists(his_nc_fn):
+            os.unlink(his_nc_fn)
+        ds.to_netcdf(his_nc_fn)
         
     def write_nefis_his_nc(self):
         nc2_fn=os.path.join(self.base_path,'dwaq_hist.nc')
