@@ -1160,10 +1160,17 @@ class Hydro(object):
         n_layers=1+self.seg_k.max()
 
         # New code - maybe not right at all.
+        # This code is also duplicated across several of the classes in this file.
+        # crying out for refactoring.
         if 'temp' in self.parameters():
             temp_file="'%s-temp.seg'"%name
         else:
             temp_file='none'
+            
+        if 'tau' in self.parameters():
+            tau_file="'%s-tau.seg'"%name
+        else:
+            tau_file='none'
             
         lines=[
             "file-created-by  SFEI, waq_scenario.py",
@@ -1207,7 +1214,7 @@ class Hydro(object):
             "vert-diffusion-file   '%s-vertdisper.seg'"%name,
             # not a segment function!
             "surfaces-file         '%s'"%self.surf_filename,
-            "shear-stresses-file   none",
+            "shear-stresses-file   %s"%tau_file,
             "hydrodynamic-layers",
             "\n".join( ["%.5f"%(1./n_layers)] * n_layers ),
             "end-hydrodynamic-layers",
