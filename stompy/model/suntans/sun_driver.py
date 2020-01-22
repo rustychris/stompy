@@ -748,6 +748,21 @@ class SuntansModel(dfm.HydroModel):
                 log.warning("chain_restarts wound up with zero runs for count=%s"%str(count))
         return runs
 
+    def chain_start(self,count=None):
+        """
+        Analog of run_start, but across chained restarts.
+        count is passed to chain_restarts().
+        """
+        runs=self.chain_restarts(count=count)
+        return runs[0].run_start
+    def chain_stop(self,count=None):
+        """
+        Analog of run_stop, but across chained restarts.
+        Included for completeness, but this is always the same
+        as self.run_stop (since we don't chain forward in time).
+        """
+        return self.run_stop
+
     def load_template(self,fn):
         self.template_fn=fn
         self.config=SunConfig(fn)
@@ -1577,6 +1592,7 @@ class SuntansModel(dfm.HydroModel):
         ds['yv']=('Nc',),cc[:,1]
 
         ds['z_r']=('Nk',),layers.z_mid.values + self.z_offset
+        ds['z_r'].attrs['positive']='down'
 
         # not right for 3D..
         ds['Nk']=('Nc',),Nk*np.ones(self.grid.Ncells(),np.int32)
@@ -2108,6 +2124,8 @@ class SuntansModel(dfm.HydroModel):
             tran['z_bot']=tran.z_bot.clip(z_min,z_max)
             tran['z_top']=tran.z_top.clip(z_min,z_max)
             tran['z_ctr']=0.5*(tran.z_bot+tran.z_top)
+            for fld in ['z_bot','z_top','z_ctr']:
+                tran[fld].attrs['positive']='up'
             # to be consistent with xr_transect, and np.diff(z_ctr),
             # z_dz is _negative_
             tran['z_dz'] =(tran.z_bot-tran.z_top)
@@ -2134,7 +2152,7 @@ class SuntansModel(dfm.HydroModel):
                 if z_dz[samp_i,k]==0.0: 
                     continue # truly dry
                 elif tran.eta[samp_i] - tran.z_bot[samp_i,k] < dzmin_surf:
-                    print(f"[sample {samp_i},k {k}] too thin")
+                    log.debug(f"[sample {samp_i},k {k}] too thin")
                     k_update.append(k)
                 else:
                     # valid layer
@@ -2154,11 +2172,31 @@ class SuntansModel(dfm.HydroModel):
 
         returns xr.Dataset, unless xy does not intersect the grid at all,
         in which case None is returned.
+
+        Simple chaining is allowed, but if time spans two runs, the later
+        run will be used.
         """
         if xy is None:
             xy=self.ll_to_native(ll)
         if dx is not None:
             xy=linestring_utils.upsample_linearring(xy,dx,closed_ring=False)
+
+        # check for chaining
+        if np.issubdtype(type(time),np.integer):
+            # time came in as an index, so no chaining.
+            pass
+        else:
+            # asarray() helps avoid xarray annoyance
+            dt=np.max(utils.to_dt64(np.asarray(time)))
+            if dt<self.run_start:
+                log.info("extract_transect: chain back")
+                run=self.chain_restarts(count=dt)[0]
+                if run is not self: # avoid inf. recursion
+                    return run.extract_transect(xy=xy,ll=ll,time=time,dx=dx,
+                                                vars=vars)
+                else:
+                    log.info("extract_transect: chain back just returned self.")
+            
         proc_point_cell=np.zeros( [self.num_procs,len(xy)], np.int32)-1
         point_datasets=[None]*len(xy)
 
@@ -2261,7 +2299,8 @@ class SuntansModel(dfm.HydroModel):
             z_ctr[dzz==0.0]=np.nan # indicate no data
 
         transect['z_ctr']=('sample','layer'), z_ctr
-        
+        transect['z_top']=('sample','layer'), z_top
+        transect['z_bot']=('sample','layer'), z_bot
 
         # first, the interior interfaces
         def choose_valid(a,b):

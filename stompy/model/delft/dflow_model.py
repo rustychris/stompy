@@ -1250,9 +1250,10 @@ class HydroModel(object):
         """ Alias for run_simulation
         """
         return self.run_simulation()
-    def run_simulation(self):
+    def run_simulation(self,extra_args=[]):
         self.run_dflowfm(cmd=["-t","1","--autostartstop",
-                              os.path.basename(self.mdu.filename)])
+                              os.path.basename(self.mdu.filename)]
+                         + extra_args)
 
     def add_gazetteer(self,shp_fn):
         """

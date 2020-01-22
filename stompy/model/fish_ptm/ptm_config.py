@@ -213,7 +213,12 @@ PARTICLE GROUP INFORMATION
                 os.unlink(fn)
 
     def write(self):
-        os.path.exists(self.run_dir) or os.makedirs(self.run_dir)
+        try:
+            os.path.exists(self.run_dir) or os.makedirs(self.run_dir)
+        except os.FileExistsError:
+            print(f"Weird - {self.run_dir} exists ({os.path.exists(self.run_dir)}), but makedirs failed.")
+            raise
+        
         self.write_config()
         self.write_method()
     def write_config(self):

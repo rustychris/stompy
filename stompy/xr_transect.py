@@ -734,9 +734,11 @@ def extrapolate_vertical(tran,var_methods,eta=0,z_bed='z_bed'):
                 N=bottom_valid_idx - bed_idx
                 if N>0:
                     u_col[bed_idx:bottom_valid_idx]=np.linspace(0,u_col[bottom_valid_idx],N+1)[:-1]
+
+    ds.attrs.update(tran.attrs)
+    history=ds.attrs.get('history',"")+"extrapolate_vertical"
+    ds.attrs['history']=history
     return ds
-
-
 
 def lplt():
     """ lazy load plotting library """
@@ -1144,3 +1146,30 @@ def calc_secondary_strength(tran,name='secondary'):
         tran[name].attrs['units']='m s-1'
         tran[name].attrs['description']='Average left-ward velocity in upper water column'
     return circ_velocity
+
+def shift_vertical(tran,delta):
+    """
+    Add a vertical delta to all vertical coordinates.
+    Regardless of the sign convention in tran, delta is interpreted
+    postive up.
+    """
+    def shift(fld,default):
+        if fld not in tran: return
+        sign=tran[fld].attrs.get('positive',default)
+        if sign=='up':
+            fac=1
+        else:
+            fac=-1
+        tran[fld].values[:] += fac*delta
+    shift('eta','up')
+    shift('z_bed','up')
+    shift('z_ctr','up')
+    shift('z_top','up')
+    shift('z_bot','up')
+    # less standard... probably don't belong
+    shift('depth_m','down')
+    shift('dv','down')
+    shift('z_r','down')
+    shift('z_w','down')
+    
+    

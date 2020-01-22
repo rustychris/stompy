@@ -7,10 +7,13 @@ https://github.com/mrayson/soda
 """
 
 import os
+import time
 import numpy as np
+import xarray as xr
 from datetime import datetime
 import matplotlib.pyplot as plt
 from ...spatial import wkb2shp
+from ... import memoize, utils
 import pandas as pd
 
 class PtmBin(object):
@@ -218,7 +221,7 @@ class PtmBin(object):
 
         returns the cached filename, a netcdf file.
         """
-        cell_cache_fn=grid_to_cell_cache_fn(self,grid)
+        cell_cache_fn=self.grid_to_cell_cache_fn(grid)
         if not force and os.path.exists(cell_cache_fn):
             return cell_cache_fn
 
@@ -228,7 +231,7 @@ class PtmBin(object):
 
         # loop once to gather all points
         for ts in utils.progress(range(n_steps)):
-            dnum,parts=pbf.read_timestep(ts)
+            dnum,parts=self.read_timestep(ts)
             if ts%100==0:
                 print(f"{ts} {dnum} {len(parts)}")
             dnums.append(dnum)
