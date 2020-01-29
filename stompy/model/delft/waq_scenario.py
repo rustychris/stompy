@@ -6011,6 +6011,9 @@ class FilterAll(FilterHydroBC):
     """ Minor specialization when you want filter everything - i.e. turn a tidal
     run into a subtidal run.
     """
+    # In the past parameter were always filtered (opposite of what I thought).
+    # that can be disabled here.
+    filter_parameters=True
     
     def __init__(self,original,**kw):
         super(FilterAll,self).__init__(original,selection='all',**kw)
@@ -6080,9 +6083,6 @@ class FilterAll(FilterHydroBC):
     def add_parameters(self,hyd):
         hyd=super(FilterAll,self).add_parameters(hyd)
 
-        #self.log.warning('During dev of memory-mapping, ignore parameters')
-        #return hyd
-    
         for key,param in iteritems(self.orig.parameters()):
             self.log.info('Original -> filtered parameter %s'%key)
             # overwrite vertdisper
@@ -6090,15 +6090,19 @@ class FilterAll(FilterHydroBC):
                 self.log.info('  parameter already set')
                 continue
             elif isinstance(param,ParameterSpatioTemporal):
-                self.log.info("  original parameter is spatiotemporal - let's FILTER")
-                hyd[key]=param.lowpass(self.lp_secs)
-                if key in ['vertdisper']: # force non-negative
-                    # a bit dangerous, since there is no guarantee that lowpass made a copy.
-                    # but if it didn't make a copy, and all of the source data were
-                    # valid, then there should be nothing to clip.
-                    hyd[key].values = hyd[key].values.clip(0,np.inf)
-                hyd[key].hydro=self
-                self.log.info("  FILTERED.")
+                if self.filter_parameters:
+                    self.log.info("  original parameter is spatiotemporal - let's FILTER")
+                    hyd[key]=param.lowpass(self.lp_secs)
+                    if key in ['vertdisper','tau','salinity']: # force non-negative
+                        # a bit dangerous, since there is no guarantee that lowpass made a copy.
+                        # but if it didn't make a copy, and all of the source data were
+                        # valid, then there should be nothing to clip.
+                        hyd[key].values = hyd[key].values.clip(0,np.inf)
+                    hyd[key].hydro=self
+                    self.log.info("  FILTERED.")
+                else:
+                    self.log.info("  original parameter is spatiotemporal - but filter_parameters=%s.  no filter"%self.filter_parameters)
+                    hyd[key]=param
             elif isinstance(param,ParameterTemporal):
                 self.log.warning("  original parameter is temporal - should filter")
                 hyd[key]=param # FIX - copy and set hydro, maybe filter, too.
@@ -7170,14 +7174,7 @@ class ParameterSpatioTemporal(Parameter):
     @property
     def times(self):
         if (self._times is None) and (self.seg_func_file is not None):
-            stride=4+self.n_seg*4
-            nbytes=os.stat(self.seg_func_file).st_size
-            frames=nbytes//stride
-            self._times=np.zeros(frames,'i4')
-            with open(self.seg_func_file,'rb') as fp:
-                for ti in range(frames):
-                    fp.seek(stride*ti)
-                    self._times[ti]=np.fromstring(fp.read(4),'i4')
+            self.load_from_segment_file()
         return self._times
 
     @property
@@ -7246,25 +7243,26 @@ class ParameterSpatioTemporal(Parameter):
                 values=self.func_t(t)
             fp.write(values.astype('f4').tobytes())
 
+    def load_from_segment_file(self):
+        """
+        Set self.values and self._times from the segment function file.
+        This uses memmap, so it should be fairly efficient and safe to
+        do even when you only want a fraction of the data.
+        """
+        self._mmap_data=np.memmap(self.seg_func_file,
+                                  dtype=[('t',np.int32),
+                                         ('value',np.float32,self.n_seg)])
+        self._times=self._mmap_data['t']
+        self.values=self._mmap_data['value']
+
     def evaluate(self,**kws):
         # This implementation is pretty rough - 
         # this class is really a mix of
         # ParameterSpatial and ParameterTemporal, yet it duplicates
         # the code from both of those here.
 
-        if self.seg_func_file is not None:
-            if 't' in kws:
-                t=kws.pop('t')
-                stride=4+self.n_seg*4
-                ti=np.searchsorted(self.times[:-1],t)
-                if self.times[ti]!=t:
-                    print("Mismatch in seg func: request=%s  file=%s"%(t,self.times[ti]))
-                with open(self.seg_func_file,'rb') as fp:
-                    fp.seek(stride*ti+4)
-                    values=np.fromfile(fp,'f4',self.n_seg)
-                    param=ParameterSpatial(values)
-                    return param.evaluate(**kws)
-            return self
+        if (self.seg_func_file is not None) and (self.values is None):
+            self.load_from_segment_file()
                 
         param=self
 
@@ -7272,12 +7270,15 @@ class ParameterSpatioTemporal(Parameter):
             t=kws.pop('t')
             if self.values is not None:
                 tidx=np.searchsorted(self.times,t)
-                param=ParameterSpatial( self.values[tidx,:] )
+                # copy to avoid keeping extra data around too long
+                param=ParameterSpatial( self.values[tidx,:].copy() )
             elif self.func_t is not None:
                 param=ParameterSpatial( self.func_t(t) )
         elif 'seg' in kws:
             seg=kws.pop('seg')
-            param=ParameterTemporal(times=self.times,values=self.values[:,seg])
+            # Copy, since these are much smaller than the original data and
+            # better not to force the original array to stay around.
+            param=ParameterTemporal(times=self.times.copy(),values=self.values[:,seg].copy())
         if param is not self:
             # allow other subclasses to do fancier things
             return param.evaluate(**kws)
@@ -7337,7 +7338,7 @@ class ParameterSpatioTemporal(Parameter):
                 values[:,seg]=-999
             else:
                 lp_values=filters.lowpass(padded,
-                                            cutoff=lp_secs,dt=dt)
+                                          cutoff=lp_secs,dt=dt)
                 values[:,seg]=lp_values[npad:-npad] # trim the pad
         return ParameterSpatioTemporal(times=self.times,
                                        values=values,
