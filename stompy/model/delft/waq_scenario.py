@@ -1419,7 +1419,7 @@ class Hydro(object):
             M[j,link]=sgn
         return M
                 
-    def path_to_transect_exchanges(self,xy,on_boundary='warn_and_skip'):
+    def path_to_transect_exchanges(self,xy,on_boundary='warn_and_skip',on_edge=False):
         """
         xy: [N,2] points.
         Each point is mapped to a node of the grid, and grid edges
@@ -1432,17 +1432,24 @@ class Hydro(object):
         on_boundary:
          'warn_and_skip': any of the edges which are closed edges in the original
             grid (unless a flow boundary), are mentioned, but omitted.
+        on_edge: xy are already on the edges of the polygons [from Zhenlin Zhang].
         """
         # align the input nodes along nodes of the grid
         g=self.grid()
         input_nodes=[g.select_nodes_nearest(p)
                      for p in xy]
-        legs=[ input_nodes[0] ] 
-        for a,b in zip(input_nodes[:-1],input_nodes[1:]):
-            if a==b:
-                continue
-            path=g.shortest_path(a, b)
-            legs+=list(path[1:])
+        if on_edge:
+            # RH 2020-01-31: In theory this shouldn't be needed --
+            # ot sure if ZZ was working around a bug, or if the original
+            # code was slow. 
+            legs=input_nodes
+        else:
+            legs=[ input_nodes[0] ] 
+            for a,b in zip(input_nodes[:-1],input_nodes[1:]):
+                if a==b:
+                    continue
+                path=g.shortest_path(a, b)
+                legs+=list(path[1:])
 
         self.infer_2d_links()
 
@@ -7562,10 +7569,15 @@ class Scenario(scriptable.Scriptable):
     grid_output=('SURF','LocalDepth')              # grid topo
     hist_output=(DEFAULT,'SURF','LocalDepth') # history file
     map_output =(DEFAULT,'SURF','LocalDepth')  # map file
+    stat_output =() # default to no stat output
 
     map_formats=['nefis']
     history_formats=['nefis','binary']
 
+    # not fully handled, but generally trying to overwrite
+    # a run without setting this to True should fail.
+    overwrite=False
+    
     # settings related to paths - a little sneaky, to allow for shorthand
     # to select the next non-existing subdirectory by setting base_path to
     # "auto"
@@ -7876,7 +7888,10 @@ END_MULTIGRID"""%num_layers
         # better to go by center, so that non-intersecting polygons
         # yield non-intersecting sets of elements and segments
         # 2019-09-12: use centroid instead of center in case the grid has weird geometry
-        elt_sel=g.select_cells_intersecting(geom,by_center='centroid') # few seconds
+        # 2020-01-31: use representative points. It's possible for centroid not to fall within
+        #      the polygon.  Don't use full polygon, because that will pick up adjacent 
+        #      cells that share an edge.
+        elt_sel=g.select_cells_intersecting(geom,by_center='representative') 
 
         # extend to segments:
         seg_sel=elt_sel[ self.hydro.seg_to_2d_element ] & (self.hydro.seg_to_2d_element>=0)         
@@ -7888,12 +7903,15 @@ END_MULTIGRID"""%num_layers
         self.monitor_areas = self.monitor_areas + ( new_area, )
 
     def add_transects_from_shp(self,shp_fn,naming='count',clip_to_poly=True,
-                               on_boundary='warn_and_skip'):
+                               on_boundary='warn_and_skip',on_edge=False):
         """
         Add monitor transects from a shapefile.
         By default transects are named in sequence.  
         Specify a shapefile field name in 'naming' to pull user-specified
         names for the transects.
+        on_edge: indicates that the shapefile is made up of nodes already following
+          edges of the grid.  In theory not needed, but included here for compatibility
+          with ZZ code.
         """
         locations=wkb2shp.shp2geom(shp_fn)
         g=self.hydro.grid()
@@ -7934,7 +7952,7 @@ END_MULTIGRID"""%num_layers
                     name="transect%04d"%i
                 else:
                     name=rec[naming]
-                exchs=self.hydro.path_to_transect_exchanges(xy,on_boundary=on_boundary)
+                exchs=self.hydro.path_to_transect_exchanges(xy,on_boundary=on_boundary,on_edge=on_edge)
                 new_transects.append( (name,exchs) )
             else:
                 self.log.warning("Not ready to handle geometry type %s"%geom.type)
@@ -8574,7 +8592,8 @@ END_MULTIGRID"""%num_layers
         Copy supporting bloominp file for runs using BLOOM algae
         """
         dst=os.path.join(self.base_path,'bloominp.d09')
-        assert not os.path.exists(dst)
+        if not self.overwrite:
+            assert not os.path.exists(dst)
         shutil.copyfile(self.original_bloominp_path,dst)
 
     def cmd_write_inp(self):
@@ -9528,10 +9547,17 @@ INCLUDE '{self.atr_filename}'  ; attributes file
 
     def text_block10(self):
         lines=[";",
-               "; Statistical output - if any",
-               "; INCLUDE 'tut_fti_waq.stt' ",
-               "; ",
-               " #10 ; delimiter for the tenth block "]
+               "; Statistical output"]
+
+        for sub in self.scenario.stat_output:
+            lines+=["output-operation 'STADAY'"
+                    "  substance '%s'"%sub,
+                    "  suffix    ' '",
+                    "  time-parameter 'TINIT' 'START'",
+                    "  time-parameter 'PERIOD' '0000/00/01-00:00:00'",
+                    "end-output-operation"]
+        
+        lines+=["#10 ; delimiter for the tenth block "]
         return "\n".join(lines)
 
     
@@ -9574,6 +9600,10 @@ class WaqModel(scriptable.Scriptable):
     grid_output=('SURF','LocalDepth')              # grid topo
     hist_output=(DEFAULT,'SURF','LocalDepth') # history file
     map_output =(DEFAULT,'SURF','TotalDepth','LocalDepth')  # map file
+    # Stat output is currently not very configurable, and just allows
+    # specifying which variables to use. See text_block10() above
+    # for the specifics that are used.
+    stat_output=() # defaults to none
 
     # easier to handle multi-platform read/write with binary, compared to nefis output
     map_formats=['binary']
@@ -9919,7 +9949,10 @@ END_MULTIGRID"""%num_layers
         # better to go by center, so that non-intersecting polygons
         # yield non-intersecting sets of elements and segments
         # 2019-09-12: use centroid instead of center in case the grid has weird geometry
-        elt_sel=g.select_cells_intersecting(geom,by_center='centroid') # few seconds
+        # 2020-01-31: use representative points. It's possible for centroid not to fall within
+        #      the polygon.  Don't use full polygon, because that will pick up adjacent 
+        #      cells that share an edge.
+        elt_sel=g.select_cells_intersecting(geom,by_center='representative') # few seconds
 
         # extend to segments:
         seg_sel=elt_sel[ self.hydro.seg_to_2d_element ] & (self.hydro.seg_to_2d_element>=0)         
@@ -9931,13 +9964,20 @@ END_MULTIGRID"""%num_layers
         self.monitor_areas = self.monitor_areas + ( new_area, )
 
     def add_transects_from_shp(self,shp_fn,naming='count',clip_to_poly=True,
-                               on_boundary='warn_and_skip'):
+                               on_boundary='warn_and_skip',on_edge=False):
         """
         Add monitor transects from a shapefile.
         By default transects are named in sequence.  
         Specify a shapefile field name in 'naming' to pull user-specified
         names for the transects.
         """
+        if on_edge:
+            # RH 2020-01-31: on_edge is from ZZ code. I'm not clear on the purpose,
+            #  it's now included for back-compatibilty in the WaqScenario class, but
+            #  moving forward I'm trying to discourage it unless a specific use-case
+            #  arises.
+            self.log.warning("add_transects_from_shp: on_edge was set. In WaqModel this does nothing")
+                             
         assert self.hydro,"Set hydro before calling add_transects_from_shp"
         locations=wkb2shp.shp2geom(shp_fn)
         g=self.hydro.grid()

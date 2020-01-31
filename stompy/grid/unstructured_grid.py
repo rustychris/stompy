@@ -2116,6 +2116,17 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             return self.cells_centroid_py(ids)
         else:
             return self.cells_centroid_shapely(ids=ids)
+
+    def cells_representative_point(self,ids=None):
+        if ids is None:
+            ids=np.arange(self.Ncells())
+
+        points=np.zeros( (len(ids),2),np.float64)*np.nan
+
+        for ci,c in enumerate(ids):
+            if not self.cells['deleted'][c]:
+                points[ci]=np.array(self.cell_polygon(c).representative_point())
+        return points
         
     def cells_centroid_shapely(self,ids=None):
         """
@@ -4361,6 +4372,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         if by_center=='centroid':
             centers=self.cells_centroid()
+        elif by_center=='representative':
+            centers=self.cells_representative_point()
         elif by_center:
             centers=self.cells_center()
 
