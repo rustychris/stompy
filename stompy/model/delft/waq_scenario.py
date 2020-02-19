@@ -8599,11 +8599,13 @@ END_MULTIGRID"""%num_layers
             print( ret)
             raise WaqException("Failed to find error/warning count")
 
-    def cmd_delwaq2(self,output_filename=None):
+    def cmd_delwaq2(self,output_filename=None,delwaq2name=None):
         """
         Run delwaq2 (computation)
+        delwaq2name: temporarily override the path to the delwaq2 executable.
+        this can be done more generally by setting self.delwaq2_path.
         """
-        cmd=[self.delwaq2_path,self.name]
+        cmd=[delwaq2name or self.delwaq2_path,self.name]
         if not output_filename:
             output_filename= os.path.join(self.base_path,'delwaq2.out')
 
