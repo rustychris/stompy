@@ -1465,8 +1465,13 @@ class Hydro(object):
             for nbr in g.select_nodes_nearest(g.nodes['x'][ncheck],count=10):
                 if utils.dist( g.nodes['x'][ncheck] - g.nodes['x'][nbr] ) < 1e-3:
                     count+=1
-            if count!=1:
+            if count>1:
                 raise Exception("Encountered duplicate nodes. May need to clean MPI output grid, or revert to ZZ edge search")
+            elif count==0:
+                if on_edge:
+                    raise Exception("Node search failed and on_edge is set, but supplied points do not line up.")
+                else:
+                    raise Exception("Node search failed but on_edge is not set.  Something very wrong")
 
         link_and_signs=[] # (link idx, sign to make from->to same as left->right
         for a,b in zip(legs[:-1],legs[1:]):
@@ -1697,6 +1702,14 @@ class HydroFiles(Hydro):
     DWAQ hydro data read from existing files, by parsing
     .hyd file.
     """
+    # When loading a DFM grid (ala waqgeom), MPI output includes
+    # ghost nodes and edges (but cells are fine).  This flag is
+    # passed to UnstructuredGrid.read_dfm(), and when true it
+    # will clean out those nodes and edges.  This is a bit slower,
+    # and potentially renumbers nodes and edges, so it's not always
+    # the right thing to do.
+    clean_mpi_dfm_grid=True
+    
     def __init__(self,hyd_path,**kw):
         self.hyd_path=hyd_path
         self.parse_hyd()
@@ -2259,7 +2272,6 @@ class HydroFiles(Hydro):
             return xr.open_dataset( self.get_path('grid-coordinates-file',check=True) )
         except KeyError:
             return
-        
 
     _grid=None
     def grid(self,force=False):
@@ -2272,7 +2284,7 @@ class HydroFiles(Hydro):
                 self._grid=unstructured_grid.UnstructuredGrid.from_ugrid(orig)
             except (IndexError,AssertionError,unstructured_grid.GridException):
                 self.log.warning("Grid wouldn't load as ugrid, trying dfm grid")
-                dg=dfm_grid.DFMGrid(orig)
+                dg=dfm_grid.DFMGrid(orig,cleanup=self.clean_mpi_dfm_grid)
                 self._grid=dg
         return self._grid
 
