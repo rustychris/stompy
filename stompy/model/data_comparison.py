@@ -115,13 +115,17 @@ def assemble_comparison_data(models,observations,model_labels=None,
     model_data=[] # a data array per model
     for model,label in zip(models,model_labels):
         if base_obs.name=='water_level':
-            ds=model.extract_station(ll=[base_obs.lon,base_obs.lat],**extract_options)
+            ds=model.extract_station(ll=[base_obs.lon,base_obs.lat],
+                                     data_vars=['eta'], # can give drastic speedup
+                                     **extract_options)
             da=ds['eta']
             da.name='water_level' # having the same name helps later
         elif base_obs.name=='flow':
             assert False,"this has not been written yet"
             # extract_section currently only for DFM, and only by name
-            ds=model.extract_section(ll=[base_obs.lon,base_obs.lat],**extract_options)
+            ds=model.extract_section(ll=[base_obs.lon,base_obs.lat],
+                                     data_vars=['cross_section_discharge'],
+                                     **extract_options)
             da=ds['cross_section_discharge'] # that's a DFM name...
             da.name='flow' # having the same name helps later
         else:

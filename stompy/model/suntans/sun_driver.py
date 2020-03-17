@@ -2335,7 +2335,7 @@ class SuntansModel(dfm.HydroModel):
             return 0.0
 
     def extract_station_monitor(self,xy=None,ll=None,chain_count=1,
-                                dv_from_map=False):
+                                dv_from_map=False,data_vars=None):
         """
         Return a dataset for a single point in the model
         xy: native model coordinates, [Nstation,2]
@@ -2363,7 +2363,7 @@ class SuntansModel(dfm.HydroModel):
             restarts=self.chain_restarts(count=chain_count,load_grid=False)
             # dv should be constant, so only load it on self.
             dss=[mod.extract_station_monitor(xy=xy,ll=ll,chain_count=1,
-                                             dv_from_map=False)
+                                             data_vars=data_vars,dv_from_map=False)
                  for mod in restarts]
             if len(dss)==0:
                 return None
@@ -2394,21 +2394,30 @@ class SuntansModel(dfm.HydroModel):
             dists=utils.dist(xy[stn,:],mon.prof_xy.values)
             best=np.argmin(dists)
             station=mon.isel(profile=best)
+            if data_vars is not None:
+                for v in list(station.data_vars):
+                    if v not in data_vars:
+                        del station[v]
             station['distance_from_target']=(),dists[best]
             station['profile_index']=best
             station['source']='monitor'
             stations.append(station)
 
-        combined_ds=xr.concat(stations,dim='station')
-        combined_ds['station_x']=('station',), xy[...,0]
-        combined_ds['station_y']=('station',), xy[...,1]
-
         if orig_ndim==1:
-            combined_ds=combined_ds.isel(station=0)
+            # This used to be done after the fact -- just isel(station=0)
+            # but concatenation in xarray is super slow
+            combined_ds=stations[0]
+            combined_ds['station_x']=(), xy[0,0]
+            combined_ds['station_y']=(), xy[0,1]
+        else:
+            combined_ds=xr.concat(stations,dim='station')
+            combined_ds['station_x']=('station',), xy[...,0]
+            combined_ds['station_y']=('station',), xy[...,1]
 
         return combined_ds
         
-    def extract_station(self,xy=None,ll=None,chain_count=1,source='auto',dv_from_map=False):
+    def extract_station(self,xy=None,ll=None,chain_count=1,source='auto',dv_from_map=False,
+                        data_vars=None):
         """
         See extract_station_map, extract_station_monitor for details.
         Will try monitor output if it exists, otherwise map output.
@@ -2418,11 +2427,12 @@ class SuntansModel(dfm.HydroModel):
         """
         if source in ['auto','monitor']:
             ds=self.extract_station_monitor(xy=xy,ll=ll,chain_count=chain_count,
-                                            dv_from_map=dv_from_map)
+                                            dv_from_map=dv_from_map,data_vars=data_vars)
             if (ds is not None) or (source=='monitor'):
                 return ds
         if source in ['auto','map']:
-            return self.extract_station_map(xy=xy,ll=ll,chain_count=chain_count)
+            return self.extract_station_map(xy=xy,ll=ll,chain_count=chain_count,
+                                            data_vars=data_vars)
         assert False,"How did we get here"
         
     def extract_station_map(self,xy=None,ll=None,chain_count=1,data_vars=None):
