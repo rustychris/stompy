@@ -95,6 +95,7 @@ def main(args=None):
     one_of.add_argument("-s", "--splice", help="Splice an MPI run into a single DWAQ hydro dataset",action='store_true')
     
     parser.add_argument("-o", "--output", help="Path and run name for file output", default="output/output")
+    parser.add_argument("-p", "--pass-parameters",help="Pass parameters through without low-pass filter",action="store_true")
 
     # these options copied in from another script, here just for reference, and possible consistency
     # in how arguments are named and described.
@@ -162,6 +163,7 @@ def main(args=None):
         # TO-DO: expose these parameters on the command line
         hydro_out=waq.FilterAll(original=hydro_orig,
                                 filter_type='butter',
+                                filter_parameters=(not args.pass_parameters),
                                 lp_secs=86400*36./24)
 
     # The code to write dwaq hydro is wrapped up in the code to write a dwaq model inp file,

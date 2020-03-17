@@ -704,7 +704,7 @@ class Hydro(object):
                     # and mark any unmarked segments vertically adjacent
                     # with the same element.
                     # returns the number segments marked
-                    if (seg_to_2d[seg]>=0):
+                    if seg_to_2d[seg]>=0:
                         return 0 # already marked
                     if self.omit_inactive_exchanges and not seg_active[seg]:
                         return 0 # don't mark inactive segments even if they have an exchange
@@ -1160,10 +1160,17 @@ class Hydro(object):
         n_layers=1+self.seg_k.max()
 
         # New code - maybe not right at all.
+        # This code is also duplicated across several of the classes in this file.
+        # crying out for refactoring.
         if 'temp' in self.parameters():
             temp_file="'%s-temp.seg'"%name
         else:
             temp_file='none'
+            
+        if 'tau' in self.parameters():
+            tau_file="'%s-tau.seg'"%name
+        else:
+            tau_file='none'
             
         lines=[
             "file-created-by  SFEI, waq_scenario.py",
@@ -1207,7 +1214,7 @@ class Hydro(object):
             "vert-diffusion-file   '%s-vertdisper.seg'"%name,
             # not a segment function!
             "surfaces-file         '%s'"%self.surf_filename,
-            "shear-stresses-file   none",
+            "shear-stresses-file   %s"%tau_file,
             "hydrodynamic-layers",
             "\n".join( ["%.5f"%(1./n_layers)] * n_layers ),
             "end-hydrodynamic-layers",
@@ -1412,7 +1419,7 @@ class Hydro(object):
             M[j,link]=sgn
         return M
                 
-    def path_to_transect_exchanges(self,xy,on_boundary='warn_and_skip'):
+    def path_to_transect_exchanges(self,xy,on_boundary='warn_and_skip',on_edge=False):
         """
         xy: [N,2] points.
         Each point is mapped to a node of the grid, and grid edges
@@ -1425,28 +1432,68 @@ class Hydro(object):
         on_boundary:
          'warn_and_skip': any of the edges which are closed edges in the original
             grid (unless a flow boundary), are mentioned, but omitted.
+        on_edge: xy are already on the edges of the polygons [from Zhenlin Zhang].
         """
         # align the input nodes along nodes of the grid
         g=self.grid()
         input_nodes=[g.select_nodes_nearest(p)
                      for p in xy]
-        legs=[ input_nodes[0] ] 
-        for a,b in zip(input_nodes[:-1],input_nodes[1:]):
-            if a==b:
-                continue
-            path=g.shortest_path(a, b)
-            legs+=list(path[1:])
+        if on_edge:
+            # RH 2020-01-31: In theory this shouldn't be needed --
+            # not sure if ZZ was working around a bug, or if the original
+            # code was slow. 
+            legs=input_nodes
+        else:
+            legs=[ input_nodes[0] ] 
+            for a,b in zip(input_nodes[:-1],input_nodes[1:]):
+                if a==b:
+                    continue
+                path=g.shortest_path(a, b)
+                legs+=list(path[1:])
 
         self.infer_2d_links()
+
+        # RH: I think the crux of the changes below from ZZ
+        # was dealing with multidomain grids
+        # from MPI DFM that had not been cleaned.
+        # those grids have duplicate nodes and edges, so ZZ added code to
+        # choose node pairs geographically and test all pairs.
+        # Given that this may still be a possibility, at least include the
+        # check here and give a marginally useful message.
+        for ncheck in legs:
+            count=0
+            for nbr in g.select_nodes_nearest(g.nodes['x'][ncheck],count=10):
+                if utils.dist( g.nodes['x'][ncheck] - g.nodes['x'][nbr] ) < 1e-3:
+                    count+=1
+            if count>1:
+                raise Exception("Encountered duplicate nodes. May need to clean MPI output grid, or revert to ZZ edge search")
+            elif count==0:
+                if on_edge:
+                    raise Exception("Node search failed and on_edge is set, but supplied points do not line up.")
+                else:
+                    raise Exception("Node search failed but on_edge is not set.  Something very wrong")
 
         link_and_signs=[] # (link idx, sign to make from->to same as left->right
         for a,b in zip(legs[:-1],legs[1:]):
             j=g.nodes_to_edge(a,b)
+            
+            if j is None:
+                # this happens when the line cuts across an island, and edges were
+                # specified directly. ignore the exchange.
+                if on_edge:
+                    continue
+                else:
+                    # if legs came from shortest_path() above, it really shouldn't
+                    # miss any edges, so signal bad news
+                    raise Exception("edge couldn't be found, but it came from the grid.")
+            
             # possible to have missing cells with other marks (as in
             # marking an ocean or flow boundary), but boundary links are
             # just -1:
             c1_c2=g.edge_to_cells(j).clip(-1,g.Ncells())
 
+            # ZZ changes were right here.
+            
             leg_to_edge_sign=1
             if g.edges['nodes'][j,0] == b:
                 leg_to_edge_sign=-1
@@ -1655,6 +1702,14 @@ class HydroFiles(Hydro):
     DWAQ hydro data read from existing files, by parsing
     .hyd file.
     """
+    # When loading a DFM grid (ala waqgeom), MPI output includes
+    # ghost nodes and edges (but cells are fine).  This flag is
+    # passed to UnstructuredGrid.read_dfm(), and when true it
+    # will clean out those nodes and edges.  This is a bit slower,
+    # and potentially renumbers nodes and edges, so it's not always
+    # the right thing to do.
+    clean_mpi_dfm_grid=True
+    
     def __init__(self,hyd_path,**kw):
         self.hyd_path=hyd_path
         self.parse_hyd()
@@ -1794,8 +1849,11 @@ class HydroFiles(Hydro):
                     self.log.info("Area file has %s steps vs. %s expected - proceed with caution"%(pred_n_steps,
                                                                                                    nsteps))
                 else:
-                    raise Exception("nsteps %s too different from size of area file (~ %.3f steps)"%(nsteps,
-                                                                                                     pred_n_steps))
+                    # Sometimes this is intentional, so don't bail out, just hope the warning is visible.
+                    #raise Exception("nsteps %s too different from size of area file (~ %s steps)"%(nsteps,
+                    #                                                                               pred_n_steps))
+                    self.log.warning("DWAQ run may be incomplete")
+
                 vol_size=os.stat(self.get_path('volumes-file')).st_size
                 # kludgY.  Ideally have the same number of volume and area output timesteps, but commonly
                 # one off.
@@ -1967,13 +2025,9 @@ class HydroFiles(Hydro):
             return f(t_sec)
 
     def vert_diffs(self,t_sec):
-        # This used to have a really screwy label
         return self.seg_func(t_sec,label='vert-diffusion-file')
 
     def write_flo(self):
-        # TODO: allow an option to avoid copying, and just supply
-        # the original path.  this is tested in windows, no need
-        # to escape backslash, seems okay with long lines.
         if not self.enable_write_symlink:
             return super(HydroFiles,self).write_flo()
         else:
@@ -2085,7 +2139,6 @@ class HydroFiles(Hydro):
                                             verbose=False,
                                             err_callback=cb)
 
-            
     @property
     def pointers(self):
         poi_fn=self.get_path('pointers-file')
@@ -2219,7 +2272,6 @@ class HydroFiles(Hydro):
             return xr.open_dataset( self.get_path('grid-coordinates-file',check=True) )
         except KeyError:
             return
-        
 
     _grid=None
     def grid(self,force=False):
@@ -2232,7 +2284,7 @@ class HydroFiles(Hydro):
                 self._grid=unstructured_grid.UnstructuredGrid.from_ugrid(orig)
             except (IndexError,AssertionError,unstructured_grid.GridException):
                 self.log.warning("Grid wouldn't load as ugrid, trying dfm grid")
-                dg=dfm_grid.DFMGrid(orig)
+                dg=dfm_grid.DFMGrid(orig,cleanup=self.clean_mpi_dfm_grid)
                 self._grid=dg
         return self._grid
 
@@ -2512,12 +2564,10 @@ class DwaqAggregator(Hydro):
         # hopefully this works for both subclasses...
         if self._flowgeoms is None:
             self._flowgeoms={}
-            
         if p not in self._flowgeoms:
             hyd=self.open_hyd(p)
             fg=qnc.QDataset(hyd.get_path('grid-coordinates-file'))
             self._flowgeoms[p] = fg
-        
         return self._flowgeoms[p]
 
     def dfm_map_file(self,p):
@@ -3196,6 +3246,8 @@ class DwaqAggregator(Hydro):
          (-1: not mapped, otherwise 0-based index of exchange)
          and exch_local_to_agg_sgn, same size, but -1,1 depending on
          how the sign should map, or 0 if the exchange is not mapped.
+
+        bc_local_to_agg used to be here, but became crufty.
         """
         # boundaries:
         # how are boundaries dealt with in existing poi?
@@ -3791,8 +3843,6 @@ class DwaqAggregator(Hydro):
         elif agg_to<0: # does this happen?
             # It can happen if the aggregation polygons don't cover the entire input grid 
             self.log.warning("get_exchange with a negative/boundary for the *to* segment - likely incomplete coverage")
-            #import pdb
-            #pdb.set_trace()
             assert self.agg_boundaries # if this is a problem, port the above stanza to here.
             agg_to=REINDEX
             if agg_from not in self.agg_exch_hash:
@@ -3860,25 +3910,8 @@ class DwaqAggregator(Hydro):
             # be sure to limit sel to segments local to p (non-ghost)
             hyd=self.open_hyd(p)
             
-            if 1: # new way, using pre-determined ghost-ness of segments
-                sel=(self.seg_local['agg'][p,:]>=0) & (self.seg_local['ghost'][p,:]==0)
-            if 0: # old way
-                sel=(self.seg_local['agg'][p,:]>=0) 
-                if not np.any(sel):
-                    self.seg_matrix[p] = None
-                    continue
-
-                nc=self.open_flowgeom(p) 
-                dom_id=nc.FlowElemDomain[:]
-                hyd.infer_2d_elements()
-
-                # expand domain info to 3D segments
-                local_dom=dom_id[hyd.seg_to_2d_element] # now in 3D
-                # sel is much bigger than local_dom, but numpy silently allows it
-                # actually newer numpy complains
-                # so use the fact that the first slice is a view, and we can assign
-                # to a bitmask selection.
-                sel[:len(local_dom)][local_dom!=p] = False
+            # new way, using pre-determined ghost-ness of segments
+            sel=(self.seg_local['agg'][p,:]>=0) & (self.seg_local['ghost'][p,:]==0)
 
             rows=self.seg_local['agg'][p,sel]
             cols=np.nonzero(sel)[0]
@@ -4536,13 +4569,9 @@ class DwaqAggregator(Hydro):
         timestep = timedelta_to_waq_timestep(timedelta)
 
         # some values just copied from the first subdomain
-        if 0: # old code copied from first subdomain:
-            hyd0=self.open_hyd(0)
-            n_layers=hyd0['number-hydrodynamic-layers']
-            assert hyd0['number-hydrodynamic-layers']==hyd0['number-water-quality-layers']
-        else: # new code uses max across all domains
-            # No support yet for differing source and aggregated layers here.
-            n_layers=self.n_agg_layers
+        # new code uses max across all domains
+        # No support yet for differing source and aggregated layers here.
+        n_layers=self.n_agg_layers
 
         # New code - maybe not right at all - same as Hydro.write_hyd
         if 'temp' in self.parameters():
@@ -5361,131 +5390,7 @@ class HydroMultiAggregator(DwaqAggregator):
         else:
             raise Exception("Really - there are more than %d subdomains?"%max_nprocs)
 
-    def create_bnd(self):
-        """
-        populate self.bnd, same format as read_bnd()
-        but based on pulling the names from the subdomains
-        """
-        # Hopefully one implementation suffices, but the original implementation
-        # is retained below for the short term.
-        return super(HydroMultiAggregator,self).create_bnd()
-    
-        # Subdomains do not list sources in FlowLink, but the aggregated grid does
-        # at least for now.
-        bc_names={}
-        # Collect subdomain geometry as it maps to aggregated domain
-        bc_x=defaultdict(list)
-
-        # finally, get back to a
-        geom=self.get_geom()
-        
-        flow_link_inside=geom.FlowLink.values.min(axis=1)
-        flow_link_outside=geom.FlowLink.values.max(axis=1)
-        # outside is the larger of the 1-based element indices
-        # len(nFlowElem) is the largest 1-based value of an inside element
-        # set those to -1
-        # What I want here is the negative bc id
-        nFlowElem=len(geom.nFlowElem)
-        bc_links= flow_link_outside>nFlowElem
-        flow_link_outside[bc_links] = nFlowElem - flow_link_outside[bc_links]
-
-        # iterate over bnds from each subdomain
-        for proc in range(self.nprocs):
-            sub_hyd=self.open_hyd(proc)
-            sub_hyd.infer_2d_elements()
-            sub_geom=sub_hyd.get_geom()
-            sub_nFlowElem=len(sub_geom.nFlowElem)
-            sub_bnds=sub_hyd.read_bnd()
-            sub_g=dfm_grid.DFMGrid(sub_geom)
-
-            sub_hyd.infer_2d_links()
-
-            for sub_bnd in sub_bnds:
-                name,segs=sub_bnd
-                for seg in segs:
-                    # This link_id is negative
-                    # This "link_id" is really the negative index to the boundary
-                    # element
-                    link_id=seg['link']
-                    # Get its positive counterpart: this is a 0-based index to
-                    # a boundary element
-                    bc_elt_pos=sub_hyd.n_2d_elements - link_id - 1
-                    x=seg['x']
-
-                    # Can we now get back to the local link this belongs to?
-                    # Then go from that local link to an aggregated link
-                    if np.all( x[0] == x[1] ):
-                        # print("Vertical/source entry")
-                        # Would like figure out which entry in FlowLink to point to
-                        # the aggregated output includes these source links in FlowLink
-                        # but the source domains do not
-                        # Can it be found based on coordinate?
-                        # Not an exact match. Note that some changes in this stanza were made
-                        # above in the HydroAggregator code.
-                        x0=x[0]
-                        elt_inside=sub_g.select_cells_nearest(x[0],inside=True)
-                        elt_outside=None # subdomains don't have these in FlowLink
-                    else:
-                        # print("Horizontal bnd entry")
-                        link1,fromto=np.nonzero( sub_geom.FlowLink.values==bc_elt_pos+1)
-                        if len(link1)!=1:
-                            print("Trouble finding the FlowLink which goes with this bc element")
-                            print("  link1: %s"%link1)
-                        link1=link1[0]
-                        fromto=fromto[0]
-
-                        # this link in terms of local elements, as 0-based
-                        elt_inside=sub_geom.FlowLink.values[link1,1-fromto] - 1 
-                        elt_outside=sub_geom.FlowLink.values[link1,fromto]  - 1
-
-                    # this comes as 1-based, based on waq_scenario.py code.
-                    elt_inside_global=sub_geom.FlowElemGlobalNr.values[elt_inside] - 1
-
-                    # Is it local to this proc?
-                    elt_is_local=sub_geom.FlowElemDomain.values[elt_inside]==proc
-
-                    elt_agg=self.elt_global_to_agg_2d[elt_inside_global]
-
-                    if (not elt_is_local) or (elt_agg<0):
-                        # only consider inside elements which are in the aggregation
-                        # only get data from the owner of the inside element
-                        continue 
-
-                    # This is the right processor to get data from, and
-                    # this element is within the aggregation
-
-                    # elt_agg is 0-based
-                    bc_flow_links=np.nonzero( (flow_link_inside==elt_agg+1) & (flow_link_outside<0) )[0]
-                    assert len(bc_flow_links)==1
-                    bc_id=flow_link_outside[bc_flow_links[0]]
-                    bc_names[bc_id]=name
-
-                    bc_x[bc_id].append(x)
-
-        # Reverse that mapping
-        bc_ids_for_name=defaultdict(list)
-
-        for k in bc_names:
-            name=bc_names[k]
-            bc_ids_for_name[name].append(k)
-
-        bnds=[]
-        for name in bc_ids_for_name:
-            bc_ids=bc_ids_for_name[name]
-            links=np.zeros( len(bc_ids), [('link','i4'),('x','f8',(2,2))] )
-            links['link']=bc_ids
-
-            for i,bc_id in enumerate(bc_ids):
-                if len(bc_x[bc_id])==1:
-                    links['x'][i]=bc_x[bc_id][0]
-                else:
-                    self.log.warning("Don't know how to combine multiple segment")
-                    # This happens when multiple BCs enter a single element
-                    links['x'][i]=bc_x[bc_id][0]
-            bnds.append( [name,links])
-
-        self.bnd = bnds
-        return self.bnd
+    # create_bnd() used to have an implementation specific to MultiAggregator, but
 
 class HydroStructured(Hydro):
     """
@@ -6004,6 +5909,9 @@ class FilterAll(FilterHydroBC):
     """ Minor specialization when you want filter everything - i.e. turn a tidal
     run into a subtidal run.
     """
+    # In the past parameter were always filtered (opposite of what I thought).
+    # that can be disabled here.
+    filter_parameters=True
     
     def __init__(self,original,**kw):
         super(FilterAll,self).__init__(original,selection='all',**kw)
@@ -6073,9 +5981,6 @@ class FilterAll(FilterHydroBC):
     def add_parameters(self,hyd):
         hyd=super(FilterAll,self).add_parameters(hyd)
 
-        #self.log.warning('During dev of memory-mapping, ignore parameters')
-        #return hyd
-    
         for key,param in iteritems(self.orig.parameters()):
             self.log.info('Original -> filtered parameter %s'%key)
             # overwrite vertdisper
@@ -6083,15 +5988,19 @@ class FilterAll(FilterHydroBC):
                 self.log.info('  parameter already set')
                 continue
             elif isinstance(param,ParameterSpatioTemporal):
-                self.log.info("  original parameter is spatiotemporal - let's FILTER")
-                hyd[key]=param.lowpass(self.lp_secs)
-                if key in ['vertdisper']: # force non-negative
-                    # a bit dangerous, since there is no guarantee that lowpass made a copy.
-                    # but if it didn't make a copy, and all of the source data were
-                    # valid, then there should be nothing to clip.
-                    hyd[key].values = hyd[key].values.clip(0,np.inf)
-                hyd[key].hydro=self
-                self.log.info("  FILTERED.")
+                if self.filter_parameters:
+                    self.log.info("  original parameter is spatiotemporal - let's FILTER")
+                    hyd[key]=param.lowpass(self.lp_secs)
+                    if key in ['vertdisper','tau','salinity']: # force non-negative
+                        # a bit dangerous, since there is no guarantee that lowpass made a copy.
+                        # but if it didn't make a copy, and all of the source data were
+                        # valid, then there should be nothing to clip.
+                        hyd[key].values = hyd[key].values.clip(0,np.inf)
+                    hyd[key].hydro=self
+                    self.log.info("  FILTERED.")
+                else:
+                    self.log.info("  original parameter is spatiotemporal - but filter_parameters=%s.  no filter"%self.filter_parameters)
+                    hyd[key]=param
             elif isinstance(param,ParameterTemporal):
                 self.log.warning("  original parameter is temporal - should filter")
                 hyd[key]=param # FIX - copy and set hydro, maybe filter, too.
@@ -7163,14 +7072,7 @@ class ParameterSpatioTemporal(Parameter):
     @property
     def times(self):
         if (self._times is None) and (self.seg_func_file is not None):
-            stride=4+self.n_seg*4
-            nbytes=os.stat(self.seg_func_file).st_size
-            frames=nbytes//stride
-            self._times=np.zeros(frames,'i4')
-            with open(self.seg_func_file,'rb') as fp:
-                for ti in range(frames):
-                    fp.seek(stride*ti)
-                    self._times[ti]=np.fromstring(fp.read(4),'i4')
+            self.load_from_segment_file()
         return self._times
 
     @property
@@ -7239,25 +7141,26 @@ class ParameterSpatioTemporal(Parameter):
                 values=self.func_t(t)
             fp.write(values.astype('f4').tobytes())
 
+    def load_from_segment_file(self):
+        """
+        Set self.values and self._times from the segment function file.
+        This uses memmap, so it should be fairly efficient and safe to
+        do even when you only want a fraction of the data.
+        """
+        self._mmap_data=np.memmap(self.seg_func_file,
+                                  dtype=[('t',np.int32),
+                                         ('value',np.float32,self.n_seg)])
+        self._times=self._mmap_data['t']
+        self.values=self._mmap_data['value']
+
     def evaluate(self,**kws):
         # This implementation is pretty rough - 
         # this class is really a mix of
         # ParameterSpatial and ParameterTemporal, yet it duplicates
         # the code from both of those here.
 
-        if self.seg_func_file is not None:
-            if 't' in kws:
-                t=kws.pop('t')
-                stride=4+self.n_seg*4
-                ti=np.searchsorted(self.times[:-1],t)
-                if self.times[ti]!=t:
-                    print("Mismatch in seg func: request=%s  file=%s"%(t,self.times[ti]))
-                with open(self.seg_func_file,'rb') as fp:
-                    fp.seek(stride*ti+4)
-                    values=np.fromfile(fp,'f4',self.n_seg)
-                    param=ParameterSpatial(values)
-                    return param.evaluate(**kws)
-            return self
+        if (self.seg_func_file is not None) and (self.values is None):
+            self.load_from_segment_file()
                 
         param=self
 
@@ -7265,12 +7168,15 @@ class ParameterSpatioTemporal(Parameter):
             t=kws.pop('t')
             if self.values is not None:
                 tidx=np.searchsorted(self.times,t)
-                param=ParameterSpatial( self.values[tidx,:] )
+                # copy to avoid keeping extra data around too long
+                param=ParameterSpatial( self.values[tidx,:].copy() )
             elif self.func_t is not None:
                 param=ParameterSpatial( self.func_t(t) )
         elif 'seg' in kws:
             seg=kws.pop('seg')
-            param=ParameterTemporal(times=self.times,values=self.values[:,seg])
+            # Copy, since these are much smaller than the original data and
+            # better not to force the original array to stay around.
+            param=ParameterTemporal(times=self.times.copy(),values=self.values[:,seg].copy())
         if param is not self:
             # allow other subclasses to do fancier things
             return param.evaluate(**kws)
@@ -7330,7 +7236,7 @@ class ParameterSpatioTemporal(Parameter):
                 values[:,seg]=-999
             else:
                 lp_values=filters.lowpass(padded,
-                                            cutoff=lp_secs,dt=dt)
+                                          cutoff=lp_secs,dt=dt)
                 values[:,seg]=lp_values[npad:-npad] # trim the pad
         return ParameterSpatioTemporal(times=self.times,
                                        values=values,
@@ -7554,10 +7460,15 @@ class Scenario(scriptable.Scriptable):
     grid_output=('SURF','LocalDepth')              # grid topo
     hist_output=(DEFAULT,'SURF','LocalDepth') # history file
     map_output =(DEFAULT,'SURF','LocalDepth')  # map file
+    stat_output =() # default to no stat output
 
     map_formats=['nefis']
     history_formats=['nefis','binary']
 
+    # not fully handled, but generally trying to overwrite
+    # a run without setting this to True should fail.
+    overwrite=False
+    
     # settings related to paths - a little sneaky, to allow for shorthand
     # to select the next non-existing subdirectory by setting base_path to
     # "auto"
@@ -7851,7 +7762,9 @@ END_MULTIGRID"""%num_layers
                 try:
                     name=rec[naming]
                 except:
-                    name="mon%d"%len(self.monitor_areas)
+                    # This used to name everything mon%d, but for easier use
+                    # and compatibility with older code, use geometry type
+                    name="%s%d"%(geom.type.lower(),len(self.monitor_areas))
                 self.add_monitor_for_geometry(name=name,geom=geom)
                 
     def add_monitor_for_geometry(self,name,geom):
@@ -7868,7 +7781,10 @@ END_MULTIGRID"""%num_layers
         # better to go by center, so that non-intersecting polygons
         # yield non-intersecting sets of elements and segments
         # 2019-09-12: use centroid instead of center in case the grid has weird geometry
-        elt_sel=g.select_cells_intersecting(geom,by_center='centroid') # few seconds
+        # 2020-01-31: use representative points. It's possible for centroid not to fall within
+        #      the polygon.  Don't use full polygon, because that will pick up adjacent 
+        #      cells that share an edge.
+        elt_sel=g.select_cells_intersecting(geom,by_center='representative') 
 
         # extend to segments:
         seg_sel=elt_sel[ self.hydro.seg_to_2d_element ] & (self.hydro.seg_to_2d_element>=0)         
@@ -7880,12 +7796,15 @@ END_MULTIGRID"""%num_layers
         self.monitor_areas = self.monitor_areas + ( new_area, )
 
     def add_transects_from_shp(self,shp_fn,naming='count',clip_to_poly=True,
-                               on_boundary='warn_and_skip'):
+                               on_boundary='warn_and_skip',on_edge=False):
         """
         Add monitor transects from a shapefile.
         By default transects are named in sequence.  
         Specify a shapefile field name in 'naming' to pull user-specified
         names for the transects.
+        on_edge: indicates that the shapefile is made up of nodes already following
+          edges of the grid.  In theory not needed, but included here for compatibility
+          with ZZ code.
         """
         locations=wkb2shp.shp2geom(shp_fn)
         g=self.hydro.grid()
@@ -7926,7 +7845,7 @@ END_MULTIGRID"""%num_layers
                     name="transect%04d"%i
                 else:
                     name=rec[naming]
-                exchs=self.hydro.path_to_transect_exchanges(xy,on_boundary=on_boundary)
+                exchs=self.hydro.path_to_transect_exchanges(xy,on_boundary=on_boundary,on_edge=on_edge)
                 new_transects.append( (name,exchs) )
             else:
                 self.log.warning("Not ready to handle geometry type %s"%geom.type)
@@ -8566,7 +8485,8 @@ END_MULTIGRID"""%num_layers
         Copy supporting bloominp file for runs using BLOOM algae
         """
         dst=os.path.join(self.base_path,'bloominp.d09')
-        assert not os.path.exists(dst)
+        if not self.overwrite:
+            assert not os.path.exists(dst)
         shutil.copyfile(self.original_bloominp_path,dst)
 
     def cmd_write_inp(self):
@@ -8691,11 +8611,13 @@ END_MULTIGRID"""%num_layers
             print( ret)
             raise WaqException("Failed to find error/warning count")
 
-    def cmd_delwaq2(self,output_filename=None):
+    def cmd_delwaq2(self,output_filename=None,delwaq2name=None):
         """
         Run delwaq2 (computation)
+        delwaq2name: temporarily override the path to the delwaq2 executable.
+        this can be done more generally by setting self.delwaq2_path.
         """
-        cmd=[self.delwaq2_path,self.name]
+        cmd=[delwaq2name or self.delwaq2_path,self.name]
         if not output_filename:
             output_filename= os.path.join(self.base_path,'delwaq2.out')
 
@@ -8746,9 +8668,16 @@ END_MULTIGRID"""%num_layers
     @property
     def delwaq1_path(self):
         return os.path.join(self.delft_bin,'delwaq1')
+    # ZZ had changed this so that an alternate delwaq2 could be specified.
+    # instead, allow overwriting delwaq2_path. Note that, following ZZ's
+    # convention, a relative path here is interpreted relative to delft_bin.
+    _delwaq2_basename="delwaq2"
     @property
     def delwaq2_path(self):
-        return os.path.join(self.delft_bin,'delwaq2')
+        return os.path.join(self.delft_bin,self._delwaq2_basename)
+    @delwaq2_path.setter
+    def delwaq2_path(self,p):
+        self._delwaq2_basename=p
 
     _share_path=None
     @property
@@ -9292,8 +9221,17 @@ INCLUDE '{self.atr_filename}'  ; attributes file
             lines.append("'{}' '{}' '{}'".format( bdry['id'].decode(),
                                                   bdry['name'].decode(),
                                                   bdry['type'].decode() ) )
-            
-        return "\n".join(lines)
+        # This used to get returned in-line, but maybe cleaner to put into separate
+        # file.
+        dir_name=self.scenario.base_path                    
+
+        local_name = 'boundary_defs.txt'            
+        fn=os.path.join(dir_name,local_name)
+        
+        data = "\n".join(lines)        
+        with open(fn,'wt') as fp:
+            fp.write(data)
+        return "INCLUDE '%s' ; boundary definition file"%local_name
     
     @property
     def n_boundaries(self):
@@ -9520,10 +9458,17 @@ INCLUDE '{self.atr_filename}'  ; attributes file
 
     def text_block10(self):
         lines=[";",
-               "; Statistical output - if any",
-               "; INCLUDE 'tut_fti_waq.stt' ",
-               "; ",
-               " #10 ; delimiter for the tenth block "]
+               "; Statistical output"]
+
+        for sub in self.scenario.stat_output:
+            lines+=["output-operation 'STADAY'"
+                    "  substance '%s'"%sub,
+                    "  suffix    ' '",
+                    "  time-parameter 'TINIT' 'START'",
+                    "  time-parameter 'PERIOD' '0000/00/01-00:00:00'",
+                    "end-output-operation"]
+        
+        lines+=["#10 ; delimiter for the tenth block "]
         return "\n".join(lines)
 
     
@@ -9566,6 +9511,10 @@ class WaqModel(scriptable.Scriptable):
     grid_output=('SURF','LocalDepth')              # grid topo
     hist_output=(DEFAULT,'SURF','LocalDepth') # history file
     map_output =(DEFAULT,'SURF','TotalDepth','LocalDepth')  # map file
+    # Stat output is currently not very configurable, and just allows
+    # specifying which variables to use. See text_block10() above
+    # for the specifics that are used.
+    stat_output=() # defaults to none
 
     # easier to handle multi-platform read/write with binary, compared to nefis output
     map_formats=['binary']
@@ -9911,7 +9860,10 @@ END_MULTIGRID"""%num_layers
         # better to go by center, so that non-intersecting polygons
         # yield non-intersecting sets of elements and segments
         # 2019-09-12: use centroid instead of center in case the grid has weird geometry
-        elt_sel=g.select_cells_intersecting(geom,by_center='centroid') # few seconds
+        # 2020-01-31: use representative points. It's possible for centroid not to fall within
+        #      the polygon.  Don't use full polygon, because that will pick up adjacent 
+        #      cells that share an edge.
+        elt_sel=g.select_cells_intersecting(geom,by_center='representative') # few seconds
 
         # extend to segments:
         seg_sel=elt_sel[ self.hydro.seg_to_2d_element ] & (self.hydro.seg_to_2d_element>=0)         
@@ -9923,13 +9875,20 @@ END_MULTIGRID"""%num_layers
         self.monitor_areas = self.monitor_areas + ( new_area, )
 
     def add_transects_from_shp(self,shp_fn,naming='count',clip_to_poly=True,
-                               on_boundary='warn_and_skip'):
+                               on_boundary='warn_and_skip',on_edge=False):
         """
         Add monitor transects from a shapefile.
         By default transects are named in sequence.  
         Specify a shapefile field name in 'naming' to pull user-specified
         names for the transects.
         """
+        if on_edge:
+            # RH 2020-01-31: on_edge is from ZZ code. I'm not clear on the purpose,
+            #  it's now included for back-compatibilty in the WaqScenario class, but
+            #  moving forward I'm trying to discourage it unless a specific use-case
+            #  arises.
+            self.log.warning("add_transects_from_shp: on_edge was set. In WaqModel this does nothing")
+                             
         assert self.hydro,"Set hydro before calling add_transects_from_shp"
         locations=wkb2shp.shp2geom(shp_fn)
         g=self.hydro.grid()

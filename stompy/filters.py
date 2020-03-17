@@ -49,7 +49,7 @@ def lowpass_gotin(data,in_t_days,*args,**kwargs):
     return lowpass_godin(data,in_t_days,*args,**kwargs)
 
 def lowpass_godin(data,in_t_days,ends='pass',*args,**kwargs):
-    """ Approximate Gotin's tidal filter
+    """ Approximate Godin's tidal filter
     Note that in preserving the length of the dataset, the ends aren't really
     valid
 

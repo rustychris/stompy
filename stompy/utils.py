@@ -1516,6 +1516,8 @@ def enumerate_groups(keys):
     given an array of labels, return, in increasing value of key,
     yield tuples (key,idxs) such that np.all(keys[idxs]==key)
     """
+    if len(keys)==0:
+        return
     order=np.argsort(keys)
     breaks=1+np.nonzero( np.diff( keys[order] ) )[0]
     for group in np.split( order,breaks ):
