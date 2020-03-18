@@ -7018,6 +7018,7 @@ class ParameterSpatioTemporal(Parameter):
     SEG_FUNCTIONS
     """
     interpolation='LINEAR' # or 'BLOCK'
+    warned_2d_to_3d=False # track one-time warning when data is supplied as 2D
 
     def __init__(self,times=None,values=None,func_t=None,scenario=None,name=None,
                  seg_func_file=None,enable_write_symlink=None,n_seg=None,
@@ -7137,6 +7138,11 @@ class ParameterSpatioTemporal(Parameter):
             fp.write(t_secs[tidx].tobytes())
             if self.values is not None:
                 values=self.values[tidx,:]
+                if (len(values)==self.hydro.n_2d_elements) and (len(values)!=self.hydro.n_seg):
+                    if not self.warned_2d_to_3d:
+                        self.scenario.log.warning("Padding parameter %s from 2D to 3D"%self.safe_name)
+                        self.warned_2d_to_3d=True
+                    values=values[self.hydro.seg_to_2d_element]
             else:
                 values=self.func_t(t)
             fp.write(values.astype('f4').tobytes())
@@ -7468,6 +7474,9 @@ class Scenario(scriptable.Scriptable):
     # not fully handled, but generally trying to overwrite
     # a run without setting this to True should fail.
     overwrite=False
+
+    # if set, initial conditions are taken from a restart file given here
+    restart_file=None
     
     # settings related to paths - a little sneaky, to allow for shorthand
     # to select the next non-existing subdirectory by setting base_path to
@@ -9349,23 +9358,40 @@ INCLUDE '{self.atr_filename}'  ; attributes file
         """
         lines=["; ",
                "; eighth block of model input (initial conditions) ",
-               " MASS/M2 ; unit for inactive substances",
-               " 1 ; initial conditions follow"]
-
-        # are any initial conditions spatially varying?
-        # if so, then skip defaults and specify all substances, everywhere
-        for s in self.scenario.substances.values():
-            if s.initial.seg_values is not None:
-                lines+=self.text_ic_old_spatially_varying()
-                break
+               " MASS/M2 ; unit for inactive substances"]
+        if self.scenario.restart_file is not None:
+            res_file=self.scenario.restart_file
+            # These filenames get corrupted in delwaq, so try to be a
+            # little smart
+            fns=glob.glob(res_file+'*')
+            if res_file not in fns:
+                if len(fns)==1:
+                    self.scenario.log.warning("Will copy corrupt restart file to specified restart file")
+                    shutil.copyfile(fns[0],res_file)
+                elif len(fns)==0:
+                    raise Exception("Restart file '%s' not found (including corrupted variants)"%res_file)
+                else:
+                    raise Exception("Restart file '%s' not found, but multiple corrupt alternatives"%res_file)
+            
+            lines+=[ " 0 ; Restart file",
+                     "%s ; Binary restart file"%res_file ]
         else:
-            # otherwise, just give defaults:
-            defaults="\n".join([" {:e} ; {}".format(s.initial.default,s.name)
-                            for s in self.scenario.substances.values() ])
-            lines+=[ " 2 ; all values with default",
-                     "{self.n_substances}*1.0 ; scale factors".format(self=self),
-                     defaults,
-                     " 0  ; overridings"]
+            lines+=[ " 1 ; initial conditions follow"]
+
+            # are any initial conditions spatially varying?
+            # if so, then skip defaults and specify all substances, everywhere
+            for s in self.scenario.substances.values():
+                if s.initial.seg_values is not None:
+                    lines+=self.text_ic_old_spatially_varying()
+                    break
+            else:
+                # otherwise, just give defaults:
+                defaults="\n".join([" {:e} ; {}".format(s.initial.default,s.name)
+                                for s in self.scenario.substances.values() ])
+                lines+=[ " 2 ; all values with default",
+                         "{self.n_substances}*1.0 ; scale factors".format(self=self),
+                         defaults,
+                         " 0  ; overridings"]
 
         lines+=[ ";",
                  " #8 ; delimiter for the eighth block"]
@@ -9498,6 +9524,9 @@ class WaqModel(scriptable.Scriptable):
     stop_time=None  # 
 
     overwrite=False 
+
+    # if set, initial conditions are taken from a restart file given here
+    restart_file=None
     
     # backward differencing,
     # .60 => second and third keywords are set 
