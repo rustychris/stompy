@@ -918,7 +918,7 @@ class HydroModel(object):
     # this is only used for setting utc_to_native, and native_to_utc
     utc_offset=np.timedelta64(0,'h') # -8 for PST
 
-    def __init__(self):
+    def __init__(self,**kw):
         self.log=log
         self.bcs=[]
         self.extra_files=[]
@@ -926,6 +926,8 @@ class HydroModel(object):
 
         self.mon_sections=[]
         self.mon_points=[]
+
+        utils.set_keywords(self,kw)
 
     def add_extra_file(self,path,copy=True):
         self.extra_files.append( (path,copy) )
@@ -2654,7 +2656,13 @@ class DFlowModel(HydroModel):
                 ]
                 fp.write("\n".join(lines))
                 pli_fn=os.path.join(self.run_dir,s['name']+'.pli')
-                geom=self.get_geometry(name=s['name'])
+                if 'geom' in s:
+                    geom=s['geom']
+                    if isinstance(geom,np.ndarray):
+                        geom=geometry.LineString(geom)
+                else:
+                    geom=self.get_geometry(name=s['name'])
+                    
                 assert geom.type=='LineString'
                 pli_data=[ (s['name'], np.array(geom.coords)) ]
                 dio.write_pli(pli_fn,pli_data)
