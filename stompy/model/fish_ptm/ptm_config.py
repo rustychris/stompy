@@ -1,4 +1,6 @@
 import os
+import re
+import datetime
 import glob
 from ... import utils
 
@@ -19,8 +21,77 @@ class PtmConfig(object):
     def load(path):
         cfg=PtmConfig()
         cfg.run_dir=path
+        cfg.read()
         return cfg
-        
+
+    def read(self):
+        """
+        INCOMPLETE!
+        set parameters as much as possible based on info in the files
+        in self.run_dir
+        """
+        with open(os.path.join(self.run_dir,'FISH_PTM.inp'),'rt') as fp:
+            lines=fp.readlines()
+            def eat(s):
+                if lines[0].strip()==s:
+                    del lines[:1]
+                else:
+                    raise Exception("Expected %s but found %s"%(s,lines[0]))
+            def keyvalue(s):
+                while lines:
+                    # not perfect -- will pick up a comment inside quotes.
+                    line=re.sub(r'--.*$','',lines[0]).strip()
+                    if not line:
+                        del lines[:1]
+                        continue
+                    k,v=line.split('=',1)
+                    del lines[:1]
+                    if k.strip()==s:
+                        return v.strip()
+                    else:
+                        raise Exception("Expected %s= but found %s"%(s,lines[0]))
+            def keystring(s): # removes matching quotes
+                v=keyvalue(s)
+                if v[0]==v[-1]:
+                    return v[1:-1]
+                else:
+                    raise Exception("Expected matching quotes, but got %s"%v)
+            def keydate(s):
+                v=keystring(s)
+                return utils.to_dt64(datetime.datetime.strptime(v,'%Y-%m-%d %H:%M:%S'))
+            eat('GLOBAL INFORMATION')
+            self.end_time=keydate('END_TIME')
+            self.restart_dir=keystring('RESTART_DIR')
+    def is_complete(self):
+        """
+        Return true if it appears that this PTM run has completed.
+        NOT VERY ROBUST.
+        Assumes that all groups have output (or at least bin index entries) through
+        the end of the run.  if the output interval is not even with end_time,
+        this will give a false negative
+        """
+        n_short=0
+        idxs=glob.glob(os.path.join(self.run_dir,'*_bin.idx'))
+        if len(idxs)==0:
+            return False
+
+        for idx in idxs:
+            with open(idx,'rt') as fp:
+                lines=fp.readlines()
+                last=lines[-1].strip()
+                try:
+                    year,month,day,hour,minute,offset,count = [int(s) for s in last.split()]
+                except ValueError:
+                    n_short+=1 # invalid index file
+                    continue
+                dt=datetime.datetime(year=year,month=month,day=day,
+                                     hour=hour,minute=minute)
+                dt=utils.to_dt64(dt)
+                if dt<self.end_time:
+                    print("IDX %s appears short: %s vs %s"%(idx,dt,self.end_time))
+                    n_short+=1
+        return n_short==0
+            
     def bin_files(self):
         fns=glob.glob(os.path.join(self.run_dir,"*_bin.out"))
         fns.sort()

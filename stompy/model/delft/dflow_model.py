@@ -1178,33 +1178,30 @@ class HydroModel(object):
         else:
             raise Exception("BC type %s not handled by class %s"%(bc.__class__,self.__class__))
 
-    def partition(self):
+    def partition(self,partition_grid=None):
         if self.num_procs<=1:
             return
-        # similar, but for the mdu:
         # precompiled 1.5.2 linux binaries are able to partition the mdu okay,
         # so switch to always using dflowfm to partition grid and mdu.
-        
-        #if sys.platform=='win32':
-        # use cli to partition the mdu
-        # if this were being run not in run_dir, 
-        # oddly, even on windows, dflowfm requires only forward
-        # slashes in the path to the mdu (ver 1.4.4)
-        # since run_dflowfm uses run_dir as the working directory
-        # here we strip to the basename
-        cmd=["--partition:ndomains=%d:icgsolver=6"%self.num_procs,
-             os.path.basename(self.mdu.filename)]
-        self.run_dflowfm(cmd,mpi=False)
-        # else:
-        #     # some of the older linux compiles don't seem to
-        #     # handle the mdu well, so use the shell script.
-        #     cmd=["--partition:ndomains=%d"%self.num_procs,
-        #          self.mdu['geometry','NetFile']]
-        #     self.run_dflowfm(cmd,mpi=False)
-        # 
-        #     gen_parallel=os.path.join(self.dfm_bin_dir,"generate_parallel_mdu.sh")
-        #     cmd=[gen_parallel,os.path.basename(self.mdu.filename),"%d"%self.num_procs]
-        #     return utils.call_with_path(cmd,self.run_dir)
+        # unfortunately there does not appear to be an option to only partition
+        # the mdu.
+
+        if partition_grid is None:
+            partition_grid=not self.restart
+
+        if partition_grid:
+            # oddly, even on windows, dflowfm requires only forward
+            # slashes in the path to the mdu (ver 1.4.4)
+            # since run_dflowfm uses run_dir as the working directory
+            # here we strip to the basename
+            cmd=["--partition:ndomains=%d:icgsolver=6"%self.num_procs,
+                 os.path.basename(self.mdu.filename)]
+            self.run_dflowfm(cmd,mpi=False)
+        else:
+            # not a cross platform solution!
+            gen_parallel=os.path.join(self.dfm_bin_dir,"generate_parallel_mdu.sh")
+            cmd=[gen_parallel,os.path.basename(self.mdu.filename),"%d"%self.num_procs,'6']
+            return utils.call_with_path(cmd,self.run_dir)
 
     _dflowfm_exe=None
     @property
@@ -2376,6 +2373,10 @@ class DFlowModel(HydroModel):
     # found in existing $PATH
     dfm_bin_dir="" # .../bin  giving directory containing dflowfm
     dfm_bin_exe='dflowfm'
+    
+    ref_date=None
+    restart=None
+    restart_model=None # reference to DFlowModel instance that we are continuing
 
     # flow and source/sink BCs will get the adjacent nodes dredged
     # down to this depth in order to ensure the impose flow doesn't
@@ -2463,6 +2464,16 @@ class DFlowModel(HydroModel):
         dest=os.path.join(self.run_dir, self.mdu['geometry','NetFile'])
         self.grid.write_dfm(dest,overwrite=True,)
 
+    def subdomain_grid(self,proc):
+        """
+        For a run that has been partitioned, load the grid for a specific
+        subdomain.
+        """
+        base_grid_name=self.mdu.filepath(('geometry','NetFile'))
+        proc_grid_name=base_grid_name.replace('_net.nc','_%04d_net.nc'%proc)
+        g=ugrid.UnstructuredGrid.read_dfm(proc_grid_name)
+        return g
+        
     def ext_force_file(self):
         return self.mdu.filepath(('external forcing','ExtForceFile'))
 
@@ -2492,7 +2503,7 @@ class DFlowModel(HydroModel):
         model.set_run_dir(d,mode='existing')
         # infer number of processors based on mdu files
         # Not terribly robust if there are other files around..
-        sub_mdu=glob.glob( fn.replace('.mdu','_*.mdu') )
+        sub_mdu=glob.glob( fn.replace('.mdu','_[0-9][0-9][0-9][0-9].mdu') )
         if len(sub_mdu)>0:
             model.num_procs=len(sub_mdu)
         else:
@@ -2500,6 +2511,7 @@ class DFlowModel(HydroModel):
             model.num_procs=1
 
         ref,start,stop=model.mdu.time_range()
+        model.ref_date=ref
         model.run_start=start
         model.run_stop=stop
         return model
@@ -2583,7 +2595,8 @@ class DFlowModel(HydroModel):
         if self.mdu is None:
             self.mdu=dio.MDUFile()
 
-        self.mdu.set_time_range(start=self.run_start,stop=self.run_stop)
+        self.mdu.set_time_range(start=self.run_start,stop=self.run_stop,
+                                ref_date=self.ref_date)
         self.mdu.set_filename(os.path.join(self.run_dir,self.mdu_basename))
 
         self.mdu['geometry','NetFile'] = self.grid_target_filename()
@@ -2842,7 +2855,79 @@ class DFlowModel(HydroModel):
         return os.path.join( self.run_dir,
                              "DFM_DELWAQ_%s"%self.mdu.name,
                              "%s.hyd"%self.mdu.name )
-                             
+
+    def restartable_time(self):
+        fns=glob.glob(os.path.join(self.mdu.output_dir(),'*_rst.nc'))
+        fns.sort() # sorts both processors and restart times    
+        last_rst=xr.open_dataset(fns[-1])
+        rst_time=last_rst.time.values[0]
+        last_rst.close()
+        return rst_time
+    
+    def create_restart(self,name):
+        new_model=DFlowModel()
+        new_model.mdu=self.mdu.copy()
+        new_model.mdu.set_filename( os.path.join( os.path.dirname(self.mdu.filename),
+                                                  name+".mdu") )
+        new_model.mdu_basename=name
+        new_model.restart=True # ?
+        new_model.restart_model=self
+        new_model.ref_date=self.ref_date
+        new_model.run_start=self.restartable_time()
+        new_model.num_procs=self.num_procs
+        new_model.grid=self.grid
+        # DFM will create a new output directory under the run directory,
+        # so we reuse the run directory.
+        # if there were some reason to modify files from the old run that are not
+        # in the output folder, will have to extend this method.
+        new_model.run_dir=self.run_dir
+        
+        rst_base=os.path.join(self.mdu.output_dir(),
+                              (self.mdu.name
+                               +'_'+utils.to_datetime(new_model.run_start).strftime('%Y%m%d_%H%M%S')
+                               +'_rst.nc'))
+        new_model.mdu['restart','RestartFile']=rst_base
+        return new_model
+
+    def restart_inputs(self):
+        """
+        Return a list of paths to restart data that will be used as the 
+        initial condition for this run. Assumes nonmerged style of restart data.
+        """
+        rst_base=self.mdu['restart','RestartFile']
+        path=os.path.dirname(rst_base)
+        base=os.path.basename(rst_base)
+        # Assume that it has the standard naming
+        suffix=base[-23:] # just the date-time portion
+        rsts=[ (rst_base[:-23] + '_%04d'%p + rst_base[-23:])
+               for p in range(self.num_procs)]
+        return rsts
+    
+    def modify_restart_data(self,modify_ic):
+        """
+        Apply the given function to restart data, and copy the restart
+        files at the same time.
+        Updates self.mdu['restart','RestartFile'] to point to the new
+        location, which will be the output folder for this run.
+
+        modify_ic: fn(xr.Dataset, **kw) => None or xr.Dataset
+
+        it should take **kw, to flexibly allow more information to be passed in
+         in the future.
+        """
+        for proc,rst in enumerate(self.restart_inputs()):
+            old_dir=os.path.dirname(rst)
+            new_rst=os.path.join(self.mdu.output_dir(),os.path.basename(rst))
+            assert rst!=new_rst
+            ds=xr.open_dataset(rst)
+            new_ds=modify_ic(ds,proc=proc,model=self)
+            if new_ds is None:
+                new_ds=ds # assume modified in place
+            new_ds.to_netcdf(new_rst)
+        old_rst_base=self.mdu['restart','RestartFile']
+        new_rst_base=os.path.join( self.mdu.output_dir(), os.path.basename(old_rst_base))
+        self.mdu['restart','RestartFile']=new_rst_base
+        
     def extract_section(self,name=None,chain_count=1,refresh=False):
         """
         Return xr.Dataset for monitored cross section.
