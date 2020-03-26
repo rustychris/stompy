@@ -600,6 +600,90 @@ def pli_to_grid_edges(g,levees):
     return levee_de
 
 
+def create_restart(res_fn, map_fn, hyd, state_vars = None, map_net_cdf = False, extr_time = None,
+                   start_time = None):
+    """ 
+    Create a restart file using an exisiting map file and a user defined 
+    time. 
+    
+    res_fn: path/file name of the restart file 
+    map_fn: provide either a binary or net CDF file. Default is the raw binary output. 
+    hyd: waq_scenario.Hydro() object
+    state_vars: an array that provides the state variables used in the original 
+    model run. Name must match the information written to map file
+    map_net_cdf: set this flag to True if providing net CDF output that has 
+        already been created by read_map 
+    extr_time: a date string that will be converted internally to a 
+        numpy datetime object.If not provided, will use the last time step of the 
+        mapfile 
+    start_time: a date string that will be converted internally to a numpy
+        datetime object. If not provided will be set as hydro.
+
+    [author: Pradeep Mugunthan]
+    """
+    # Identify whether read_map call is needed 
+    if not map_net_cdf:
+        ds = read_map(map_fn, hyd)
+    
+    # infer n_subs and n_segs
+    if state_vars is None: 
+        state_vars = ds.sub.values
+
+    n_subs = len(state_vars)
+    
+    n_segs = np.int32(len(ds.layer)*len(ds.face))
+    
+    # convert time to dt 
+    if extr_time is not None:
+        dt = np.datetime64(extr_time)
+    else:
+        dt = max(ds.time.values)
+        extr_time = pd.to_datetime(dt).strftime('%Y-%m-%d %H:%M')
+        
+    dt_st = np.datetime64(hyd.time0)
+    if start_time is not None:
+        dt_st = np.datetime64(start_time)
+     
+    ds_t = ds.sel(time = dt)
+    
+    # construct output arrays 
+    # now = pd.Timestamp.today().strftime('%Y-%m-%d %H:%M')
+    # txt_header = np.array('Restart file starting at {:s} ' \
+    #                       'Written by stompy.model.delft.io.create_restart '\
+    #                       'Written at {:s}'.format(extr_time, now),dtype='S160')
+    
+    txt_header = np.array(ds.header,dtype = 'S160')
+    
+    out_arr = np.zeros((n_segs,n_subs), dtype = 'f4' )  
+    subs = np.array(['']*n_subs,dtype='S20')
+    time = np.int32(pd.to_timedelta(dt-dt_st).total_seconds())
+
+    count = 0
+    for idx,name in enumerate(ds_t.sub.values):
+        if name in state_vars:
+            subs[count] = name
+            out_arr[:,count] = ds_t[name].values.flatten()
+            count = count + 1             
+    
+    # write out file 
+    with open(res_fn,'wb') as fp:
+        # header 
+        fp.write(txt_header)
+        
+        # nosubs, noseg
+        fp.write(np.array(n_subs, 'i4').tobytes())
+        fp.write(np.array(n_segs, 'i4').tobytes())
+        
+        # parameter names 
+        fp.write(subs) # is tobytes() implied here?
+        
+        # output time and substance values 
+        fp.write(np.array(time, 'i4').tobytes())
+        fp.write(out_arr.astype('f4'))
+        
+        fp.close() # PM - this shoudn't be necessary - but am having problems with file remanining open even after return
+    
+    return 
 
 
 def read_map(fn,hyd=None,use_memmap=True,include_grid=True,return_grid=False):
