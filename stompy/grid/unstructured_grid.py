@@ -497,11 +497,16 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         return UnstructuredGrid.from_ugrid(*a,**kw)
     
     @staticmethod
-    def from_ugrid(nc,mesh_name=None,skip_edges=False,fields='auto'):
+    def from_ugrid(nc,mesh_name=None,skip_edges=False,fields='auto',
+                   dialect=None):
         """ extract 2D grid from netcdf/ugrid
         nc: either a filename or an xarray dataset.
         fields: 'auto' [new] populate additional node,edge and cell fields
         based on matching dimensions.
+
+        dialect: ad-hoc support for slight variants on the format.
+          'fishptm' for reading ptm hydro files in nc format where the names
+          are standardized but a mesh variable is not set.
         """
         if isinstance(nc,six.string_types):
             filename=nc
@@ -509,6 +514,21 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         else:
             filename=None
 
+        if dialect=='fishptm':
+            mesh_name='Mesh2'
+            nc[mesh_name]=(),1
+            nc[mesh_name].attrs.update(dict(cf_role='mesh_topology',
+                                            node_coordinates='Mesh2_node_x Mesh2_node_y',
+                                            face_node_connectivity='Mesh2_face_nodes',
+                                            edge_node_connectivity='Mesh2_edge_nodes',
+                                            node_dimension='nMesh2_node',
+                                            edge_dimension='nMesh2_edge',
+                                            face_dimension='nMesh2_face',
+                                            face_coordinates='Mesh2_face_x Mesh2_face_y',
+                                            edge_coordinates='Mesh2_edge_x Mesh2_edge_y'))
+            # This is straight from the output, so no need to add bathy offset
+            #grid.add_cell_field('z_bed',-grid.cells['Mesh2_face_depth'])
+            
         if mesh_name is None:
             meshes=[]
             for vname in nc.variables.keys():
@@ -610,6 +630,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             face_x,face_y = mesh.face_coordinates.split()
             ug.cells['_center'][:,0] = nc[face_x].values
             ug.cells['_center'][:,1] = nc[face_y].values
+
+        ug.add_cell_field('z_bed',-ug.cells['Mesh2_face_depth'])
+            
         ug.filename=filename
         return ug
 

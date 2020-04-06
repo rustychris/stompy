@@ -92,6 +92,7 @@ def main(args=None):
     one_of.add_argument("-a", "--aggregate", help="Path to shapefile definining aggregation polygons",default=None,type=str)
     one_of.add_argument("-c", "--continuity", help="Check continuity by comparing fluxes and volumes", action='store_true')
     one_of.add_argument("-l", "--lowpass", help="Low-pass filter", action='store_true')
+    # TODO: splice output should default to mimicing what a serial run would use.
     one_of.add_argument("-s", "--splice", help="Splice an MPI run into a single DWAQ hydro dataset",action='store_true')
     
     parser.add_argument("-o", "--output", help="Path and run name for file output", default="output/output")

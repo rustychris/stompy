@@ -678,14 +678,29 @@ class UgridXr(object):
             layer_bounds=np.concatenate( (layer_interfaces[:-1, None],
                                           layer_interfaces[1:, None]),
                                          axis=1)
-
+        # used to retain layer_interfaces for the top of the top and the
+        # bottom of the bottom.  But that just makes for more cleanup
+        # so now clip this to be interfaces between two layers.
+        layer_interfaces=layer_interfaces[1:-1]
+        
+        # Calls to searchsorted below may need to negate both arguments
+        # if increasing k maps to decreasing elevation.
+        if np.all( np.diff(layer_interfaces) < 0 ):
+            k_sign=-1
+        elif np.all( np.diff(layer_interfaces) > 0):
+            k_sign=1
+        else:
+            raise Exception("Confused about the ordering of k")
+            
         # this is a bit trickier, because there could be lumping.  for now, it should work okay
-        # with 2-d, but won't be good for 3-d
-        Nk = np.searchsorted(-layer_interfaces,-bed)
+        # with 2-d, but won't be good for 3-d HERE if k is increasing up, this is WRONG
+        # this used to be called Nk, but that's misleading.  it's the k index
+        # of the bed layer, not the number of layers per water column.
+        kbed = np.searchsorted(k_sign*layer_interfaces,k_sign*bed)
 
-        one_dz = -np.diff(layer_interfaces)
+        one_dz = k_sign*(layer_bounds[:,1]-layer_bounds[:,0])
         all_dz=np.ones(h.shape+one_dz.shape)*one_dz
-        all_k = np.ones(h.shape+one_dz.shape)*np.arange(len(one_dz))
+        all_k = np.ones(h.shape+one_dz.shape,np.int32)*np.arange(len(one_dz))
 
         # adjust bed and 
         # 3 choices here..
@@ -706,42 +721,42 @@ class UgridXr(object):
                 h = bed + dz
 
         # so now h and bed are elevations bounding the integration region
-        z = layer_bounds.min(axis=1) # bottom of each cell
-        ctops = np.searchsorted(-z - self.surface_dzmin, -h)
+        # with this min call it's only correct for k_sign==-1
+        ctops = np.searchsorted(k_sign*(layer_interfaces + self.surface_dzmin), 
+                                k_sign*h)
 
         # default h_to_ctop will use the dzmin appropriate for the surface,
         # but at the bed, it goes the other way - safest just to say dzmin=0,
         # and also clamp to known Nk
-        cbeds = np.searchsorted(-z,-bed) + 1 # it's an exclusive index
+        cbeds = np.searchsorted(k_sign*layer_interfaces,k_sign*bed) 
 
         # dimension problems here - Nk has dimensions like face_slice or face_slice,time_slice
         # cbeds has dimensions like face_slice,time_slice
         # how to conditionally add dimensions to Nk?
         # for now, ASSUME that time is after face, and use shape of h to
         # figure out how to pad it
-        while h.ndim > Nk.ndim:
-            Nk=Nk[...,None]
+        while h.ndim > kbed.ndim:
+            kbed=kbed[...,None]
         # also have to expand Nk so that the boolean indexing works
-        cbeds[ cbeds>Nk ] = (Nk*np.ones_like(cbeds))[ cbeds>Nk ]
+        
+        # use to make cbeds exclusive indexing, but its cleaner to leave
+        # ctops and cbeds both as inclusive, since it changes based on
+        # k_sign
+        if k_sign==-1:
+            # keep cbed valid w.r.t. to deepest layer kbed,            
+            cbeds=np.minimum(cbeds,kbed)
+            drymask = (all_k < ctops[...,None]) | (all_k>cbeds[...,None])
+        else:
+            cbeds=np.maximum(cbeds,kbed) # maybe redundant now
+            drymask = (all_k < cbeds[...,None]) | (all_k>ctops[...,None])
 
-        # seems that there is a problem with how dry cells are handled -
-        # for the exploratorium display this ending up with a number of cells with
-        # salinity close to 1e6.
-        # in the case of a dry cell, ctop==cbed==Nk[i]
-        drymask = (all_k < ctops[...,None]) | (all_k>=cbeds[...,None])
         all_dz[drymask] = 0.0
 
         ii = tuple(np.indices( h.shape ) )
+        z = layer_bounds.min(axis=1) # bottom of each cell
         all_dz[ii+(ctops[ii],)] = h-z[ctops]
-        all_dz[ii+(cbeds[ii]-1,)] -= bed - z[cbeds-1]
+        all_dz[ii+(cbeds[ii],)] -= bed - z[cbeds]
         
-        # ctops has indices into the z dimension, and it has
-        #   cell,time shape
-        #  h also has cell,time shape
-        # old code:
-        # all_dz[ii,ctops] = h - z[ctops]
-        # all_dz[ii,cbeds-1] -= bed - z[cbeds-1]
-
         # make those weighted averages
         # have to add extra axis to get broadcasting correct
         all_dz = all_dz / np.sum(all_dz,axis=-1)[...,None]
