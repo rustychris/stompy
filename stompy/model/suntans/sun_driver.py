@@ -2089,7 +2089,7 @@ class SuntansModel(dfm.HydroModel):
                 return None
             if np.isscalar(t):
                 if (t<stn.time.values[0]) or (t>stn.time.values[-1]):
-                    log.info(f"Requested time {t} is outside the range of the model output")
+                    log.info("Requested time %s is outside the range of the model output"%t)
                     return None
                 ti=utils.nearest(stn.time.values,t)
                 stn=stn.isel(time=ti)
@@ -2152,7 +2152,7 @@ class SuntansModel(dfm.HydroModel):
                 if z_dz[samp_i,k]==0.0: 
                     continue # truly dry
                 elif tran.eta[samp_i] - tran.z_bot[samp_i,k] < dzmin_surf:
-                    log.debug(f"[sample {samp_i},k {k}] too thin")
+                    log.debug("[sample %s,k %s] too thin"%(samp_i,k))
                     k_update.append(k)
                 else:
                     # valid layer
