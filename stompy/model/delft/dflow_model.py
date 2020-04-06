@@ -2860,7 +2860,7 @@ class DFlowModel(HydroModel):
         new_model=DFlowModel()
         new_model.mdu=self.mdu.copy()
         new_model.mdu.set_filename( os.path.join( os.path.dirname(self.mdu.filename),
-                                                  name+".mdu") )
+                                                  name) )
         new_model.mdu_basename=name
         new_model.restart=True # ?
         new_model.restart_model=self
@@ -2915,6 +2915,10 @@ class DFlowModel(HydroModel):
             new_ds=modify_ic(ds,proc=proc,model=self)
             if new_ds is None:
                 new_ds=ds # assume modified in place
+
+            dest_dir=os.path.dirname(new_rst)
+            if not os.path.exists(dest_dir):
+                os.makedirs(dest_dir)
             new_ds.to_netcdf(new_rst)
         old_rst_base=self.mdu['restart','RestartFile']
         new_rst_base=os.path.join( self.mdu.output_dir(), os.path.basename(old_rst_base))

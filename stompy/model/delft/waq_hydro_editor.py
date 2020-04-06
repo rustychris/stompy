@@ -96,6 +96,13 @@ def main(args=None):
     
     parser.add_argument("-o", "--output", help="Path and run name for file output", default="output/output")
     parser.add_argument("-p", "--pass-parameters",help="Pass parameters through without low-pass filter",action="store_true")
+    
+    parser.add_argument("--keep-cells",
+                        help=("When splicing skip regeneration of cells. DFM typically regenerates cells"
+                              "on startup, which can introduce inconsistency between the net file and the"
+                              "output. By default the same regeneration is applied here, but can be disabled"
+                              "with this option"),
+                        action='store_true')
 
     # these options copied in from another script, here just for reference, and possible consistency
     # in how arguments are named and described.
@@ -146,6 +153,8 @@ def main(args=None):
         run_prefix=model.mdu.name
         run_dir=model.run_dir
         dest_grid=model.grid
+        if not args.keep_cells:
+            dest_grid.make_cells_from_edges()
         hydro_out=waq.HydroMultiAggregator(run_prefix=run_prefix,
                                            path=run_dir,
                                            agg_shp=dest_grid,

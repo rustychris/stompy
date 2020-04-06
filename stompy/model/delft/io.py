@@ -1259,6 +1259,64 @@ class SectionedConfig(object):
     def __getitem__(self,sec_key):       # self[sec_key]
         return self.get_value(sec_key)
 
+    def __contains__(self,sec_key):
+        """
+        Return true if the given section or (section,key) tuple 
+        exists.  Note that [currently] if the entry exists but is
+        empty, this still returns True.
+        """
+        if isinstance(sec_key,tuple):
+            section='[%s]'%sec_key[0].lower()
+            key = sec_key[1].lower()
+        else:
+            section='[%s]'%sec_key.lower()
+            key=None
+            
+        for row_idx,row_sec,row_key,row_value,row_comment in self.entries():
+            if ( ((key is None) or (row_key.lower() == key))
+                 and (section.lower() == row_sec.lower())):
+                return True
+        else:
+            return False
+
+    def __delitem__(self,sec_key):
+        if isinstance(sec_key,tuple):
+            section='[%s]'%sec_key[0].lower()
+            key = sec_key[1].lower()
+        else:
+            section='[%s]'%sec_key.lower()
+            key=None
+
+        new_rows=[]
+        row_sec=None
+        
+        for row_idx,row in enumerate(self.rows):
+            row_key=None
+            parsed=self.parse_row(row)
+
+            if parsed[0] is None: # blank line
+                new_rows.append(row)
+                continue # don't send back blank rows
+
+            if parsed[0][0]=='[':
+                row_sec=parsed[0]
+
+                if (row_sec == section) and (key is None):
+                    # delete this row.
+                    continue
+                else:
+                    new_rows.append(row)
+                    continue
+            else:
+                row_key=parsed[0]
+                if ( ((key is None) or (row_key.lower() == key))
+                     and (section.lower() == row_sec.lower())):
+                    # delete this row
+                    continue
+                else:
+                    new_rows.append(row)
+        self.rows=new_rows
+        
     def filepath(self,sec_key):
         """
         Lookup a filename via a ('section','name') tuple, and

@@ -1819,7 +1819,8 @@ class HydroFiles(Hydro):
             n_elts=nx*ny
             # bit of sanity check:
             if os.path.exists(self.get_path('grid-coordinates-file')):
-                g=dfm_grid.DFMGrid(self.get_path('grid-coordinates-file'))
+                # g=dfm_grid.DFMGrid(self.get_path('grid-coordinates-file'))# deprecated
+                g=unstructured_grid.UnstructuredGrid.read_dfm(self.get_path('grid-coordinates-file'))
                 n_elts_nc=g.Ncells() 
                 assert n_elts_nc==n_elts
 
@@ -2284,7 +2285,7 @@ class HydroFiles(Hydro):
                 self._grid=unstructured_grid.UnstructuredGrid.from_ugrid(orig)
             except (IndexError,AssertionError,unstructured_grid.GridException):
                 self.log.warning("Grid wouldn't load as ugrid, trying dfm grid")
-                dg=dfm_grid.DFMGrid(orig,cleanup=self.clean_mpi_dfm_grid)
+                dg=unstructured_grid.UnstructuredGrid.read_dfm(orig,cleanup=self.clean_mpi_dfm_grid)
                 self._grid=dg
         return self._grid
 
@@ -2741,7 +2742,8 @@ class DwaqAggregator(Hydro):
                 assert np.all(FlowLink[:,1]>=start_index),"Bad assumption on boundary links"
 
                 # and boundary elements get numbered beyond the number of regular elements.
-                FlowLink[bc_links,0]=ds.dims['nmesh2d_face'] + 1 + np.arange(bc_links.sum())
+                face_dim=ds['mesh2d'].attrs.get('face_dimension','nmesh2d_face')
+                FlowLink[bc_links,0]=ds.dims[face_dim] + 1 + np.arange(bc_links.sum())
 
                 assert np.all(FlowLink[:,0]>=start_index),"Missed some boundary links??"
 
@@ -2857,7 +2859,9 @@ class DwaqAggregator(Hydro):
                 max_gid=len(nc['nFlowElem'])
             else:
                 raise Exception("Need global element numbers for multi-processor run")
-            if 'nFlowElem' in nc.dims:
+            if 'mesh2d' in nc:
+                ncell=nc.mesh2d.attrs['face_dimension']
+            elif 'nFlowElem' in nc.dims:
                 ncell='nFlowElem'
             elif 'nmesh2d_face' in nc.dims:
                 ncell='nmesh2d_face'
@@ -2996,7 +3000,7 @@ class DwaqAggregator(Hydro):
             else:
                 raise Exception("flowgeom does not have cell depths.  Maybe there is DFM map output that we didn't find?")
                 
-            ncg=dfm_grid.DFMGrid(nc)
+            ncg=unstructured_grid.UnstructuredGrid.read_dfm(nc) # used to be dfm_grid
             g_centroids=ncg.cells_centroid()
             ccx=g_centroids[:,0]
             ccy=g_centroids[:,1]
@@ -3059,13 +3063,14 @@ class DwaqAggregator(Hydro):
                     self.log.info("Checking proc %d for inconsistent links"%proc)
                     nc=self.open_flowgeom_ds(proc)
                     proc_global_ids=nc.FlowElemGlobalNr.values - 1  # make 0-based
-                    ncg=dfm_grid.DFMGrid(nc)
+                    ncg=unstructured_grid.UnstructuredGrid.read_dfm(nc,cleanup=True) # dfm_grid.DFMGrid(nc)
                     # This is slow, but on the chance that the grid is from a merged
                     # hydro run, this is necessary (or the code below needs to be rewritten
                     # to cope with duplicate edges from a merged hydro run).
-                    self.log.info("Overly conservative cleanup pass on grid")
-                    dfm_grid.cleanup_multidomains(ncg)
-                    self.log.info(" ... done with cleanup pass")
+                    # now incorporated into cleanup=True above
+                    #self.log.info("Overly conservative cleanup pass on grid")
+                    #dfm_grid.cleanup_multidomains(ncg)
+                    #self.log.info(" ... done with cleanup pass")
 
                     e2c=ncg.edge_to_cells()
                     for j in np.nonzero(e2c.min(axis=1)>=0)[0]: # only internal edges
@@ -3305,7 +3310,11 @@ class DwaqAggregator(Hydro):
             n_hor=hyd['number-horizontal-exchanges']
             n_ver=hyd['number-vertical-exchanges']
 
-            nFlowElem=len(nc['nFlowElem'])
+            if 'mesh2d' in nc:
+                face_dim=nc.mesh2d.attrs.get('face_dimension','nFlowElem')
+            else:
+                face_dim='nFlowElem'
+            nFlowElem=nc.dims[face_dim]
 
             pointers2d=pointers[:,:2].copy()
             sel=(pointers2d>0) # only map non-boundary segments
@@ -4891,10 +4900,14 @@ class DwaqAggregator(Hydro):
             # CHANGE
             #sub_geom=sub_hyd.get_geom() # for MultiAggregator -
             sub_geom=self.open_flowgeom_ds(proc) # for DwaqAggregator
-
-            sub_nFlowElem=len(sub_geom.nFlowElem)
+            if 'mesh2d' in sub_geom:
+                face_dim=sub_geom.mesh2d.attrs.get('face_dimension','nFlowElem')
+            else:
+                face_dim='nFlowElem'
+            sub_nFlowElem=sub_geom.dims[face_dim]
             sub_bnds=sub_hyd.read_bnd()
-            sub_g=dfm_grid.DFMGrid(sub_geom)
+            #sub_g=dfm_grid.DFMGrid(sub_geom) # deprecated
+            sub_g=unstructured_grid.UnstructuredGrid.read_dfm(sub_geom)
 
             sub_hyd.infer_2d_links()
 

@@ -77,6 +77,10 @@ class DFlowToPTMHydro(object):
     grd_fn=None
     write_nc=True
 
+    # Allow for the possibility that DWAQ cells are not in the same order
+    # as the DFM map output cells
+    remap_waq_elements=True
+
     def __init__(self,mdu_path,output_fn,**kwargs):
         utils.set_keywords(self,kwargs)
 
@@ -120,18 +124,33 @@ class DFlowToPTMHydro(object):
         
         # incoming dataset from DFM:
         map_fns=self.model.map_outputs()
+        if len(map_fns)>1:
+            map_fns=[map_fn for map_fn in map_fns if '_merged_' in map_fn]
+            if len(map_fns)==1:
+                log.info("Found multiple map files but only 1 merged map file.  Will use that")
         assert len(map_fns)==1,"Not ready for multi processor or time-divided output"
         self.map_ds=xr.open_dataset(map_fns[0])
         
         # Additionally trim to subset of times here:
         subset_ds=self.map_ds.isel(time=self.time_slice)
 
+        if 'mesh2d' in subset_ds:
+            face_dim=subset_ds.mesh2d.attrs.get('face_dimension','nmesh2d_face')
+            edge_dim=subset_ds.mesh2d.attrs.get('edge_dimension','nmesh2d_edge')
+            node_dim=subset_ds.mesh2d.attrs.get('node_dimension','nmesh2d_node')
+            max_side_dim=subset_ds.mesh2d.attrs.get('max_face_nodes_dimension',
+                                                    'max_nmesh2d_face_nodes')
+        else:
+            face_dim='nmesh2d_face'
+            edge_dim='nmesh2d_edge'
+            node_dim='nmesh2d_node'
+
         # shallow copy of that with renames for PTM compatibility
         self.mod_map_ds=subset_ds.rename({'time':'nMesh2_data_time',
-                                          'nmesh2d_face':'nMesh2_face',
-                                          'nmesh2d_edge':'nMesh2_edge',
-                                          'nmesh2d_node':'nMesh2_node',
-                                          'max_nmesh2d_face_nodes':'nMaxMesh2_face_nodes',
+                                          face_dim:'nMesh2_face',
+                                          edge_dim:'nMesh2_edge',
+                                          node_dim:'nMesh2_node',
+                                          max_side_dim:'nMaxMesh2_face_nodes',
                                           'mesh2d_face_x':'Mesh2_face_x',
                                           'mesh2d_face_y':'Mesh2_face_y',
                                           'mesh2d_edge_x':'Mesh2_edge_x',
@@ -393,8 +412,20 @@ class DFlowToPTMHydro(object):
          self.link_to_edge_sign: [ (j from grid, +-1 to indicate flipped), ...]
           (indexed by waq link indexes)
 
+         self.element_to_cell: [i from grid, ...] (indexed by waq 2D element)
+           - if self.remap_waq_elements is False, this is just np.arange(g.Ncells()).
+             Otherwise it will be decided based on geometry
         """
+        if self.remap_waq_elements:
+            hg=self.hyd.grid()
+            node_map,edge_map,cell_map=hg.match_to_grid(self.g)
+            self.element_to_cell=cell_map
+        else:
+            self.element_to_cell=np.arange(self.hyd.n_seg)
 
+        assert self.hyd.n_seg == self.g.Ncells()
+        self.cell_to_element=utils.invert_permutation(self.element_to_cell)
+            
         # link_to_edge_sign=[] # an edge index in g.edges, and a +-1 sign for whether the link is aligned the same.
         # use array to allow for vector operations later
         link_to_edge_sign=np.zeros( (len(self.hyd.links),2), np.int32)
@@ -404,12 +435,22 @@ class DFlowToPTMHydro(object):
         mapped_edges={} # make sure we don't map multiple links onto the same edge
 
         for link_idx,(l_from,l_to) in enumerate(self.hyd.links):
+            if l_from>=0:
+                i_from=self.element_to_cell[l_from]
+            else:
+                i_from=l_from
+            if l_to>=0:
+                i_to  =self.element_to_cell[l_to]
+            else:
+                i_to = l_to
+                
             if l_from>=0 and l_to>=0:
-                j=self.g.cells_to_edge(l_from,l_to)
+                j=self.g.cells_to_edge(i_from,i_to)
+                assert j is not None
                 j_cells=self.g.edge_to_cells(j)
-                if j_cells[0]==l_from and j_cells[1]==l_to:
+                if j_cells[0]==i_from and j_cells[1]==i_to:
                     sign=1
-                elif j_cells[1]==l_from and j_cells[0]==l_to:
+                elif j_cells[1]==i_from and j_cells[0]==i_to:
                     sign=-1
                 else:
                     assert False,"We have lost our way"
@@ -418,8 +459,8 @@ class DFlowToPTMHydro(object):
                 mapped_edges[j]=link_idx
             else:
                 assert l_to>=0,"Was only expecting 'from' for the link to be negative"
-                nbr_cells=np.array(self.g.cell_to_cells(l_to))
-                nbr_edges=np.array(self.g.cell_to_edges(l_to))
+                nbr_cells=np.array(self.g.cell_to_cells(i_to))
+                nbr_edges=np.array(self.g.cell_to_edges(i_to))
                 potential_edges=nbr_edges[nbr_cells<0]
                 if len(potential_edges)==1:
                     j=potential_edges[0]
@@ -439,9 +480,9 @@ class DFlowToPTMHydro(object):
                         raise Exception("Couldn't find an edge for link %d->%d"%(l_from,l_to))
                 mapped_edges[j]=link_idx
                 j_cells=self.g.edge_to_cells(j)
-                if j_cells[0]==l_to:
+                if j_cells[0]==i_to:
                     link_to_edge_sign[link_idx,:]=[j,-1]
-                elif j_cells[1]==l_to:
+                elif j_cells[1]==i_to:
                     link_to_edge_sign[link_idx,:]=[j,1]
                 else:
                     assert False,"whoa there"
@@ -476,7 +517,10 @@ class DFlowToPTMHydro(object):
         self.edge_k_top_var[:,0]=0
         self.v_flow_var[:,:,0]=np.nan
         self.A_face_var[:,:,0]=np.nan
-        
+
+        # will need seg_k below
+        self.hyd.infer_2d_elements()
+
         for ti,t in enumerate(times):
             if True: # ti%24==0:
                 print("%d/%d t=%s"%(ti,len(times),t))
@@ -595,10 +639,11 @@ class DFlowToPTMHydro(object):
                         # based on looking at the untrim output, this should be recorded to
                         # the k of the lower layer, but also flipped to be bed->surface
                         # ordered
-                        # assumes that dwaq cells are numbered the same as dfm cells.
-                        v_flow_avg[elt,nkmax-k_lower-1]=Q
+                        # no longer assume that dwaq cells are numbered the same as dfm cells.
+                        cell=self.element_to_cell[elt]
+                        v_flow_avg[cell,nkmax-k_lower-1]=Q
                         if k_upper==0: # repeat top flux
-                            v_flow_avg[elt,nkmax-k_upper-1]=Q
+                            v_flow_avg[cell,nkmax-k_upper-1]=Q
                 else:
                     # At least populate the area, though it may not make a difference
                     v_area_avg[:,0] = np.where(cell_water_depth>0,Ac,0.0)
@@ -613,8 +658,11 @@ class DFlowToPTMHydro(object):
             # assume again that cells are numbered the same.
             # they come to us ordered by first all the top layer, then the second
             # layer, on down to the bed.  convert to 3D, and reorder the layers
-            vols=vols.reshape( (self.nkmax,self.g.Ncells()) )[::-1,:]
-            self.vol_var[:,:,ti] = vols.T
+            # used to reshape by self.g.Ncells().
+            vols=vols.reshape( (self.nkmax,self.hyd.n_2d_elements) )[::-1,:] # [k,element]
+            vols=vols.T # [element,k]
+            vols=vols[self.cell_to_element,:] # [cell,k]
+            self.vol_var[:,:,ti] = vols
     def close(self):
         self.out_nc.close()
         self.out_nc=None

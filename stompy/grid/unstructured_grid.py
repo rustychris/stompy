@@ -1533,6 +1533,39 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         self.cells=recarray_del_fields(self.cells,names)
         self.cell_dtype=self.cells.dtype
 
+    def match_to_grid(self,other,tol=1e-3):
+        """
+        Return node_map,edge_map,cell_map
+        Each is indexed by self's items, and is either an index
+        into other's items, or -1 if no match was found. 
+         
+        I.e.:
+        self.nodes['x'][n] == other.nodes['x'][node_map[n]]
+        """
+        import scipy.spatial
+        
+        kdt=scipy.spatial.KDTree( other.nodes['x'] )
+        dists_idxs=[ kdt.query(xy,1) for xy in self.nodes['x'] ]
+        dists_idxs=np.array(dists_idxs)
+        node_map=dists_idxs[:,1].astype(np.int32)
+        node_map[ dists_idxs[:,0]>tol ] = -1
+
+        # Edges can be matched, but they don't necessarily have the same
+        # orientation.
+        kdt=scipy.spatial.KDTree( other.edges_center() )
+        dists_idxs=[ kdt.query(xy,1) for xy in self.edges_center() ]
+        dists_idxs=np.array(dists_idxs)
+        edge_map=dists_idxs[:,1].astype(np.int32)
+        edge_map[ dists_idxs[:,0]>tol ] = -1
+
+        kdt=scipy.spatial.KDTree( other.cells_centroid() )
+        dists_idxs=[ kdt.query(xy,1) for xy in self.cells_centroid() ]
+        dists_idxs=np.array(dists_idxs)
+        cell_map=dists_idxs[:,1].astype(np.int32)
+        cell_map[ dists_idxs[:,0]>tol ] = -1
+
+        return node_map,edge_map,cell_map
+        
     def renumber(self,reorient_edges=True):
         """
         Renumber all nodes, edges and cells to omit
