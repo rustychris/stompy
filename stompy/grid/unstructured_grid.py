@@ -1543,7 +1543,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         data=np.asarray(data)
         if name in np.dtype(self.cell_dtype).names:
             if on_exists == 'fail':
-                raise GridException("Node field %s already exists"%name)
+                raise GridException("Cell field %s already exists"%name)
             elif on_exists == 'pass':
                 return
             elif on_exists == 'overwrite':
