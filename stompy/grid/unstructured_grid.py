@@ -631,7 +631,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             ug.cells['_center'][:,0] = nc[face_x].values
             ug.cells['_center'][:,1] = nc[face_y].values
 
-        ug.add_cell_field('z_bed',-ug.cells['Mesh2_face_depth'])
+        if dialect=='fishptm':
+            ug.add_cell_field('z_bed',-ug.cells['Mesh2_face_depth'])
             
         ug.filename=filename
         return ug
