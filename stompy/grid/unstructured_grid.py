@@ -5011,6 +5011,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
            bizarre grid might yield erroneous results.  In this case, count is used to
            specify how many cells to test for containing the query point, and the
            return value will be a single index.
+          'try' => first try to find a cell containing xy, but if that fails, return the
+           'closest' as if inside=False
         """
         xy=np.asarray(xy)
         real_count=count
@@ -5052,7 +5054,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             for hit in hits:
                 if self.cell_path(hit).contains_point(xy):
                     return hit
-            return None
+            if inside=='try':
+                return hits[0]
+            else:
+                return None
 
         if count is None:
             if len(hits):

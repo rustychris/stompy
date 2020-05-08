@@ -690,6 +690,11 @@ class SuntansModel(dfm.HydroModel):
           True: is a restart, but insufficient information to find the parent run
           string: path to suntans.dat for the parent run
         """
+        if self.config['StartFile'] is None:
+            # Possibly not a valid config file
+            self.restart=None
+            return
+        
         start_path=os.path.join(self.run_dir,self.config['StartFile']+".0")
         if os.path.exists(start_path):
             log.debug("Looks like a restart")
