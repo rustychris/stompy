@@ -667,6 +667,8 @@ def extrapolate_vertical(tran,var_methods,eta=0,z_bed='z_bed'):
        in this case, linearly ramp from 0 at the bed up to the first value.
     'constant': how to extrapolate between the top valid data point and the
        free surface.
+    Alternative:
+      'pow(0.167)': fit alpha in u~ alpha * z.a.b.^0.167
 
     will resample in the vertical to make sure the full range of elevations is
     in z_ctr.
@@ -723,17 +725,34 @@ def extrapolate_vertical(tran,var_methods,eta=0,z_bed='z_bed'):
             u_col[eta_idx:]=np.nan
             u_col[:bed_idx]=np.nan
 
+            def powfit(mode):
+                beta=float(mode[4:-1])
+                # Just fit the power curve once
+                z_col=z_sgn*new_z # positive-up
+                zab=(z_col-z_bed_col).clip(1e-6)
+                # least squares solution:
+                alpha=( np.sum( (zab**beta*u_col.values)[u_valid] )
+                        /
+                        np.sum( (zab**(2*beta))[u_valid] ) )
+                return alpha*zab**beta
+                
             # Surface:
             if surface_mode=='constant':
                 u_col[top_valid_idx+1:eta_idx] = u_col[top_valid_idx]
+            elif surface_mode.startswith('pow('):
+                u_pow=powfit(surface_mode)
+                u_col[top_valid_idx+1:eta_idx]=u_pow[top_valid_idx+1:eta_idx]
             else:
                 raise Exception("Unknown surface_mode %s"%surface_mode)
 
             # Bed:
-            if bed_mode=='linear':
-                N=bottom_valid_idx - bed_idx
-                if N>0:
+            N=bottom_valid_idx - bed_idx
+            if N>0:
+                if bed_mode=='linear':
                     u_col[bed_idx:bottom_valid_idx]=np.linspace(0,u_col[bottom_valid_idx],N+1)[:-1]
+                elif bed_mode.startswith('pow('):
+                    u_pow=powfit(bed_mode)
+                    u_col[bed_idx:bottom_valid_idx]=u_pow[bed_idx:bottom_valid_idx]
 
     ds.attrs.update(tran.attrs)
     history=ds.attrs.get('history',"")+"extrapolate_vertical"
