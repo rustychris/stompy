@@ -728,7 +728,6 @@ def extrapolate_vertical(tran,var_methods,eta=0,z_bed='z_bed'):
             def powfit(mode):
                 beta=float(mode[4:-1])
                 # Just fit the power curve once
-                z_col=z_sgn*new_z # positive-up
                 zab=(z_col-z_bed_col).clip(1e-6)
                 # least squares solution:
                 alpha=( np.sum( (zab**beta*u_col.values)[u_valid] )
