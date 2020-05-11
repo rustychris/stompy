@@ -28,14 +28,22 @@ except ImportError:
 def cdec_df_to_ds(df):
     ds=xr.Dataset()
 
-    times=[datetime.datetime.strptime(s,"%Y%m%d %H%M") for s in df['DATE TIME']]
-    ds['time']=('time',),times
-    if not times:
-        # force type, which for empty list defaults to float64
-        ds['time']=ds.time.values.astype('<M8')
+    # Used to handle the date parsing here, but seems more expedient
+    # to have the caller below ask pandas to parse the dates, and then
+    # here have pandas also do a proper PDT->UTC conversion.
+    # times=[datetime.datetime.strptime(s,"%Y%m%d %H%M") for s in df['DATE TIME']]
+    # if not times:
+    #     # force type, which for empty list defaults to float64
+    #     ds['time']=ds.time.values.astype('<M8')
+    # make the adjustment to UTC  FIX THIS
+    # ds.time.values[:] += np.timedelta64(8,'h')
+    df['time_local']=df['DATE TIME'].dt.tz_localize('America/Los_Angeles')
+    df['time']=df.time_local.dt.tz_convert('UTC')
+    # if not times:
+    #     # force type, which for empty list defaults to float64
+    #     ds['time']=ds.time.values.astype('<M8')
+    ds['time']=('time',),df.time.values
 
-    # make the adjustment to UTC, even though this is daily data...
-    ds.time.values[:] += np.timedelta64(8,'h')
     # not convention, but a nice reminder
     ds.time.attrs['timezone']='UTC'
 
@@ -49,7 +57,9 @@ def cdec_df_to_ds(df):
 
 def cdec_dataset(station,start_date,end_date,sensor,
                  days_per_request='M',duration='E',
-                 cache_dir=None,clip=True,cache_only=False):
+                 cache_dir=None,clip=True,
+                 cache_mode=None
+                 ):
     """
     Retrieval script for CDEC csv
 
@@ -77,7 +87,9 @@ def cdec_dataset(station,start_date,end_date,sensor,
 
     clip: if True, then even if more data was fetched, return only the period requested.
 
-    cache_only: If true, only read from cache, not attempting to fetch any new data.
+    cache_mode: Generalization of cache_only.  None is regular caching.  'refresh' will 
+      write to cache, but doesn't use an existing cached file. 'cache_only' will not attempt to
+      fetch, and either return cached data or None.
 
     returns an xarray dataset.  note that TIMES ARE UTC in the returned dataset.
 
@@ -114,16 +126,17 @@ def cdec_dataset(station,start_date,end_date,sensor,
         else:
             cache_fn=None
 
-        if (cache_fn is not None) and os.path.exists(cache_fn):
+        if (cache_mode!='refresh') and (cache_fn is not None) and os.path.exists(cache_fn):
             log.info("Cached   %s -- %s"%(interval_start,interval_end))
             ds=xr.open_dataset(cache_fn)
-        elif cache_only:
+        elif cache_mode=='cache_only':
             log.info("Cache only - no data for %s -- %s"%(interval_start,interval_end))
             continue
         else:
             log.info("Fetching %s"%(base_fn))
             req=requests.get(base_url,params=params)
-            df=pd.read_csv(StringIO(req.text),na_values=['---'])
+            df=pd.read_csv(StringIO(req.text),na_values=['---'],
+                           parse_dates=[ 'DATE TIME' ])
             if len(df)==0:
                 continue
 

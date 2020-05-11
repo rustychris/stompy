@@ -564,7 +564,7 @@ def resample_d(tran,new_xy,save_original=None):
     new_start=np.argmin(dists0)
     new_stop =np.argmin(distsN)
     if new_start>new_stop:
-        print("Resampling: flip transect to match order of new points")
+        # print("Resampling: flip transect to match order of new points")
         new_start,new_stop = new_stop,new_start
 
     for row in range(new_start,new_stop+1):
@@ -647,7 +647,7 @@ def resample_d(tran,new_xy,save_original=None):
     return ds
 
 
-def extrapolate_vertical(tran,var_methods,eta=0,z_bed='z_bed'):
+def extrapolate_vertical(tran,var_methods,eta=0,z_bed='z_bed',save_original=False):
     """
     Extrapolate each water column in the vertical to span the
     full bed-to-surface range.
@@ -672,6 +672,10 @@ def extrapolate_vertical(tran,var_methods,eta=0,z_bed='z_bed'):
 
     will resample in the vertical to make sure the full range of elevations is
     in z_ctr.
+
+    save_original: a copy of each variable will be made with a _nofill suffix,
+     after resampling but before filling.
+
     returns a new dataset
     """
     z_sgn=1
@@ -698,6 +702,12 @@ def extrapolate_vertical(tran,var_methods,eta=0,z_bed='z_bed'):
 
     for data_var,isel_kw,bed_mode,surface_mode in var_methods:
         data=ds[data_var]
+
+        if save_original:
+            save_var=data_var+"_nofill"
+            if save_var not in ds:
+                ds[save_var]=ds[data_var].copy(deep=True)
+                
         if isel_kw:
             data=data.isel(**isel_kw)
 
@@ -868,7 +878,7 @@ def plot_scalar_polys(tran,v,ax=None,xform=None,**kw):
     Y=y.values
     Dz=dz.values
     
-    if ('positive' in y.attrs) and (y.attrs['positive']=='down'):
+    if y.attrs.get('positive','up')=='down':
         Y=-Y
         
     # I think Dz is getting contaminated at the top/bottom
@@ -935,6 +945,9 @@ def contour_like(tran,v,meth,*args,**kwargs):
     # appears to be okay to just fill with 0.
     yvals=y.values.copy()
     yvals[np.isnan(yvals)]=0.0
+
+    if y.attrs.get('positive','up')=='down':
+        yvals*=-1
 
     f=getattr(ax,meth)
     return f(x.values,yvals,scal.values,*args,**kwargs)
@@ -1191,3 +1204,28 @@ def shift_vertical(tran,delta):
     shift('z_w','down')
     
     
+def mask_bed(tran,v,depth_fraction=0.9,z_top=0.0):
+    """
+    tran: transect dataset
+    v: variable to mask out
+    depth_fraction: bins with a z_ctr below z_top - 0.9(z_top - z_bed)
+    will be set to nan.
+    """
+    # Velocity within 10% of the bed also deleted for sidelobe 
+    # contamination.
+    V,z_ctr,z_bed,z_top=xr.broadcast(v,tran.z_ctr,tran.z_bed,z_top)
+    pos=tran.z_ctr.attrs.get('positive','up')
+    if pos=='up': 
+        z_sgn=1
+    else:
+        z_sgn=-1
+    depth=(z_top - z_sgn*z_bed).clip(0.)
+    mask=(z_sgn*z_ctr) < (z_top - 0.90*depth)
+    v.values[mask]=np.nan
+
+def pos_up(tran,vname):
+    if tran[vname].attrs.get('positive','up')=='up':
+        z_sgn=1
+    else:
+        z_sgn=-1
+    return z_sgn*tran[vname]

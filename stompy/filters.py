@@ -91,7 +91,7 @@ def lowpass_godin(data,in_t_days,ends='pass',*args,**kwargs):
     return data
 
 def lowpass_fir(x,winsize,ignore_nan=True,axis=-1,mode='same',use_fft=False,
-                nan_weight_threshold=0.49):
+                nan_weight_threshold=0.49999):
     """
     In the absence of exact filtering needs, choose the window 
     size to match the cutoff period.  Signals with a frequency corresponding to
@@ -111,6 +111,10 @@ def lowpass_fir(x,winsize,ignore_nan=True,axis=-1,mode='same',use_fft=False,
     nan_weight_threshold: items with a weight less than this will be marked nan
       the default value is slightly less than half, to avoid numerical roundoff
       issues with 0.49999999 < 0.5
+
+    N.B. In the case of an input with nan only at the beginning and end, to 
+    guarantee that the output will have the same nans as the input winsize must
+    be odd. Otherwise there can be nan-weights exactly==0.500 on both ends.
     """
     # hanning windows have first/last elements==0.
     # but it's counter-intuitive - so force a window with nonzero
@@ -140,6 +144,7 @@ def lowpass_fir(x,winsize,ignore_nan=True,axis=-1,mode='same',use_fft=False,
         result[has_weight] = result[has_weight] / weights[has_weight]
         result[~has_weight]=0 # redundant, but in case of roundoff.
         result[weights<nan_weight_threshold]=np.nan
+        
     return result
 
 # xarray time series versions:
