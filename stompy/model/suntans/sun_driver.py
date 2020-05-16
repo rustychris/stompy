@@ -156,7 +156,11 @@ class GenericConfig(object):
         self.set_value(key,None)
     def __contains__(self,key):
         return self[key] is not None
-
+    def get(self,key,default=None):
+        if key in self:
+            return self[key]
+        else:
+            return default
     def __eq__(self,other):
         return self.is_equal(other)
     def is_equal(self,other,limit_to_keys=None):
