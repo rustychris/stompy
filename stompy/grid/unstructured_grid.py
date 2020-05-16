@@ -4045,6 +4045,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     def plot_cells(self,ax=None,mask=None,values=None,clip=None,centers=False,labeler=None,
                    centroid=False,**kwargs):
         """
+        values: color cells based on the given values.  can also be
+          the name of a field in self.cells.
         centers: scatter plot of cell centers.  otherwise polygon plot
         labeler: f(cell_idx,cell_record) => string for labeling.
         centroid: if True, use centroids instead of centers.  if an array,
@@ -4053,8 +4055,11 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         ax = ax or plt.gca()
 
         if values is not None:
-            # asanyarray allows for masked arrays to pass through unmolested.
-            values = np.asanyarray(values)
+            if isinstance(values,six_string_types):
+                values=self.cells[values]
+            else:
+                # asanyarray allows for masked arrays to pass through unmolested.
+                values = np.asanyarray(values)
 
         if mask is None:
             mask=~self.cells['deleted']

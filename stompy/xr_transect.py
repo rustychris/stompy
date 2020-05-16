@@ -191,13 +191,7 @@ def total_int(tran,v):
 def total_avg(tran,v):
     return total_int(tran,v) / total_int(tran,1.0)
 
-def Qleft(tran):
-    """
-    Calculate flow with positive meaning towards the 'left', i.e.
-    if looking from the start to the end of the transect.
-    """
-    quv=depth_int(tran,'U')
-
+def left_normal(tran):
     # unit normals left of transect:
     left_normal=linestring_utils.left_normals(np.c_[tran.x_sample,tran.y_sample])
     # in some cases there are repeated points in x,y, leading to nan here.
@@ -206,25 +200,60 @@ def Qleft(tran):
     # re-normalize magnitudes
     mags=utils.mag(left_normal).clip(1e-5,np.inf)
     left_normal /= mags[:,None]
-    
+    return left_normal
+
+def Qleft(tran):
+    """
+    Calculate flow with positive meaning towards the 'left', i.e.
+    if looking from the start to the end of the transect.
+    """
+    quv=depth_int(tran,'U')
+    ln=left_normal(tran)
     # flow per-width normal to transect:
-    qnorm=np.sum( (quv.values * left_normal),axis=1 )
+    qnorm=np.sum( (quv.values * ln),axis=1 )
 
     Q=np.sum( get_dx_sample(tran).values * qnorm )
     return Q
 
-def add_rozovski_angles(tran,src,name='roz_angle'):
+def add_rozovski_angles(tran,src,name='roz_angle',force_left=False):
+    """
+    Calculate per-water column mean flow direction a al Rozovski.
+    tran: transect Dataset
+    src: vector-valued velocity variable
+    name: field to save the angle to.
+    force_left: if true, angles which would put a unit vector in the 
+    opposite direction of right-to-left flow are flipped.  Useful if
+    a transect has some eddying or recirculation, and it's necessary
+    to retain the net 'downstream' sense of the angles.
+    """
     quv=depth_int(tran,src)
-
+    
     # direction of flow, as mathematical angle (radians
     # left of east)
     roz_angle=np.arctan2( quv.values[...,1],
                           quv.values[...,0])
+    if force_left:
+        ln=left_normal(tran)
+        qnorm=np.sum( quv.values*ln, axis=1)
+        roz_angle[qnorm<0] += np.pi
+    
     tran[name]=('sample',),roz_angle
 
-def add_rozovski(tran,src='U',dst='Uroz',frame='roz',comp_names=['downstream','left']):
-    add_rozovski_angles(tran,src)
+def add_rozovski(tran,src='U',dst='Uroz',frame='roz',comp_names=['downstream','left'],
+                 force_left=False):
+    add_rozovski_angles(tran,src,force_left=force_left)
+    add_rotated(tran,src=src,dst=dst,frame=frame,comp_names=comp_names,
+                angle_field='roz_angle')
 
+def add_rotated(tran,src='U',dst='Uroz',frame='roz',comp_names=['downstream','left'],
+                angle_field='roz_angle'):
+    """
+    Rotate the variable 'src' by the angle 'angle_field', putting the result into
+    'dst', and naming the new coordinate dimension 'frame', with component labels
+    'comp_names'.
+    Defaults are suitable for Rozovski rotation.
+    Modifies tran in place.
+    """
     vec_norm=xr.concat( [np.cos(tran.roz_angle),
                          np.sin(tran.roz_angle)],
                         dim=frame).transpose('sample',frame)
