@@ -20,14 +20,44 @@ def nan_detrend(x,order=1):
     else:
         return x
 
+def autocorrcoef(x,maxlags=None):
+    N = len(x)
 
-def autocorrelation(x, maxlags=None):
+    #default lag is N-1
+    if maxlags == None:
+        maxlags = N - 1
+    else:
+        assert maxlags < N, 'lag must be less than len(x)'
+    assert(np.isrealobj(x))
+    
+    #create an autocorrelation array with same length as lag
+    r = np.zeros(1+maxlags, dtype=float)
+
+    x=x-np.nanmean(x)
+    
+    for k in range(0, maxlags+1):
+        nk = N - k - 1
+        a=x[0:nk+1]
+        b=x[k:k+nk+1]
+        valid=np.isfinite(a*b)
+
+        denom=np.sqrt( np.mean( a[valid]**2 ) ) * np.sqrt( (b[valid]**2).mean() )
+        r[k]=np.mean( a[valid]*b[valid] ) / denom 
+    return r
+
+
+def autocovariance(x, maxlags=None,
+                   normalize=None):
     """
     Correlation function - similar to xcorr.  Copied from
     spectrum.correlation.CORRELATION, and simplified for
     the present application.
     assumes autocorrelation, not cross-correlation.
     norm is unbiased,x is real.
+
+    By default this is autocovariance.
+    normalize: 'corr' - divide by var(x).
+      'corrcoef' - calculate a correlation coefficient for each lag
     """
     N = len(x)
 
@@ -46,27 +76,23 @@ def autocorrelation(x, maxlags=None):
     #create an autocorrelation array with same length as lag
     r = np.zeros(1+maxlags, dtype=float)
 
-    for k in xrange(0, maxlags+1):
+    for k in range(0, maxlags+1):
         nk = N - k - 1
 
-        if 0:
-            ksum = 0
-            count = 0
-            for j in xrange(0, nk+1):
-                ksum += x[j+k] * x[j]
-                count+=1
-            # seems like this should be the unbiased,
-            # N-1 normalization, but the original implementation
-            # was defaulting to the biased N.  
-            r[k] = ksum / count # float(N-k)
+        # for an unbiased estimate would have to get fancier,
+        # counting the number of missing samples.
+        # for biased, though, it's easy:
+        # biased - doesn't really make a big difference
+        if normalize=='corrcoef':
+            valid=np.isfinite(x[0:nk+1]*x[k:k+nk+1])
+            r[k]=np.corrcoef(x[0:nk+1],x[k:k+nk+1])[1,0]
         else:
-            # for an unbiased estimate would have to get fancier,
-            # counting the number of missing samples.
-            # for biased, though, it's easy:
-            # biased - doesn't really make a big difference
             r[k]=my_mean(x[0:nk+1]*x[k:k+nk+1])
+    
+    if normalize=='corr':
+        r/=r[0]
+        
     return r
-
 
 def correlogrampsd(X, lag, NFFT=None):
     """
@@ -85,8 +111,8 @@ def correlogrampsd(X, lag, NFFT=None):
     # the right side.
     w = np.hanning(2*lag+1)[lag+1:]
 
-    # compute the cross correlation
-    rxy = autocorrelation(X, lag)
+    # compute the cross covariance
+    rxy = autocovariance(X, lag)
     
     # keep track of the first elt.
     psd[0] = rxy[0]

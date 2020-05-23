@@ -1358,13 +1358,15 @@ def to_datetime(x):
     # the value *is* a numpy scalar.
     if np.isscalar(x):
         if np.issubdtype(x,np.datetime64):
-            ts = (x - np.datetime64('1970-01-01T00:00:00Z')) / np.timedelta64(1, 's')
+            # Used to be ...Z, but np is always timezone-oblivious, and a Z
+            # has become deprecated
+            ts = (x - np.datetime64('1970-01-01T00:00:00')) / np.timedelta64(1, 's')
             return datetime.datetime.utcfromtimestamp(ts)
     else:
         if np.issubdtype(x.dtype,np.floating):
             return num2date(x)
         if np.issubdtype(x.dtype,np.datetime64):
-            ts = (x - np.datetime64('1970-01-01T00:00:00Z')) / np.timedelta64(1, 's')
+            ts = (x - np.datetime64('1970-01-01T00:00:00')) / np.timedelta64(1, 's')
             # return datetime.datetime.utcfromtimestamp(ts) # or do we have to vectorize?
             return [datetime.datetime.utcfromtimestamp(x)
                     for x in ts]
@@ -1678,11 +1680,13 @@ def uniquify_paths(fns):
 
 
 # Used to be in array_append
-def array_append( A, b ):
+def array_append( A, b=None ):
     """
     append b to A, where b.shape == A.shape[1:]
     Attempts to make this fast by dynamically resizing the base array of
     A, and returning the appropriate slice.
+
+    if b is None, zeros are appended to A
     """
 
     # a bit more complicated because A may have a different column ordering
@@ -1711,6 +1715,8 @@ def array_append( A, b ):
         base = A.base
 
     A = base[:len(A)+1]
+    if b is None:
+        return A
     if A.dtype.isbuiltin:
         A[-1] = b
     else:
