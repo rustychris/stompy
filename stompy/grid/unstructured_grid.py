@@ -1605,12 +1605,20 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             self.orient_edges()
         return dict(node_map=node_map,edge_map=edge_map,cell_map=cell_map)
 
-    def orient_edges(self):
+    def orient_edges(self,on_bare_edge='fail'):
         """
         Flip any boundary edges with the exterior on the left.
+        on_bare_edge: what to do if an edge is missing cells on both sides.
+          'fail': raise GridException
+          'pass': ignore.
         """
         e2c=self.edge_to_cells()
         to_flip=np.nonzero( (e2c[:,0]<0) & (e2c[:,1]>=0) )[0]
+
+        bare=np.nonzero( (e2c[:,0]<0) & (e2c[:,1]<0) )[0]
+        if len(bare) and on_bare_edge=='fail':
+            raise GridException("orient_edges: edges with no cells: %s"%bare)
+        
         if len(to_flip):
             self.log.info("Will flip %d edges"%len(to_flip))
             for j in to_flip:
@@ -1618,7 +1626,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 self.modify_edge( j=j,
                                   nodes=[rec['nodes'][1],rec['nodes'][0]],
                                   cells=[rec['cells'][1],rec['cells'][0]] )
-
+        if on_bare_edge=='return':
+            return bare
+        
     def renumber_nodes_ordering(self):
         return np.argsort(self.nodes['deleted'],kind='mergesort')
 
@@ -2664,8 +2674,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     # entities, while the delete_*_cascade operations will check
     # and remove dependent entitites
     @listenable
-    def delete_edge(self,j):
-        if np.any(self.edges['cells'][j]>=0):
+    def delete_edge(self,j,check_cells=True):
+        if check_cells and np.any(self.edges['cells'][j]>=0):
             raise GridException("Edge %d has cell neighbors"%j)
         self.edges['deleted'][j] = True
         if self._node_to_edges is not None:
@@ -2710,8 +2720,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             edges=self.node_to_edges(node)
             assert len(edges)==2
         if node is None:
-            Na=self.edge_to_nodes(edges[0])
-            Nb=self.edge_to_nodes(edges[1])
+            Na=self.edges['nodes'][edges[0]]
+            Nb=self.edges['nodes'][edges[1]]
             for node in Na:
                 if node in Nb:
                     break
@@ -2751,15 +2761,22 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         if Ab==0: # take care to preserve orientation
             new_nodes=new_nodes[::-1]
 
-        self.delete_edge(C)
+        # A bit sneaky, but rather than removing the cell and adding it back in,
+        # just disconnect edge C from the cell so that delete_edge does not complain.
+        # are there other places to update this?
+        # self.edges['cells'][C,:]=-1
+        # if modify_cell were smarter this wouldn't be an issue.
+        # as it stands this may not undo correctly
+        self.delete_edge(C,check_cells=False)
         # expanding modify_edge into a delete/add allows
         # a ShadowCDT to maintain valid state
         # self.modify_edge(A,nodes=new_nodes)
         # be careful to copy A's entries, as they will get overwritten
         # during the delete/add process.
         edge_data=rec_to_dict(self.edges[A].copy())
-
-        self.delete_edge(A)
+        # similar to above.
+        #self.edges['cells'][A,:]=-1
+        self.delete_edge(A,check_cells=False)
         self.delete_node(B)
         edge_data['nodes']=new_nodes
         self.add_edge(_index=A,**edge_data)
@@ -3246,11 +3263,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         self.cells['deleted'][i]=True
 
-
         # special case for undo:
         if i+1==len(self.cells):
             self.cells=self.cells[:-1]
-
 
     def undelete_cell(self,i,cell_data):
         d=rec_to_dict(cell_data)
@@ -3350,7 +3365,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         # updated 2016-08-25 - not positive here.
         # This whole chunk needs testing.
         # maybe some confusion over when edges has to be set
-        edges=self.cell_to_edges(i)
+        edges=self.cell_to_edges(i,ordered=True)
 
         if 'edges' not in kwargs:
             # wait - is this circular??
@@ -3377,7 +3392,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 # TODO: probably this ought to be using modify_edge
                 self.edges['cells'][j,1]=i
             else:
-                assert False
+                print("side: %d j=%d n1=%d  n2=%d  edges[nodes][j]=%s"%
+                      (side,j,n1,n2,self.edges['nodes'][j,:]))
+                assert False # umbra fails here
 
         self.push_op(self.unadd_cell,i)
 
@@ -3590,6 +3607,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         return within_2d(self.nodes['x'],clip)
 
     def plot_nodes(self,ax=None,mask=None,values=None,sizes=20,labeler=None,clip=None,
+                   masked_values=None,
                    **kwargs):
         """ plot nodes as scatter
         labeler: callable taking (node index, node record), return string
@@ -3604,7 +3622,11 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         if values is not None:
             values=values[mask]
-            kwargs['c']=values
+
+        if masked_values is not None:
+            values=masked_values
+
+        kwargs['c']=values
 
         if labeler is not None:
             if labeler=='id':
@@ -4193,7 +4215,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         return edge_hits
 
     def select_edges_intersecting(self,geom,invert=False,mask=slice(None),
-                                  by_center=False):
+                                  by_center=False,as_type='mask'):
         """
         geom: a shapely geometry
         returns: bitmask over edges, with non-deleted, selected edges set and others False.
@@ -4217,7 +4239,11 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             sel[j] = geom.intersects(edge_line)
             if invert:
                 sel[j] = ~sel[j]
-        return sel
+                
+        if as_type=='indices':
+            return np.nonzero(sel)[0]
+        else:
+            return sel
 
     def cell_polygon(self,c):
         return geometry.Polygon(self.nodes['x'][self.cell_to_nodes(c)])
@@ -5775,6 +5801,70 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         return {'cells':cell_ids,
                 'nodes':node_ids}
 
+    def add_quad_ring(self,r_in,r_out=None,nrows=None,nspokes=None,
+                      sides=4,stagger0=0,scale=None):
+        """
+        Add rings, with option to double resolution, add multiple rows,
+        add a triangle-strip or quad strip.
+        Interface subject to change.
+        """
+        if scale is None:
+            assert nspokes is not None
+            scale=r_in*2*np.pi/nspokes
+        tol=0.01*scale
+        nspokes=nspokes or int(2*np.pi*r_in/scale)
+        theta0=stagger0*2*np.pi/nspokes
+
+        def ring(n,r,stagger=0):
+            theta=theta0 + stagger*2*np.pi/n + np.linspace( 0,2*np.pi,n+1 )[:-1]
+            return r*np.c_[ np.cos(theta),np.sin(theta)]
+
+        if nrows=='stitch':
+            radii=np.linspace(r_in,r_out,2)
+        elif nrows is not None:
+            radii=np.linspace(r_in,r_out,nrows)
+        else:
+            radii=[r_in]
+
+        # circumference
+        rings=[]
+        for ri,r in enumerate(radii):
+            if nrows=='stitch' and ri==1:
+                pnts=ring(2*nspokes,r)
+            elif sides==3:
+                pnts=ring(nspokes,r,stagger=0.5*(ri%2))
+            else:
+                pnts=ring(nspokes,r)
+            rings.append(pnts)
+        for pnts in rings:
+            for a,b in circular_pairs(pnts):
+                na=self.add_or_find_node(x=a,tolerance=tol)
+                nb=self.add_or_find_node(x=b,tolerance=tol)
+                try:
+                    if na!=nb:
+                        self.add_edge(nodes=[na,nb])
+                except self.GridException:
+                    pass
+        for ra,rb in zip(rings[:-1],rings[1:]):
+            if len(ra)==len(rb):
+                if sides==4:
+                    segss=[ zip(ra,rb)]
+                else:
+                    segss=[ zip(ra,rb),
+                            zip(np.roll(ra,-1,axis=0),rb)]
+            else: # stitch
+                segss=[ zip(ra,rb[::2]),
+                       zip(ra,rb[1::2]),
+                       zip(np.roll(ra,-1,axis=0),rb[1::2]) ]
+            for segs in segss:
+                for pa,pb in segs:
+                    na=self.add_or_find_node(x=pa,tolerance=tol)
+                    nb=self.add_or_find_node(x=pb,tolerance=tol)
+                    try:
+                        if na!=nb:
+                            self.add_edge(nodes=[na,nb])
+                    except self.GridException:
+                        pass
 
     # Half-edge interface
     def halfedge(self,j,orient):
