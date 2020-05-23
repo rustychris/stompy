@@ -2251,6 +2251,11 @@ class AdvancingTriangles(AdvancingFront):
             sites.append( TriangleSite(self,nodes=[a,b,c]) )
         return sites
 
+    # reject edit that puts a cell circumcenter outside the cell
+    reject_cc_outside_cell=True
+    # If a numeric value, check distance between adjacent circumcenters
+    # reject if signed distance below this value
+    reject_cc_distance_factor=None
     def check_edits(self,edits):
         """
         edits: {'nodes':[n1,n2,...],
@@ -2268,8 +2273,33 @@ class AdvancingTriangles(AdvancingFront):
         for c in list(cells):
             pnts=self.grid.nodes['x'][self.grid.cell_to_nodes(c)]
             cc=circumcenter_py(pnts[0],pnts[1],pnts[2])
-            if not self.grid.cell_polygon(c).contains(geometry.Point(cc)):
-                failures['cells'].append(c)
+            if self.reject_cc_outside_cell:
+                if not self.grid.cell_polygon(c).contains(geometry.Point(cc)):
+                    failures['cells'].append(c)
+            if self.reject_cc_distance_factor is not None:
+                # More expensive but closer to what really matters
+                for j in self.grid.cell_to_edges(c):
+                    ec=self.grid.edges['cells'][j,:]
+                    n=self.grid.edges_normals(j)
+                    if ec[0]==c:
+                        nbr=ec[1]
+                    elif ec[1]==c:
+                        nbr=ec[0]
+                        n=-n
+                    else: assert False
+                    if nbr<0: continue
+
+                    pnts=self.grid.nodes['x'][self.grid.cell_to_nodes(nbr)]
+                    nbr_cc=circumcenter_py(pnts[0],pnts[1],pnts[2])
+
+                    l_perp=(np.array(nbr_cc)-np.array(cc)).dot(n)
+                    L=np.sqrt( self.grid.cells_area(sel=[c,nbr]).sum() )
+                    if l_perp < self.reject_cc_distance_factor*L:
+                        failures['cells'].append(c)
+                        break
+                    
+                        
+                    
         return failures
 
     # cc_py is more elegant and crappier
@@ -2383,6 +2413,8 @@ class AdvancingTriangles(AdvancingFront):
             return cost_cc_and_scale_py
         else:
             assert False
+
+##
 
 
 #### 
