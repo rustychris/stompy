@@ -464,10 +464,13 @@ def lines_to_polygons_slow(new_features,close_arc=False,single_feature=True,forc
 
 # updated version, hopefully faster in the usual case of no open loops, but
 # multiple polygons
-def lines_to_polygons(new_features,close_arc=False,single_feature=True,force_orientation=True):
+def lines_to_polygons(new_features,close_arc=False,single_feature=True,force_orientation=True,
+                      return_open=False,min_area=0.0):
     """
     returns a list of Polygons and a list of features which were not part of a polygon
     force_orientation: ensure that interior rings have negative signed area
+    return_open: if True, allow open linestrings, but they will be returned in a 3rd item.
+    min_area: prune polygons with area below this threshold
     """
     ### Remove non-polygons - still not smart enough to handle duplicate points
     new_features = [f for f in new_features if len(f) > 2]
@@ -485,14 +488,21 @@ def lines_to_polygons(new_features,close_arc=False,single_feature=True,force_ori
                                                     len(simple_polys)))
 
     if len(open_strings):
-        log.error("New version of lines_to_polygons is faster but intolerant.  Cannot handle ")
-        log.error("%d open strings"%len(open_strings))
-        log.error("First open string starts at %s"%(new_features[open_strings[0]][0]))
-        raise Exception("No longer can handle open line strings")
+        if not return_open:
+            log.error("New version of lines_to_polygons is faster but intolerant.  Cannot handle ")
+            log.error("%d open strings"%len(open_strings))
+            log.error("First open string starts at %s"%(new_features[open_strings[0]][0]))
+            raise Exception("No longer can handle open line strings")
 
     polys=[] # output polygons
 
     areas=np.array([p.area for p in simple_polys])
+
+    if min_area>0:
+        select=areas>=min_area
+        simple_polys=[p for p,a in zip(simple_polys,areas) if a>=min_area]
+        areas=areas[select]
+    
     # sort big to small
     ordering=np.argsort(-areas)
     simple_polys=[simple_polys[i] for i in ordering]
@@ -530,7 +540,7 @@ def lines_to_polygons(new_features,close_arc=False,single_feature=True,force_ori
         # confusing islands in lake with lakes
         hit_indexes.sort()
 
-        for i in hit_indexes:
+        for i in utils.progress(hit_indexes):
             if assigned_p[i]:
                 continue
             int_poly=simple_polys[i]
@@ -547,7 +557,10 @@ def lines_to_polygons(new_features,close_arc=False,single_feature=True,force_ori
             break
 
     extras=[p for p,is_assigned in zip(simple_polys,assigned_p) if not is_assigned]
-    return poly_geoms,extras
+    if return_open:
+        return poly_geoms,extras,open_strings
+    else:        
+        return poly_geoms,extras
 
 
 ####### Running the actual steps ########

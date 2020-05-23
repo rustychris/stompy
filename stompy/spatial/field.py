@@ -1948,6 +1948,7 @@ class SimpleGrid(QuadrilateralGrid):
         segs=cset.allsegs
         geoms=[]
         for seg in segs[0]:
+            if len(seg)<3: continue
             geoms.append( geometry.Polygon(seg) )
         if union:
             poly=geoms[0]
