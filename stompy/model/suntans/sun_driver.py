@@ -156,7 +156,11 @@ class GenericConfig(object):
         self.set_value(key,None)
     def __contains__(self,key):
         return self[key] is not None
-
+    def get(self,key,default=None):
+        if key in self:
+            return self[key]
+        else:
+            return default
     def __eq__(self,other):
         return self.is_equal(other)
     def is_equal(self,other,limit_to_keys=None):
@@ -690,6 +694,11 @@ class SuntansModel(dfm.HydroModel):
           True: is a restart, but insufficient information to find the parent run
           string: path to suntans.dat for the parent run
         """
+        if self.config['StartFile'] is None:
+            # Possibly not a valid config file
+            self.restart=None
+            return
+        
         start_path=os.path.join(self.run_dir,self.config['StartFile']+".0")
         if os.path.exists(start_path):
             log.debug("Looks like a restart")

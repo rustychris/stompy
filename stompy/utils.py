@@ -2059,17 +2059,28 @@ def remove_repeated(A,axis=0):
         return A[valid,...]
         
 
-def download_url(url,local_file,log=None,on_abort='pass',**extra_args):
+def download_url(url,local_file,log=None,on_abort='pass',on_exists='pass',
+                 **extra_args):
     """
     log: an object or module with info(), warning(), and error()
     methods ala the logging module.
     on_abort: if an exception is raised during download, 'pass'
       leaves partial files in tact, 'remove' deletes partial files
+    on_exists: 'pass' do nothing and return. 'exception': raise an exception,
+      'replace': delete and re-download.  Note that this is not atomic, and
+      if the download fails the original file may be deleted anyway.
     extra_args: keyword arguments passed on to requests.get or ftplib.FTP()
       useful options here:
         verify=False: if an https server has a bad certificate but you want
            to proceed anyway.
     """
+    if os.path.exists(local_file):
+        if on_exists=='pass': return
+        elif on_exists=='exception':
+            raise Exception("File %s already exists"%local_file)
+        else:
+            os.unlink(local_file)
+            
     parsed=six.moves.urllib_parse.urlparse(url)
 
     thresh=102400

@@ -191,13 +191,7 @@ def total_int(tran,v):
 def total_avg(tran,v):
     return total_int(tran,v) / total_int(tran,1.0)
 
-def Qleft(tran):
-    """
-    Calculate flow with positive meaning towards the 'left', i.e.
-    if looking from the start to the end of the transect.
-    """
-    quv=depth_int(tran,'U')
-
+def left_normal(tran):
     # unit normals left of transect:
     left_normal=linestring_utils.left_normals(np.c_[tran.x_sample,tran.y_sample])
     # in some cases there are repeated points in x,y, leading to nan here.
@@ -206,25 +200,60 @@ def Qleft(tran):
     # re-normalize magnitudes
     mags=utils.mag(left_normal).clip(1e-5,np.inf)
     left_normal /= mags[:,None]
-    
+    return left_normal
+
+def Qleft(tran):
+    """
+    Calculate flow with positive meaning towards the 'left', i.e.
+    if looking from the start to the end of the transect.
+    """
+    quv=depth_int(tran,'U')
+    ln=left_normal(tran)
     # flow per-width normal to transect:
-    qnorm=np.sum( (quv.values * left_normal),axis=1 )
+    qnorm=np.sum( (quv.values * ln),axis=1 )
 
     Q=np.sum( get_dx_sample(tran).values * qnorm )
     return Q
 
-def add_rozovski_angles(tran,src,name='roz_angle'):
+def add_rozovski_angles(tran,src,name='roz_angle',force_left=False):
+    """
+    Calculate per-water column mean flow direction a al Rozovski.
+    tran: transect Dataset
+    src: vector-valued velocity variable
+    name: field to save the angle to.
+    force_left: if true, angles which would put a unit vector in the 
+    opposite direction of right-to-left flow are flipped.  Useful if
+    a transect has some eddying or recirculation, and it's necessary
+    to retain the net 'downstream' sense of the angles.
+    """
     quv=depth_int(tran,src)
-
+    
     # direction of flow, as mathematical angle (radians
     # left of east)
     roz_angle=np.arctan2( quv.values[...,1],
                           quv.values[...,0])
+    if force_left:
+        ln=left_normal(tran)
+        qnorm=np.sum( quv.values*ln, axis=1)
+        roz_angle[qnorm<0] += np.pi
+    
     tran[name]=('sample',),roz_angle
 
-def add_rozovski(tran,src='U',dst='Uroz',frame='roz',comp_names=['downstream','left']):
-    add_rozovski_angles(tran,src)
+def add_rozovski(tran,src='U',dst='Uroz',frame='roz',comp_names=['downstream','left'],
+                 force_left=False):
+    add_rozovski_angles(tran,src,force_left=force_left)
+    add_rotated(tran,src=src,dst=dst,frame=frame,comp_names=comp_names,
+                angle_field='roz_angle')
 
+def add_rotated(tran,src='U',dst='Uroz',frame='roz',comp_names=['downstream','left'],
+                angle_field='roz_angle'):
+    """
+    Rotate the variable 'src' by the angle 'angle_field', putting the result into
+    'dst', and naming the new coordinate dimension 'frame', with component labels
+    'comp_names'.
+    Defaults are suitable for Rozovski rotation.
+    Modifies tran in place.
+    """
     vec_norm=xr.concat( [np.cos(tran.roz_angle),
                          np.sin(tran.roz_angle)],
                         dim=frame).transpose('sample',frame)
@@ -564,7 +593,7 @@ def resample_d(tran,new_xy,save_original=None):
     new_start=np.argmin(dists0)
     new_stop =np.argmin(distsN)
     if new_start>new_stop:
-        print("Resampling: flip transect to match order of new points")
+        # print("Resampling: flip transect to match order of new points")
         new_start,new_stop = new_stop,new_start
 
     for row in range(new_start,new_stop+1):
@@ -647,7 +676,7 @@ def resample_d(tran,new_xy,save_original=None):
     return ds
 
 
-def extrapolate_vertical(tran,var_methods,eta=0,z_bed='z_bed'):
+def extrapolate_vertical(tran,var_methods,eta=0,z_bed='z_bed',save_original=False):
     """
     Extrapolate each water column in the vertical to span the
     full bed-to-surface range.
@@ -667,9 +696,15 @@ def extrapolate_vertical(tran,var_methods,eta=0,z_bed='z_bed'):
        in this case, linearly ramp from 0 at the bed up to the first value.
     'constant': how to extrapolate between the top valid data point and the
        free surface.
+    Alternative:
+      'pow(0.167)': fit alpha in u~ alpha * z.a.b.^0.167
 
     will resample in the vertical to make sure the full range of elevations is
     in z_ctr.
+
+    save_original: a copy of each variable will be made with a _nofill suffix,
+     after resampling but before filling.
+
     returns a new dataset
     """
     z_sgn=1
@@ -696,6 +731,12 @@ def extrapolate_vertical(tran,var_methods,eta=0,z_bed='z_bed'):
 
     for data_var,isel_kw,bed_mode,surface_mode in var_methods:
         data=ds[data_var]
+
+        if save_original:
+            save_var=data_var+"_nofill"
+            if save_var not in ds:
+                ds[save_var]=ds[data_var].copy(deep=True)
+                
         if isel_kw:
             data=data.isel(**isel_kw)
 
@@ -723,17 +764,33 @@ def extrapolate_vertical(tran,var_methods,eta=0,z_bed='z_bed'):
             u_col[eta_idx:]=np.nan
             u_col[:bed_idx]=np.nan
 
+            def powfit(mode):
+                beta=float(mode[4:-1])
+                # Just fit the power curve once
+                zab=(z_col-z_bed_col).clip(1e-6)
+                # least squares solution:
+                alpha=( np.sum( (zab**beta*u_col.values)[u_valid] )
+                        /
+                        np.sum( (zab**(2*beta))[u_valid] ) )
+                return alpha*zab**beta
+                
             # Surface:
             if surface_mode=='constant':
                 u_col[top_valid_idx+1:eta_idx] = u_col[top_valid_idx]
+            elif surface_mode.startswith('pow('):
+                u_pow=powfit(surface_mode)
+                u_col[top_valid_idx+1:eta_idx]=u_pow[top_valid_idx+1:eta_idx]
             else:
                 raise Exception("Unknown surface_mode %s"%surface_mode)
 
             # Bed:
-            if bed_mode=='linear':
-                N=bottom_valid_idx - bed_idx
-                if N>0:
+            N=bottom_valid_idx - bed_idx
+            if N>0:
+                if bed_mode=='linear':
                     u_col[bed_idx:bottom_valid_idx]=np.linspace(0,u_col[bottom_valid_idx],N+1)[:-1]
+                elif bed_mode.startswith('pow('):
+                    u_pow=powfit(bed_mode)
+                    u_col[bed_idx:bottom_valid_idx]=u_pow[bed_idx:bottom_valid_idx]
 
     ds.attrs.update(tran.attrs)
     history=ds.attrs.get('history',"")+"extrapolate_vertical"
@@ -850,7 +907,7 @@ def plot_scalar_polys(tran,v,ax=None,xform=None,**kw):
     Y=y.values
     Dz=dz.values
     
-    if ('positive' in y.attrs) and (y.attrs['positive']=='down'):
+    if y.attrs.get('positive','up')=='down':
         Y=-Y
         
     # I think Dz is getting contaminated at the top/bottom
@@ -917,6 +974,9 @@ def contour_like(tran,v,meth,*args,**kwargs):
     # appears to be okay to just fill with 0.
     yvals=y.values.copy()
     yvals[np.isnan(yvals)]=0.0
+
+    if y.attrs.get('positive','up')=='down':
+        yvals*=-1
 
     f=getattr(ax,meth)
     return f(x.values,yvals,scal.values,*args,**kwargs)
@@ -1173,3 +1233,28 @@ def shift_vertical(tran,delta):
     shift('z_w','down')
     
     
+def mask_bed(tran,v,depth_fraction=0.9,z_top=0.0):
+    """
+    tran: transect dataset
+    v: variable to mask out
+    depth_fraction: bins with a z_ctr below z_top - 0.9(z_top - z_bed)
+    will be set to nan.
+    """
+    # Velocity within 10% of the bed also deleted for sidelobe 
+    # contamination.
+    V,z_ctr,z_bed,z_top=xr.broadcast(v,tran.z_ctr,tran.z_bed,z_top)
+    pos=tran.z_ctr.attrs.get('positive','up')
+    if pos=='up': 
+        z_sgn=1
+    else:
+        z_sgn=-1
+    depth=(z_top - z_sgn*z_bed).clip(0.)
+    mask=(z_sgn*z_ctr) < (z_top - 0.90*depth)
+    v.values[mask]=np.nan
+
+def pos_up(tran,vname):
+    if tran[vname].attrs.get('positive','up')=='up':
+        z_sgn=1
+    else:
+        z_sgn=-1
+    return z_sgn*tran[vname]
