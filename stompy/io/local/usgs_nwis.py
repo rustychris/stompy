@@ -60,8 +60,8 @@ def nwis_dataset(station,start_date,end_date,products,
     Retrieve one or more data products from a single station.
     station: string or numeric identifier for COOPS station.
 
-    products: list of integers identifying the variable to retrieve.  See all_products at
-    the top of this file.
+    products: list of integers identifying the variable to retrieve. See
+    usgs_parm_codes.tsv in the directory above this directory.
 
     start_date,end_date: period to retrieve, as python datetime, matplotlib datenum,
     or numpy datetime64.

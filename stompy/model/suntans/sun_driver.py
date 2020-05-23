@@ -116,7 +116,7 @@ class GenericConfig(object):
             self.originals.append(line)
             i = len(self.originals)-1
 
-            m = re.match("^\s*((\S+)\s+(\S+))?\s*.*",line)
+            m = re.match(r"^\s*((\S+)\s+(\S+))?\s*.*",line)
             if m and m.group(1):
                 key = m.group(2)
                 if not self.keys_are_case_sensitive:

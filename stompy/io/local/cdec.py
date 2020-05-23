@@ -35,6 +35,8 @@ def cdec_df_to_ds(df):
         ds['time']=ds.time.values.astype('<M8')
 
     # make the adjustment to UTC, even though this is daily data...
+    # This is dangerous!  CDEC seems to be lax with timezones, and at least sometimes
+    # data is local, not local standard, so this 8 is sometimes a 7.
     ds.time.values[:] += np.timedelta64(8,'h')
     # not convention, but a nice reminder
     ds.time.attrs['timezone']='UTC'
