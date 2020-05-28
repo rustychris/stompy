@@ -28,7 +28,7 @@ except ImportError:
 
 from collections import OrderedDict,Iterable
 import sys
-from scipy.interpolate import RectBivariateSpline,interp1d
+from scipy.interpolate import RectBivariateSpline,interp1d,LinearNDInterpolator
 from scipy import optimize
 from . import filters, harm_decomp
 import re
@@ -504,6 +504,69 @@ def interp_bilinear(x,y,z):
         zs[invalids>0] = np.nan
         return zs
     return interper
+
+
+def LinearNDExtrapolator(points,values):
+    """
+    Kludge the linear interpolator to also extrapolate.
+    Accomplished by estimating a value and gradient
+    along the convex hull and creating points "far"
+    away that extrapolate that gradient.
+    """
+    int_ij=LinearNDInterpolator(points,values)
+
+    # monkey patch that to extrapolate?
+    # Maybe by adding some points at "infinity"
+
+    # The segments are in order, but the nodes within
+    # each segment are not.
+
+    tri=int_ij.tri
+    nseg=len(tri.convex_hull)
+
+    extra_xy=[]
+    extra_val=[]
+
+    # estimate of a length scale for offseting external points
+    L=(points.max(axis=0) - points.min(axis=0)).sum()
+    L*=10
+    eps=1e-3 # for numerical estimate of gradient
+
+
+    for i in range(nseg):
+        # orient the segment
+        seg_last=tri.convex_hull[(i-1)%nseg]
+        seg_next=tri.convex_hull[(i+1)%nseg]
+        seg=tri.convex_hull[i]
+
+        if (seg[0] in seg_last) and (seg[1] in seg_next):
+            # already in order
+            pass
+        else:
+            # flip
+            seg=seg[::-1]
+
+        ij_tang=tri.points[seg[1]] - tri.points[seg[0]]
+        ij_norm=to_unit( np.array([ij_tang[1],-ij_tang[0]]))
+        midpoint=0.5*(tri.points[seg[1]] + tri.points[seg[0]])
+        new_point = midpoint + L*ij_norm
+        # So I can place points offset beyond the edges of the convex hull.
+        # but I need to know what value to give them.
+
+        query=[ midpoint-eps*ij_norm,
+                midpoint-2*eps*ij_norm ]
+        query_val=int_ij(query)
+
+        new_value=query_val[0] - L/eps * (query_val[1] - query_val[0])
+
+        extra_xy.append( new_point )
+        extra_val.append( new_value )
+
+    int_ij_extra=LinearNDInterpolator(
+        np.concatenate( (points,extra_xy) ),
+        np.concatenate( (values,extra_val) ) )
+
+    return int_ij_extra
 
 def interp_near(x,sx,sy,max_dx=None):
     src_idx=np.searchsorted(sx,x) # gives the index for the element *after* x

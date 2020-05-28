@@ -521,6 +521,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                                             node_coordinates='Mesh2_node_x Mesh2_node_y',
                                             face_node_connectivity='Mesh2_face_nodes',
                                             edge_node_connectivity='Mesh2_edge_nodes',
+                                            face_edge_connectivity='Mesh2_face_edges',
+                                            edge_face_connectivity='Mesh2_edge_faces',
                                             node_dimension='nMesh2_node',
                                             edge_dimension='nMesh2_edge',
                                             face_dimension='nMesh2_face',
@@ -603,6 +605,23 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         edges = process_as_index(mesh.edge_node_connectivity) # [N,2]
 
         ug = UnstructuredGrid(points=node_xy,cells=faces,edges=edges)
+
+        # When the incoming netcdf supplies additional topology, use it
+        if 'face_edge_connectivity' in mesh.attrs:
+            ug.cells['edges'] = nc[mesh.attrs['face_edge_connectivity']].values
+        if 'edge_face_connectivity' in mesh.attrs:
+            ug.edges['cells'] = nc[mesh.attrs['edge_face_connectivity']].values
+        
+        if dialect=='fishptm':
+            ug.cells_center()
+            ug.cells_area()
+
+            mark = ug.cells['mark'] = nc['Mesh2_face_bc'].values
+            ug.cells['mark'][mark<3] = 0  # different markers for suntans
+            ug.cells['mark'][mark==3] = 1 # different markers for suntans
+            ug.edges['mark'] = nc['Mesh2_edge_bc'].values
+            ug.add_cell_field('cell_depth',nc['Mesh2_face_depth'].values)
+            ug.add_edge_field('edge_depth',nc['Mesh2_edge_depth'].values)
 
         if fields=='auto':
             # doing this after the fact is inefficient, but a useful
@@ -1468,11 +1487,21 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         self.refresh_metadata()
 
-    def update_cell_edges(self):
+    def update_cell_edges(self,select='missing'):
         """ from edges['nodes'] and cells['nodes'], set cells['edges']
+        select: 'all':  force an update on all cells.
+        'missing': only cells for which the number of set edges does not
+         match the number of nodes will be updated.
         """
-        self.cells['edges'] = -1
-        for c in range(self.Ncells()):
+        if select=='all':
+            cells=self.valid_cell_iter()
+        else:
+            edge_per_cell=np.sum(self.cells['edges']<0,axis=1)
+            node_per_cell=np.sum(self.cells['nodes']<0,axis=1)
+            cells=np.nonzero( edge_per_cell != node_per_cell )[0]
+
+        for c in cells:
+            self.cells['edges'][c,:]=self.UNDEFINED # == -1
             for i,(a,b) in enumerate(circular_pairs(self.cell_to_nodes(c))):
                 self.cells['edges'][c,i] = self.nodes_to_edge(a,b)
 
@@ -4402,6 +4431,118 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             strings.append( feat_nodes )
         return strings
 
+    def select_quad_subset(self,ctr,max_cells=None,max_radius=None,node_set=None):
+        """
+        Starting from ctr, select a contiguous set of nodes connected 
+        by quads, up to max_cells and within max_radius of the starting
+        point.
+
+        Alternatively, specify a list of node indices in node_set, and the search
+        is limited to traversal among that set of nodes.
+
+        Returns (node_idxs,ij)
+          node_idxs: array of indices into self.nodes
+          ij: cartesian indices for each of those nodes.
+
+        The orientation of ij is arbitrary.  The origin is near ctr (but not
+        necessarily that the node closest to ctr is (0,0)
+        ij values include negatives
+        """
+        rotL=np.array( [[0,-1],[1,0]] )
+        rotR=np.array( [[0,1],[-1,0]] )
+
+        stack=[]
+
+        node_ij={} # map nodes to their ij index
+        visited_cells={} # cell index => the index, 0..3, of its node that has the min i and min j.
+
+        if node_set is None:
+            j=self.select_edges_nearest(ctr)
+            he=self.halfedge(j,0)
+        else:
+            n=node_set[0]
+            node_set=set(node_set)
+            he=None
+            for j in self.node_to_edges(n):
+                if ( (self.edges['nodes'][j,0] in node_set)
+                      and
+                     (self.edges['nodes'][j,1] in node_set) ):
+                    he=self.halfedge(j,0)
+                    break
+            if he is None:
+                # could try harder with other nodes..
+                print("Failed to find an edge with first node of set.")
+                return np.zeros(0,np.int32),np.zeros((0,2),np.int32)
+                
+        node_ij[ he.node_rev() ] = np.array([0,0])
+
+        # stack is a half edge, meaning visit the cell the half edge is facing.
+        # node_ij[node_rev()] is guaranteed to be populated.
+        # and dir gives the ij vector for the edge normal (into the new cell)
+        # if node_set is given, then both nodes of the half edge are guaranteed to be in node_set
+        self.edge_to_cells()
+
+        stack.append( (he, np.array([1,0]) ) )
+
+        cc=self.cells_center()
+
+        while stack:
+            he,vecnorm = stack.pop(0)
+            c=he.cell()
+            if (c in visited_cells) or (c<0):
+                continue
+
+            if (max_radius is not None) and (mag(cc[c]-ctr)>max_radius):
+                continue
+
+            visited_cells[c]=True
+
+            # Be sure search is breadth first, and we stop
+            # with a given count.
+            if (max_cells is not None) and (len(visited_cells)>max_cells):
+                break
+
+            assert he.node_rev() in node_ij
+
+            if self.cell_Nsides(c)!=4:
+                continue
+
+            he_trav=he
+            ij_norm=vecnorm
+            # node_ij[nrev] may not be saved if nrev isn't valid
+            # so traverse ij_rev manually
+            ij_rev=node_ij[he.node_rev()]
+            
+            for i in range(4):
+                nrev=he_trav.node_rev()
+                nfwd=he_trav.node_fwd()
+                ij_fwd=ij_rev + rotR.dot(ij_norm)
+
+                if ((node_set is None) or (nfwd in node_set)):
+                    # valid  node
+                    if nfwd in node_ij:
+                        # probably will have to relax this.
+                        assert np.all(node_ij[nfwd]==ij_fwd)
+                    else:
+                        node_ij[nfwd]=ij_fwd
+
+                    if nrev in node_ij:
+                        # both ends of the half edge have ij,
+                        # and both are valid.
+                        # queue a visit to trav's opposite
+                        he_opp=he_trav.opposite()
+                        stack.append( (he_opp,-ij_norm) )
+
+                # And move to next face of quad
+                he_trav=he_trav.fwd()
+                ij_norm=rotL.dot(ij_norm)
+                ij_rev=ij_fwd
+
+        node_idxs=np.array( list(node_ij.keys()) )
+        ij=np.array( [node_ij[n] for n in node_idxs] )
+
+        return node_idxs, ij
+
     def select_nodes_boundary_segment(self, coords, ccw=True):
         """
         bc_coords: [ [x0,y0], [x1,y1] ] coordinates, defining
@@ -4505,7 +4646,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                                                        boxes,
                                                        [None]*self.Ncells()),
                                                    interleaved=False)
-            for p,x in utils.progress(enumerate(points)):
+            for p,x in progress(enumerate(points)):
                 for c in cell_index.intersection([x[0],x[0],x[1],x[1]]):
                     if paths[c].contains_point(x):
                         cells[p]=c
@@ -5612,8 +5753,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             # write polygon info
             fp.write(poly_hdr+"\n")
             cell_write_str1 = " %10d %10d %16.7f %16.7f %16.7f "
-            cell_depths = self.cell_depths()
-            self.update_cell_edges()
+            cell_depths = self.cells['cell_depth']
+            # Make sure cells['edges'] is set, but don't replace
+            # data if it is already there.
+            self.update_cell_edges(select='missing')
             cc=self.cells_center()
             for c in range(self.Ncells()):
                 edges = self.cells['edges'][c,:]
@@ -5627,13 +5770,13 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                                           nsides,
                                           cc[c,0],
                                           cc[c,1],
-                                          -cell_depths[c]))
+                                          cell_depths[c]))
                 fp.write(edge_str)
 
             # write side info
             fp.write(side_hdr+"\n")
             # likewise, ptm expects edge depths to be positive down.
-            edge_depths = self.edge_depths()
+            edge_depths = self.edges['edge_depth']
             edge_write_str = " %10d %16.7f %10d %10d %10d %10d %10d\n"
             for s in range(self.Nedges()):
                 edges = self.edges['cells'][s,:]
@@ -5641,12 +5784,14 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 nodes = self.edges['nodes'][s,:]
                 nodes[nodes<0] = -1
                 # RH 2019-01-14: flip sign on edge depth.
+                # RH 2020-05-23: reverting.  trying to keep 'depth' to mean positive
+                #  down, and 'z' to mean positive up.
                 fp.write(edge_write_str%(s+1,
-                                          -edge_depths[s],
-                                          nodes[0]+1,
-                                          nodes[1]+1,
-                                          edges[0]+1,
-                                          edges[1]+1,
+                                         edge_depths[s],
+                                         nodes[0]+1,
+                                         nodes[1]+1,
+                                         edges[0]+1,
+                                         edges[1]+1,
                                           self.edges['mark'][s]))
             if subgrid:
                 Ac=self.cells_area()
@@ -5664,6 +5809,13 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
     def cell_depths(self):
         """
+        DEPRECATED. 
+        Moving away from having unstructured_grid try to infer how depth information
+        should be handled.  Instead, users should strive to keep positive-up values in
+        'z_*' fields, and positive-down values in 'depth_*'  fields, and where possible
+        keep names of fields unique between cells, edges, and nodes to facilitate netcdf
+        output.
+
         Return an array of cell-centered depths.  This *should* be
         a positive:up quantity.
         TODO: make naming consistent so that this is elevation, indicating
