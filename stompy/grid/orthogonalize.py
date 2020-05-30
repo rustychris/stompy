@@ -61,10 +61,12 @@ class Tweaker(object):
         for n in self.g.cell_to_nodes(c):
             self.nudge_node_orthogonal(n)
 
-    def calc_halo(self, node_idxs):
+    def calc_halo(self, node_idxs, max_halo=20):
         """
         calculate how many steps each node in node_idxs is away
         from a node *not* in node_idxs.
+        max_halo: used to truncate the search and also as a default 
+         value if there are no adjacent nodes not in node_idxs.
         """
         g=self.g
         # Come up with weights based on rings
@@ -81,6 +83,7 @@ class Tweaker(object):
         while stack:
             ni=stack.pop(0)
             n=node_idxs[ni]
+            if node_insets[ni]>=max_halo: continue
 
             for nbr in g.node_to_nodes(n):
                 nbri=np.nonzero(node_idxs==nbr)[0]
@@ -89,10 +92,13 @@ class Tweaker(object):
                 if node_insets[nbri]<0:
                     node_insets[nbri]=1+node_insets[ni]
                     stack.append(nbri)
+
+        node_insets[node_insets<0]=max_halo
+        
         return node_insets
             
     def local_smooth(self,node_idxs,ij=None,n_iter=3,stencil_radius=1,
-                     min_halo=2):
+                     free_nodes=None,min_halo=2):
         """
         Fit regular grid patches iteratively within the subset of nodes given
         by node_idxs.
@@ -105,6 +111,8 @@ class Tweaker(object):
         node.
         min_halo: only nodes at least this many steps from a non-selected node
         are moved.
+        free_subset: node indexes (i.e. indices of g.nodes) that are allowed 
+         to move.  Defaults to all of node_idxs subject to the halo.
         """
         g=self.g
         
@@ -132,16 +140,22 @@ class Tweaker(object):
         M=np.c_[stencil,np.ones(len(stencil))]
         new_XY=XY.copy()
 
+        if free_nodes is not None:
+            # use dict for faster tests
+            free_nodes={n:True for n in free_nodes}
+            
         moved_nodes={}
         for count in range(n_iter):
             new_XY[...]=XY
             for ni,n in enumerate(node_idxs):
                 if halos[ni]<min_halo: continue
+                if (free_nodes is not None) and (n not in free_nodes): continue
 
-                # Find that node in
-                ni=np.nonzero(node_idxs==n)[0]
-                assert len(ni)>0,"Somehow n wasn't in the quad subset"
-                ni=ni[0]
+                # Cruft, pretty sure.
+                # # Find that node in
+                # ni=np.nonzero(node_idxs==n)[0]
+                # assert len(ni)>0,"Somehow n wasn't in the quad subset"
+                # ni=ni[0]
 
                 # Query XY to estimate where n "should" be.
                 i,j=ij[ni]
@@ -180,6 +194,7 @@ class Tweaker(object):
                 if nbr not in moved_nodes:
                     moved_nodes[nbr]=True
         for n in moved_nodes.keys():
+            if (free_nodes is not None) and (n not in free_nodes): continue
             self.nudge_node_orthogonal(n)
 
 

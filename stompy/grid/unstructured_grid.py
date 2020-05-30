@@ -3938,7 +3938,15 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         ax=kwargs.pop('ax',None) or plt.gca()
         tri=self.mpl_triangulation()
         return ax.tricontourf(tri,values,*args,**kwargs)
-
+    
+    def contour_node_values(self,values,*args,**kwargs):
+        """
+        Plot a smooth contour field defined by values at nodes and topology of cells.
+        """
+        ax=kwargs.pop('ax',None) or plt.gca()
+        tri=self.mpl_triangulation()
+        return ax.tricontour(tri,values,*args,**kwargs)
+    
     def average_matrix(self,f=1.0,normalize='area'):
         """
         Smoothing on the grid.  Returns a sparse matrix suitable for repeated
@@ -4094,10 +4102,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             (centers[:,1] > xxyy[2]) & (centers[:,1]<xxyy[3])
 
     def plot_cells(self,ax=None,mask=None,values=None,clip=None,centers=False,labeler=None,
+                   masked_values=None,
                    centroid=False,**kwargs):
         """
         values: color cells based on the given values.  can also be
           the name of a field in self.cells.
+        masked_values: same as values, but just for elements in mask
         centers: scatter plot of cell centers.  otherwise polygon plot
         labeler: f(cell_idx,cell_record) => string for labeling.
         centroid: if True, use centroids instead of centers.  if an array,
@@ -4106,7 +4116,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         ax = ax or plt.gca()
 
         if values is not None:
-            if isinstance(values,six_string_types):
+            if isinstance(values,six.string_types):
                 values=self.cells[values]
             else:
                 # asanyarray allows for masked arrays to pass through unmolested.
@@ -4120,6 +4130,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             if np.issubdtype(mask.dtype,np.integer):
                 bitmask=np.zeros(self.Ncells(),np.bool)
                 bitmask[mask]=True
+                if masked_values is not None:
+                    masked_values=masked_values[ np.argsort(mask) ]
                 mask=bitmask
 
         if clip is not None: # convert clip to mask
@@ -4127,6 +4139,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         if values is not None and len(values)==self.Ncells():
             values = values[mask]
+        elif masked_values is not None:
+            values = masked_values
 
         if centers or labeler:
             if isinstance(centroid,np.ndarray):
