@@ -568,6 +568,7 @@ def resample_z(tran,new_z,save_original=None,new_z_positive='same'):
         ds[v]=dims,new_val
         ds[v].attrs.update(var.attrs)
 
+    ds.attrs.update(tran.attrs)
     return ds
 
 def resample_d(tran,new_xy,save_original=None):
