@@ -462,6 +462,8 @@ def resample_z(tran,new_z,save_original=None,new_z_positive='same'):
       'down': positive down
 
     the current handling for order of z is not good.
+
+    new_z is taken to be in the target sign convention.
     """
     # had been a comment about resampling to positive up, but the code
     # doesn't actually do that.  instead, assumes that new_z is the
@@ -471,14 +473,22 @@ def resample_z(tran,new_z,save_original=None,new_z_positive='same'):
     z_dim='layer'
 
     z_ctr_pos=tran.z_ctr.attrs.get('positive','up')
-    if new_z_positive!='same' and (new_z_positive!=z_ctr_pos):
-        new_z=-new_z
-    
+    if new_z_positive=='same':
+        new_z_positive=z_ctr_pos
+        
+    if new_z_positive!=z_ctr_pos:
+        z_flip=-1
+    else:
+        z_flip= 1
+
+    # print("Existing z_ctr_pos %s  new z pos %s z_flip %s"%(z_ctr_pos,new_z_positive,z_flip))
+
     ds['sample']=tran['sample']
     ds['z_ctr']=(z_dim,),new_z
     ds['z_dz']=(z_dim,),utils.center_to_interval(new_z)
 
     ds['z_ctr'].attrs.update(tran.z_ctr.attrs)
+    ds['z_ctr'].attrs['positive']=new_z_positive
 
     for v in tran.data_vars:
         var=tran[v]
@@ -517,6 +527,9 @@ def resample_z(tran,new_z,save_original=None,new_z_positive='same'):
         # Not quite there -- this isn't smart enough to get the interfaces
         _,src_z,src_dz = xr.broadcast(var,tran['z_ctr'],get_z_dz(tran))
 
+        # sgn is used to get the src data into increasing z coordinate
+        # so if the order is top-to-bottom, sgn*src_z is positive-down
+        #    if order is bottom-to-top, sgn*src_z is positive-up
         all_sgns=np.sign(src_dz).values.ravel()
         # some of these may be nan - just look past those
         all_sgns=all_sgns[ np.isfinite(all_sgns) ]
@@ -531,9 +544,6 @@ def resample_z(tran,new_z,save_original=None,new_z_positive='same'):
         for index in np.ndindex( *iter_shape ):
             if index[z_num]>0:
                 continue
-            # Why are values getting filled to the bed?
-            # import pdb
-            # pdb.set_trace()
             index=list(index)
             index[z_num]=slice(None)
             index=tuple(index)
@@ -554,11 +564,14 @@ def resample_z(tran,new_z,save_original=None,new_z_positive='same'):
             src_valid=np.isfinite(my_src_z+my_src)
             Nsrc_valid=src_valid.sum()
 
+            # interfaces in src z coordinate
             my_src_ints=np.concatenate( (my_src_bottom[src_valid],
                                          my_src_top[src_valid][-1:]) )
 
             # use sgn to make sure this is increasing
-            bins=np.searchsorted(sgn*my_src_ints,sgn*new_z)
+            # and new_z is flipped maybe to match flipping of src, and
+            # maybe again to get the desired output sign.
+            bins=np.searchsorted(sgn*my_src_ints,z_flip*sgn*new_z)
             bad=(bins<1)|(bins>Nsrc_valid) # not sure about that top clip
             # Make these safe, and 0-referenced
             bins=bins.clip(1,Nsrc_valid)-1
