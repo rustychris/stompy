@@ -462,6 +462,8 @@ def resample_z(tran,new_z,save_original=None,new_z_positive='same'):
       'down': positive down
 
     the current handling for order of z is not good.
+
+    new_z is taken to be in the target sign convention.
     """
     # had been a comment about resampling to positive up, but the code
     # doesn't actually do that.  instead, assumes that new_z is the

@@ -383,8 +383,23 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         # maybe subclasses shouldn't be used here - for example,
         # this requires that every subclass include 'grid' in its
         # __init__.  Maybe more subclasses should just be readers?
-        # return self.__class__(grid=self)
-        return UnstructuredGrid(grid=self)
+
+        # Old approach
+        # return UnstructuredGrid(grid=self)
+
+        # But I want to preserve more of the structures
+        g=UnstructuredGrid(max_sides=self.max_sides)
+        
+        g.cell_dtype=self.cell_dtype
+        g.edge_dtype=self.edge_dtype
+        g.node_dtype=self.node_dtype
+
+        g.cells=self.cells.copy()
+        g.edges=self.edges.copy()
+        g.nodes=self.nodes.copy()
+
+        g.refresh_metadata()
+        return g
 
     def copy_from_grid(self,grid):
         """
@@ -3590,7 +3605,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 continue
 
             if self.cell_Nsides(c)<=3:
-                raise GridException("not implemented")
+                #raise GridException("not implemented")
+                return False
             else:
                 c_n = list(self.cells['nodes'][c])
                 c_n.remove(n_del)
@@ -4566,11 +4582,20 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         if ccw=False, then traverse the boundary CW instead of CCW.
 
         returns [n0,n1,...] nodes along boundary between those locations.
+
+        This does not currently support islands.
         """
         self.edge_to_cells()
-        start_n,end_n=[ self.select_nodes_nearest(xy)
-                        for xy in coords]
         cycle=np.asarray( self.boundary_cycle() )
+        #start_n,end_n=[ self.select_nodes_nearest(xy)
+        #                for xy in coords]
+
+        nodes=[]
+        for xy in coords:
+            dists=mag( self.nodes['x'][cycle] - xy)
+            nodes.append( cycle[ np.argmin(dists) ] )
+        start_n,end_n=nodes
+        
         start_i=np.nonzero( cycle==start_n )[0][0]
         end_i=np.nonzero( cycle==end_n )[0][0]
 
@@ -5470,7 +5495,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     #-# Grid refinement
     # as ugly as it is having this in here, there's not a very clean way to
     # put this sort of code elsewhere, and still be able to call super()
-    def global_refine(self):
+    def global_refine(self,l_thresh=1.0):
         # # Some helper functions - stuffed inside here to avoid
         #  polluting namespace
         def copy_edge_attributes_to_refined(g_orig,g_new):
@@ -5522,7 +5547,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         new_points = np.concatenate( new_points )
 
         # 2. build up cells, just using the nodes
-        new_cells = np.zeros( (self.max_sides*self.Ncells(),self.max_sides), np.int32) - 1
+        new_cells = np.zeros( (4*self.Ncells(),self.max_sides), np.int32) - 1
 
         for c in range(self.Ncells()):
             cn = self.cell_to_nodes(c)
@@ -5538,16 +5563,18 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     new_cells[4*c+i,:3] = [ midpoints[(i-1)%3], cn[i], midpoints[i]]
                 # plus the one in the center:
                 new_cells[4*c+3,:3] = midpoints
-            else: # quad
+            elif len(cn)==4: # quad
                 n_ctr = self.Nnodes() + self.Nedges() + c
                 for i in range(4):
-                    new_cells[4*c+i] =  [ midpoints[(i-1)%4], cn[i], midpoints[i], n_ctr]
+                    new_cells[4*c+i,:4] =  [ midpoints[(i-1)%4], cn[i], midpoints[i], n_ctr]
+            else:
+                raise Exception("global_refine() can only handle triangles and quads")
 
         # 3. generic construction of edges from cells
         # try to use the same subclass as the original grid, so we'll have the same
         # fields available.
         # OLD: gr = ug.UnstructuredGrid()
-        gr = self.__class__()
+        gr = self.__class__(max_sides=self.max_sides)
         gr.from_simple_data(points = new_points,
                             cells = new_cells)
 
@@ -5562,7 +5589,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         # quad centers may be very close to a (typ. LAND) edge
         # this will turn the resulting cells into triangles.
-        gr.collapse_short_edges()
+        gr.collapse_short_edges(l_thresh=l_thresh)
         # which deletes some edges and nodes, so renumber
         gr.renumber()
 

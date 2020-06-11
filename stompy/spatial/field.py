@@ -2523,7 +2523,7 @@ class SimpleGrid(QuadrilateralGrid):
             os.unlink(tmp_dest_fn)
         return result
 
-    def write_gdal(self,output_file,nodata=None):
+    def write_gdal(self,output_file,nodata=None,overwrite=False):
         """ Write a Geotiff of the field.
 
         if nodata is specified, nan's are replaced by this value, and try to tell
@@ -2540,6 +2540,12 @@ class SimpleGrid(QuadrilateralGrid):
         else:
             driver = gdal.GetDriverByName("MEM")
             options=[]
+
+            if os.path.exists(output_file):
+                if overwrite:
+                    os.unlink(output_file)
+                else:
+                    raise Exception("File %s already exists"%output_file)
 
         gtype = numpy_type_to_gdal[self.F.dtype.type]
         dst_ds = driver.Create(output_file, self.F.shape[1], self.F.shape[0], 1, gtype,
@@ -3273,7 +3279,7 @@ class CompositeField(Field):
         # allocate the blank starting canvas
         result_F =np.ones((ny,nx),'f8')
         result_F[:]=-999 # -999 so we don't get nan contamination
-        result_data=SimpleGrid(extents=bounds,F=result_F)
+        result_data=SimpleGrid(extents=bounds,F=result_F,projection=self.projection)
         result_alpha=result_data.copy()
         result_alpha.F[:]=0.0
 
