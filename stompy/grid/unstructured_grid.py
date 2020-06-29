@@ -1247,6 +1247,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
                     ds[out_field] = (dim_name,),src_data[field]
         ds.to_netcdf(fn)
+        return ds
 
     def write_dfm(self,nc_fn,overwrite=False,node_elevation=None):
         """
@@ -2151,6 +2152,66 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         self.edges['cells'] = new_edges[:,2:4]
         self._node_to_edges=None
 
+    def make_edges_from_cells_fast(self):
+        """
+        vectorized version.  might be buggy.
+        new June 2020
+        """
+        valid_cells=~self.cells['deleted']
+
+        def pair_iter():
+            all_c=np.arange(self.Ncells())
+
+            for face in range(self.max_sides):
+                a=self.cells['nodes'][:,face]
+                if face+1==self.max_sides:
+                    b=self.cells['nodes'][:,0]
+                else:
+                    b=self.cells['nodes'][:,face+1]
+                    b=np.where( b<0, self.cells['nodes'][:,0], b )
+                valid=(a>=0)&(~self.cells['deleted'])
+                yield (a[valid],b[valid],all_c[valid])
+
+        edge_sets=[]
+        for a,b,cell in pair_iter():
+            print( len(a) )
+            flip=a>b
+
+            new_edges=np.zeros( len(a), [('a',np.int32),
+                                         ('b',np.int32),
+                                         ('c1',np.int32),
+                                         ('c2',np.int32)])
+            new_edges['a']=np.where(flip,b,a)
+            new_edges['b']=np.where(flip,a,b)
+            new_edges['c1']=np.where(flip,-1,cell)
+            new_edges['c2']=np.where(flip,cell,-1)
+
+            edge_sets.append(new_edges)
+        new_edges=np.concatenate(edge_sets)
+
+        #order=np.argsort( new_edges, order=['a','b'], kind='stable') # 2s
+        # 5x faster
+        orderb=np.argsort( new_edges['b'], kind='stable') # 0.3s
+        ordera=np.argsort( new_edges['a'][orderb], kind='stable' )
+        order=orderb[ordera]
+
+        new_edges=new_edges[order]
+
+        # indices of first part of an edge
+        breaks=np.r_[False, (np.diff(new_edges['a'])!=0) | (np.diff(new_edges['b'])!=0)]
+        edge=np.r_[0,np.nonzero(breaks)[0] ]
+        j=np.cumsum(breaks)
+
+        self.edges = np.zeros( j[-1]+1,self.edge_dtype )
+        self.edges['nodes'][:,0] = new_edges['a'][edge]
+        self.edges['nodes'][:,1] = new_edges['b'][edge]
+        self.edges['cells']=-1
+        has_left=new_edges['c1']>=0
+        has_right=new_edges['c2']>=0
+        self.edges['cells'][j[has_left],0]=new_edges['c1'][has_left]
+        self.edges['cells'][j[has_right],0]=new_edges['c2'][has_right]
+        self._node_to_edges=None
+
     def refresh_metadata(self):
         """ Call this when the cells, edges and nodes may be out of sync with indices
         and the like.  doesn't force a rebuild, just clears out potentially stale information.
@@ -2592,6 +2653,11 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         return np.any( self.edge_to_cells()[edges] < 0 )
     def is_boundary_edge(self,e):
         return np.any(self.edge_to_cells(e) < 0)
+    def is_boundary_node(self,n):
+        for j in self.node_to_edges(n):
+            if self.is_boundary_edge(j):
+                return True
+        return False
 
     def cell_to_adjacent_boundary_cells(self,c):
         """
