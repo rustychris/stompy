@@ -10,6 +10,7 @@ from matplotlib.collections import LineCollection
 from matplotlib.transforms import Transform,Affine2D
 import matplotlib.transforms as transforms
 from matplotlib import collections, path
+import matplotlib.patheffects as pe
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 from matplotlib.tri import Triangulation
@@ -295,6 +296,17 @@ def scalebar(xy,L=None,aspect=0.05,unit_factor=1,fmt="%.0f",label_txt=None,fract
                     objs.append( ax.fill(xlist,
                                          [ymin,ymin,ymax,ymax],
                                          'w', edgecolor='k',lw=lw,transform=xy_transform) )
+    elif style=='ticks':
+        # similar to ticks on an axis
+        segs=[ [ [xmin,ymin],[xmin+dx,ymin]] ]
+        
+        for i in range(len(divisions)):
+            xleft=xmin+divisions[i]
+            segs.append( [ [xleft,ymin],[xleft,ymax]] )
+        lcoll=LineCollection(segs,color='k',lw=lw,transform=xy_transform)
+        objs.append(lcoll)
+        ax.add_collection(lcoll)
+        
     baseline=ymax + 0.25*dy
     for div in divisions:
         div_txt=fmt%(unit_factor* div)
@@ -731,12 +743,14 @@ def get_aspect(ax):
     return disp_ratio / data_ratio
 
 
-def annotate_line(l,s,norm_position=0.5,offset_points=10,ax=None,**kwargs):
+def annotate_line(l,s,norm_position=0.5,offset_points=10,ax=None,
+                  buff=None,**kwargs):
     """
     line: a matplotlib line object
     s: string to show
     norm_position: where along the line, normalized to [0,1]
     offset_points: how to offset the text baseline relative to the line.
+    buff: options to draw a buffer around text. foreground, linewidth
     """
     ax=ax or plt.gca()
 
@@ -765,7 +779,11 @@ def annotate_line(l,s,norm_position=0.5,offset_points=10,ax=None,**kwargs):
                   rotation=angle,
                   ha='center',va='center')
     settings.update(kwargs)
-    ax.annotate(s,[x_of_label,y_of_label],**settings)
+
+    if buff is not None:
+        settings['path_effects']=[pe.withStroke(**buff)]
+    t=ax.annotate(s,[x_of_label,y_of_label],**settings)
+    return t
 
 def klabel(k,txt,color='0.5',ax=None,y=None,**kwargs):
     ax = ax or plt.gca()

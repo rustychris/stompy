@@ -506,7 +506,7 @@ def interp_bilinear(x,y,z):
     return interper
 
 
-def LinearNDExtrapolator(points,values):
+def LinearNDExtrapolator(points,values,eps=None):
     """
     Kludge the linear interpolator to also extrapolate.
     Accomplished by estimating a value and gradient
@@ -529,39 +529,41 @@ def LinearNDExtrapolator(points,values):
 
     # estimate of a length scale for offseting external points
     L=(points.max(axis=0) - points.min(axis=0)).sum()
-    L*=10
-    eps=1e-3 # for numerical estimate of gradient
-
+    L*=2
+    if eps is None:
+        eps=L*1e-3
 
     for i in range(nseg):
-        # orient the segment
-        seg_last=tri.convex_hull[(i-1)%nseg]
-        seg_next=tri.convex_hull[(i+1)%nseg]
+        # appears that no ordering on convex_hull is
+        # guaranteed
         seg=tri.convex_hull[i]
-
-        if (seg[0] in seg_last) and (seg[1] in seg_next):
-            # already in order
-            pass
-        else:
-            # flip
-            seg=seg[::-1]
 
         ij_tang=tri.points[seg[1]] - tri.points[seg[0]]
         ij_norm=to_unit( np.array([ij_tang[1],-ij_tang[0]]))
         midpoint=0.5*(tri.points[seg[1]] + tri.points[seg[0]])
-        new_point = midpoint + L*ij_norm
         # So I can place points offset beyond the edges of the convex hull.
         # but I need to know what value to give them.
 
-        query=[ midpoint-eps*ij_norm,
-                midpoint-2*eps*ij_norm ]
-        query_val=int_ij(query)
+        # seems that the ordering of vertices is not consistent,
+        # so guess and check
+        for sig in [1,-1]:
+            new_point = midpoint + sig*L*ij_norm
+            query=[ midpoint-sig*eps*ij_norm,
+                    midpoint-sig*2*eps*ij_norm ]
+            query_val=int_ij(query)
+            if np.all(np.isfinite(query_val)):
+                break
+        else:
+            raise Exception("Failed to get finite gradient")
 
-        new_value=query_val[0] - L/eps * (query_val[1] - query_val[0])
+        #nthis should almost certainly be -
+        new_value=query_val[0] - (L+eps) * (query_val[1] - query_val[0])/eps
 
         extra_xy.append( new_point )
         extra_val.append( new_value )
 
+        assert np.all(np.isfinite(new_value))
+        
     int_ij_extra=LinearNDInterpolator(
         np.concatenate( (points,extra_xy) ),
         np.concatenate( (values,extra_val) ) )
@@ -2278,3 +2280,14 @@ def runfile(fn):
     with open(fn) as fp:
         code = compile(fp.read(),fn,'exec')
         exec(code,globals(),dict(__file__=fn))
+
+
+# Finite difference helpers
+# centered differences internal, one-sided at the ends
+def deriv(c,x):
+    N=len(c)
+    i=np.arange(N)
+    left=(i-1).clip(0)
+    right=(i+1).clip(0,N-1)
+    return (c[right]-c[left])/(x[right]-x[left])
+

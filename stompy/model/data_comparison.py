@@ -70,12 +70,18 @@ def combine_sources(all_sources,dt=np.timedelta64(900,'s'),min_period=True):
         # groupby_bins allows for specifying the exact bins and labels,
         # simplifying concatenation below.
         da=da.rename(field_name)
+        # having trouble with groupby_bins
+        #
+        da['dnum']=('time',),utils.to_dnum(da.time)
+        bins=utils.to_dnum(resample_bins)
         # dim='time' is needed for vector-valued data to indicate not to
         # take the mean across vector components, just within bins on the
         # time axis
-        da_r=(da.groupby_bins(da.time,resample_bins,labels=bin_labels)
+        da_r=(# ada.groupby_bins(da.time,resample_bins,labels=bin_labels)
+            da.groupby_bins('dnum',bins,labels=bin_labels)
               .mean(dim='time')
-              .rename(time_bins='time')
+              #.rename(time_bins='time')
+            .rename(dnum_bins='time')
               .to_dataset())
         return da_r
 
@@ -147,7 +153,7 @@ def assemble_comparison_data(models,observations,model_labels=None,
     return all_sources,combined
 
 
-def calc_metrics(x,ref):
+def calc_metrics(x,ref,combine=False):
     """
     x, ref: DataArrays with common dimension.
 
@@ -161,13 +167,21 @@ def calc_metrics(x,ref):
         x=xr.DataArray(x)
     if not isinstance(ref,xr.DataArray):
         ref=xr.DataArray(ref)
+
+    x_orig=x
+    ref_orig=ref
+        
+    if combine:
+        combined=combine_sources([x,ref])
+        x=combined.isel(source=0)
+        ref=combined.isel(source=1)
         
     metrics={}
     metrics['bias']=np.nanmean( (x-ref).values )
     valid=np.isfinite( (x+ref).values )
     metrics['r'] = np.corrcoef( x.values[valid],ref.values[valid])[0,1]
     if 'time' in x.dims and 'time' in ref.dims:
-        metrics['lag']= utils.find_lag_xr(x,ref) 
+        metrics['lag']= utils.find_lag_xr(x_orig,ref_orig) 
         metrics['lag_s']=metrics['lag']/np.timedelta64(1,'s')
     metrics['amp']=np.std(x.values[valid]) / np.std(ref.values[valid])
 

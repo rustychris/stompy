@@ -48,7 +48,9 @@ def lowpass_gotin(data,in_t_days,*args,**kwargs):
     print("Use lowpass_godin() instead of lowpass_gotin()")
     return lowpass_godin(data,in_t_days,*args,**kwargs)
 
-def lowpass_godin(data,in_t_days,ends='pass',*args,**kwargs):
+def lowpass_godin(data,in_t_days=None,ends='pass',
+                  mean_dt_h = None,
+                  *args,**kwargs):
     """ Approximate Godin's tidal filter
     Note that in preserving the length of the dataset, the ends aren't really
     valid
@@ -56,6 +58,7 @@ def lowpass_godin(data,in_t_days,ends='pass',*args,**kwargs):
     data: array suitable to pass to np.convolve
     in_t_days: timestamps in decimal days.  This is only used to establish
     the time step, which is assumed to be constant.
+    dt_h: directly specify timestep in hours. 
 
     ends:
     'pass' no special treatment at the ends.  The first and last ~37
@@ -66,7 +69,8 @@ def lowpass_godin(data,in_t_days,ends='pass',*args,**kwargs):
     easier to slip this method in to replace others without having to change
     the call signature
     """
-    mean_dt_h = 24*np.mean(np.diff(in_t_days))
+    if mean_dt_h is None:
+        mean_dt_h = 24*np.mean(np.diff(in_t_days))
 
     # how many samples are in 24 hours?
     N24 = int(round(24. / mean_dt_h))
