@@ -649,16 +649,26 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     # Should be able to make a good guess based on node coordinates
                     dim_name=nc[node_x_name].dims[0]
                 if dim_name:
+                    prefix='_'+dim_name+'_' # see below, for uniquifying fields
+                    
                     for vname in nc.data_vars:
                         if vname in [node_x_name,node_y_name]:
                             continue # skip things like node_x
                         # At this point, only scalar values
                         if nc[vname].dims==(dim_name,):
-                            if vname in struct.dtype.names:
+                            struct_vname=vname
+                            # Undo the uniquifying code in write_ugrid
+                            # This allows for a field like 'mark' to
+                            # exist in UnstructuredGrid from both edges
+                            # and cells, but on writing to netcdf
+                            # one or both will get _<dim_name>_ prefix
+                            if struct_vname.startswith(prefix):
+                                struct_vname=struct_vname[len(prefix):]
+                            if struct_vname in struct.dtype.names:
                                 # already exists, just copy
-                                struct[vname]=nc[vname].values
+                                struct[struct_vname]=nc[vname].values
                             else:
-                                adder( vname, nc[vname].values )
+                                adder( struct_vname, nc[vname].values )
 
         if 'face_coordinates' in mesh.attrs:
             face_x,face_y = mesh.face_coordinates.split()
@@ -671,6 +681,16 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         ug.filename=filename
         return ug
 
+    @staticmethod
+    def read_tin_xml(fn):
+        from ..io import landxml
+        P,F = landxml.read_tin_xml_mmap(fn)
+        gtin=UnstructuredGrid(points=P[:,:2],
+                              cells=F)
+        gtin.make_edges_from_cells_fast()
+        gtin.add_node_field('elev',P[:,2])
+        return gtin
+    
     # COMING SOON
     #@staticmethod
     #def read_rgfgrid(grd_fn):
@@ -1177,7 +1197,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     mesh_name='mesh',
                     fields='auto',
                     overwrite=False,
-                    centers=True):
+                    centers=True,
+                    dialect=None):
         """
         rough ugrid writing - doesn't set the full complement of
         attributes (missing_value, edge-face connectivity, others...)
@@ -1192,6 +1213,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         overwrite: if False and the output exists, fail.
         centers: write cell centers.  this will trigger a call to cells_center()
           to make sure that any nan-valued centers are recalculated.
+
+        dialect: 
+          'mdal': As of QGIS 3.14, there are some limitations and strict 
+           requirements for a mesh to be read in via mdal. Notably node and cell
+           data can only be float or double.  Earlier mdal also required that face_node
+           be float (something related to _FillValue, nan's).  That was the case with QGIS 3.6
         """
         if os.path.exists(fn):
             if overwrite:
@@ -1205,26 +1232,48 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         mesh_var=ds[mesh_name]
         # required: (this seems more robust than mesh_var.attrs[...] = '...'
         ds[mesh_name].attrs['cf_role']='mesh_topology'
+        ds[mesh_name].attrs['standard_name']='mesh_topology'
         ds[mesh_name].attrs['topology_dimension']=2
+        ds[mesh_name].attrs['dimension']=2
         ds[mesh_name].attrs['face_node_connectivity']='face_node'
         ds[mesh_name].attrs['node_coordinates']='node_x node_y'
+        ds[mesh_name].attrs['long_name']='mesh topology'
         # "optionally required"
         ds[mesh_name].attrs['edge_dimension']='edge'
         ds[mesh_name].attrs['face_dimension']='face'
         ds[mesh_name].attrs['edge_node_connectivity']='edge_node'
         # optional
         ds[mesh_name].attrs['node_dimension']='node'
+        ds[mesh_name].attrs['max_face_nodes_dimension']='maxnode_per_face'
 
         ds['node_x'] = ('node',),self.nodes['x'][:,0]
         ds['node_y'] = ('node',),self.nodes['x'][:,1]
         ds['face_node'] = ('face','maxnode_per_face'),self.cells['nodes']
         ds['edge_node']=('edge','node_per_edge'),self.edges['nodes']
+        ds['edge_node'].attrs['start_index']=0
 
+        ds['node_x'].attrs['standard_name']='projection_x_coordinate'
+        ds['node_y'].attrs['standard_name']='projection_y_coordinate'
+
+        ds['node_x'].attrs['location']='node'
+        ds['node_y'].attrs['location']='node'
+
+        ds['face_node'].attrs['cf_role']='face_node_connectivity'
+        ds['face_node'].attrs['standard_name']='face_node_connectivity'
+        ds['face_node'].attrs['start_index']=0
+        ds['face_node'].attrs['long_name']='Vertex nodes of mesh faces'
+        ds['face_node'].attrs['units']='nondimensional'
+        
         if centers:
             cc=self.cells_center()
             ds[mesh_name].attrs['face_coordinates']='face_x face_y'
             ds['face_x']=('face',),self.cells['_center'][:,0]
             ds['face_y']=('face',),self.cells['_center'][:,1]
+
+            ds['face_x'].attrs['location']='face'
+            ds['face_y'].attrs['location']='face'
+            ds['face_x'].attrs['standard_name']='projection_x_coordinate'
+            ds['face_y'].attrs['standard_name']='projection_y_coordinate'
 
         if fields=='auto':
             for src_data,dim_name in [ (self.cells,'face'),
@@ -1240,12 +1289,27 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     if np.issubdtype(src_data[field].dtype,np.object_):
                         logging.warning("write_ugrid: will drop %s"%field)
                         continue
+                    if (dialect=='mdal' and
+                        not np.issubdtype(src_data[field].dtype,np.floating)):
+                        logging.warning("write_ugrid: mdal dialect will drop non-floating %s"%field)
+                        continue
                     if field in ds: # avoid duplicate names
-                        out_field = dim_name + "_" + field
+                        # This is messy. There are fields like 'mark'
+                        # that may exist on cells, edges and nodes.
+                        # in the netcdf these have to have unique names.
+                        prefix='_'+dim_name
+                        if field.startswith(prefix):
+                            logging.warning("Duplicate field already has prefix: %s"%field)
+                            continue
+                        out_field = prefix + "_" + field
                     else:
                         out_field=field
 
                     ds[out_field] = (dim_name,),src_data[field]
+
+        ds.attrs['Conventions']='CF-1.6, UGRID-1.0'
+        ds=ds.set_coords(['node_x','node_y'])
+        
         ds.to_netcdf(fn)
         return ds
 
