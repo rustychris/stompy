@@ -6,6 +6,7 @@ from __future__ import print_function
 import numpy as np 
 
 import glob,types
+import copy
 
 from numpy.random import random
 from numpy import ma
@@ -43,7 +44,7 @@ except ImportError:
     from matplotlib import delaunay
 
 from . import wkb2shp
-from ..utils import array_append, isnat, circumcenter, dist
+from ..utils import array_append, isnat, circumcenter, dist, set_keywords
 
 try:
     from matplotlib import cm
@@ -149,6 +150,9 @@ class Field(object):
         new_field = self.apply_xform(xform)
         new_field._projection = to_projection
         return new_field
+
+    def copy(self):
+        return copy.copy(self)
 
     def make_xform(self,from_projection,to_projection):
         if from_projection is None:
@@ -322,6 +326,8 @@ class XYZField(Field):
         return (xmin,xmax,ymin,ymax)
 
     def apply_xform(self,xform):
+        new_fld=self.copy()
+        
         new_X = self.X.copy()
 
         if len(self.F)>10000:
@@ -335,7 +341,8 @@ class XYZField(Field):
             print("Done transforming points")
 
         # projection should get overwritten by the caller
-        return XYZField( new_X, self.F, projection='reprojected')
+        new_fld.X=new_X
+        return new_fld
 
     # an XYZ Field of our voronoi points
     _tri = None
@@ -3767,17 +3774,32 @@ class TileMaker(object):
     output_dir = "."
 
     filename_fmt = "%(left).0f-%(bottom).0f.tif"
+    quantize=True # whether to quantize bounds to tx
     
     def __init__(self,f,**kwargs):
         """ f: the field to be gridded
         """
         self.f = f
-        self.__dict__.update(kwargs)
+        set_keywords(self,kwargs)
 
         if not os.path.exists(self.output_dir):
             os.mkdir(self.output_dir)
 
-    def tile(self,xmin,ymin,xmax,ymax):
+    def tile(self,xmin=None,ymin=None,xmax=None,ymax=None):
+        self.tile_fns=[]
+        
+        bounds=self.f.bounds()
+        if xmin is None: xmin=bounds[0]
+        if xmax is None: xmax=bounds[1]
+        if ymin is None: ymin=bounds[2]
+        if ymax is None: ymax=bounds[3]
+
+        if self.quantize:
+            xmin=self.tx*np.floor(xmin/self.tx)
+            xmax=self.tx*np.ceil( xmax/self.tx)
+            ymin=self.ty*np.floor(ymin/self.ty)
+            ymax=self.ty*np.ceil( ymax/self.ty)
+            
         nx = int(np.ceil((xmax - xmin)/self.tx))
         ny = int(np.ceil((ymax - ymin)/self.ty))
 
@@ -3801,7 +3823,8 @@ class TileMaker(object):
                 dy = self.dy
                 
                 output_fn = os.path.join(self.output_dir,self.filename_fmt%locals())
-
+                self.tile_fns.append(output_fn)
+                
                 print("Looking for output file: %s"%output_fn)
 
                 if self.force or not os.path.exists(output_fn):
@@ -3814,6 +3837,38 @@ class TileMaker(object):
                     print("Done")
                 else:
                     print("Already exists. Skipping")
+
+    def merge(self):
+        # and then merge them with something like:
+        # if the file exists, its extents will not be updated.
+        output_fn=os.path.join(self.output_dir,'merged.tif')
+        os.path.exists(output_fn) and os.unlink(output_fn)
+        log.info("Merging using gdal_merge.py")
+        
+        # Try importing gdal_merge directly, which will more reliably
+        # find the right library since if we got this far, python already
+        # found gdal okay.  Unfortunately it's not super straightforward
+        # to get the right way of importing this, since it's intended as
+        # a script and not a module.
+        try:
+            from Scripts import gdal_merge
+        except ImportError:
+            log.info("Failed to import gdal_merge, will try subprocess") 
+            gdal_merge=None
+
+        cmd=["python","gdal_merge.py","-init","nan","-a_nodata","nan",
+             "-o",output_fn]+self.tile_fns
+        
+        log.info(" ".join(cmd))
+                
+        if gdal_merge:
+            gdal_merge.main(argv=cmd[1:])
+        else:
+            # more likely that gdal_merge.py is on PATH, than the script itself will
+            # be seen by python, so drop python, and invoke script directly.
+            subprocess.call(" ".join(cmd[1:]),shell=True)
+
+
 
     
 if __name__ == '__main__':

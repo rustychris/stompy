@@ -76,7 +76,7 @@ def read_tin_xml_mmap(fn):
     
     with open(fn,'rb') as fp:
         mm=mmap.mmap(fp.fileno(),length=0,prot=mmap.PROT_READ)
-        miter=re.finditer( (b'(<P id="(\d+)">([0-9\.]+) ([0-9\.]+) ([0-9\.]+)</P>)'
+        miter=re.finditer( (b'(<P id="(\d+)">([-0-9\.]+) ([-0-9\.]+) ([-0-9\.]+)</P>)'
                             b'|(<F[^>]*>(\d+) (\d+) (\d+)</F>)'),
                            mm)
         for g in miter:
@@ -109,8 +109,15 @@ def read_tin_xml_mmap(fn):
     # Renumber to get just the points that were defined.
     Pvalid=np.isfinite(Ps[:,0])
     Ps_valid=Ps[Pvalid,:]
-    remap=np.zeros(Ps.shape[0],np.int32)
+    remap=np.zeros(Ps.shape[0],np.int32)-999
     remap[Pvalid]=np.arange(len(Ps_valid))
     Fs_valid=remap[Fs]
+
+    missing=np.nonzero( Fs_valid.min(axis=1)<0 )[0]
+    if len(missing):
+        missing_points=np.unique( Fs[ Fs_valid<0] )
+        # 2691390, 2693678, 2693687
+        import pdb
+        pdb.set_trace()
     
     return Ps_valid,Fs_valid

@@ -4054,23 +4054,36 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         self.renumber()
 
-    def mpl_triangulation(self):
+    def mpl_triangulation(self,cell_mask=None,offset=[0,0]):
         """
         Return a matplotlib triangulation for the cells of the grid.
         Only guarantees that the nodes retain their order
         """
         tris=[] # [ (n1,n2,n3), ...]
 
-        for c in self.valid_cell_iter():
-            nodes=np.array(self.cell_to_nodes(c))
+        if cell_mask is None:
+            cell_mask=np.nonzero( ~self.cells['deleted'] )
 
-            # this only works for convex cells
-            for i in range(1,len(nodes)-1):
-                tris.append( nodes[ [0,i,i+1] ] )
+        if self.max_sides>3:
+            for c in self.valid_cell_iter():
+                nodes=np.array(self.cell_to_nodes(c))
 
-        tris=np.array(tris)
-        tri=Triangulation(self.nodes['x'][:,0],self.nodes['x'][:,1],
-                          triangles=tris )
+                # this only works for convex cells
+                for i in range(1,len(nodes)-1):
+                    tris.append( nodes[ [0,i,i+1] ] )
+
+            tris=np.array(tris)
+        else:
+            tris=self.cells['nodes'][cell_mask]
+
+        x = self.nodes['x'][:,0]
+        y = self.nodes['x'][:,1]
+        
+        if offset is not None:
+            x=x-offset[0]
+            y=y-offset[0]
+            
+        tri=Triangulation(x, y, triangles=tris)
         return tri
 
     def contourf_node_values(self,values,*args,**kwargs):
@@ -4242,10 +4255,24 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         return (xmax>xxyy[0]) & (xmin<xxyy[1]) & \
             (ymax > xxyy[2]) & (ymin<xxyy[3])
 
-    def cell_clip_mask(self,xxyy):
-        centers=self.cells_center()
-        return  (centers[:,0] > xxyy[0]) & (centers[:,0]<xxyy[1]) & \
-            (centers[:,1] > xxyy[2]) & (centers[:,1]<xxyy[3])
+    def cell_clip_mask(self,xxyy,by_center=True):
+        if by_center:
+            centers=self.cells_center()
+            return  (centers[:,0] > xxyy[0]) & (centers[:,0]<xxyy[1]) & \
+                (centers[:,1] > xxyy[2]) & (centers[:,1]<xxyy[3])
+        else:
+            # test cell bounds
+            nodes=self.cells['nodes']
+            x=np.where( nodes>=0, self.nodes['x'][nodes,0], np.nan )
+            y=np.where( nodes>=0, self.nodes['x'][nodes,1], np.nan )
+
+            xmin=np.nanmin(x,axis=1)
+            ymin=np.nanmin(y,axis=1)
+            xmax=np.nanmax(x,axis=1)
+            ymax=np.nanmax(y,axis=1)
+
+            cell_valid=(xmin<xxyy[1])&(xmax>xxyy[0])&(ymin<xxyy[3])&(ymax>xxyy[2])
+            return cell_valid
 
     def plot_cells(self,ax=None,mask=None,values=None,clip=None,centers=False,labeler=None,
                    masked_values=None,
