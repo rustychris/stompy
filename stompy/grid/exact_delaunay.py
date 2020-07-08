@@ -1821,8 +1821,10 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
     def bulk_init(self,points): # ExactDelaunay
         if spatial is None:
             return self.bulk_init_slow(points)
-        
-        sdt = spatial.Delaunay(points)
+
+        # looks like centering this affects how many cells Delaunay
+        # finds.  That's lame.
+        sdt = spatial.Delaunay(points-points.mean(axis=0))
 
         self.nodes=np.zeros( len(points), self.node_dtype)
         self.cells=np.zeros( sdt.vertices.shape[0], self.cell_dtype)

@@ -3,7 +3,23 @@ import numpy as np
 from ..spatial import field
 from . import unstructured_grid, front
 
-def triangulate_hole(grid,seed_point,max_nodes=5000):
+def triangulate_hole(grid,seed_point,max_nodes=5000,hole_rigidity='cells',
+                     splice=True,return_value='grid',dry_run=False):
+    """
+    hole_rigidity: 
+       'cells' nodes and edges which are part of a cell are considered rigid.
+       'all': all nodes and edges of the hole are considered rigid.
+       'all-nodes': edges can be subdivided, but nodes cannot be moved.
+    This affects both the calculation of local scale and the state of nodes
+     and edges during triangulation.
+
+    splice: if true, the new grid is spliced into grid. if false, just returns
+     the grid covering the hole.
+
+    return_value: grid: return the resulting grid
+    front: advancing front instance
+    dry_run: if True, get everything set up but don't triangulate
+    """
     # manually tell it where the region to be filled is.
     # 5000 ought to be plenty of nodes to get around this loop
     nodes=grid.enclosing_nodestring(seed_point,max_nodes)
@@ -19,10 +35,15 @@ def triangulate_hole(grid,seed_point,max_nodes=5000):
 
     for na,nb in utils.circular_pairs(nodes):
         j=grid.nodes_to_edge([na,nb])
-        if np.any( grid.edges['cells'][j] >= 0 ):
-            sample_xy.append(ec[j])
-            sample_scale.append(el[j])
+        if hole_rigidity=='cells':
+            if np.all( grid.edges['cells'][j] < 0):
+                continue
+        elif hole_rigidity in ['all','all-nodes']:
+            pass 
+        sample_xy.append(ec[j])
+        sample_scale.append(el[j])
 
+    assert len(sample_xy)
     sample_xy=np.array(sample_xy)
     sample_scale=np.array(sample_scale)
 
@@ -54,14 +75,22 @@ def triangulate_hole(grid,seed_point,max_nodes=5000):
         assert delta<0.1 # should be 0.0
 
         if len(grid.node_to_cells(n_src))==0:
-            # It should be a HINT
-            AT.grid.nodes['fixed'][n]=AT.HINT
-            src_hints.append(n_src)
-            # And any edges it participates in should not be RIGID either.
-            for j in AT.grid.node_to_edges(n):
-                AT.grid.edges['fixed'][j]=AT.UNSET
+            if hole_rigidity=='cells':
+                # It should be a HINT
+                AT.grid.nodes['fixed'][n]=AT.HINT
+                src_hints.append(n_src)
+            if hole_rigidity in ['cells','all-nodes']:
+                # And any edges it participates in should not be RIGID either.
+                for j in AT.grid.node_to_edges(n):
+                    AT.grid.edges['fixed'][j]=AT.UNSET
 
     AT.scale=apollo
+
+    if dry_run:
+        if return_value=='grid':
+            return AT.grid
+        else:
+            return AT
     
     if AT.loop():
         AT.grid.renumber()
@@ -69,14 +98,23 @@ def triangulate_hole(grid,seed_point,max_nodes=5000):
         print("Grid generation failed")
         return AT # for debugging -- need to keep a handle on this to see what's up.
 
-    for n in src_hints:
-        grid.delete_node_cascade(n)
-        
-    grid.add_grid(AT.grid)
+    if not splice:
+        if return_value=='grid':
+            return AT.grid
+        else:
+            return AT
+    else:    
+        for n in src_hints:
+            grid.delete_node_cascade(n)
 
-    # Surprisingly, this works!
-    grid.merge_duplicate_nodes()
+        grid.add_grid(AT.grid)
 
-    grid.renumber()
+        # Surprisingly, this works!
+        grid.merge_duplicate_nodes()
 
-    return grid
+        grid.renumber(reorient_edges=False)
+
+        if return_value=='grid':
+            return grid
+        else:
+            return AT

@@ -1799,28 +1799,37 @@ class AdvancingFront(object):
         2019-03-12: max_levels used to default to 3, but there were
          cases where it needed a little more perseverance.
          cost_thresh defaults to 0.22, following the tuning of paver.py
-        
         """
         if cost_thresh is None:
             cost_thresh=self.cost_thresh_default
             
         for level in range(max_levels):
+            # following paver, maybe will decrease number of calls
+            # didn't help.
+            nodes.sort(reverse=True)
+            
             max_cost=0
             for n in nodes:
                 # relax_node can return 0 if there was no cost
                 # function to optimize
 
                 # this node may already be good enough
-                if self.eval_cost(n)<cost_thresh: continue
+                initial_cost=self.eval_cost(n)
+                if initial_cost<cost_thresh: continue
                 new_cost=self.relax_node(n) or 0.0
+
                 max_cost=max(max_cost,new_cost)
             if max_cost <= cost_thresh:
                 break
+            # as in paver -- if everybody is valid, good enough
+            failures=self.check_edits(dict(nodes=nodes))
+            if len(failures['cells'])==0:
+                break
+                
             if level==0:
                 # just try re-optimizing once
                 pass
             else:
-                # pass
                 # expand list of nodes one level
                 new_nodes=set(nodes)
                 for n in nodes:
@@ -1876,21 +1885,24 @@ class AdvancingFront(object):
             return None
         x0=self.grid.nodes['x'][n]
         local_length=self.scale( x0 )
+        init_cost=cost(x0)
         new_x = opt.fmin(cost,
                          x0,
                          xtol=local_length*1e-4,
                          disp=0)
+        opt_cost=cost(new_x)
         dx=utils.dist( new_x - x0 )
-        # self.log.debug('Relaxation moved node %f'%dx)
-        cp=self.grid.checkpoint()
-        try:
-            if dx !=0.0:
+
+        if (dx != 0.0) and opt_cost<init_cost:
+            # self.log.debug('Relaxation moved node %f'%dx)
+            cp=self.grid.checkpoint()
+            try:
                 self.grid.modify_node(n,x=new_x)
-            return cost(new_x)
-        except self.cdt.IntersectingConstraints as exc:
-            self.grid.revert(cp)
-            self.log.info("Relaxation caused intersection, reverting")
-            return cost(x0)
+                return opt_cost
+            except self.cdt.IntersectingConstraints as exc:
+                self.grid.revert(cp)
+                self.log.info("Relaxation caused intersection, reverting")
+        return init_cost
         
     def relax_slide_node(self,n):
         cost_free=self.cost_function(n)
@@ -1916,6 +1928,8 @@ class AdvancingFront(object):
             err=(f-fclip)**2
             return err+cost_free( self.curves[ring](fclip) )
 
+        base_cost=cost_free(x0)
+
         new_f = opt.fmin(cost_slide,
                          [f0],
                          xtol=local_length*1e-4,
@@ -1928,7 +1942,6 @@ class AdvancingFront(object):
             # still, can check the two bounds, and if the 
             # cost is lower, return one of them.
             self.log.warning("Slide went outside limits")
-            base_cost=cost_free(x0)
 
             slide_length=(slide_limits[1] - slide_limits[0])
             lower_f=0.95*slide_limits[0]+0.05*slide_limits[1]
@@ -1945,16 +1958,17 @@ class AdvancingFront(object):
             else:
                 self.log.warning("Couldn't truncate slide.")
                 return base_cost
+        new_cost=cost_slide(new_f)
 
-        cp=self.grid.checkpoint()
-        try:
-            if new_f[0]!=f0:
+        if new_cost<base_cost:
+            cp=self.grid.checkpoint()
+            try:
                 self.slide_node(n,new_f[0]-f0)
-            return cost_slide(new_f)
-        except self.cdt.IntersectingConstraints as exc:
-            self.grid.revert(cp)
-            self.log.info("Relaxation caused intersection, reverting")
-            return cost_free(x0)
+                return new_cost
+            except self.cdt.IntersectingConstraints as exc:
+                self.grid.revert(cp)
+                self.log.info("Relaxation caused intersection, reverting")
+        return base_cost
 
     def node_ring_f(self,n,ring0):
         """
@@ -2170,7 +2184,7 @@ class AdvancingFront(object):
         for best in bests:
             try:
                 cp=self.grid.checkpoint()
-                self.log.info("Chose strategy %s"%( actions[best] ) )
+                self.log.debug("Chose strategy %s"%( actions[best] ) )
                 edits=actions[best].execute(site)
                 opt_edits=self.optimize_edits(edits)
 
@@ -2297,8 +2311,6 @@ class AdvancingTriangles(AdvancingFront):
                     if l_perp < self.reject_cc_distance_factor*L:
                         failures['cells'].append(c)
                         break
-                    
-                        
                     
         return failures
 

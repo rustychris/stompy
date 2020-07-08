@@ -1745,15 +1745,18 @@ def uniquify_paths(fns):
 
 
 # Used to be in array_append
-def array_append( A, b=None ):
+sentinel=object()
+def array_append( A, b=sentinel ):
     """
     append b to A, where b.shape == A.shape[1:]
     Attempts to make this fast by dynamically resizing the base array of
     A, and returning the appropriate slice.
 
     if b is None, zeros are appended to A
-    """
 
+    the sentinel bit is to allow specifying a value of None, distinct
+    from not specifying a value
+    """
     # a bit more complicated because A may have a different column ordering
     # than A.base (due to a previous transpose, probably)
     # can compare strides to see if our orderings are the same.
@@ -1780,7 +1783,7 @@ def array_append( A, b=None ):
         base = A.base
 
     A = base[:len(A)+1]
-    if b is None:
+    if b is sentinel:
         return A
     if A.dtype.isbuiltin:
         A[-1] = b

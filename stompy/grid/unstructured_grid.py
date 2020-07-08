@@ -1882,7 +1882,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         # edges take a little extra work, for handling -1 missing edges
         # Follows same logic as for cells
-        Nneg=-min(-1,self.cells['edges'].min())
+        if self.Ncells():
+            Nneg=-min(-1,self.cells['edges'].min())
+        else:
+            Nneg=1
         edge_map = np.zeros(self.Nedges()+Nneg) # do this before truncating
         self.edges = self.edges[esort]
 
@@ -1966,14 +1969,15 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             for f in B_bad:
                 del kwargs[f]
 
-            # avoid mutating ugB.
+            # avoid mutating ugB, and pass on only the valid
+            # nodes and edges
             orig_nodes=kwargs['nodes']
-            kwargs['nodes'] = orig_nodes.copy()
-            kwargs['edges'] = kwargs['edges'].copy()
+            kwargs['nodes'] = orig_nodes[orig_nodes>=0]
+            orig_edges=kwargs['edges']
+            kwargs['edges'] = orig_edges[orig_edges>=0]
 
             for i,node in enumerate(kwargs['nodes']):
-                if node>=0:
-                    kwargs['nodes'][i]=node_map[node]
+                kwargs['nodes'][i]=node_map[node]
 
             # less common, but still need to check for duplicated cells
             # when merge_nodes is used.
@@ -1986,14 +1990,16 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     continue
 
             for i,edge in enumerate(kwargs['edges']):
-                if edge>=0:
-                    kwargs['edges'][i]=edge_map[edge]
+                kwargs['edges'][i]=edge_map[edge]
 
             cell_map[n]=self.add_cell(**kwargs)
 
         return node_map,edge_map,cell_map
 
     def boundary_cycle(self):
+        """
+        Return list of nodes in the outermost boundary
+        """
         # find a point outside the domain:
         x0=self.nodes['x'].min(axis=0)-1.0
         # grab nearby edges
@@ -3776,6 +3782,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         else: # 'mark'
             sel=self.edges['mark']>0
 
+        sel=sel&(~self.edges['deleted'])
+
         return self.plot_edges(mask=sel,**kwargs)
 
     def node_clip_mask(self,clip):
@@ -3806,6 +3814,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         if labeler is not None:
             if labeler=='id':
                 labeler=lambda n,rec: str(n)
+            elif labeler in self.nodes.dtype.names:
+                field=labeler
+                labeler=lambda i,r: str(r[field])
 
             # weirdness to account for mask being indices vs. bitmask
             for n in np.arange(self.Nnodes())[mask]: # np.nonzero(mask)[0]:
@@ -4580,14 +4591,14 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         #  mid: break features at nodes with degree>2.
         # go with mid
         strings=[]
-        edge_marks=np.zeros( self.Nedges(),'b1')
+        edge_marks=np.zeros(self.Nedges(), np.bool8)
 
         for j in self.valid_edge_iter():
             if edge_marks[j]:
                 continue
             edge_marks[j]=True
 
-            trav=tuple(self.edges['nodes'][j])
+            # trav=tuple(self.edges['nodes'][j])
             node_fwd=self.edges['nodes'][j,1]
             node_rev=self.edges['nodes'][j,0]
 
@@ -4603,8 +4614,11 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
                     for j in js:
                         jnodes=self.edges['nodes'][j]
-                        if trav[0] in jnodes:
-                            continue
+                        if trav[0] not in jnodes:
+                            break
+                    else:
+                        assert False
+                        
                     if edge_marks[j]:
                         # possible if we go all the way around a ring.
                         break
@@ -5516,13 +5530,15 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         angle_err=(np.arccos(dots) - np.pi/2)
         return angle_err
 
-
-
     @staticmethod
-    def from_pickle(fn):
+    def read_pickle(fn):
         with open(fn,'rb') as fp:
             return pickle.load(fp)
-
+        
+    @staticmethod
+    def from_pickle(fn):
+        return UnstructuredGrid.read_pickle(fn)
+    
     def write_pickle(self,fn,overwrite=False):
         if os.path.exists(fn) and not overwrite:
             raise Exception("File %s exists, and overwrite is False"%fn)
