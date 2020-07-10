@@ -1634,6 +1634,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 return
             elif on_exists == 'overwrite':
                 self.nodes[name] = data
+            else:
+                raise Exception("Bad on_exists option: %s"%on_exists)
         else:
             self.nodes=recarray_add_fields(self.nodes,
                                            [(name,data)])

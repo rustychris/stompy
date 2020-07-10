@@ -689,6 +689,7 @@ def point_segment_distance(point,seg,return_alpha=False):
     delta = point - seg[0]
     L=mag(seg[1]-seg[0])
     vec = (seg[1] - seg[0])/L
+    assert L!=0.0
     alpha=np.dot(delta,vec) / L
     if alpha<0:
         D=dist(point,seg[0])

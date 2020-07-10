@@ -345,56 +345,79 @@ class Curve(object):
         the first valid result returned.
 
         rel_tol: stop when a point is found within rel_tol*len(segment)
-        of a segment
+        of a segment.
+
+        This is intended for finding f for a point that is already
+        approximately on the curve. So it's a greedy approach.
+
+        To project a point onto the curve, specify rel_tol='best'
         """
         # Walk along the curve, looking for a segment which approximately
         # contains x.
 
-        # Have to be careful about exact matches.  distances[i] should always
-        # yield idx_start=i.
-        # But anything in between depends on the direction
-        if direction==1:
-            idx_start=np.searchsorted(self.distances,f_start,side='right') - 1
-        elif direction==-1:
-            idx_start=np.searchsorted(self.distances,f_start,side='left')
-        elif direction==0:
-            # try either, accept any hit.
-            try: 
-                return self.point_to_f(x,f_start=f_start,direction=1,rel_tol=rel_tol)
-            except self.CurveException:
-                return self.point_to_f(x,f_start=f_start,direction=-1,rel_tol=rel_tol)
+        if rel_tol=='best':
+            # Do a full sweep, check all segments.
+            # Could be smarter, but for now this isn't performance critical
+            idx_start=0
+            direction=1
         else:
-            raise Exception("direction must be +-1")
+            # Have to be careful about exact matches.  distances[i] should always
+            # yield idx_start=i.
+            # But anything in between depends on the direction
+            if direction==1:
+                idx_start=np.searchsorted(self.distances,f_start,side='right') - 1
+            elif direction==-1:
+                idx_start=np.searchsorted(self.distances,f_start,side='left')
+            elif direction==0:
+                # try either, accept any hit.
+                try: 
+                    return self.point_to_f(x,f_start=f_start,direction=1,rel_tol=rel_tol)
+                except self.CurveException:
+                    return self.point_to_f(x,f_start=f_start,direction=-1,rel_tol=rel_tol)
+            else:
+                raise Exception("direction must be +-1")
 
         # Start traversing the segments:
         seg_idx_a=idx_start
-        for i in range(len(self.points)): # max possible traversal
-            seg_idx_b=seg_idx_a + direction
 
-            # Wrapping
-            if seg_idx_b<0:
-                if self.closed:
-                    seg_idx_b += len(self.points)
-                else:
+        best=None
+
+        # closed loops have a point duplicated, and open strings
+        # have one less segment than points
+        # Either way, -1.
+        Nseg=len(self.points)-1
+            
+        for i in range(Nseg): # max possible traversal
+            if self.closed:
+                seg_idx_b=(seg_idx_a + direction)%Nseg
+            else:
+                seg_idx_b=seg_idx_a+direction
+                # Wrapping
+                if seg_idx_b<0:
                     break
-            if seg_idx_b>=len(self.points):
-                if self.closed:
-                    seg_idx_b -= len(self.points)
-                else:
+                if seg_idx_b>Nseg: # same as >=len(self.points)
                     break
 
             seg=self.points[ [seg_idx_a,seg_idx_b] ]
             seg_len=utils.dist(seg[0],seg[1])
             dist,alpha = utils.point_segment_distance(x,seg,return_alpha=True)
 
-            if dist/seg_len < rel_tol: 
-                # How to get to an f from this?
-                new_f=self.distances[seg_idx_a] + direction*alpha*seg_len
-                if not self.closed:
-                    new_f=max(0,min(new_f,self.distances[-1]))
-                return new_f
+            if rel_tol=='best':
+                if (best is None) or (dist<best[0]):
+                    new_f=self.distances[seg_idx_a] + direction*alpha*seg_len
+                    best=[dist,new_f,seg_idx_a,seg_idx_b]
+            else:
+                if dist/seg_len < rel_tol: 
+                    # How to get to an f from this?
+                    new_f=self.distances[seg_idx_a] + direction*alpha*seg_len
+                    if not self.closed:
+                        new_f=max(0,min(new_f,self.distances[-1]))
+                    return new_f
 
             seg_idx_a=seg_idx_b
+
+        if rel_tol=='best':
+            return best[1]
 
         raise self.CurveException("Failed to find a point within tolerance")
 
