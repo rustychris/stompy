@@ -379,8 +379,12 @@ class BC(object):
         mode: this is passed to bokeh, 'cdn' yields small files but requires an internet
          connection to view them.  'inline' yields self-contained, larger (~800k) files.
         """
-        import bokeh.io as bio # output_notebook, show, output_file
-        import bokeh.plotting as bplt
+        try:
+            import bokeh.io as bio # output_notebook, show, output_file
+            import bokeh.plotting as bplt
+        except ModuleNotFoundError:
+            log.warning("Bokeh not found.  Will not generate bokeh plots")
+            return
 
         bplt.reset_output()
 
@@ -435,7 +439,7 @@ class BC(object):
         if label is None:
             label=self.name
         if 'time' in da.dims:
-            plot.line( da.time.values.copy(), da.values.copy(), legend=label,
+            plot.line( da.time.values.copy(), da.values.copy(), legend_label=label,
                        color=self.get_color())
         else:
             from bokeh.models import Label
@@ -478,7 +482,7 @@ class LowpassGodin(BCFilter):
             self.bc.pad=self.min_pad
     def transform_output(self,da):
         assert da.ndim==1,"Only ready for simple time series"
-        from ... import filters
+        from .. import filters
         da.values[:]=filters.lowpass_godin(da.values,
                                            utils.to_dnum(da.time))
         return da
@@ -490,7 +494,7 @@ class Lowpass(BCFilter):
     fill_nan=True
     def transform_output(self,da):
         assert da.ndim==1,"Only ready for simple time series"
-        from ... import filters
+        from .. import filters
         assert self.cutoff_hours is not None,"Must specify lowpass threshold cutoff_hors"
         dt_h=24*np.median(np.diff(utils.to_dnum(da.time.values)))
         log.debug("Lowpass: data time step is %.2fh"%dt_h)
@@ -671,7 +675,7 @@ class RoughnessBC(BC):
             for m in mapped ]
 
         plot.scatter(da.x.values.copy(), da.y.values.copy(), radius=3,
-                     fill_color=colors, line_color=None,legend=label)
+                     fill_color=colors, line_color=None,legend_label=label)
 
         color_bar = ColorBar(color_mapper=color_mapper,
                              label_standoff=12, border_line_color=None, location=(0,0))
@@ -855,7 +859,7 @@ class WindBC(BC):
         for xy in [0,1]:
             plot.line( da.time.values.copy(),
                        da.isel(xy=xy).values.copy(),
-                       legend=label+"-"+"xy"[xy],
+                       legend_label=label+"-"+"xy"[xy],
                        color=self.get_color())
 
 class ScalarBC(BC):
@@ -1148,6 +1152,11 @@ class HydroModel(object):
     def write(self):
         # Make sure instance data has been pushed to the MDUFile, this
         # is used by write_forcing() and write_grid()
+
+        # This doesn't clear it out -- that should be done beforehand.
+        # this is just to make sure the directory exists
+        self.set_run_dir(self.run_dir,mode='create')
+
         assert self.grid is not None,"Must call set_grid(...) before writing"
         self.update_config()
         log.info("Writing MDU to %s"%self.mdu.filename)
@@ -1737,7 +1746,7 @@ class HycomMultiBC(MultiBC):
                          hy_bathy.bathymetry.isel(MT=0).values[sel] ]
         bathy_xyz[:,:2]=self.model.ll_to_native(bathy_xyz[:,:2])
 
-        from ...spatial import field
+        from ..spatial import field
         self.bathy=field.XYZField(X=bathy_xyz[:,:2],F=bathy_xyz[:,2])
 
 
@@ -2212,7 +2221,7 @@ class NwisStageBC(NwisBC,StageBC):
         Download or load from cache, take care of any filtering, unit conversion, etc.
         Returns a dataset with a 'z' variable, and with time as UTC
         """
-        from ...io.local import usgs_nwis
+        from ..io.local import usgs_nwis
         ds=usgs_nwis.nwis_dataset(station=self.station,start_date=period_start,
                                   end_date=period_stop,
                                   products=[self.product_id],
@@ -2239,7 +2248,7 @@ class NwisScalarBC(NwisBC,ScalarBC):
         Download or load from cache, take care of any filtering, unit conversion, etc.
         Returns a dataset with a 'z' variable, and with time as UTC
         """
-        from ...io.local import usgs_nwis
+        from ..io.local import usgs_nwis
         ds=usgs_nwis.nwis_dataset(station=self.station,start_date=period_start,
                                   end_date=period_stop,
                                   products=[self.product_id],
@@ -2264,7 +2273,7 @@ class NwisFlowBC(NwisBC,FlowBC):
         Download or load from cache, take care of any filtering, unit conversion, etc.
         Returns a dataset with a 'z' variable, and with time as UTC
         """
-        from ...io.local import usgs_nwis
+        from ..io.local import usgs_nwis
 
         ds=usgs_nwis.nwis_dataset(station=self.station,start_date=period_start,
                                   end_date=period_stop,

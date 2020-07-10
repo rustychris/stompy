@@ -24,9 +24,7 @@ from stompy.model.delft import dfm_grid
 import stompy.grid.unstructured_grid as ugrid
 
 from . import io as dio
-
-import ..hydro_model as hm
-
+from .. import hydro_model as hm
 
 class DFlowModel(hm.HydroModel,hm.MpiModel):
     # If these are the empty string, then assumes that the executables are
@@ -38,7 +36,9 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
     
     ref_date=None
     mdu=None
-
+    # If set, a DFlowModel instance which will be continued
+    restart_from=None
+    
     # flow and source/sink BCs will get the adjacent nodes dredged
     # down to this depth in order to ensure the impose flow doesn't
     # get blocked by a dry edge. Set to None to disable.
@@ -50,6 +50,9 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         super(DFlowModel,self).__init__(*a,**kw)
         self.structures=[]
         self.load_default_mdu()
+
+        if self.restart_from is not None:
+            self.update_restart(self.restart_from)
         
     def load_default_mdu(self):
         """
@@ -651,28 +654,35 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
     
     def create_restart(self,name):
         new_model=DFlowModel()
-        new_model.mdu=self.mdu.copy()
-        new_model.mdu.set_filename( os.path.join( os.path.dirname(self.mdu.filename),
-                                                  name) )
-        new_model.mdu_basename=name
-        new_model.restart=True # ?
-        new_model.restart_model=self
-        new_model.ref_date=self.ref_date
-        new_model.run_start=self.restartable_time()
-        new_model.num_procs=self.num_procs
-        new_model.grid=self.grid
+        new_model.set_restart_from(self)
+        return new_model
+    
+    def update_restart(self,model):
+        """
+        Pull the restart-related settings from model into the currenty instance.
+        This is going to need tweaking.
+        """
+        self.mdu=model.mdu.copy()
+        self.mdu.set_filename( os.path.join( os.path.dirname(self.mdu.filename),
+                                             name) )
+        self.mdu_basename=name
+        self.restart=True # ?
+        self.restart_model=model
+        self.ref_date=model.ref_date
+        self.run_start=model.restartable_time()
+        self.num_procs=model.num_procs
+        self.grid=model.grid
         # DFM will create a new output directory under the run directory,
         # so we reuse the run directory.
         # if there were some reason to modify files from the old run that are not
         # in the output folder, will have to extend this method.
-        new_model.run_dir=self.run_dir
+        self.run_dir=self.run_dir
         
-        rst_base=os.path.join(self.mdu.output_dir(),
-                              (self.mdu.name
-                               +'_'+utils.to_datetime(new_model.run_start).strftime('%Y%m%d_%H%M%S')
+        rst_base=os.path.join(model.mdu.output_dir(),
+                              (model.mdu.name
+                               +'_'+utils.to_datetime(self.run_start).strftime('%Y%m%d_%H%M%S')
                                +'_rst.nc'))
-        new_model.mdu['restart','RestartFile']=rst_base
-        return new_model
+        self.mdu['restart','RestartFile']=rst_base
 
     def restart_inputs(self):
         """

@@ -254,6 +254,7 @@ def rdb_to_dataset(filename=None,text=None,to_utc=True):
         # and third, optional, is statistic code
         m=re.match(r'(\d+)_(\d+)(_(\d+))?(_cd)?$',key)
         meta={}
+        parameter=None
         if m:
             meta['ts_code']=m.group(1)
             meta['parm_code']=m.group(2)
@@ -266,6 +267,9 @@ def rdb_to_dataset(filename=None,text=None,to_utc=True):
             if parameter is not None:
                 # parm_nm is often really long!
                 # srsname, when present, is shorter
+                # not great -- srsname is sometimes misleading
+                # like 'stream_flow_mean_daily' when really it's instantaneous
+                # tidal flow.
                 srsname=parameter['srsname']
                 varname=None
                 if srsname:
@@ -297,18 +301,26 @@ def rdb_to_dataset(filename=None,text=None,to_utc=True):
                 # TODO: save QA codes
                 continue
 
-        if isinstance( usgs_data[key], np.ndarray ):
+        if (not isinstance(data, np.ndarray)) and (parameter is not None):
+            # In the past, if it had no dimension, I assumed it was
+            # an attribute.  But maybe it's better to see whether
+            # it was found as a parameter.  In that case, it's
+            # probably a real data point but was collapsed by
+            # the rdb code because it had no variation.
+            # Depending, this may need to be smarter about datatype
+            data=data*np.ones(ds.dims['time'])
+            
+        if isinstance(data, np.ndarray):
             if len(data)==len(ds.time):
-                ds[varname] = ( ('time',), data)
+                ds[varname] = ('time',), data
             else:
                 print("What to do with %s"%key)
 
             for k in meta:
                 ds[varname].attrs[k]=meta[k]
-
-        else: # probably should be an attribute
-            ds.attrs[key]=data
-
+        else:
+            # probably should be an attribute
+            ds.attrs[varname]=data
 
     # if there is a tz_cd attribute, use that to get timestamps
     # back to UTC.
