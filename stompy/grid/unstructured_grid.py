@@ -327,17 +327,21 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     # (outside of initialization or during modification), they are kept consistent.
 
     node_dtype = [ ('x',(np.float64,2)),('deleted',np.bool8) ]
+    node_defaults=None
     cell_dtype  = [ # edges/nodes are set dynamically in __init__ since max_sides can change
                     ('_center',(np.float64,2)),  # typ. voronoi center
                     ('mark',np.int32),
                     ('_area',np.float64),
                     ('deleted',np.bool8)]
+    cell_defaults=None
     edge_dtype = [ ('nodes',(np.int32,2)),
                    ('mark',np.int32),
                    ('cells',(np.int32,2)),
                    ('deleted',np.bool8)]
+    edge_defaults=None
 
     ##
+    
     filename=None
 
     def __init__(self,
@@ -374,10 +378,38 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                           self.cell_dtype + extra_cell_fields
         self.edge_dtype = self.edge_dtype + extra_edge_fields
 
+        self.update_element_defaults()
+
         if grid is not None:
             self.copy_from_grid(grid)
         else:
             self.from_simple_data(points=points,edges=edges,cells=cells)
+            
+    def update_element_defaults(self):
+        """
+        Allocate or update default 'template' values for the 3 types of elements.
+        Existing default values are copied based on name.
+        New default values get whatever np.zeros gives them, with the exception of
+        floating that get nan and object which gets None.
+        """
+        def copy_and_update(default,new_dtype):
+            if default is None:
+                return np.zeros( (), new_dtype)
+            if default.dtype == new_dtype:
+                return default # already fine.
+            new_def=np.zeros( (), new_dtype )
+            for name in new_def.dtype.names:
+                if name in default.dtype.names:
+                    new_def[name]=default[name]
+                elif np.issubdtype(new_def[name].dtype,np.floating):
+                    new_def[name]=np.nan
+                elif np.issubdtype(new_def[name].dtype,np.object_):
+                    new_def[name]=None
+                # otherwise whatever np.zeros serves up.
+                    
+        self.node_defaults=copy_and_update(self.node_defaults,self.node_dtype)
+        self.edge_defaults=copy_and_update(self.edge_defaults,self.edge_dtype)
+        self.cell_defaults=copy_and_update(self.cell_defaults,self.cell_dtype)
 
     def copy(self):
         # maybe subclasses shouldn't be used here - for example,
@@ -529,6 +561,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         else:
             filename=None
 
+        # fields which will be ignored for fields='auto', presumably because
+        # they are grid geometry/topology, and already handled.
+        ignore_fields=[]
+            
         if dialect=='fishptm':
             mesh_name='Mesh2'
             nc[mesh_name]=(),1
@@ -559,6 +595,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         node_x_name,node_y_name = mesh.node_coordinates.split()
 
+        ignore_fields.extend([node_x_name,node_y_name])
         node_x=nc[node_x_name]
         node_y=nc[node_y_name]
         try:
@@ -571,6 +608,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             node_y=node_y[:]
         node_xy = np.array([node_x,node_y]).T
         def process_as_index(varname):
+            ignore_fields.append(varname)
             ncvar=nc[varname]
             idxs=ncvar.values
             try:
@@ -638,6 +676,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             ug.add_cell_field('cell_depth',nc['Mesh2_face_depth'].values)
             ug.add_edge_field('edge_depth',nc['Mesh2_edge_depth'].values)
 
+        if 'face_coordinates' in mesh.attrs:
+            face_x,face_y = mesh.face_coordinates.split()
+            ug.cells['_center'][:,0] = nc[face_x].values
+            ug.cells['_center'][:,1] = nc[face_y].values
+            ignore_fields.extend([face_x,face_y])
+            
         if fields=='auto':
             # doing this after the fact is inefficient, but a useful
             # simplification during development
@@ -652,28 +696,27 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     prefix='_'+dim_name+'_' # see below, for uniquifying fields
                     
                     for vname in nc.data_vars:
-                        if vname in [node_x_name,node_y_name]:
+                        if vname in ignore_fields:
                             continue # skip things like node_x
-                        # At this point, only scalar values
-                        if nc[vname].dims==(dim_name,):
-                            struct_vname=vname
-                            # Undo the uniquifying code in write_ugrid
-                            # This allows for a field like 'mark' to
-                            # exist in UnstructuredGrid from both edges
-                            # and cells, but on writing to netcdf
-                            # one or both will get _<dim_name>_ prefix
-                            if struct_vname.startswith(prefix):
-                                struct_vname=struct_vname[len(prefix):]
-                            if struct_vname in struct.dtype.names:
-                                # already exists, just copy
-                                struct[struct_vname]=nc[vname].values
-                            else:
-                                adder( struct_vname, nc[vname].values )
 
-        if 'face_coordinates' in mesh.attrs:
-            face_x,face_y = mesh.face_coordinates.split()
-            ug.cells['_center'][:,0] = nc[face_x].values
-            ug.cells['_center'][:,1] = nc[face_y].values
+                        if (len(nc[vname].dims)==0) or (nc[vname].dims[0]!=dim_name):
+                            continue
+                        struct_vname=vname
+                        # Undo the uniquifying code in write_ugrid
+                        # This allows for a field like 'mark' to
+                        # exist in UnstructuredGrid from both edges
+                        # and cells, but on writing to netcdf
+                        # one or both will get _<dim_name>_ prefix
+                        if struct_vname.startswith(prefix):
+                            struct_vname=struct_vname[len(prefix):]
+                            
+                        if struct_vname in struct.dtype.names:
+                            # already exists, just copy, and hope data type and shape
+                            # are ok.  
+                            struct[struct_vname]=nc[vname].values
+                        else:
+                            adder( struct_vname, nc[vname].values )
+                    
 
         if dialect=='fishptm':
             ug.add_cell_field('z_bed',-ug.cells['Mesh2_face_depth'])
@@ -1284,8 +1327,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                         continue # presumed to be private, probably auto-calculated.
                     if field in ['cells','nodes','edges','deleted','face_x','face_y']:
                         continue # already included
-                    if src_data[field].ndim != 1:
-                        continue # not smart enough for that yet
+                    if (src_data is self.nodes) and field=='x':
+                        continue
                     if np.issubdtype(src_data[field].dtype,np.object_):
                         logging.warning("write_ugrid: will drop %s"%field)
                         continue
@@ -1305,7 +1348,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     else:
                         out_field=field
 
-                    ds[out_field] = (dim_name,),src_data[field]
+                    # simple handling to multidimensional arrays.
+                    extra_dims=['d%d'%d for d in src_data[field].shape[1:]]
+                    out_dims=(dim_name,) + tuple(extra_dims)
+                    ds[out_field] = out_dims,src_data[field]
 
         ds.attrs['Conventions']='CF-1.6, UGRID-1.0'
         ds=ds.set_coords(['node_x','node_y'])
@@ -1461,17 +1507,17 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         nc.close()
         
     @staticmethod
-    def from_shp(shp_fn):
+    def from_shp(shp_fn,**kw):
         # bit of extra work to find the number of nodes required
         feats=wkb2shp.shp2geom(shp_fn)['geom']
-        if feats[0].type=='Polygon':
-            nsides=[len(geom.exterior.coords)
-                    for geom in wkb2shp.shp2geom(shp_fn)['geom']]
-            nsides=np.max(nsides)
-        else:
-            nsides=10 # total punt
 
-        g=UnstructuredGrid(max_sides=nsides)
+        if 'max_sides' not in kw:
+            if feats[0].type=='Polygon':
+                nsides=[len(geom.exterior.coords)
+                                 for geom in wkb2shp.shp2geom(shp_fn)['geom']]
+                kw['max_sides']=np.max(nsides)
+
+        g=UnstructuredGrid(**kw)
         g.add_from_shp(shp_fn)
         return g
     def add_from_shp(self,shp_fn):
@@ -1615,9 +1661,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             self.edges=recarray_add_fields(self.edges,
                                            [(name,data)])
             self.edge_dtype=self.edges.dtype
+        self.update_element_defaults()
+        
     def delete_edge_field(self,*names):
         self.edges=recarray_del_fields(self.edges,names)
         self.edge_dtype=self.edges.dtype
+        self.update_element_defaults()
 
     def add_node_field(self,name,data,on_exists='fail'):
         """ add a new field to nodes, amend node_dtype
@@ -1640,9 +1689,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             self.nodes=recarray_add_fields(self.nodes,
                                            [(name,data)])
             self.node_dtype=self.nodes.dtype
+        self.update_element_defaults()
+        
     def delete_node_field(self,*names):
         self.nodes=recarray_del_fields(self.nodes,names)
         self.node_dtype=self.nodes.dtype
+        self.update_element_defaults()
 
     def add_cell_field(self,name,data,on_exists='fail'):
         """
@@ -1664,9 +1716,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             self.cells=recarray_add_fields(self.cells,
                                            [(name,data)])
             self.cell_dtype=self.cells.dtype
+        self.update_element_defaults()
+        
     def delete_cell_field(self,*names):
         self.cells=recarray_del_fields(self.cells,names)
         self.cell_dtype=self.cells.dtype
+        self.update_element_defaults()
 
     def match_to_grid(self,other,tol=1e-3):
         """
@@ -2785,9 +2840,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 self.nodes[i]['deleted']=False
 
         if i is None: # have to extend the array
-            n=np.zeros( (), dtype=self.node_dtype)
+            # RH 2020-07-16: new code for default values.  maybe works?
+            n=self.node_defaults # np.zeros( (), dtype=self.node_dtype)
             self.nodes=array_append(self.nodes,n)
             i=len(self.nodes)-1
+        else:
+            self.nodes[i]=self.node_defaults
 
         for k,v in six.iteritems(kwargs):
             # oddly, the ordering of the indexing matters
@@ -4569,6 +4627,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         for idx,i in enumerate(cells):
             xy = self.nodes['x'][self.cell_to_nodes(i)]
             cell_geoms[idx] = geometry.Polygon(xy)
+        del cell_geoms[(idx+1):]
         return ops.cascaded_union(cell_geoms)
 
     def boundary_polygon(self):
@@ -4580,7 +4639,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             return self.boundary_polygon_by_edges()
         except Exception as exc:
             self.log.warning('Warning, boundary_polygon() failed using edges!  Trying polygon union method')
-            self.log.warning(exc,exc_info=True)
+            # self.log.warning(exc,exc_info=True)
             return self.boundary_polygon_by_union()
 
     def extract_linear_strings(self):
@@ -4826,7 +4885,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             else:
                 test=geom.intersects( self.cell_polygon(c) )
             if invert:
-                test = ~test
+                test = not test # not in numpy land, so don't invert with ~
             if as_type is 'mask':
                 sel[c] = test
             else:
@@ -6272,9 +6331,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         cell i
         """
         cell_nodes = self.cell_to_nodes(i)
-        cell_codes = np.ones(len(cell_nodes),np.int32)*Path.LINETO
-        cell_codes[0] = Path.MOVETO
-        cell_codes[-1] = Path.CLOSEPOLY
+        #cell_codes = np.ones(len(cell_nodes),np.int32)*Path.LINETO
+        #cell_codes[0] = Path.MOVETO
+        #cell_codes[-1] = Path.CLOSEPOLY
         return Path(self.nodes['x'][cell_nodes])
 
 class UGrid(UnstructuredGrid):

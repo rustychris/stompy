@@ -358,8 +358,13 @@ class Curve(object):
         if rel_tol=='best':
             # Do a full sweep, check all segments.
             # Could be smarter, but for now this isn't performance critical
-            idx_start=0
-            direction=1
+            segs=np.stack( [self.points[:-1,:],
+                            self.points[1:,:]], axis=1)
+            dists,alphas = utils.point_segments_distance(x,segs,return_alpha=True)
+            best=np.argmin(dists)
+            seg_len=utils.dist( segs[best,0], segs[best,1] )
+            new_f=self.distances[best] + alphas[best]*seg_len
+            return new_f
         else:
             # Have to be careful about exact matches.  distances[i] should always
             # yield idx_start=i.

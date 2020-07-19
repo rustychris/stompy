@@ -699,10 +699,37 @@ def point_segment_distance(point,seg,return_alpha=False):
         delta -= np.dot(delta,vec) * vec
         D=mag(delta)
     if return_alpha:
+        alpha=np.clip(alpha,0,1) # used to just return alpha.  That seems bad.
         return D,alpha
     else:
         return D
 
+def point_segments_distance(point,segs,return_alpha=False):
+    """
+    Like point_segment_distance, but vectorized over segments
+    Distance from point to finite segment
+    point: [nd] array
+    seg [ns,2,nd] array
+    """
+    segA=segs[:,0,:]
+    segB=segs[:,1,:]
+    deltas = point - segA # vector from start of segment to query
+    L=mag(segB-segA) # length of segment
+    vecs = (segB - segA)/L[:,None] # unit vector along segment
+    assert np.all( L!=0.0 )
+
+    # [270,2] by [270,2]
+    alpha=(deltas*vecs).sum(axis=1) # map point onto segment
+    alpha=alpha.clip(0,L)
+
+    seg_points=segA+vecs*alpha[...,None]
+    
+    D=dist(point, seg_points)
+    if return_alpha:
+        alpha=alpha/L # make it nondimensional
+        return D,alpha
+    else:
+        return D
 
 # rotate the given vectors/points through the CCW angle in radians
 def rot_fn(angle):
