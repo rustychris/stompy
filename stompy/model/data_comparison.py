@@ -11,6 +11,8 @@ from stompy import filters
 from matplotlib import dates
 from scipy.stats import spearmanr
 
+from . import hydro_model as hm
+
 from .. import (xr_utils, utils)
 
 def period_union(sources):
@@ -38,6 +40,29 @@ def combine_sources(all_sources,dt=np.timedelta64(900,'s'),min_period=True):
     dt: each input is resample at this time step.
     min_period: True => use the 
     """
+    # If any sources are actually 'BC' objects, skip while figuring out
+    # the timeline
+    t_min=None
+    t_max=None
+    for src in all_sources:
+        if isinstance(src, hm.BC):
+            continue
+        if (t_min is None) or (t_min>src.time.min()):
+            t_min=src.time.min()
+        if (t_max is None) or (t_max<src.time.max()):
+            t_max=src.time.max()
+    new_sources=[]
+    
+    for src in all_sources:
+        if isinstance(src, hm.BC):
+            # Now get the real data.
+            src.data_start=t_min
+            src.data_stop=t_max
+            new_sources.append(src.data())
+        else:
+            new_sources.append(src)
+    sources=new_sources
+    
     # For many plots and metrics need a common timeline -- 
     # Get them on common time frames
     empty=[len(da)==0 for da in all_sources]
@@ -100,6 +125,9 @@ def assemble_comparison_data(models,observations,model_labels=None,
     observations: list of DataArrays representing time series
       the first observation must have lon and lat fields
       defining where to extract data from in the model.
+
+    HERE: alternatively, can pass BC object, allowing the auto-download and 
+    translate code for BCs to be reused for managing validation data.
 
     returns a tuple: ( [list of dataarrays], combined dataset )
     """
@@ -226,16 +254,7 @@ def calibration_figure_3panel(all_sources,combined=None,
         metric_ref=N[metric_ref]
     if scatter_x_source<0:
         scatter_x_source=N[scatter_x_source]
-        
-    gs = gridspec.GridSpec(5, 3)
-    fig=plt.figure(figsize=(9,7),num=num)
-    ts_ax = fig.add_subplot(gs[:-3, :])
-    lp_ax = fig.add_subplot(gs[-3:-1, :-1])
-    scat_ax=fig.add_subplot(gs[-3:-1, 2])
-    txt_ax= fig.add_subplot(gs[-1,:])
 
-    labels=list(combined.label.values)
-    
     if trim_time:
         t_min,t_max=period_intersection(all_sources)
         new_sources=[]
@@ -245,8 +264,20 @@ def calibration_figure_3panel(all_sources,combined=None,
         all_sources=new_sources
         
     if combined is None:
-        combined=combine_sources(all_sources)
-        
+        combined=combine_sources(all_sources,min_period=trim_time)
+        if combined is None:
+            log.warning("Combined sources was None -- likely no overlap between data sets")
+            return None
+
+    labels=list(combined.label.values)
+
+    gs = gridspec.GridSpec(5, 3)
+    fig=plt.figure(figsize=(9,7),num=num)
+    ts_ax = fig.add_subplot(gs[:-3, :])
+    lp_ax = fig.add_subplot(gs[-3:-1, :-1])
+    scat_ax=fig.add_subplot(gs[-3:-1, 2])
+    txt_ax= fig.add_subplot(gs[-1,:])
+
     offsets=combined.mean(dim='time').values
     if offset_source is not None:
         offsets-=offsets[offset_source]

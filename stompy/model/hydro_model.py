@@ -523,7 +523,7 @@ class Lag(BCFilter):
     def transform_output(self,da):
         da.time.values[:]=da.time.values-self.lag
         return da
-    
+
 class Transform(BCFilter):
     def __init__(self,fn=None, fn_da=None, units=None):
         """
@@ -898,10 +898,26 @@ class SigmaCoord(VerticalCoord):
     sigma_growth_factor=1
 
 class MpiModel(object):
-    mpi_bin_dir=None # same, but for mpiexec.  None means use dfm_bin_dir
+    """
+    Starting point for common MPI functionality.  In its
+    infancy.
+    """
+    mpi_bin_dir=None 
     mpi_bin_exe='mpiexec'
     mpi_args=() # tuple to avoid mutation
     num_procs=1 # might be useful outside of MPI, but keep it here for now.
+
+    _mpiexec=None 
+    @property
+    def mpiexec(self):
+        if self._mpiexec is None:
+            return os.path.join(self.mpi_bin_dir,self.mpi_bin_exe)
+        else:
+            return self._mpiexec
+    @mpiexec.setter
+    def set_mpiexec(self,m):
+        self._mpiexec=m
+    
     
 class HydroModel(object):
     run_dir="." # working directory when running dflowfm
@@ -1159,7 +1175,6 @@ class HydroModel(object):
 
         assert self.grid is not None,"Must call set_grid(...) before writing"
         self.update_config()
-        log.info("Writing MDU to %s"%self.mdu.filename)
         self.write_config()
         self.write_extra_files()
         self.write_forcing()

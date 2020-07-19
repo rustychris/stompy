@@ -13,6 +13,7 @@ import copy
 
 import numpy as np
 import xarray as xr
+import pandas as pd
 from shapely import geometry
 
 import stompy.model.delft.io as dio
@@ -52,7 +53,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         self.load_default_mdu()
 
         if self.restart_from is not None:
-            self.update_restart(self.restart_from)
+            self.set_restart_from(self.restart_from)
         
     def load_default_mdu(self):
         """
@@ -145,14 +146,16 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         dest=os.path.join(self.run_dir, self.mdu['geometry','NetFile'])
         self.grid.write_dfm(dest,overwrite=True,)
 
+    def subdomain_grid_filename(self,proc):
+        base_grid_name=self.mdu.filepath(('geometry','NetFile'))
+        proc_grid_name=base_grid_name.replace('_net.nc','_%04d_net.nc'%proc)
+        return proc_grid_name
     def subdomain_grid(self,proc):
         """
         For a run that has been partitioned, load the grid for a specific
         subdomain.
         """
-        base_grid_name=self.mdu.filepath(('geometry','NetFile'))
-        proc_grid_name=base_grid_name.replace('_net.nc','_%04d_net.nc'%proc)
-        g=ugrid.UnstructuredGrid.read_dfm(proc_grid_name)
+        g=ugrid.UnstructuredGrid.read_dfm(self.subdomain_grid_filename(proc))
         return g
         
     def ext_force_file(self):
@@ -195,7 +198,23 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         model.ref_date=ref
         model.run_start=start
         model.run_stop=stop
+
+        model.load_gazetteer_from_run()
         return model
+
+    def load_gazetteer_from_run(self):
+        """
+        Populate gazetteers with geometry read in from an existing run.
+        So far only gets stations.  Will have to come back to handle
+        transects, regions, etc. and maybe even read back in BC locations,
+        or query output history files.
+        """
+        fn=self.mdu.filepath(['output','ObsFile'])
+        if os.path.exists(fn):
+            stations=pd.read_csv(self.mdu.filepath(['output','ObsFile']),
+                                 sep=' ',names=['x','y','name'],quotechar="'")
+            stations['geom']=[geometry.Point(x,y) for x,y in stations.loc[ :, ['x','y']].values ]
+            self.gazetteers.append(stations.to_records())
 
     @classmethod
     def to_mdu_fn(cls,path):
@@ -243,6 +262,13 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                  os.path.basename(self.mdu.filename)]
             self.run_dflowfm(cmd,mpi=False)
         else:
+            # Copy the partitioned network files:
+            for proc in range(self.num_procs):
+                old_grid_fn=self.restart_from.subdomain_grid_filename(proc)
+                new_grid_fn=self.subdomain_grid_filename(proc)
+                print("Copying pre-partitioned grid files: %s => %s"%(old_grid_fn,new_grid_fn))
+                shutil.copyfile(old_grid_fn,new_grid_fn)
+                
             # not a cross platform solution!
             gen_parallel=os.path.join(self.dfm_bin_dir,"generate_parallel_mdu.sh")
             cmd=[gen_parallel,os.path.basename(self.mdu.filename),"%d"%self.num_procs,'6']
@@ -278,8 +304,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
 
         if num_procs>1:
             mpi_bin_dir=self.mpi_bin_dir or self.dfm_bin_dir
-            mpiexec=os.path.join(mpi_bin_dir,"mpiexec")
-            real_cmd=( [mpiexec,"-n","%d"%self.num_procs]
+            real_cmd=( [self.mpiexec,"-n","%d"%self.num_procs]
                         +list(self.mpi_args)
                         +[self.dflowfm_exe]
                         +cmd )
@@ -323,18 +348,30 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         this doesn't mean that all output files are present.
         """
         root_fn=self.mdu.filename[:-4] # drop .mdu suffix
+        # Look in multiple locations for diagnostic file.
+        # In older DFM, MPI runs placed it next to mdu, while
+        # serial and newer DFM (>=1.6.2?) place it in
+        # output folder
+        dia_fns=[]
+        dia_fn_base=os.path.basename(root_fn)
         if self.num_procs>1:
-            dia_fn=root_fn+'_0000.dia'
+            dia_fn_base+='_0000.dia'
         else:
-            # for serial runs, the dia file ends up in the DFM output folder
-            dia_fn=os.path.join(self.run_dir,
-                                "DFM_OUTPUT_%s"%self.mdu.name,
-                                "%s.dia"%self.mdu.name)
+            dia_fn_base+=".dia"
+            
+        dia_fns.append(os.path.join(self.run_dir,dia_fn_base))
+        dia_fns.append(os.path.join(self.run_dir,
+                                    "DFM_OUTPUT_%s"%self.mdu.name,
+                                    dia_fn_base))
 
-        assert dia_fn!=self.mdu.filename,"Probably case issues with %s"%dia_fn
+        for dia_fn in dia_fns:
+            assert dia_fn!=self.mdu.filename,"Probably case issues with %s"%dia_fn
 
-        if not os.path.exists(dia_fn):
+            if os.path.exists(dia_fn):
+                break
+        else:
             return False
+        
         # Read the last 1000 bytes
         with open(dia_fn,'rb') as fp:
             fp.seek(0,os.SEEK_END)
@@ -370,6 +407,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         # Assumes update_config() already called
         self.write_structures() # updates mdu
         self.write_monitors()
+        log.info("Writing MDU to %s"%self.mdu.filename)
         self.mdu.write()
 
     def write_monitors(self):
@@ -510,7 +548,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
     def write_flow_bc(self,bc):
         self.write_gen_bc(bc,quantity='flow')
 
-        if bc.dredge_depth is not None:
+        if (bc.dredge_depth is not None) and (self.restart_from is None):
             # Additionally modify the grid to make sure there is a place for inflow to
             # come in.
             log.info("Dredging grid for source/sink BC %s"%bc.name)
@@ -521,7 +559,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
     def write_source_bc(self,bc):
         self.write_gen_bc(bc,quantity='source')
 
-        if bc.dredge_depth is not None:
+        if (bc.dredge_depth is not None) and (self.restart_from is None):
             # Additionally modify the grid to make sure there is a place for inflow to
             # come in.
             log.info("Dredging grid for source/sink BC %s"%bc.name)
@@ -645,44 +683,56 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                              "%s.hyd"%self.mdu.name )
 
     def restartable_time(self):
+        """
+        Based on restart files, what is the latest time that restart
+        data exists for continuing this run?
+        Returns None of no restart data was found
+        """
         fns=glob.glob(os.path.join(self.mdu.output_dir(),'*_rst.nc'))
-        fns.sort() # sorts both processors and restart times    
+        fns.sort() # sorts both processors and restart times
+        if len(fns)==0:
+            return None
+        
         last_rst=xr.open_dataset(fns[-1])
         rst_time=last_rst.time.values[0]
         last_rst.close()
         return rst_time
     
-    def create_restart(self,name):
+    def create_restart(self):
         new_model=DFlowModel()
         new_model.set_restart_from(self)
         return new_model
     
-    def update_restart(self,model):
+    def set_restart_from(self,model):
         """
-        Pull the restart-related settings from model into the currenty instance.
-        This is going to need tweaking.
+        Pull the restart-related settings from model into the current instance.
+        This is going to need tweaking. Previously it would re-use the original
+        run directory, since outputs would go into a new sub-directory.  but
+        that's not flexible enough for general use of restarts.
         """
         self.mdu=model.mdu.copy()
-        self.mdu.set_filename( os.path.join( os.path.dirname(self.mdu.filename),
-                                             name) )
-        self.mdu_basename=name
-        self.restart=True # ?
+        name=model.mdu.name
+        self.mdu_basename=os.path.basename( model.mdu_basename )
+        self.mdu.set_filename( os.path.join(self.run_dir, self.mdu_basename) )
+        self.restart=True
         self.restart_model=model
         self.ref_date=model.ref_date
         self.run_start=model.restartable_time()
+        assert self.run_start is not None,"Trying to restart run that has no restart data"
+        
         self.num_procs=model.num_procs
         self.grid=model.grid
-        # DFM will create a new output directory under the run directory,
-        # so we reuse the run directory.
-        # if there were some reason to modify files from the old run that are not
-        # in the output folder, will have to extend this method.
-        self.run_dir=self.run_dir
+        
+        # Too soon to test this?
+        assert self.run_dir != model.run_dir
         
         rst_base=os.path.join(model.mdu.output_dir(),
                               (model.mdu.name
                                +'_'+utils.to_datetime(self.run_start).strftime('%Y%m%d_%H%M%S')
                                +'_rst.nc'))
-        self.mdu['restart','RestartFile']=rst_base
+        # That gets rst_base relative to the cwd, but we need it relative
+        # to the new runs run_dir
+        self.mdu['restart','RestartFile']=os.path.relpath(rst_base,start=self.run_dir)
 
     def restart_inputs(self):
         """
