@@ -25,6 +25,9 @@ try:
 except ImportError:
     seawater=None
 
+cdec_time_zone='America/Los_Angeles'
+ref_time_zone='UTC'
+
 def cdec_df_to_ds(df):
     ds=xr.Dataset()
 
@@ -37,8 +40,8 @@ def cdec_df_to_ds(df):
     #     ds['time']=ds.time.values.astype('<M8')
     # make the adjustment to UTC  FIX THIS
     # ds.time.values[:] += np.timedelta64(8,'h')
-    df['time_local']=df['DATE TIME'].dt.tz_localize('America/Los_Angeles')
-    df['time']=df.time_local.dt.tz_convert('UTC')
+    df['time_local']=df['DATE TIME'].dt.tz_localize(cdec_time_zone)
+    df['time']=df.time_local.dt.tz_convert(ref_time_zone)
     # if not times:
     #     # force type, which for empty list defaults to float64
     #     ds['time']=ds.time.values.astype('<M8')
@@ -69,7 +72,7 @@ def cdec_dataset(station,start_date,end_date,sensor,
     sensor: integer, e.g. 70 for discharge, pumping
 
     start_date,end_date: period to retrieve, as python datetime, matplotlib datenum,
-    or numpy datetime64.
+    or numpy datetime64. These are now interpreted as UTC times.
 
     days_per_request: batch the requests to fetch smaller chunks at a time.
     if this is an integer, then chunks will start with start_date, then start_date+days_per_request,
@@ -93,9 +96,11 @@ def cdec_dataset(station,start_date,end_date,sensor,
 
     returns an xarray dataset.  note that TIMES ARE UTC in the returned dataset.
 
-    CDEC returns all data in PST, but for consistency with other io.local modules
-    those are converted to UTC in this script
+    CDEC returns all data in Pacific local time (PDT/PST). For consistency with other 
+    io.local modules those are converted to UTC in this script, and likewise the input times are
+    converted from UTC to Pacific local before sending the request to CDEC.
     """
+    # In theory these incoming dates are UTC.
     start_date=utils.to_dt64(start_date)
     end_date=utils.to_dt64(end_date)
 
@@ -114,13 +119,19 @@ def cdec_dataset(station,start_date,end_date,sensor,
     last_url=None
 
     for interval_start,interval_end in periods(start_date,end_date,days_per_request):
-        params['Start']=utils.to_datetime(interval_start).strftime('%Y-%m-%d')
-        params['End']  =utils.to_datetime(interval_end).strftime('%Y-%m-%d')
+        times_local=( pd.Series([ interval_start,interval_end] )
+                      .dt.tz_localize('UTC')
+                      .dt.tz_convert('America/Los_Angeles') )
+
+        utc_strings=[ utils.to_datetime(t).strftime('%Y-%m-%d')
+                      for t in [interval_start,interval_end] ]
+        
+        params['Start']=times_local[0].strftime('%Y-%m-%d')
+        params['End']  =times_local[1].strftime('%Y-%m-%d')
 
         base_fn="%s_%s%s_%s_%s.nc"%(station,
                                     str(sensor), duration,
-                                    params['Start'],
-                                    params['End'])
+                                    utc_strings[0],utc_strings[1])
         if cache_dir is not None:
             cache_fn=os.path.join(cache_dir,base_fn)
         else:
