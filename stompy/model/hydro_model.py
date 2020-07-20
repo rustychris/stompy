@@ -25,6 +25,10 @@ import stompy.grid.unstructured_grid as ugrid
 
 class BC(object):
     name=None
+
+    # Having the CF standard name can help match up variables
+    standard_name=None
+    
     _geom=None
     # set geom_type in subclasses to limit the matching geometries
     # to just 'Point', 'LineString', etc.   Avoids conflicts if
@@ -686,10 +690,16 @@ class StageBC(BC):
     # datum.
     datum=None
     geom_type='LineString'
+    standard_name='sea_surface_height'
+    water_level=None
 
-    def __init__(self,z=None,**kw):
+    def __init__(self,water_level=None,**kw):
+        """
+        water_level: scalar value or xr.DataArray specifying water level BC.
+        used to be 'z' but that should be reserved for vertical coordinates
+        """
         super(StageBC,self).__init__(**kw)
-        self.z=z
+        self.water_level=water_level
 
     def write_config(self):
         old_bc_fn=self.model.ext_force_file()
@@ -710,7 +720,7 @@ class StageBC(BC):
         return super(StageBC,self).filename_base()+"_ssh"
 
     def src_data(self):
-        return self.z
+        return self.water_level
 
     def write_data(self):
         # just write a single node
@@ -718,15 +728,16 @@ class StageBC(BC):
 
 class FlowBC(BC):
     dredge_depth=-1.0
-    Q=None
+    standard_name='ocean_volume_transport_across_line'
+    flow=None
     geom_type='LineString'
 
-    def __init__(self,Q=None,**kw):
+    def __init__(self,flow=None,**kw):
         super(FlowBC,self).__init__(**kw)
-        self.Q=Q
+        self.flow=flow
 
     def filename_base(self):
-        return super(FlowBC,self).filename_base()+"_Q"
+        return super(FlowBC,self).filename_base()+"_flow"
 
     def write_config(self):
         old_bc_fn=self.model.ext_force_file()
@@ -740,27 +751,14 @@ class FlowBC(BC):
                    "\n"]
             fp.write("\n".join(lines))
 
-    # Dredging now handled by model driver, not within the BC
-    # def write_pli(self):
-    #     super(FlowBC,self).write_pli()
-    # 
-    #     if self.dredge_depth is not None:
-    #         # Additionally modify the grid to make sure there is a place for inflow to
-    #         # come in.
-    #         log.info("Dredging grid for flow BC %s"%self.name)
-    #         self.model.dredge_boundary(np.array(self.geom.coords),
-    #                                    self.dredge_depth)
-    #     else:
-    #         log.info("Dredging disabled")
-
     def src_data(self):
         # probably need some refactoring here...
-        return self.Q
+        return self.flow
 
     def write_data(self):
         self.write_tim(self.data())
 
-class SourceSinkBC(BC):
+class SourceSinkBC(FlowBC):
     # The grid, at the entry point, will be taken down to this elevation
     # to ensure that prescribed flows are not prevented due to a dry cell.
 
@@ -770,20 +768,11 @@ class SourceSinkBC(BC):
     z='bed'
 
     dredge_depth=-1.0
-    def __init__(self,Q=None,**kw):
-        """
-        Q: one of:
-          a constant value in m3/s
-          an xarray DataArray with a time index.
-        """
-        super(SourceSinkBC,self).__init__(**kw)
-        self.Q=Q
-
     def filename_base(self):
-        return super(SourceSinkBC,self).filename_base()+"_Q"
+        return super(SourceSinkBC,self).filename_base()+"_flow"
 
     def write_config(self):
-        assert self.Q is not None
+        assert self.flow is not None
 
         old_bc_fn=self.model.ext_force_file()
 
@@ -795,26 +784,9 @@ class SourceSinkBC(BC):
                    "OPERAND=O",
                    "\n"]
             fp.write("\n".join(lines))
-
-    # Dredging now handled by the model driver.
-    # def write_pli(self):
-    #     super(SourceSinkBC,self).write_pli()
-    # 
-    #     if self.dredge_depth is not None:
-    #         # Additionally modify the grid to make sure there is a place for inflow to
-    #         # come in.
-    #         log.info("Dredging grid for flow BC %s"%self.name)
-    #         dfm_grid.dredge_discharge(self.model.grid,
-    #                                   np.array(self.geom.coords),
-    #                                   self.dredge_depth)
-    #     else:
-    #         log.info("dredging disabled")
-
+            
     def write_data(self):
         self.write_tim(self.data())
-    def src_data(self):
-        assert self.Q is not None
-        return self.Q
 
 class WindBC(BC):
     """
@@ -1537,8 +1509,6 @@ class OTPSStageBC(StageBC,OTPSHelper):
     def write_data(self): # DFM IMPLEMENTATION!
         self.write_tim(self.data())
 
-
-
 class OTPSFlowBC(FlowBC,OTPSHelper):
     def __init__(self,**kw):
         super(OTPSFlowBC,self).__init__(**kw)
@@ -2207,8 +2177,8 @@ class CdecStageBC(CdecBC,StageBC):
                              sensor=self.sensor, cache_dir=self.cache_dir)
         if ds is not None:
             # to m
-            ds['z']=ds['sensor%04d'%self.sensor] * 0.3048
-            ds['z'].attrs['units']='m'
+            ds['water_level']=ds['sensor%04d'%self.sensor] * 0.3048
+            ds['water_level'].attrs['units']='m'
             return ds
     
 class NwisBC(object):
@@ -2226,7 +2196,7 @@ class NwisStageBC(NwisBC,StageBC):
     product_id=65 # gage height
     def src_data(self):
         ds=self.fetch_for_period(self.data_start,self.data_stop)
-        return ds['z']
+        return ds['water_level']
     def write_bokeh(self,**kw):
         defaults=dict(title="Stage: %s (%s)"%(self.name,self.station))
         defaults.update(kw)
@@ -2242,8 +2212,9 @@ class NwisStageBC(NwisBC,StageBC):
                                   products=[self.product_id],
                                   cache_dir=self.cache_dir)
         if ds is not None:
-            ds['z']=('time',), 0.3048*ds['height_gage']
-            ds['z'].attrs['units']='m'
+            ds['water_level']=('time',), 0.3048*ds['height_gage']
+            ds['water_level'].attrs['units']='m'
+            ds['water_level'].attrs['standard_name']=self.standard_name
         return ds
 
 class NwisScalarBC(NwisBC,ScalarBC):
@@ -2275,7 +2246,7 @@ class NwisFlowBC(NwisBC,FlowBC):
     def src_data(self):
         ds=self.fetch_for_period(self.data_start,self.data_stop)
         if ds is not None:
-            return ds['Q']
+            return ds['flow']
         else:
             return self.default
     
@@ -2295,11 +2266,10 @@ class NwisFlowBC(NwisBC,FlowBC):
                                   products=[self.product_id],
                                   cache_dir=self.cache_dir)
         if ds is not None:
-            ds['Q']=('time',), 0.028316847*ds['stream_flow_mean_daily']
-            ds['Q'].attrs['units']='m3 s-1'
+            ds['flow']=('time',), 0.028316847*ds['stream_flow_mean_daily']
+            ds['flow'].attrs['units']='m3 s-1'
+            ds['flow'].attrs['standard_name']=self.standard_name
         return ds
-
-
 
 class DFlowModel(HydroModel):
     # If these are the empty string, then assumes that the executables are
@@ -2865,7 +2835,8 @@ class DFlowModel(HydroModel):
         new_rst_base=os.path.join( self.mdu.output_dir(), os.path.basename(old_rst_base))
         self.mdu['restart','RestartFile']=new_rst_base
         
-    def extract_section(self,name=None,chain_count=1,refresh=False):
+    def extract_section(self,name=None,chain_count=1,refresh=False,
+                        xy=None,ll=None,data_vars=None):
         """
         Return xr.Dataset for monitored cross section.
         currently only supports selection by name.  may allow for 
@@ -2873,59 +2844,17 @@ class DFlowModel(HydroModel):
 
         refresh: force a close/open on the netcdf.
         """
-        
-        his=xr.open_dataset(self.his_output())
-        if refresh:
-            his.close()
-            his=xr.open_dataset(self.his_output())
-            
-        names=his.cross_section_name.values
-        try:
-            names=[n.decode() for n in names]
-        except AttributeError:
-            pass
-
-        if name not in names:
-            return None
-        idx=names.index(name)
-        # this has a bunch of extra cruft -- some other time remove
-        # the parts that are not relevant to the cross section.
-        return his.isel(cross_section=idx)
-
-    def extract_station(self,xy=None,ll=None,name=None,refresh=False):
-        his=xr.open_dataset(self.his_output())
-        
-        if refresh:
-            his.close()
-            his=xr.open_dataset(self.his_output())
-        
-        if name is not None:
-            names=his.station_name.values
-            try:
-                names=[n.decode() for n in names]
-            except AttributeError:
-                pass
-
-            if name not in names:
-                return None
-            idx=names.index(name)
-        else:
-            raise Exception("Only picking by name has been implemented for DFM output")
-        
-        # this has a bunch of extra cruft -- some other time remove
-        # the parts that are not relevant to the station
-        ds=his.isel(stations=idx)
-        # When runs are underway, some time values beyond the current point in the
-        # run are set to t0.  Remove those.
-        non_increasing=(ds.time.values[1:] <= ds.time.values[:-1])
-        if np.any(non_increasing):
-            # e.g. time[1]==time[0]
-            # then diff(time)[0]==0
-            # nonzero gives us 0, and the correct slice is [:1]
-            stop=np.nonzero(non_increasing)[0][0]
-            ds=ds.isel(time=slice(None,stop+1))
-        return ds
-
+        raise Exception("extract_section has not been implemented in subclass")
+    
+    def extract_station(self,xy=None,ll=None,name=None,refresh=False,
+                        data_vars=None):
+        """
+        From a model that has been run, extract output from a location
+        defined by one of xy,ll or name.
+        data_vars: optional list of the subset of variables to extract.
+          may be ignored if the particular driver does not support it.
+        """
+        raise Exception("extract_section has not been implemented in subclass")
 
 import sys
 if sys.platform=='win32':

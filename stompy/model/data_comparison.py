@@ -40,12 +40,10 @@ def combine_sources(all_sources,dt=np.timedelta64(900,'s'),min_period=True):
     dt: each input is resample at this time step.
     min_period: True => use the 
     """
-    # If any sources are actually 'BC' objects, skip while figuring out
-    # the timeline
     t_min=None
     t_max=None
     for src in all_sources:
-        if isinstance(src, hm.BC):
+        if len(src.time)==0:
             continue
         if (t_min is None) or (t_min>src.time.min()):
             t_min=src.time.min()
@@ -117,6 +115,7 @@ def combine_sources(all_sources,dt=np.timedelta64(900,'s'),min_period=True):
 
 
 def assemble_comparison_data(models,observations,model_labels=None,
+                             period='model',
                              extract_options={}):
     """
     Extract data from one or more model runs to match one or more observations
@@ -126,8 +125,13 @@ def assemble_comparison_data(models,observations,model_labels=None,
       the first observation must have lon and lat fields
       defining where to extract data from in the model.
 
-    HERE: alternatively, can pass BC object, allowing the auto-download and 
-    translate code for BCs to be reused for managing validation data.
+      alternatively, can pass BC object, allowing the auto-download and 
+      translate code for BCs to be reused for managing validation data.
+
+    the first observation determines what data is extracted from the
+    model. if a dataarray, it should have a name of water_level or flow.
+    if a BC object, then the class of the object (FlowBC,StageBC) determines
+    what to extract from the model.
 
     returns a tuple: ( [list of dataarrays], combined dataset )
     """
@@ -143,27 +147,91 @@ def assemble_comparison_data(models,observations,model_labels=None,
                     model_labels.append("Model %d"%(i+1))
     else:
         assert len(model_labels)>=len(models),"Not enough model labels supplied"
+
+    # Collect inferred options for extracting model data, which
+    # can later be overridden by extract_options
+    loc_extract_opts=dict()
+        
+    # Convert BC instances into dataarrays
+    new_obs=[]
+    for oi,obs in enumerate(observations):
+        if isinstance(obs,hm.BC):
+            # Have to decide at this point what period of data to request
+            if period=='model': # the first model, no chaining
+                period=[models[0].run_start,models[0].run_stop]
+                
+            bc=obs
+            bc.data_start=period[0]
+            bc.data_stop=period[1]
+            
+            obs=bc.data()
+            if oi==0:
+                # This BC/dataarray will define where model data is extracted.
+                # so try to get location information if it exists
+                loc_extract_opts['name']=bc.name
+                # could get fancy and try to query the gazetteer, but for now
+                # just assume BC had a good name, that will match the output
+                    
+        new_obs.append(obs)
+
+    orig_obs=observations
+    observations=new_obs
     
     # Extract relevant variable and location from model
     base_obs=observations[0] # defines the variable and location for extracting model data
+    base_var=base_obs.name # e.g. 'water_level', 'flow'
+
+    try:
+        loc_extract_opts['lon']=base_obs.lon
+        loc_extract_opts['lat']=base_obs.lat
+    except AttributeError:
+        pass
+
+    try:
+        loc_extract_opts['x']=base_obs.x
+        loc_extract_opts['y']=base_obs.y
+    except AttributeError:
+        pass
+
+    if base_var=='water_level':
+        loc_extract_opts['data_vars']=['water_level']
+        # there are numerous very similar standard names, mostly depending
+        # on the datum.  the models never know the true datum, so it's
+        # arbitrary exactly which standard name is used.
+    elif base_var=='flow':
+        loc_extract_opts['data_vars']=['cross_section_discharge']
+        # Not that many people use this...  but it's the correct one.
+    else:
+        raise Exception("Not ready to extract variable %s"%base_var)
+    
+    loc_extract_opts.update(extract_options)
+    
     model_data=[] # a data array per model
     for model,label in zip(models,model_labels):
-        if base_obs.name=='water_level':
-            ds=model.extract_station(ll=[base_obs.lon,base_obs.lat],
-                                     data_vars=['eta'], # can give drastic speedup
-                                     **extract_options)
-            da=ds['eta']
-            da.name='water_level' # having the same name helps later
-        elif base_obs.name=='flow':
-            assert False,"this has not been written yet"
-            # extract_section currently only for DFM, and only by name
-            ds=model.extract_section(ll=[base_obs.lon,base_obs.lat],
-                                     data_vars=['cross_section_discharge'],
-                                     **extract_options)
-            da=ds['cross_section_discharge'] # that's a DFM name...
-            da.name='flow' # having the same name helps later
+        if base_var=='flow':
+            ds=model.extract_section(**loc_extract_opts)
         else:
-            raise Exception("Not yet ready")
+            ds=model.extract_station(**loc_extract_opts)
+
+        if ds is None:
+            print("No data extracted from model.  omitting")
+            continue
+            
+        assert len(loc_extract_opts['data_vars'])==1,"otherwise missing some data"
+        tgt_var=loc_extract_opts['data_vars'][0]
+        try:
+            da=ds[tgt_var]
+        except KeyError:
+            # see if the variable can be found based on standard-name
+            for dv in ds.data_vars:
+                if ds[dv].attrs.get('standard_name','')==tgt_var:
+                    da=ds[dv]
+                    da.name=tgt_var
+                    break
+            else:
+                raise Exception("Could not find %s by name or standard_name"%(tgt_var))
+
+        da.name=base_var # having the same name helps later
         da=da.assign_coords(label=label)
         model_data.append(da)
         
@@ -215,7 +283,8 @@ def calc_metrics(x,ref,combine=False):
 
     metrics['wilmott']=utils.model_skill(x.values,ref.values)
     metrics['murphy']=utils.murphy_skill(x.values,ref.values)
-    metrics['spearman_rho'],metrics['spearman_p']=spearmanr(x.values,ref.values)
+        
+    metrics['spearman_rho'],metrics['spearman_p']=spearmanr(x.values[valid],ref.values[valid])
     
     return metrics    
 

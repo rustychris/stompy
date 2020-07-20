@@ -777,7 +777,8 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         new_rst_base=os.path.join( self.mdu.output_dir(), os.path.basename(old_rst_base))
         self.mdu['restart','RestartFile']=new_rst_base
         
-    def extract_section(self,name=None,chain_count=1,refresh=False):
+    def extract_section(self,name=None,chain_count=1,refresh=False,
+                        xy=None,ll=None,data_vars=None):
         """
         Return xr.Dataset for monitored cross section.
         currently only supports selection by name.  may allow for 
@@ -785,6 +786,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
 
         refresh: force a close/open on the netcdf.
         """
+        assert name is not None,"Currently sections can only be pulled by name"
         
         his=xr.open_dataset(self.his_output())
         if refresh:
@@ -798,13 +800,43 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             pass
 
         if name not in names:
+            print("section %s not found.  Options are:"%name)
+            print(", ".join(names))
             return None
+
         idx=names.index(name)
         # this has a bunch of extra cruft -- some other time remove
         # the parts that are not relevant to the cross section.
-        return his.isel(cross_section=idx)
+        ds=his.isel(cross_section=idx)
+        return self.translate_vars(ds,requested_vars=data_vars)
 
-    def extract_station(self,xy=None,ll=None,name=None,refresh=False):
+    def translate_vars(self,ds,requested_vars=[]):
+        """
+        Not sure if this is the right place to handle this sort of thing.
+        Trying to deal with the fact that we'd like to request 'water_level'
+        from a model, but it may be named 'eta', 'waterlevel', 'sea_surface_height',
+        's1', and so on.
+
+        The interface is going to evolve here...
+
+        For now:
+        ds: xr.Dataset, presumably from model output.
+        requested_vars: if present, a list of variable names that the caller 
+        wants.
+
+        Updates ds, try to find candidates for the requested variables.
+        """
+        lookup={'flow':'cross_section_discharge',
+                'water_level':'waterlevel'}
+        for v in requested_vars:
+            if v in ds: continue
+            if (v in lookup) and (lookup[v] in ds):
+                ds[v]=ds[ lookup[v] ]
+                ds[v].attrs['history']='Copied from %s'%lookup[v]
+        return ds
+    
+    def extract_station(self,xy=None,ll=None,name=None,refresh=False,
+                        data_vars=None):
         his=xr.open_dataset(self.his_output())
         
         if refresh:
@@ -836,8 +868,8 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             # nonzero gives us 0, and the correct slice is [:1]
             stop=np.nonzero(non_increasing)[0][0]
             ds=ds.isel(time=slice(None,stop+1))
-        return ds
 
+        return self.translate_vars(ds,requested_vars=data_vars)
 
 import sys
 if sys.platform=='win32':
