@@ -12,7 +12,8 @@ import datetime
 from matplotlib.dates import date2num, num2date
 
 from ... import utils, memoize
-from ..delft import dflow_model as dfm
+#from ..delft import dflow_model as dfm
+from .. import hydro_model as hm
 from ..delft import dfm_grid
 from ...grid import unstructured_grid
 from ...spatial import linestring_utils
@@ -72,22 +73,22 @@ def dt_round(dt):
         return dt + td
 
 # certainly there is a better way to do this...
-MultiBC=dfm.MultiBC
-StageBC=dfm.StageBC
-FlowBC=dfm.FlowBC
-VelocityBC=dfm.VelocityBC
-ScalarBC=dfm.ScalarBC
-SourceSinkBC=dfm.SourceSinkBC
-OTPSStageBC=dfm.OTPSStageBC
-OTPSFlowBC=dfm.OTPSFlowBC
-OTPSVelocityBC=dfm.OTPSVelocityBC
-HycomMultiVelocityBC=dfm.HycomMultiVelocityBC
-HycomMultiScalarBC=dfm.HycomMultiScalarBC
-NOAAStageBC=dfm.NOAAStageBC
-NwisFlowBC=dfm.NwisFlowBC
-NwisStageBC=dfm.NwisStageBC
-CdecFlowBC=dfm.CdecFlowBC
-CdecStageBC=dfm.CdecStageBC
+MultiBC=hm.MultiBC
+StageBC=hm.StageBC
+FlowBC=hm.FlowBC
+VelocityBC=hm.VelocityBC
+ScalarBC=hm.ScalarBC
+SourceSinkBC=hm.SourceSinkBC
+OTPSStageBC=hm.OTPSStageBC
+OTPSFlowBC=hm.OTPSFlowBC
+OTPSVelocityBC=hm.OTPSVelocityBC
+HycomMultiVelocityBC=hm.HycomMultiVelocityBC
+HycomMultiScalarBC=hm.HycomMultiScalarBC
+NOAAStageBC=hm.NOAAStageBC
+NwisFlowBC=hm.NwisFlowBC
+NwisStageBC=hm.NwisStageBC
+CdecFlowBC=hm.CdecFlowBC
+CdecStageBC=hm.CdecStageBC
 
 class GenericConfig(object):
     """ Handles reading and writing of suntans.dat formatted files.
@@ -417,7 +418,7 @@ class SunConfig(GenericConfig):
                 'vertspace.dat']
         return self.is_equal(other,limit_to_keys=keys)
 
-class SuntansModel(dfm.HydroModel):
+class SuntansModel(hm.HydroModel):
     # Annoying, but suntans doesn't like signed elevations
     # this offset will be applied to grid depths and freesurface boundary conditions.
     # This is error prone, though, and makes it difficult to "round-trip"
@@ -1290,16 +1291,16 @@ class SuntansModel(dfm.HydroModel):
         return ds
 
     def write_bc(self,bc):
-        if isinstance(bc,dfm.StageBC):
+        if isinstance(bc,hm.StageBC):
             self.write_stage_bc(bc)
-        elif isinstance(bc,dfm.FlowBC):
-            self.write_flow_bc(bc)
-        elif isinstance(bc,dfm.VelocityBC):
-            self.write_velocity_bc(bc)
-        elif isinstance(bc,dfm.ScalarBC):
-            self.write_scalar_bc(bc)
-        elif isinstance(bc,dfm.SourceSinkBC):
+        elif isinstance(bc,hm.SourceSinkBC):
             self.write_source_sink_bc(bc)
+        elif isinstance(bc,hm.FlowBC):
+            self.write_flow_bc(bc)
+        elif isinstance(bc,hm.VelocityBC):
+            self.write_velocity_bc(bc)
+        elif isinstance(bc,hm.ScalarBC):
+            self.write_scalar_bc(bc)
         else:
             super(SuntansModel,self).write_bc(bc)
 
