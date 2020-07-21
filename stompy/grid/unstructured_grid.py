@@ -5710,7 +5710,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 for n in self.cells['nodes'][c,:nsides]:
                     txt.append(str(n))
 
-                for nbr in self.cell_to_cells(c):
+                # Important to get the right order
+                for nbr in self.cell_to_cells(c,ordered=True):
                     if nbr<0:
                         txt.append("-1")
                     else:
