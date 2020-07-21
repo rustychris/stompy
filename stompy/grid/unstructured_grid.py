@@ -400,12 +400,23 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             new_def=np.zeros( (), new_dtype )
             for name in new_def.dtype.names:
                 if name in default.dtype.names:
-                    new_def[name]=default[name]
+                    if new_def[name].shape == default[name].shape:
+                        new_def[name]=default[name]
+                    else:
+                        # For now just allow differences in the length of a vector
+                        # i.e. when changing max_sides
+                        assert new_def[name].ndim==default[name].ndim,"ndim changed: %s"%name
+                        max_len=min(len(new_def[name]),len(default[name]))
+                        # in case new_def is longer -- will fill with the first element
+                        # of default
+                        new_def[name][:] = default[name][0]
+                        new_def[name][:max_len] = default[name][:max_len]
                 elif np.issubdtype(new_def[name].dtype,np.floating):
                     new_def[name]=np.nan
                 elif np.issubdtype(new_def[name].dtype,np.object_):
                     new_def[name]=None
                 # otherwise whatever np.zeros serves up.
+            return new_def
                     
         self.node_defaults=copy_and_update(self.node_defaults,self.node_dtype)
         self.edge_defaults=copy_and_update(self.edge_defaults,self.edge_dtype)
@@ -504,6 +515,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 new_cell_dtype.append( typeinfo ) # just copy
 
         self.cell_dtype=new_cell_dtype
+        # this will handle the change in shape:
+        self.update_element_defaults()
         new_cells=np.zeros(self.Ncells(),new_cell_dtype)
 
         for typeinfo in old_dtype:
