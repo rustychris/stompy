@@ -558,11 +558,15 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     
     @staticmethod
     def from_ugrid(nc,mesh_name=None,skip_edges=False,fields='auto',
-                   dialect=None):
+                   auto_max_bytes_per_element=256,dialect=None):
         """ extract 2D grid from netcdf/ugrid
         nc: either a filename or an xarray dataset.
         fields: 'auto' [new] populate additional node,edge and cell fields
-        based on matching dimensions.
+        based on matching dimensions.  In case the source file is a full 
+        run, 'large' variables are not included in auto, determined by
+          whether each element has a size greater than auto_max_bytes_per_element.
+          'all' will load all fields, regardless of size.
+          a list of names will load those specific variables.
 
         dialect: ad-hoc support for slight variants on the format.
           'fishptm' for reading ptm hydro files in nc format where the names
@@ -695,7 +699,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             ug.cells['_center'][:,1] = nc[face_y].values
             ignore_fields.extend([face_x,face_y])
             
-        if fields=='auto':
+        if fields is not None: # fields=='auto':
             # doing this after the fact is inefficient, but a useful
             # simplification during development
             for dim_attr,struct,adder in [('node_dimension',ug.nodes,ug.add_node_field),
@@ -711,9 +715,20 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     for vname in nc.data_vars:
                         if vname in ignore_fields:
                             continue # skip things like node_x
-
-                        if (len(nc[vname].dims)==0) or (nc[vname].dims[0]!=dim_name):
+                        if len(nc[vname].dims)==0:
                             continue
+                        if nc[vname].dims[0]!=dim_name:
+                            continue # might be too restrictive
+
+                        if fields=='all':
+                            pass
+                        elif fields=='auto':
+                            # Check size
+                            if nc[vname].size / len(struct) > auto_max_bytes_per_element:
+                                continue
+                        elif vname not in fields:
+                            continue
+                        
                         struct_vname=vname
                         # Undo the uniquifying code in write_ugrid
                         # This allows for a field like 'mark' to
