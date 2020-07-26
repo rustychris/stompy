@@ -38,7 +38,8 @@ def combine_sources(all_sources,dt=np.timedelta64(900,'s'),min_period=True):
     Resample multiple DataArray time series to common timebase.
     all_sources: list of xr.DataArray()
     dt: each input is resample at this time step.
-    min_period: True => use the 
+    min_period: True => time period defined by the intersection of all the sources
+      otherwise use the union of all source time periods
     """
     t_min=None
     t_max=None
