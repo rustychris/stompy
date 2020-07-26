@@ -1863,6 +1863,12 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
                             break
                     else:
                         assert False
+    # def constrained_centers(self):
+    #     """
+    #     For cells with no constrained edges, return the circumcenter.
+    #     If there is one constrained edge, return the average of its
+    #     midpoint and the other node
+    #     """
 
             
 # Issues:

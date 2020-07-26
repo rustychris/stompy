@@ -441,6 +441,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         g.edges=self.edges.copy()
         g.nodes=self.nodes.copy()
 
+        g.cell_defaults=self.cell_defaults.copy()
+        g.edge_defaults=self.edge_defaults.copy()
+        g.node_defaults=self.node_defaults.copy()
+
         g.refresh_metadata()
         return g
 
@@ -2184,7 +2188,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         if recalc:
             self.edges['cells'][:,:]=self.UNMESHED
             self.log.info("Recalculating edge to cells" )
-            all_c=range(self.Ncells())
+            all_c=np.nonzero( ~self.cells['deleted'] )[0]
+            # range(self.Ncells())
         else:
             if e is None:
                 e=slice(None)
@@ -4655,7 +4660,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             # self.log.warning(exc,exc_info=True)
             return self.boundary_polygon_by_union()
 
-    def extract_linear_strings(self):
+    def extract_linear_strings(self,edge_select=None):
         """
         extract contiguous linestrings as sequences of nodes.
         """
@@ -4667,14 +4672,16 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         strings=[]
         edge_marks=np.zeros(self.Nedges(), np.bool8)
 
-        for j in self.valid_edge_iter():
-            if edge_marks[j]:
+        for j0 in self.valid_edge_iter():
+            if (edge_select is not None) and (not edge_select[j0]):
                 continue
-            edge_marks[j]=True
+            if edge_marks[j0]:
+                continue
+            edge_marks[j0]=True
 
             # trav=tuple(self.edges['nodes'][j])
-            node_fwd=self.edges['nodes'][j,1]
-            node_rev=self.edges['nodes'][j,0]
+            node_fwd=self.edges['nodes'][j0,1]
+            node_rev=self.edges['nodes'][j0,0]
 
             node_string=[node_fwd,node_rev]
 
@@ -4682,6 +4689,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                           (node_rev,node_fwd) ]:
                 while 1:
                     js = self.node_to_edges(trav[1])
+
+                    if edge_select is not None:
+                        js=[j for j in js if edge_select[j]]
 
                     if len(js)!=2:
                         break
@@ -5607,7 +5617,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     @staticmethod
     def read_pickle(fn):
         with open(fn,'rb') as fp:
-            return pickle.load(fp)
+            g=pickle.load(fp)
+        # Might be an older grid
+        g.update_element_defaults()
+        return g
         
     @staticmethod
     def from_pickle(fn):

@@ -303,8 +303,13 @@ def steady_streamline_twoways(g,Uc,x0,**kw):
     ds_fwd=steady_streamline_oneway(g,Uc,x0,**kw)
     ds_rev=steady_streamline_oneway(g,-Uc,x0,**kw)
     ds_rev.time.values *= -1
-    return xr.concat( [ds_rev.isel(time=slice(None,None,-1)), ds_fwd],
+    ds=xr.concat( [ds_rev.isel(time=slice(None,None,-1)), ds_fwd],
                       dim='time' )
+    del ds['stop_condition']
+    ds['stop_condition']= ('leg',), [ds_rev.stop_condition.values,
+                                     ds_fwd.stop_condition.values]
+    ds['root']=(),len(ds_rev.time.values)
+    return ds
 
 def prepare_grid(g):
     g.add_edge_field('normal',g.edges_normals(),on_exists='overwrite')
