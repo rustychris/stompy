@@ -1863,12 +1863,22 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
                             break
                     else:
                         assert False
-    # def constrained_centers(self):
-    #     """
-    #     For cells with no constrained edges, return the circumcenter.
-    #     If there is one constrained edge, return the average of its
-    #     midpoint and the other node
-    #     """
+    def constrained_centers(self):
+        """
+        For cells with no constrained edges, return the circumcenter.
+        If return centroid.
+        The details may evolve, but the purpose is to get a point which 
+        is inside the domain and can be used like a circumcenter (i.e. 
+        approximately lies on the medial axis of the continous boundary).
+        """
+        ccs=self.cells_center(refresh=True) # circumcenters
+        centroids=self.cells_centroid()
+        e2c=self.edge_to_cells() # recalc=True)
+        cell_with_constraint=np.unique( e2c[ self.edges['constrained']] )
+        result=ccs.copy()
+        result[cell_with_constraint] = centroids[cell_with_constraint]
+        return result
+    
 
             
 # Issues:

@@ -597,7 +597,7 @@ class UgridXr(object):
         """
         reimplementation of sunreader.Sunreader::averaging_weights
         
-        Returns weights as array [Nk] to average over a cell-centered quantity
+        returns: weights as array [faces,Nk] to average over a cell-centered quantity
         for the range specified by ztop,zbottom, and dz.
 
         range is specified by 2 of the 3 of ztop, zbottom, dz, all non-negative.
