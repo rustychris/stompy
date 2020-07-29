@@ -24,16 +24,44 @@ RIGID=front.AdvancingFront.RIGID
 class NodeDiscretization(object):
     def __init__(self,g):
         self.g=g
-    def construct_matrix(self,op='laplacian',dirichlet_nodes={}):
+    def construct_matrix(self,op='laplacian',dirichlet_nodes={},
+                         zero_tangential_nodes=[]):
+        """
+        Construct a matrix and rhs for the given operation.
+        dirichlet_nodes: boundary node id => value
+        zero_tangential_nodes: list of lists.  each list gives a set of
+          nodes which should be equal to each other, allowing specifying
+          a zero tangential gradient BC.  
+        """
         g=self.g
         B=np.zeros(g.Nnodes(),np.float64)
         M=sparse.dok_matrix( (g.Nnodes(),g.Nnodes()),np.float64)
+
+        # Adjust tangential node data structure for easier use
+        # in matrix construction
+        tangential_nodes={} 
+        for grp in zero_tangential_nodes:
+            leader=grp[0]
+            for member in grp:
+                # NB: This includes leader=>leader
+                tangential_nodes[member]=leader
 
         for n in range(g.Nnodes()):
             if n in dirichlet_nodes:
                 nodes=[n]
                 alphas=[1]
                 rhs=dirichlet_nodes[n]
+            elif n in tangential_nodes:
+                leader=tangential_nodes[n]
+                if n==leader:
+                    # Really should drop the row
+                    rhs=0.0
+                    nodes=[n]
+                    alphas=[0]
+                else:
+                    rhs=0.0
+                    nodes=[n,leader]
+                    alphas=[1,-1]
             else:
                 nodes,alphas,rhs=self.node_discretization(n,op=op)
                 # could add to rhs here
@@ -41,6 +69,7 @@ class NodeDiscretization(object):
             for node,alpha in zip(nodes,alphas):
                 M[n,node]=alpha
         return M,B
+    
     def node_laplacian(self,n0):
         return self.node_discretization(n0,'laplacian')
 
@@ -422,13 +451,14 @@ class QuadGen(object):
             gen.edges['bez'][js[1],1+flips[1]] = cp1
 
     def plot_gen_bezier(self,num=10):
+        gen=self.gen
         fig=plt.figure(num)
         fig.clf()
         ax=fig.add_subplot(1,1,1)
-        self.gen.plot_edges(lw=0.3,color='k',alpha=0.5,ax=ax)
-        self.gen.plot_nodes(alpha=0.5,ax=ax,zorder=3,color='orange')
+        gen.plot_edges(lw=0.3,color='k',alpha=0.5,ax=ax)
+        gen.plot_nodes(alpha=0.5,ax=ax,zorder=3,color='orange')
         
-        for j in gen.valid_edge_iter():
+        for j in self.gen.valid_edge_iter():
             n0=gen.edges['nodes'][j,0]
             nN=gen.edges['nodes'][j,1]
             bez=gen.edges['bez'][j]
@@ -688,53 +718,90 @@ class QuadGen(object):
             boundary=e2c.min(axis=1)<0
             i_dirichlet_nodes={} # for psi
             j_dirichlet_nodes={} # for phi
-            for e in np.nonzero(boundary)[0]:
-                n1,n2=gtri.edges['nodes'][e]
-                i1=gtri.nodes['ij'][n1,0]
-                i2=gtri.nodes['ij'][n2,0]
-                if i1==i2:
-                    i_dirichlet_nodes[n1]=i1
-                    i_dirichlet_nodes[n2]=i2
-                j1=gtri.nodes['ij'][n1,1]
-                j2=gtri.nodes['ij'][n2,1]
-                if j1==j2:
-                    # So why does this need to be inverted?
-                    j_dirichlet_nodes[n1]=-j1
-                    j_dirichlet_nodes[n2]=-j2
+
+            # Block of nodes with a zero-tangential-gradient BC
+            i_tan_groups=[]
+            j_tan_groups=[]
+            i_tan_groups_i=[] # the input i value
+            j_tan_groups_j=[] # the input j value
+
+            if 0: 
+                for e in np.nonzero(boundary)[0]:
+                    n1,n2=gtri.edges['nodes'][e]
+                    i1=gtri.nodes['ij'][n1,0]
+                    i2=gtri.nodes['ij'][n2,0]
+                    if i1==i2:
+                        i_dirichlet_nodes[n1]=i1
+                        i_dirichlet_nodes[n2]=i2
+                    j1=gtri.nodes['ij'][n1,1]
+                    j2=gtri.nodes['ij'][n2,1]
+                    if j1==j2:
+                        # So why does this need to be inverted?
+                        j_dirichlet_nodes[n1]=-j1
+                        j_dirichlet_nodes[n2]=-j2
+            else:
+                # Try zero tangential nodes.  Current code will be under-determined
+                # without the derivative constraints.
+                bcycle=gtri.boundary_cycle()
+                n1=bcycle[-1]
+                i_grp=None
+                j_grp=None
+
+                for n2 in bcycle:
+                    i1=gtri.nodes['ij'][n1,0]
+                    i2=gtri.nodes['ij'][n2,0]
+                    j1=gtri.nodes['ij'][n1,1]
+                    j2=gtri.nodes['ij'][n2,1]
+                    if i1==i2:
+                        if i_grp is None:
+                            i_grp=[n1]
+                            i_tan_groups.append(i_grp)
+                            i_tan_groups_i.append(i1)
+                            j_grp=None
+                        i_grp.append(n2)
+                    elif j1==j2:
+                        if j_grp is None:
+                            j_grp=[n1]
+                            j_tan_groups.append(j_grp)
+                            j_tan_groups_j.append(j1)
+                            i_grp=None
+                        j_grp.append(n2)
+                    else:
+                        print("Don't know how to deal with non-cartesian edges")
+                    n1=n2
+
+                # Set the range of psi to [-1,1], and pin some j to 1.0
+                low_i=np.argmin(i_tan_groups_i)
+                high_i=np.argmax(i_tan_groups_i)
+
+                i_dirichlet_nodes[i_tan_groups[low_i][0]]=-1
+                i_dirichlet_nodes[i_tan_groups[high_i][0]]=1
+                j_dirichlet_nodes[j_tan_groups[1][0]]=1
 
             Mblocks=[]
             Bblocks=[]
             if 1: # PSI
-                M_psi_Lap,B_psi_Lap=nd.construct_matrix(op='laplacian',dirichlet_nodes=i_dirichlet_nodes)
+                M_psi_Lap,B_psi_Lap=nd.construct_matrix(op='laplacian',
+                                                        dirichlet_nodes=i_dirichlet_nodes,
+                                                        zero_tangential_nodes=i_tan_groups)
                 Mblocks.append( [M_psi_Lap,None] )
                 Bblocks.append( B_psi_Lap )
             if 1: # PHI
-                M_phi_Lap,B_phi_Lap=nd.construct_matrix(op='laplacian',dirichlet_nodes=j_dirichlet_nodes)
+                M_phi_Lap,B_phi_Lap=nd.construct_matrix(op='laplacian',
+                                                        dirichlet_nodes=j_dirichlet_nodes,
+                                                        zero_tangential_nodes=j_tan_groups)
                 Mblocks.append( [None,M_phi_Lap] )
                 Bblocks.append( B_phi_Lap )
-            if 0:
+            if 1:
                 # PHI-PSI relationship
-                # So far this doesn't really help.
+                # When full dirichlet is used, this doesn't help, but if
+                # just zero-tangential-gradient is used, this is necessary.
                 Mdx,Bdx=nd.construct_matrix(op='dx')
                 Mdy,Bdy=nd.construct_matrix(op='dy')
                 Mblocks.append( [Mdy,-Mdx] )
                 Mblocks.append( [Mdx, Mdy] )
                 Bblocks.append( np.zeros(Mdx.shape[1]) )
                 Bblocks.append( np.zeros(Mdx.shape[1]) )
-
-            # solve
-            # dpsi_dy-dphi_dx = 0
-            # dpsi_dx+dphi_dy = 0
-            # Which looks like this
-            # [ M_Lap 0   ]          = [ B_psi_Lap ]
-            # [ Mdy  -Mdx ] [ psi ]  = [ 0         ]
-            # [ Mdx  Mdy  ] [ phi ]    [ 0         ]
-
-            # Mdx.phi = u = Mdy.psi
-            # Mdy.phi = v = -Mdx.psi
-            # =>
-            # Mdy.psi - Mdx.phi
-            # Mdx.psi + Mdy.phi
 
             bigM=sparse.bmat( Mblocks )
             rhs=np.concatenate( Bblocks )
@@ -743,6 +810,7 @@ class QuadGen(object):
             self.psi=psi_phi[:gtri.Nnodes()]
             self.phi=psi_phi[gtri.Nnodes():]
         else:
+            # Solve PSI, and then separately solve PHI
             if 1: # PSI
                 boundary=e2c.min(axis=1)<0
                 dirichlet_nodes={}
@@ -776,17 +844,17 @@ class QuadGen(object):
                 phi,*rest=sparse.linalg.lsqr(Mdxdy,Buv)
                 self.phi=phi
 
-    def plot_psi_phi(self,num=4):
+    def plot_psi_phi(self,num=4,thinning=2):
         plt.figure(num).clf()
         fig,ax=plt.subplots(num=num)
 
         di,dj=np.nanmax(self.gen.nodes['ij'],axis=0) - np.nanmin(self.gen.nodes['ij'],axis=0)
 
         self.g_int.plot_edges(color='k',lw=0.5,alpha=0.2)
-        cset_psi=self.g_int.contour_node_values(self.psi,int(di/2),
+        cset_psi=self.g_int.contour_node_values(self.psi,int(di/thinning),
                                                 linewidths=1.5,linestyles='solid',colors='orange',
                                                 ax=ax)
-        cset_phi=self.g_int.contour_node_values(self.phi,int(dj/2),
+        cset_phi=self.g_int.contour_node_values(self.phi,int(dj/thinning),
                                                 linewidths=1.5,linestyles='solid',colors='blue',
                                                 ax=ax)
         ax.axis('tight')
@@ -848,7 +916,9 @@ class QuadGen(object):
         # grid.  Whenever some g_psi or g_phi is close to the boundary,
         # the Delaunay triangulation is going to make things difficult.
         interp_xy=utils.LinearNDExtrapolator( np.c_[self.psi,self.phi],
-                                              gtri.nodes['x'],eps=0.5 )
+                                              gtri.nodes['x'],
+                                              #eps=0.5 ,
+                                              eps=None)
         # Save all the pieces for debugging:
         self.interp_xy=interp_xy
         self.interp_domain=np.c_[self.psi,self.phi]
