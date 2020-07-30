@@ -199,59 +199,129 @@ class QuadsGen(object):
         plt.axis('equal')
     
 class QuadGen(object):
-    def __init__(self,gen,execute=True,seeds=None,ij_src='nodes'):
+    def __init__(self,gen,execute=True,seeds=None):
         """
         gen: the design grid. cells of this grid will be filled in with 
         quads.  
-        ij_src: 'edges': untested.  edges should have a dij field, or
-         nodes can have ij or separate i and j fields.
+        nodes should have separate i and j fields.
 
         i,j are interpeted as x,y indices in the reference frame of the quad grid.
         """
+        gen=gen.copy()
         self.gen=gen
 
-        if ij_src=='nodes':
-            self.fill_ij_interp(gen) # unsure here.
-            self.node_ij_to_edge(gen)
+        # Prep the target resolution grid information
+        self.coalesce_ij(self.gen)
+        self.fill_ij_interp(self.gen)
+        self.node_ij_to_edge(self.gen)
 
-        if 'ij_fixed' not in gen.nodes.dtype.names:
-            gen.add_node_field('ij_fixed',np.ones(gen.Nnodes(),np.bool8))
+        # Prep the nominal resolution grid information
+        self.coalesce_ij_nominal(self.gen,dest='IJ')
+        self.fill_ij_interp(self.gen,dest='IJ')
+        self.node_ij_to_edge(self.gen,dest='IJ')
+
+        # Why?
+        # self.gen.add_node_field('ij_fixed',np.ones(gen.Nnodes(),np.bool8))
         
         if execute:
-            self.add_bezier(gen)
-            self.create_intermediate_grid()
+            self.add_bezier(self.gen)
+            self.g_int=self.create_intermediate_grid(src='IJ')
             # This now happens as a side effect of smooth_interior_quads
             # self.adjust_intermediate_bounds()
             self.smooth_interior_quads(self.g_int)
             self.calc_psi_phi()
             self.adjust_intermediate_by_psi_phi()
 
-    def node_ij_to_edge(self,g):
-        dij=(g.nodes['ij'][g.edges['nodes'][:,1]]
-             - g.nodes['ij'][g.edges['nodes'][:,0]])
-        g.add_edge_field('dij',dij,on_exists='overwrite')
+    def node_ij_to_edge(self,g,dest='ij'):
+        dij=(g.nodes[dest][g.edges['nodes'][:,1]]
+             - g.nodes[dest][g.edges['nodes'][:,0]])
+        g.add_edge_field('d'+dest,dij,on_exists='overwrite')
 
-    def fill_ij_interp(self,gen):
-        # First, copy any 'i','j' fields that are separate in to a vector field
-        # If there isn't an ij, make it.
-        gen.add_node_field('ij',np.nan*np.ones( (gen.Nnodes(),2)),
-                           on_exists='pass')
+    def coalesce_ij_nominal(self,gen,dest='IJ',nom_res=4.0,min_steps=2.0,
+                            max_cycle_len=1000):
+        """ 
+        Similar to coalesce_ij(), but infers a scale for I and J
+        from the geographic distances.
+        nom_res: TODO -- figure out good default.  This is the nominal
+         spacing for i and j in geographic units.
+        min_steps: edges should not be shorter than this in IJ space.
 
-        # Incoming data may be split to separate i,j fields
-        if 'i' in gen.nodes.dtype.names:
-            copy_i=np.isnan(gen.nodes['ij'][:,0]) & np.isfinite(gen.nodes['i'])
-            gen.nodes['ij'][copy_i,0]=gen.nodes['i'][copy_i]
-        if 'j' in gen.nodes.dtype.names:
-            copy_j=np.isnan(gen.nodes['ij'][:,1]) & np.isfinite(gen.nodes['j'])
-            gen.nodes['ij'][copy_j,1]=gen.nodes['j'][copy_j]
+        max_cycle_len: only change for large problems.  Purpose here
+          is to abort on bad inputs/bugs instead of getting into an
+          infinite loop
+        """
+        IJ=np.zeros( (gen.Nnodes(),2), np.float64)
+        IJ[...]=np.nan
+
+        # Very similar to fill_ij_interp, but we go straight to
+        # assigning dIJ
+        cycles=gen.find_cycles(max_cycle_len=1000)
+
+        assert len(cycles)==1,"For now, cannot handle multiple cycles"
+
+        ij_in=np.c_[ gen.nodes['i'], gen.nodes['j'] ]
+        ij_fixed=np.isfinite(ij_in)
+
+        # Collect the steps so that we can close the sum at the end
+        for idx in [0,1]: # i, j
+            steps=[] # [ [node a, node b, delta], ... ]
+            for s in cycles:
+                # it's a cycle, so we can roll
+                is_fixed=np.nonzero( ij_fixed[s,idx] )[0]
+                assert len(is_fixed),"There are no nodes with fixed i,j!"
+                
+                s=np.roll(s,-is_fixed[0])
+                s=np.r_[s,s[0]] # repeat first node at the end
+                # Get the new indices for fixed nodes
+                is_fixed=np.nonzero( ij_fixed[s,idx] )[0]
+
+                dists=utils.dist_along( gen.nodes['x'][s] )
+
+                for a,b in zip( is_fixed[:-1],is_fixed[1:] ):
+                    d_ab=dists[b]-dists[a]
+                    dij_ab=ij_in[s[b],idx] - ij_in[s[a],idx]
+                    if dij_ab==0:
+                        steps.append( [s[a],s[b],0] )
+                    else:
+                        n_steps=max(min_steps,d_ab/nom_res)
+                        dIJ_ab=int( np.sign(dij_ab) * n_steps )
+                        steps.append( [s[a],s[b],dIJ_ab] )
+                steps=np.array(steps)
+                err=steps[:,2].sum()
+
+                stepsizes=np.abs(steps[:,2])
+                err_dist=np.round(err*np.cumsum(np.r_[0,stepsizes])/stepsizes.sum())
+                err_per_step = np.diff(err_dist)
+                steps[:,2] -= err_per_step.astype(np.int32)
+
+            # Now steps properly sum to 0.
+            IJ[steps[0,0],idx]=0 # arbitrary starting point
+            IJ[steps[:-1,1],idx]=np.cumsum(steps[:-1,2])
+
+        gen.add_node_field(dest,IJ,on_exists='overwrite')
+        gen.add_node_field(dest+'_fixed',ij_fixed,on_exists='overwrite')
+
+    def coalesce_ij(self,gen,dest='ij'):
+        """
+        Copy incoming 'i' and 'j' node fields to 'ij', and note which
+        values were finite in 'ij_fixed'
+        """
+        ij_in=np.c_[ gen.nodes['i'], gen.nodes['j'] ]
+        gen.add_node_field(dest,ij_in,on_exists='overwrite')
+        gen.add_node_field(dest+'_fixed',np.isfinite(ij_in))
         
+    def fill_ij_interp(self,gen,dest='ij'):
+        """
+        Interpolate the values in gen.nodes[dest] evenly between
+        the existing fixed values
+        """
         # the rest are filled by linear interpolation
-        gen.add_node_field('ij_fixed', np.isfinite(gen.nodes['ij']), on_exists='overwrite')
         strings=gen.extract_linear_strings()
 
         for idx in [0,1]:
-            node_vals=gen.nodes['ij'][:,idx] 
+            node_vals=gen.nodes[dest][:,idx] 
             for s in strings:
+                # This has some 'weak' support for multiple cycles. untested.
                 if s[0]==s[-1]:
                     # cycle, so we can roll
                     has_val=np.nonzero( np.isfinite(node_vals[s]) )[0]
@@ -265,17 +335,26 @@ class QuadGen(object):
                                      dists[valid], s_vals[valid] )
                 node_vals[s[~valid]]=fill_vals
             
-    def create_intermediate_grid(self):
-        # HERE:
-        # Need two options:
-        #   one is to generate a grid that respects ij directly
-        #   another chooses grid spacing that is roughly isotropic
-        #   to improve the quality of the FD approximations.
+    def create_intermediate_grid(self,src='ij',coordinates='xy'):
+        """
+        src: base variable name for the ij indices to use.
+          i.e. gen.nodes['ij'], gen.nodes['ij_fixed'],
+             and gen.edges['dij']
+
+          the resulting grid will use 'ij' regardless, this just for the
+          generating grid.
+
+        coordinates: 
+         'xy' will interpolate the gen xy coordinates to get
+          node coordinates for the result.
+         'ij' will leave 'ij' coordinate values in both x and 'ij'
+        
+        """
         # target grid
-        self.g_int=g=unstructured_grid.UnstructuredGrid(max_sides=4,
-                                                        extra_node_fields=[('ij',np.float64,2),
-                                                                           ('gen_j',np.int32),
-                                                                           ('rigid',np.int32)])
+        g=unstructured_grid.UnstructuredGrid(max_sides=4,
+                                             extra_node_fields=[('ij',np.float64,2),
+                                                                ('gen_j',np.int32),
+                                                                ('rigid',np.int32)])
         gen=self.gen
         for c in gen.valid_cell_iter():
             local_edges=gen.cell_to_edges(c,ordered=True)
@@ -284,9 +363,9 @@ class QuadGen(object):
             edge_nodes=gen.edges['nodes'][local_edges]
             edge_nodes[flip,:] = edge_nodes[flip,::-1]
 
-            dijs=gen.edges['dij'][local_edges] * ((-1)**flip)[:,None]
+            dijs=gen.edges['d'+src][local_edges] * ((-1)**flip)[:,None]
             xys=gen.nodes['x'][edge_nodes[:,0]]
-            ij0=gen.nodes['ij'][edge_nodes[0,0]]
+            ij0=gen.nodes[src][edge_nodes[0,0]]
             ijs=np.cumsum(np.vstack([ij0,dijs]),axis=0)
 
             # Sanity check to be sure that all the dijs close the loop.
@@ -308,30 +387,27 @@ class QuadGen(object):
 
             g.nodes['gen_j'][pnodes]=-1
 
-            # Copy xy to ij, then remap xy
+            # Copy xy to ij, then optionally remap xy
             g.nodes['ij'][pnodes] = g.nodes['x'][pnodes]
 
-            Extrap=utils.LinearNDExtrapolator
+            if coordinates=='xy':
+                Extrap=utils.LinearNDExtrapolator
 
-            int_x=Extrap(ijs,xys[:,0])
-            node_x=int_x(g.nodes['x'][pnodes,:])
+                int_x=Extrap(ijs,xys[:,0])
+                node_x=int_x(g.nodes['x'][pnodes,:])
 
-            int_y=Extrap(ijs,xys[:,1])
-            node_y=int_y(g.nodes['x'][pnodes,:])
+                int_y=Extrap(ijs,xys[:,1])
+                node_y=int_y(g.nodes['x'][pnodes,:])
 
-            g.nodes['x'][pnodes]=np.c_[node_x,node_y]
+                g.nodes['x'][pnodes]=np.c_[node_x,node_y]
 
-            # delete cells that fall outside of the ij
-            for n in pnodes[ np.isnan(node_x) ]:
-                g.delete_node_cascade(n)
-
-            # Mark nodes as rigid if they match a point in the generator
-            for n in g.valid_node_iter():
-                match0=gen.nodes['ij'][:,0]==g.nodes['ij'][n,0]
-                match1=gen.nodes['ij'][:,1]==g.nodes['ij'][n,1]
-                match=np.nonzero(match0&match1)[0]
-                if len(match):
-                    g.nodes['rigid'][n]=RIGID
+                # delete cells that fall outside of the ij
+                # This seems wrong, though. Using Extrap,
+                # this is only nan when the Extrapolation didn't
+                # extrapolate enough.  The real trimming is in
+                # 'ij' space below.
+                # for n in pnodes[ np.isnan(node_x) ]:
+                #     g.delete_node_cascade(n)
 
             ij_poly=geometry.Polygon(ijs)
             for cc in patch['cells'].ravel():
@@ -340,11 +416,18 @@ class QuadGen(object):
                 c_ij=np.mean(g.nodes['ij'][cn],axis=0)
                 if not ij_poly.contains(geometry.Point(c_ij)):
                     g.delete_cell(cc)
-
             # This part will need to get smarter when there are multiple patches:
             g.delete_orphan_edges()
             g.delete_orphan_nodes()
-            
+
+            # Mark nodes as rigid if they match a point in the generator
+            for n in g.valid_node_iter():
+                match0=gen.nodes[src][:,0]==g.nodes['ij'][n,0]
+                match1=gen.nodes[src][:,1]==g.nodes['ij'][n,1]
+                match=np.nonzero(match0&match1)[0]
+                if len(match):
+                    g.nodes['rigid'][n]=RIGID
+
             # Fill in generating edges for boundary nodes
             boundary_nodes=g.boundary_cycle()
             # hmm -
@@ -377,13 +460,16 @@ class QuadGen(object):
                     raise Exception("Failed to match up a boundary node")
                 
         g.renumber()
-
+        return g
+    
     def plot_intermediate(self,num=1):
         plt.figure(num).clf()
         fig,ax=plt.subplots(num=num)
         self.gen.plot_edges(lw=1.5,color='b',ax=ax)
         self.g_int.plot_edges(lw=0.5,color='k',ax=ax)
-        self.g_int.plot_nodes(mask=self.g_int.nodes['rigid']>0) # good
+
+        self.g_int.plot_nodes(mask=self.g_int.nodes['rigid']>0)
+        ax.axis('tight')
         ax.axis('equal')
 
     def add_bezier(self,gen):
@@ -532,10 +618,6 @@ class QuadGen(object):
             nN=gen.edges['nodes'][j,1]
             bez=gen.edges['bez'][j]
             
-            # dij=gen.edges['dij'][j]
-            # steps=int(utils.mag(dij))
-            # t=np.linspace(0,1,1+steps)
-
             g_nodes=np.nonzero( g.nodes['gen_j']==j )[0]
 
             p0=gen.nodes['x'][n0]
@@ -871,7 +953,10 @@ class QuadGen(object):
         """
         gtri=self.g_int
         gen=self.gen
-        g=self.g_final=self.g_int.copy()
+
+        # when the intermediate grid and gtri were the same:
+        #g=self.g_final=self.g_int.copy()
+        g=self.g_final=self.create_intermediate_grid(src='ij',coordinates='ij')
 
         for coord in [0,1]: # i,j
             gen_valid=(~gen.nodes['deleted'])&(gen.nodes['ij_fixed'][:,coord])
