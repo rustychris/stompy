@@ -453,6 +453,9 @@ class QuadGen(object):
                 match1=gen.nodes[src][:,1]==g.nodes['ij'][n,1]
                 match=np.nonzero(match0&match1)[0]
                 if len(match):
+                    # Something is amiss, but this part looks okay in pdb
+                    # import pdb
+                    # pdb.set_trace()
                     g.nodes['rigid'][n]=RIGID
 
             # Fill in generating edges for boundary nodes
@@ -587,19 +590,75 @@ class QuadGen(object):
             ax.plot(points[:,0],points[:,1],'r-')
             ax.plot(bez[:,0],bez[:,1],'b-o')
 
-    def gen_bezier_curve(self,samples_per_edge=10):
-        points=self.gen_bezier_linestring(samples_per_edge=samples_per_edge)
-        return front.Curve(points,closed=True)
+    def gen_bezier_curve(self,j=None,samples_per_edge=10,span_fixed=True):
+        """
+        j: make a curve for gen.edges[j], instead of the full boundary cycle.
+        samples_per_edge: how many samples to use to approximate each bezier
+         segment
+        span_fixed: if j is specified, create a curve that includes j and
+         adjacent edges until a fixed node is encountered
+        """
+        points=self.gen_bezier_linestring(j=j,samples_per_edge=samples_per_edge,
+                                          span_fixed=span_fixed)
+        if j is None:
+            return front.Curve(points,closed=True)
+        else:
+            return front.Curve(points,closed=False)
         
-    def gen_bezier_linestring(self,samples_per_edge=10):
+    def gen_bezier_linestring(self,j=None,samples_per_edge=10,span_fixed=True):
         """
         Calculate an up-sampled linestring for the bezier boundary of self.gen
+        
+        j: limit the curve to a single generating edge if given.
+        span_fixed: see gen_bezier_curve()
         """
         gen=self.gen
-        bound_nodes=self.gen.boundary_cycle()
 
+        # need to know which ij coordinates are used in order to know what is
+        # fixed. So far fixed is the same whether IJ or ij, so not making this
+        # a parameter yet.
+        src='IJ'
+        
+        if j is None:
+            node_pairs=zip(bound_nodes,np.roll(bound_nodes,-1))
+            bound_nodes=self.gen.boundary_cycle() # probably eating a lot of time.
+        else:
+            if not span_fixed:
+                node_pairs=[ self.gen.edges['nodes'][j] ]
+            else:
+                nodes=[]
+
+                # Which coord is changing on j? I.e. which fixed should
+                # we consult?
+                # A little shaky here.  Haven't tested this with nodes
+                # that are fixed in only coordinate.
+                j_coords=self.gen.nodes[src][ self.gen.edges['nodes'][j] ]
+                if j_coords[0,0] == j_coords[1,0]:
+                    coord=1
+                elif j_coords[0,1]==j_coords[1,1]:
+                    coord=0
+                else:
+                    raise Exception("Neither coordinate is constant on this edge??")
+                
+                trav=self.gen.halfedge(j,0)
+                while 1: # FWD
+                    n=trav.node_fwd()
+                    nodes.append(n)
+                    if self.gen.nodes[src+'_fixed'][n,coord]:
+                        break
+                    trav=trav.fwd()
+                nodes=nodes[::-1]
+                trav=self.gen.halfedge(j,0)
+                while 1: # REV
+                    n=trav.node_rev()
+                    nodes.append(n)
+                    if self.gen.nodes[src+'_fixed'][n,coord]:
+                        break
+                    trav=trav.rev()
+                node_pairs=zip( nodes[:-1], nodes[1:])
+            
         points=[]
-        for a,b in zip(bound_nodes,np.roll(bound_nodes,-1)):
+        for a,b in node_pairs:
             j=gen.nodes_to_edge(a,b)
             
             n0=gen.edges['nodes'][j,0]
@@ -617,6 +676,11 @@ class QuadGen(object):
             edge_points = B0[:,None]*bez[0] + B1[:,None]*bez[1] + B2[:,None]*bez[2] + B3[:,None]*bez[3]
 
             points.append(edge_points[:-1])
+        if j is not None:
+            # When the curve isn't closed, then be inclusive of both
+            # ends
+            points.append(edge_points[-1:])
+            
         return np.concatenate(points,axis=0)
 
     def adjust_intermediate_bounds(self):
@@ -693,8 +757,18 @@ class QuadGen(object):
 
         # And I want the edge to its interior neighbor (xi,yi) perpendicular to that line.
         # (xb-xi)*c1 + (yb-yi)*c2 = 0
-        
-        curve=self.gen_bezier_curve()
+
+        # Old approach: one curve for the whole region:
+        # curve=self.gen_bezier_curve()
+
+        # New approach: One curve per straight line, and constrain nodes to
+        # that curve. This should keep node bound to intervals between rigid
+        # neighboring nodes.  It does not keep them from all landing on top of each
+        # other, and does not distinguish rigid in i vs rigid in j
+        n_to_curve={}
+        for n in g.valid_node_iter():
+            if g.nodes['gen_j'][n]>=0:
+                n_to_curve[n]=self.gen_bezier_curve(j=g.nodes['gen_j'][n],span_fixed=True)
         
         N=g.Nnodes()
 
@@ -705,15 +779,13 @@ class QuadGen(object):
 
             for n in g.valid_node_iter():
                 if g.is_boundary_node(n):
-                    dirichlet=g.nodes['rigid'][n]
-                    #dirichlet=True
+                    dirichlet=g.nodes['rigid'][n]==RIGID
                     if dirichlet:
                         M[n,n]=1
                         rhs[n]=g.nodes['x'][n,0]
                         M[N+n,N+n]=1
                         rhs[N+n]=g.nodes['x'][n,1]
                     else:
-                        # figure out the normal from neighbors.
                         boundary_nbrs=[]
                         interior_nbr=[]
                         for nbr in g.node_to_nodes(n):
@@ -724,11 +796,18 @@ class QuadGen(object):
                         assert len(boundary_nbrs)==2
                         assert len(interior_nbr)==1
 
-                        vec=np.diff( g.nodes['x'][boundary_nbrs], axis=0)[0]
-                        nrm=utils.to_unit( np.array([vec[1],-vec[0]]) )
-                        tng=utils.to_unit( np.array(vec) )
+                        if 0: # figure out the normal from neighbors.
+                            vec=np.diff( g.nodes['x'][boundary_nbrs], axis=0)[0]
+                            nrm=utils.to_unit( np.array([vec[1],-vec[0]]) )
+                            tng=utils.to_unit( np.array(vec) )
+                        else: # figure out normal from bezier curve
+                            curve=n_to_curve[n]
+                            f=curve.point_to_f(g.nodes['x'][n],rel_tol='best')
+                            tng=curve.tangent(f)
+                            nrm=np.array([-tng[1],tng[0]])
+
                         c3=np.dot(nrm,g.nodes['x'][n])
-                        # n-equation puts it on the linen
+                        # n-equation puts it on the line
                         M[n,n]=nrm[0]
                         M[n,N+n]=nrm[1]
                         rhs[n]=c3
@@ -775,7 +854,8 @@ class QuadGen(object):
 
             # And nudge the boundary nodes back onto the boundary
             for n in g.valid_node_iter():
-                if g.nodes['gen_j'][n]>=0:
+                if (g.nodes['gen_j'][n]>=0) and (g.nodes['rigid'][n]!=RIGID):
+                    curve=n_to_curve[n]
                     new_f=curve.point_to_f(g.nodes['x'][n],rel_tol='best')
                     g.nodes['x'][n] = curve(new_f)
 

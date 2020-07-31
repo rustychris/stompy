@@ -4675,6 +4675,13 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             # self.log.warning(exc,exc_info=True)
             return self.boundary_polygon_by_union()
 
+    def area_total(self):
+        """
+        Total area of the grid cells.  Currently computed by summing per-cell
+        areas, though there are more efficient ways (probably).
+        """
+        return self.cells_area().sum()
+
     def extract_linear_strings(self,edge_select=None):
         """
         extract contiguous linestrings as sequences of nodes.

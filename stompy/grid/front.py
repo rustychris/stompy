@@ -217,6 +217,23 @@ class Curve(object):
             return (1-alphas)*self.points[idxs] + alphas*self.points[idxs+1]
         else:
             assert False
+    def tangent(self,f,metric='distance'):
+        assert metric=='distance'
+        if self.closed:
+            # wraps around
+            # double mod in case f==-eps
+            f=(f % self.distances[-1]) % self.distances[-1]
+        # side='right' ensures that f=0 works
+        # it's unfortunately possible to get f=-eps, which rounds in
+        # a way such that (f % distances[-1]) == distances[-1]
+        # the double mod above might solve that
+        idxs=np.searchsorted(self.distances,f,side='right') - 1
+        assert not np.any( f>self.distances[-1] ),"Curve: Range or round off problem"
+        idxs=idxs.clip(0,len(self.distances)-2) # to be sure equality doesn't push us off the end
+
+        tng=utils.to_unit( self.points[idxs+1] - self.points[idxs] )
+        return tng
+    
     def total_distance(self):
         return self.distances[-1]
 

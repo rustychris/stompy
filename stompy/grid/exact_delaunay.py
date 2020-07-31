@@ -1878,8 +1878,11 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
         result=ccs.copy()
         result[cell_with_constraint] = centroids[cell_with_constraint]
         return result
-    
 
+    # TODO: def constrained_radii(self):
+    #  Calculate the usual circumradius, but for centers which were
+    #  adjusted due to a constrained edge also check point-segment
+    #  distances.
             
 # Issues:
 #   Calls like edge_to_cells do not scale well right now.  In particular,
