@@ -68,7 +68,11 @@ def ggr_cm(filename,reverse=False):
     return colors.LinearSegmentedColormap.from_list(os.path.basename(filename),rgb_tuples)
 
 def cmap_transform(cmap,f,samples=256):
-    """ brute-force - evaluate the gradient at all 256 locations.
+    """
+    Apply a transformation on the index (i.e. change a linear colormap into
+    a quadratic colormap).
+
+    brute-force - evaluate the gradient at all 256 locations.
     f is a function [0,1] => [0,1], mapping the new values to 
     old.
     e.g. f=lambda x: (1-x)  would reverse a colormap
@@ -78,6 +82,39 @@ def cmap_transform(cmap,f,samples=256):
     #rgb_tuples = [ (rgba,g,b) for rgba in rgb]
 
     return colors.LinearSegmentedColormap.from_list('transformed',rgb_tuples)
+
+def transform_color(function, cmap):
+    """ 
+    From: https://scipy-cookbook.readthedocs.io/items/Matplotlib_ColormapTransformations.html
+
+    Applies function (which should operate on vectors of shape 3: [r, g, b]), on colormap cmap.
+    This routine will break any discontinuous points in a colormap.
+    """
+    cdict = cmap._segmentdata
+    step_dict = {}
+    # Firt get the list of points where the segments start or end
+    for key in ('red', 'green', 'blue'):
+        step_dict[key] = list(map(lambda x: x[0], cdict[key]))
+    step_list = sum(step_dict.values(), [])
+    step_list = np.array(list(set(step_list)))
+    # Then compute the LUT, and apply the function to the LUT
+    reduced_cmap = lambda step : np.array(cmap(step)[0:3])
+    old_LUT = np.array(list(map(reduced_cmap, step_list)))
+    new_LUT = np.array(list(map(function, old_LUT)))
+    # Now try to make a minimal segment definition of the new LUT
+    cdict = {}
+    for i, key in enumerate(['red','green','blue']):
+        this_cdict = {}
+        for j, step in enumerate(step_list):
+            if step in step_dict[key]:
+                this_cdict[step] = new_LUT[j, i]
+            elif new_LUT[j,i] != old_LUT[j, i]:
+                this_cdict[step] = new_LUT[j, i]
+        colorvector = list(map(lambda x: x + (x[1], ), this_cdict.items()))
+        colorvector.sort()
+        cdict[key] = colorvector
+
+    return colors.LinearSegmentedColormap('colormap',cdict,1024)
 
 def cmap_reverse(cmap):
     return cmap_transform(cmap,lambda x: 1-x)
@@ -241,4 +278,5 @@ def cmap_clip(cmap,low,high):
     sub_cmap = colors.LinearSegmentedColormap(cmap.name + "_sub", cdict)
     # Return colormap object.
     return sub_cmap
+
 
