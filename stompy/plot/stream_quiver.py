@@ -34,11 +34,19 @@ class StreamlineQuiver(object):
         self.boundary=g.boundary_polygon()
         self.init_tri()
         self.calculate_streamlines()
-        
+
+    NOT_STREAM=0
+    STREAM=1
+    TRUNC=2
     def init_tri(self):
         self.tri=tri=exact_delaunay.Triangulation()
         tri.add_cell_field('outside',np.zeros(0,np.bool8))
         tri.add_node_field('tip',np.zeros(0,np.bool8))
+        # NOT_STREAM=0: not part of a streamline
+        # STREAM=1: streamline without truncation
+        # TRUNC=2: streamline that got truncated.
+        tri.add_node_field('stream_code',np.zeros(0,np.int32))
+        
         tri.cell_defaults['_center']=np.nan
         tri.cell_defaults['_area']=np.nan
         tri.cell_defaults['outside']=False
@@ -106,8 +114,10 @@ class StreamlineQuiver(object):
         clearance=self.neighbor_clearance(nroot,recent)
         if clearance<min_clearance:
             print(".",end="")
+            self.tri.nodes['stream_code'][recent]=self.TRUNC
             return len(recent)
 
+        stream_code=self.STREAM
         for incr in [1,-1]:
             xy_leg=xys[trace_root+incr::incr]
             na=nroot
@@ -121,12 +131,14 @@ class StreamlineQuiver(object):
                     # Essentially a degenerate case of neighbor_clearance
                     # going to 0.
                     print("x",end="")
+                    stream_code=self.TRUNC
                     break
                 recent.append(nb)
                 clearance=self.neighbor_clearance(nb,recent)
                 if clearance<min_clearance:
                     # if it's too close, don't add an edge
                     print("-",end="")
+                    stream_code=self.TRUNC
                     break
                 try:
                     self.tri.add_constraint(na,nb)
@@ -137,6 +149,7 @@ class StreamlineQuiver(object):
             if incr>0:
                 self.tri.nodes['tip'][na]=True
             recent=recent[::-1] # Second iteration goes reverse to the first.
+        self.tri.nodes['stream_code'][recent]=stream_code
         return len(recent)
 
     def pick_starting_point(self):
@@ -201,8 +214,13 @@ class StreamlineQuiver(object):
         ax.axis('off')
         ax.set_position([0,0,1,1])
         return fig,ax
-    def segments_and_speeds(self):
-        # Extract segments starting from nodes marked as tip
+    def segments_and_speeds(self,include_truncated=True):
+        """
+        Extract segments starting from nodes marked as tip.
+
+        include_truncate: include segments that are not as long as their
+        trace on account of truncation due to spacing.
+        """
         strings=self.tri.extract_linear_strings(edge_select=self.tri.edges['constrained'])
 
         # Order them ending with the tip, and only strings that include
@@ -211,6 +229,8 @@ class StreamlineQuiver(object):
         for string in strings:
             node_tips=self.tri.nodes['tip'][string]
             if np.all( ~node_tips): continue
+            if not include_truncated and np.any(self.tri.nodes['stream_code'][string]==self.TRUNC):
+                continue
             xy=self.tri.nodes['x'][string]
             if node_tips[0]:
                 xy=xy[::-1]
@@ -223,7 +243,6 @@ class StreamlineQuiver(object):
         tip_cells=[self.g.select_cells_nearest(seg[-1],inside=True) for seg in segs]
         speeds=self.Umag[tip_cells]
         return segs,speeds
-    
 
     sym=2.0 * np.array( [ [1.5,    0],
                     [-0.5, 1],
@@ -247,7 +266,7 @@ class StreamlineQuiver(object):
         pcoll=collections.PolyCollection(polys)
         return pcoll
 
-    def plot_quiver(self,ax=None,lw=0.8):
+    def plot_quiver(self,ax=None,lw=0.8,include_truncated=True):
         """
         Add the quiver plot to the given axes.
         The quiver is split into two collections: a line (shaft) and
@@ -261,7 +280,7 @@ class StreamlineQuiver(object):
         if ax is None:
             ax=plt.gca()
 
-        segs,speeds=self.segments_and_speeds()
+        segs,speeds=self.segments_and_speeds(include_truncated=include_truncated)
 
         result={}
         result['lcoll']=collections.LineCollection(segs,

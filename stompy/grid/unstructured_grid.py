@@ -5670,7 +5670,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         self.__dict__.update(state)
         self.init_log()
 
-        print( "May need to rewire any internal listeners" )
+        logging.debug( "May need to rewire any internal listeners" )
 
     def init_log(self):
         self.log = logging.getLogger(self.__class__.__name__)

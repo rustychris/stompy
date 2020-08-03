@@ -1,6 +1,30 @@
 """
 Create a nearly orthogonal quad mesh by solving for stream function
 and velocity potential inside a given boundary.
+
+Still trying to improve the formulation of the Laplacian.  Psi
+(stream function) and phi (velocity potential) are solved
+simultaneously. There are other options, and each field 
+uniquely constraints the other field to within a constant offset.
+
+A block matrix is constructed which solves the Laplacian for
+each of psi and phi. The boundaries of the domain are restricted
+to be contours of either phi or psi, and these edges meet at right
+angles.
+
+For a grid with N nodes there are 2N unknowns.
+Each interior node implies 2 constraints via the Laplacian on psi and phi.
+
+For boundary nodes not at corner, one of psi/phi implies a no-flux boundary
+and d phi/dn=0 or d psi/dn=0.
+
+The question is how to constrain the remaining boundary nodes. These boundaries
+are contours of the respective field.  For a boundary segment of
+s nodes, inclusive of corners, that yields s-1 constraints.
+
+
+
+
 """
 
 import numpy as np
@@ -211,7 +235,7 @@ class QuadGen(object):
     # Minimum number of edges along a boundary segment in the nominal isotropic grid
     min_steps=2
     
-    def __init__(self,gen,execute=True,**kw):
+    def __init__(self,gen,execute=True,cell=None,**kw):
         """
         gen: the design grid. cells of this grid will be filled in with 
         quads.  
@@ -224,6 +248,15 @@ class QuadGen(object):
         """
         utils.set_keywords(self,kw)
         gen=gen.copy()
+
+        if cell is not None:
+            for c in range(gen.Ncells()):
+                if c!=cell:
+                    gen.delete_cell(c)
+            gen.delete_orphan_edges()
+            gen.delete_orphan_nodes()
+            gen.renumber(reorient_edges=False)
+        
         self.gen=gen
 
         # Prep the target resolution grid information
@@ -943,6 +976,12 @@ class QuadGen(object):
         i_dirichlet_nodes[i_tan_groups[high_i][0]]=1
         j_dirichlet_nodes[j_tan_groups[1][0]]=1
 
+        # Extra degrees of freedom:
+        # Each tangent group leaves an extra dof (a zero row)
+        # and the above BCs constrain 3 of those
+        dofs=len(i_tan_groups) + len(j_tan_groups) - 3
+        assert dofs>0
+
         Mblocks=[]
         Bblocks=[]
         if 1: # PSI
@@ -958,11 +997,32 @@ class QuadGen(object):
             Mblocks.append( [None,M_phi_Lap] )
             Bblocks.append( B_phi_Lap )
         if 1:
+            # Not sure what the "right" value is here.
+            # When the grid is coarse and irregular, the
+            # error in these blocks can overwhelm the BCs
+            # above.  This scaling decreases the weight of
+            # these blocks.
+            # 0.1 was okay
+            # Try normalizing based on degrees of freedom.
+            # how many dofs are we short?
+            # This assumes that the scale of the rows above is of
+            # the same order as the scale of a derivative row below.
+            
+            # each of those rows constrains 1 dof, and I want the
+            # set of derivative rows to constrain dofs. And there
+            # are 2*Nnodes() rows.
+            gradient_scale = dofs / (2*gtri.Nnodes())
+            
             # PHI-PSI relationship
             # When full dirichlet is used, this doesn't help, but if
             # just zero-tangential-gradient is used, this is necessary.
             Mdx,Bdx=nd.construct_matrix(op='dx')
             Mdy,Bdy=nd.construct_matrix(op='dy')
+            if gradient_scale!=1.0:
+                Mdx *= gradient_scale
+                Mdy *= gradient_scale
+                Bdx *= gradient_scale
+                Bdy *= gradient_scale
             Mblocks.append( [Mdy,-Mdx] )
             Mblocks.append( [Mdx, Mdy] )
             Bblocks.append( np.zeros(Mdx.shape[1]) )
