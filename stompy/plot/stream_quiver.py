@@ -25,11 +25,13 @@ class StreamlineQuiver(object):
     max_t=60.0
     max_dist=60.
     size=1.0
+    clip=None # don't start traces outside this xxyy bounding box
     
     def __init__(self,g,U,**kw):
         utils.set_keywords(self,kw)
         self.g=g
         self.U=U
+        self.island_points=[] # log weird island points for debugging
         self.Umag=utils.mag(U)
         self.boundary=g.boundary_polygon()
         self.init_tri()
@@ -158,18 +160,38 @@ class StreamlineQuiver(object):
         Complicated by the presence of constrained edges at the boundary of the
         grid. Using constrained centers helps to some degree.
         """
-        centers=self.tri.constrained_centers() 
+        while 1:
+            centers=self.tri.constrained_centers() 
 
-        radii=utils.dist(centers - self.tri.nodes['x'][self.tri.cells['nodes'][:,0]])
-        radii[ self.tri.cells['outside'] | self.tri.cells['deleted']] = 0.0
-        radii[ ~np.isfinite(radii)]=0.0
-        best=np.argmax(radii)
+            radii=utils.dist(centers - self.tri.nodes['x'][self.tri.cells['nodes'][:,0]])
+            radii[ self.tri.cells['outside'] | self.tri.cells['deleted']] = 0.0
+            if self.clip is not None:
+                clipped=( (centers[:,0]<self.clip[0])
+                          | (centers[:,0]>self.clip[1])
+                          | (centers[:,1]<self.clip[2])
+                          | (centers[:,1]>self.clip[3]) )
+                radii[clipped]=0.0
+            radii[ ~np.isfinite(radii)]=0.0
+            best=np.argmax(radii)
 
-        xy=centers[best]
-        print("*",end="") # xy)
+            xy=centers[best]
+            print("*",end="") # xy)
 
-        if not self.boundary.intersects( geometry.Point(xy) ):
-            raise Exception("Crap")
+            if not self.boundary.intersects( geometry.Point(xy) ):
+                # Either constrained_centers() did a bad job and the point isn't
+                # in the cell,
+                cpoly=self.tri.cell_polygon(best)
+                if not cpoly.intersects( geometry.Point(xy) ):
+                    print("Constrained center %s fell outside cell %d.  Lie and mark cell 'outside'"%(str(xy),best))
+                    self.tri.cells['outside'][best]=True
+                    continue
+                else:
+                    # Assume this is an island.
+                    print("Island")
+                    self.island_points.append( xy )
+                    self.tri.cells['outside'][best]=True
+                    continue
+            break
         return xy
 
     # would have been keeping track of the recent nodes as they were 
