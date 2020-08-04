@@ -7168,7 +7168,8 @@ class ParameterSpatioTemporal(Parameter):
         """
         self._mmap_data=np.memmap(self.seg_func_file,
                                   dtype=[('t',np.int32),
-                                         ('value',np.float32,self.n_seg)])
+                                         ('value',np.float32,self.n_seg)],
+                                  mode='r')
         self._times=self._mmap_data['t']
         self.values=self._mmap_data['value']
 
