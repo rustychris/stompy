@@ -1638,7 +1638,7 @@ class MultiBC(BC):
         # dredge_grid already has some of the machinery
         grid=self.model.grid
 
-        edges=dfm_grid.polyline_to_boundary_edges(grid,np.array(self.geom.coords))
+        edges=grid.select_edges_by_polyline(np.array(self.geom.coords))
 
         self.model.log.info("MultiBC will be applied over %d edges"%len(edges))
 

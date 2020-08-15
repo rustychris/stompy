@@ -468,7 +468,8 @@ class SuntansModel(hm.HydroModel):
         return utils.to_dt64(dt)
 
     def create_restart(self,symlink=True):
-        new_model=SuntansModel()
+        new_model=self.__class__() # in case of subclassing
+        # SuntansModel()
         new_model.config=self.config.copy()
         # things that have to match up, but are not part of the config:
         new_model.num_procs=self.num_procs
