@@ -2899,6 +2899,52 @@ class GdalGrid(SimpleGrid):
                             F=A,
                             projection=self.gds.GetProjection() )
 
+def rasterize_grid_cells(g,values,dx,dy,stretch=True):
+    """ 
+    g: UnstructuredGrid
+    values: scalar values for each cell of the grid.  Must be uint16.
+    dx,dy: resolution of the resulting raster
+    stretch: use the full range of a uint16
+
+    returns: SimpleGrid field in memory
+    """
+    from . import wkb2shp
+    dtype=np.uint16
+    if stretch:
+        vmin=values.min()
+        vmax=values.max()
+        fac=1./(vmax-vmin) * (np.iinfo(dtype).max-1)
+        values=1+( (values-vmin)*fac ).astype(dtype)
+    else:
+        values=values.astype(np.uint16)
+    polys=[g.cell_polygon(c) for c in range(g.Ncells())]
+    poly_ds=wkb2shp.wkb2shp("Memory",polys,
+                            fields=dict(VAL=values.astype(np.uint32)))
+    
+    extents=g.bounds()
+    
+    Nx=int( 1+ (extents[1]-extents[0])/dx )
+    Ny=int( 1+ (extents[3]-extents[2])/dy )
+    F=np.zeros( (Ny,Nx), np.float64)
+    
+    target_field=SimpleGrid(F=F,extents=extents)
+    target_ds = target_field.write_gdal('Memory')
+    
+    # write 1000 into the array where the polygon falls.
+    gdal.RasterizeLayer(target_ds,[1],poly_ds.GetLayer(0),options=["ATTRIBUTE=VAL"])
+    #None,None,[1000],[])
+    new_raster=GdalGrid(target_ds)
+
+    if stretch:
+        F=new_raster.F
+        Fnew=np.zeros(F.shape,np.float64)
+
+        Fnew = (F-1)/fac+vmin
+        Fnew[F==0]=np.nan
+        new_raster.F=Fnew
+
+    return new_raster
+        
 if ogr:
     from stompy.spatial import interp_coverage
     class BlenderField(Field):
@@ -3262,13 +3308,16 @@ class CompositeField(Field):
         return self.delegate_list[i]
 
     def to_grid(self,nx=None,ny=None,bounds=None,dx=None,dy=None,
-                mask_poly=None):
+                mask_poly=None,return_stack=False):
         """ render the layers to a SimpleGrid tile.
         nx,ny: number of pixels in respective dimensions
         bounds: xxyy bounding rectangle.
         dx,dy: size of pixels in respective dimensions.
         mask_poly: a shapely polygon.  only points inside this polygon
         will be generated.
+
+        return_stack: return a list of the layers involve in compositing
+        this tile. 
         """
         # boil the arguments down to dimensions
         if bounds is None:
@@ -3282,6 +3331,9 @@ class CompositeField(Field):
         if nx is None:
             nx=1+int(np.round((xmax-xmin)/dx))
             ny=1+int(np.round((ymax-ymin)/dy))
+
+        if return_stack:
+            stack=[]
 
         # allocate the blank starting canvas
         result_F =np.ones((ny,nx),'f8')
@@ -3305,6 +3357,11 @@ class CompositeField(Field):
         order = np.argsort(self.src_priority[relevant_srcs])
         ordered_srcs=relevant_srcs[order]
 
+        # Use to use ndimage.distance_transform_bf.
+        # This appears to give equivalent results (at least for binary-valued
+        # inputs), and runs about 80x faster on a small-ish input.
+        dist_xform=ndimage.distance_transform_edt
+        
         for src_i in ordered_srcs:
             log.info(self.sources['src_name'][src_i])
             log.info("   data mode: %s  alpha mode: %s"%(self.data_mode[src_i],
@@ -3368,18 +3425,36 @@ class CompositeField(Field):
                 "linear feathering within original poly"
                 pixels=int(round(float(dist)/dx))
                 if pixels>0:
-                    Fsoft=ndimage.distance_transform_bf(src_alpha.F)
+                    Fsoft=dist_xform(src_alpha.F)
                     src_alpha.F = (Fsoft/pixels).clip(0,1)
+            def buffer(dist):
+                "buffer poly outwards (by pixels)"
+                # Could do this by erosion/dilation.  but using
+                # distance is a bit more compact (maybe slower, tho)
+                pixels=int(round(float(dist)/dx))
+                if pixels>0:
+                    # Like feather_out.
+                    # Fsoft gets distance to a 1 pixel
+                    Fsoft=dist_xform(1-src_alpha.F)
+                    # is this right, or does it need a 1 in there?
+                    src_alpha.F = (pixels-Fsoft).clip(0,1)
+                elif pixels<0:
+                    pixels=-pixels
+                    # Fsoft gets the distance to a zero pixel
+                    Fsoft=dist_xform(src_alpha.F)
+                    src_alpha.F = (Fsoft-pixels).clip(0,1)
+                
             feather=feather_in
             def feather_out(dist):
                 pixels=int(round(float(dist)/dx))
                 if pixels>0:
-                    Fsoft=ndimage.distance_transform_bf(1-src_alpha.F)
+                    Fsoft=dist_xform(1-src_alpha.F)
                     src_alpha.F = (1-Fsoft/pixels).clip(0,1)
 
             # dangerous! executing code from a shapefile!
-            eval(self.data_mode[src_i])
-            eval(self.alpha_mode[src_i])
+            for mode in [self.data_mode[src_i],self.alpha_mode[src_i]]:
+                if mode is None or mode.strip() in ['',b'']: continue
+                eval(mode)
 
             data_missing=np.isnan(src_data.F)
             src_alpha.F[data_missing]=0.0
@@ -3403,10 +3478,19 @@ class CompositeField(Field):
             result_data.F[valid] /= total_alpha[valid]
             result_alpha.F  = total_alpha
 
+            if return_stack:
+                stack.append( (self.sources['src_name'][src_i],
+                               result_data.copy(),
+                               src_alpha.copy() ) )
+
         # fudge it a bit, and allow semi-transparent data back out, but
         # at least nan out the totally transparent stuff.
         result_data.F[ result_alpha.F==0 ] = np.nan
-        return result_data
+
+        if return_stack:
+            return result_data,stack
+        else:
+            return result_data
 
 class MultiRasterField(Field):
     """ Given a collection of raster files at various resolutions and with possibly overlapping
