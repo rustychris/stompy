@@ -1815,6 +1815,15 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
                 for j in self.node_to_edges(n)
                 if self.edges['constrained'][j]]
 
+    def init_from_grid(self,g):
+        """
+        Initialize from the nodes and edges of an existing grid, making
+        existing edges constrained
+        """
+        self.bulk_init(g.nodes['x'][~g.nodes['deleted']])
+        for j in g.valid_edge_iter():
+            self.add_constraint( *g.edges['nodes'][j] )
+        
     def bulk_init_slow(self,points):
         raise Exception("No - it's really slow.  Don't do this.")
     

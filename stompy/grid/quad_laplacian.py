@@ -23,6 +23,15 @@ are contours of the respective field.  For a boundary segment of
 s nodes, inclusive of corners, that yields s-1 constraints.
 
 
+TODO: 
+ - enforce monotonic sliding of nodes on the same segment.  Currently it's possible
+   for nodes to slide over each other resulting in an invalid (but sometimes salvageable)
+   intermediate grid.
+ - Allow ragged edges.
+ - Allow multiple patches that can be solved simultaneously.  
+ - Depending on how patches go, may allow for overlaps in phi/psi space if they are distinct in geographic space.
+ - allow patch connections that are rotated (psi on one side matches phi on the other, or a 
+   full inversion
 
 
 """
@@ -234,7 +243,10 @@ class QuadGen(object):
     nom_res=4.0
     # Minimum number of edges along a boundary segment in the nominal isotropic grid
     min_steps=2
-    
+
+    # How many iterations to execute during the smoothing of the solution grid
+    # (smooth_interior_quads)
+    smooth_iterations=3
     def __init__(self,gen,execute=True,cell=None,**kw):
         """
         gen: the design grid. cells of this grid will be filled in with 
@@ -270,21 +282,24 @@ class QuadGen(object):
         self.node_ij_to_edge(self.gen,dest='IJ')
 
         if execute:
-            self.add_bezier(self.gen)
-            self.g_int=self.create_intermediate_grid(src='IJ')
-            # This now happens as a side effect of smooth_interior_quads
-            # self.adjust_intermediate_bounds()
-            self.smooth_interior_quads(self.g_int)
-            self.calc_psi_phi()
-            if self.anisotropic:
-                self.g_final=self.create_intermediate_grid(src='ij',coordinates='ij')
-                self.adjust_by_psi_phi(self.g_final, src='ij')
-            else:
-                self.g_final=self.g_int.copy()
-                self.adjust_by_psi_phi(self.g_final, src='IJ')
-                # but update ij to reflect the 'ij' in the original input.
-                ij=self.remap_ij(self.g_final,src='ij')
-                self.g_final.nodes['ij']=ij
+            self.execute()
+            
+    def execute(self):
+        self.add_bezier(self.gen)
+        self.g_int=self.create_intermediate_grid(src='IJ')
+        # This now happens as a side effect of smooth_interior_quads
+        # self.adjust_intermediate_bounds()
+        self.smooth_interior_quads(self.g_int)
+        self.calc_psi_phi()
+        if self.anisotropic:
+            self.g_final=self.create_intermediate_grid(src='ij',coordinates='ij')
+            self.adjust_by_psi_phi(self.g_final, src='ij')
+        else:
+            self.g_final=self.g_int.copy()
+            self.adjust_by_psi_phi(self.g_final, src='IJ')
+            # but update ij to reflect the 'ij' in the original input.
+            ij=self.remap_ij(self.g_final,src='ij')
+            self.g_final.nodes['ij']=ij
 
     def node_ij_to_edge(self,g,dest='ij'):
         dij=(g.nodes[dest][g.edges['nodes'][:,1]]
@@ -772,11 +787,13 @@ class QuadGen(object):
             for n,point in zip(g_nodes,points):
                 g.modify_node(n,x=point)
 
-    def smooth_interior_quads(self,g,iterations=3):
+    def smooth_interior_quads(self,g,iterations=None):
         """
         Smooth quad grid by allowing boundary nodes to slide, and
         imparting a normal constraint at the boundary.
         """
+        if iterations is None:
+            iterations=self.smooth_iterations
         # So the anisotropic smoothing has a weakness where the spacing
         # of boundary nodes warps the interior.
         # Currently I smooth x and y independently, using the same matrix.
@@ -926,6 +943,18 @@ class QuadGen(object):
         # It is still a bit unclear what the remaining degrees of freedom
         # are, but they can, in practice, be eliminated by additionally
         # the coupling terms d psi /dy ~ d phi/dx, and vice versa.
+
+        # One approach would be to split the problem into constraints and
+        # costs.  Then the known BCs and Laplacians can be constraints,
+        # and the remaining DOFs can be solved as a least-squares problem.
+        # This is "equality-constrained linear least squares"
+        # For dense matrices:
+        # With Cx=d constraint, minimize Ax=b
+        #  from scipy.linalg import lapack
+        #  # Define the matrices as usual, then
+        #  x = lapack.dgglse(A, C, b, d)[3]
+        # And there is ostensibly a way to do this by solving an augmented
+        # system
         
         # check boundaries and determine where Laplacian BCs go
         boundary=e2c.min(axis=1)<0
@@ -1028,10 +1057,14 @@ class QuadGen(object):
             Bblocks.append( np.zeros(Mdx.shape[1]) )
             Bblocks.append( np.zeros(Mdx.shape[1]) )
 
+        self.Mblocks=Mblocks
+        self.Bblocks=Bblocks
+        
         bigM=sparse.bmat( Mblocks )
         rhs=np.concatenate( Bblocks )
 
         psi_phi,*rest=sparse.linalg.lsqr(bigM,rhs)
+        self.psi_phi=psi_phi
         self.psi=psi_phi[:gtri.Nnodes()]
         self.phi=psi_phi[gtri.Nnodes():]
 

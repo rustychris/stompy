@@ -2510,10 +2510,11 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         cxy[:,0] = ( (xA[:,:,0]+xB[:,:,0])*tmp).sum(axis=1)
         cxy[:,1] = ( (xA[:,:,1]+xB[:,:,1])*tmp).sum(axis=1)
 
-        cxy /= 6*A[:,None]
-        cxy += refs
+        valid=~self.cells['deleted'][sel]
+        cxy[valid] /= 6*A[valid,None]
+        cxy[valid] += refs[valid,:]
 
-        cxy[self.cells['deleted'][sel],:]=np.nan
+        cxy[~valid,:]=np.nan
 
         return cxy
 
@@ -3326,7 +3327,41 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         return dict(j_next=j_next)
 
-            
+    def merge_cells_by_circumcenter(self,d_min=None, d_min_rel=0.01):
+        """
+        Merge adjacent cells when circumcenters are within d_min
+        of each other, or d/sqrt(Asum) < d_min_rel
+        """
+        # signed distance
+        e2c=self.edge_to_cells()
+        c1=e2c[:,0].copy()
+        c2=e2c[:,1].copy()
+        c1[c1<0]=c2[c1<0]
+        c2[c2<0]=c1[c2<0]
+        cc=self.cells_center()
+        n=self.edges_normals()
+        d=((cc[c2] - cc[c1]) * n).sum(axis=1)
+        A=self.cells_area()
+        L=np.sqrt( A[c1] + A[c2] )
+
+        sel=False
+        if d_min is not None:
+            sel=sel | (d<=d_min)
+        if d_min_rel is not None:
+            sel=sel | (d<=d_min_rel * L)
+
+        sel=sel & (c1!=c2)
+
+        hit_side_limit=0
+        for j in np.nonzero(sel)[0]:
+            if self.edges['deleted'][j]: continue
+            if self.cell_Nsides(c1[j]) + self.cell_Nsides(c2[j]) - 1 >self.max_sides:
+                hit_side_limit+=1
+                continue
+            self.merge_cells(j=j)
+
+        if hit_side_limit:
+            print("%d edges could not be merged due to max_sides"%hit_side_limit)
     def merge_cells(self,j=None,x=None):
         """
         Given an edge or point near an edge midpoint,
@@ -5939,8 +5974,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             cell_geoms[poly_id]=self.cell_polygon(poly_id)
 
         print( cell_data.dtype )
-        wkb2shp.wkb2shp(shpname,input_wkbs=cell_geoms,fields=cell_data,
-                        overwrite=overwrite)
+        result=wkb2shp.wkb2shp(shpname,input_wkbs=cell_geoms,fields=cell_data,
+                               overwrite=overwrite)
+        return result
 
     def write_shore_shp(self,shpname,geom_type='polygon',overwrite=False):
         poly=self.boundary_polygon()
