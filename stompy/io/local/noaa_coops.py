@@ -229,6 +229,8 @@ def coops_dataset_product(station,product,
                 else:
                     # Regardless, if there was an error we got no data.
                     log.warning("Unknown error - got no data back.")
+                    log.warning("URL was %s"%(req.url))
+
                     log.debug(data)
                     
                 log.debug("URL was %s"%(req.url))
