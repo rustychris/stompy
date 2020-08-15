@@ -215,7 +215,7 @@ def wkb2shp(shp_name,
             new_layer.CreateFeature(feat)
             feat.Destroy()
 
-    if shp_name!="Memory":
+    if shp_name.lower()!="memory":
         new_layer.SyncToDisk()
     else:
         return new_ds
