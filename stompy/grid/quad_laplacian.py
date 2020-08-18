@@ -69,9 +69,6 @@ class NodeDiscretization(object):
         gradient_nodes: boundary node id => gradient unit vector [dx,dy]
         """
         g=self.g
-        B=np.zeros(g.Nnodes(),np.float64)
-        M=sparse.dok_matrix( (g.Nnodes(),g.Nnodes()),np.float64)
-
         # Adjust tangential node data structure for easier use
         # in matrix construction
         tangential_nodes={} 
@@ -79,14 +76,105 @@ class NodeDiscretization(object):
             leader=grp[0]
             for member in grp:
                 # NB: This includes leader=>leader
+                assert member not in tangential_nodes
                 tangential_nodes[member]=leader
 
-        for n in range(g.Nnodes()):
-            if n in dirichlet_nodes:
-                nodes=[n]
-                alphas=[1]
-                rhs=dirichlet_nodes[n]
-            elif n in gradient_nodes:
+        if 0:
+            # previously nodes constrained by a BC were omitted from the
+            # regular equations, so the resulting matrix is always square,
+            # but can have some zero rows.
+            B=np.zeros(g.Nnodes(),np.float64)
+            M=sparse.dok_matrix( (g.Nnodes(),g.Nnodes()),np.float64)
+            multiple=False
+        else:
+            # Now I want to allow multiple BCs to constrain the same node.
+            # How many rows will I end up with?
+
+            # First count up the nodes that will get a regular laplacian
+            # row.  This includes boundary nodes that have a no-flux BC.
+            # (because that's the behavior of the discretization on a
+            # boundary)
+            nlaplace_rows=0
+            laplace_nodes={}
+            for n in range(g.Nnodes()):
+                if n in dirichlet_nodes: continue
+                if n in gradient_nodes: continue
+                if n in tangential_nodes: continue
+                laplace_nodes[n]=True
+                nlaplace_rows+=1
+
+            ndirichlet_nodes=len(dirichlet_nodes)
+            # Each group of tangential gradient nodes provides len-1 constraints
+            ntangential_nodes=len(tangential_nodes) - len(zero_tangential_nodes)
+            ngradient_nodes=len(gradient_nodes)
+
+            nrows=nlaplace_rows + ndirichlet_nodes + ntangential_nodes + ngradient_nodes
+            
+            B=np.zeros(nrows,np.float64)
+            M=sparse.dok_matrix( (nrows,g.Nnodes()),np.float64)
+            multiple=True
+
+        if not multiple:
+            for n in range(g.Nnodes()):
+                if n in dirichlet_nodes:
+                    nodes=[n]
+                    alphas=[1]
+                    rhs=dirichlet_nodes[n]
+                elif n in gradient_nodes:
+                    vec=gradient_nodes[n] # The direction of the gradient
+                    normal=[vec[1],-vec[0]] # direction of zero gradient
+                    dx_nodes,dx_alphas,_=self.node_discretization(n,op='dx')
+                    dy_nodes,dy_alphas,_=self.node_discretization(n,op='dy')
+                    assert np.all(dx_nodes==dy_nodes),"Have to be cleverer"
+                    nodes=dx_nodes
+                    # So if vec = [1,0], then normal=[0,-1]
+                    # and I want dx*norma[0]+dy*normal[1] = 0
+                    alphas=np.array(dx_alphas)*normal[0] + np.array(dy_alphas)*normal[1]
+                    rhs=0
+                elif n in tangential_nodes:
+                    leader=tangential_nodes[n]
+                    if n==leader:
+                        # Really should drop the row
+                        rhs=0.0
+                        nodes=[n]
+                        alphas=[0]
+                    else:
+                        rhs=0.0
+                        nodes=[n,leader]
+                        alphas=[1,-1]
+                else:
+                    nodes,alphas,rhs=self.node_discretization(n,op=op)
+                    # could add to rhs here
+                B[n]=rhs
+                for node,alpha in zip(nodes,alphas):
+                    M[n,node]=alpha
+        else:
+            # Very similar code, but messy to refactor so write a new loop.
+            ndirichlet_nodes=len(dirichlet_nodes)
+            # Each group of tangential gradient nodes provides len-1 constraints
+            ntangential_nodes=len(tangential_nodes) - len(zero_tangential_nodes)
+            ngradient_nodes=len(gradient_nodes)
+
+            nrows=nlaplace_rows + ndirichlet_nodes + ntangential_nodes + ngradient_nodes
+            
+            B=np.zeros(nrows,np.float64)
+            M=sparse.dok_matrix( (nrows,g.Nnodes()),np.float64)
+            multiple=True
+
+            row=0
+            for n in laplace_nodes:
+                nodes,alphas,rhs=self.node_discretization(n,op=op)
+                B[row]=rhs
+                for node,alpha in zip(nodes,alphas):
+                    M[row,node]=alpha
+                row+=1
+                
+            for n in dirichlet_nodes:
+                B[row]=dirichlet_nodes[n]
+                M[row,n]=1
+                row+=1
+
+            for n in gradient_nodes:
                 vec=gradient_nodes[n] # The direction of the gradient
                 normal=[vec[1],-vec[0]] # direction of zero gradient
                 dx_nodes,dx_alphas,_=self.node_discretization(n,op='dx')
@@ -96,24 +184,22 @@ class NodeDiscretization(object):
                 # So if vec = [1,0], then normal=[0,-1]
                 # and I want dx*norma[0]+dy*normal[1] = 0
                 alphas=np.array(dx_alphas)*normal[0] + np.array(dy_alphas)*normal[1]
-                rhs=0
-            elif n in tangential_nodes:
+                B[row]=0
+                for node,alpha in zip(nodes,alphas):
+                    M[row,node]=alpha
+                row+=1
+                    
+            for n in tangential_nodes:
                 leader=tangential_nodes[n]
                 if n==leader:
-                    # Really should drop the row
-                    rhs=0.0
-                    nodes=[n]
-                    alphas=[0]
-                else:
-                    rhs=0.0
-                    nodes=[n,leader]
-                    alphas=[1,-1]
-            else:
-                nodes,alphas,rhs=self.node_discretization(n,op=op)
-                # could add to rhs here
-            B[n]=rhs
-            for node,alpha in zip(nodes,alphas):
-                M[n,node]=alpha
+                    print("skip leader")
+                    continue
+                M[row,n]=1
+                M[row,leader]=-1
+                B[row]=0.0
+                row+=1
+            assert row==nrows
+            
         return M,B
     
     def node_laplacian(self,n0):
@@ -1011,7 +1097,7 @@ class QuadGen(object):
         grad_phi={}
         for ni,n in enumerate(bcycle):
             grad_psi[n]=bc_grad_psi[ni,:]
-            grad_phi[n]=bc_grad_psi[ni,:]
+            grad_phi[n]=bc_grad_phi[ni,:]
         return grad_psi,grad_phi
     
     def calc_psi_phi(self,gtri=None):
@@ -1072,28 +1158,42 @@ class QuadGen(object):
             i2=gtri.nodes['ij'][n2,0]
             j1=gtri.nodes['ij'][n1,1]
             j2=gtri.nodes['ij'][n2,1]
-            if np.allclose(i1,i2): # too lazy to track down how i'm getting a 2e-12 offset
+            imatch=np.allclose(i1,i2) # too lazy to track down how i'm getting a 2e-12 offset
+            jmatch=np.allclose(j1,j2)
+            
+            if imatch: 
                 if i_grp is None:
                     i_grp=[n1]
                     i_tan_groups.append(i_grp)
                     i_tan_groups_i.append(i1)
-                    j_grp=None
                 i_grp.append(n2)
-            elif np.allclose(j1,j2):
+            else:
+                i_grp=None
+
+            if jmatch:
                 if j_grp is None:
                     j_grp=[n1]
                     j_tan_groups.append(j_grp)
                     j_tan_groups_j.append(j1)
-                    i_grp=None
                 j_grp.append(n2)
             else:
+                j_grp=None
+                
+            if not (imatch or jmatch):
                 # Register gradient BC for n1
                 psi_gradient_nodes[n1]=psi_gradients[n1]
-                phi_gradient_nodes[n1]=phi_gradients[n1]
                 psi_gradient_nodes[n2]=psi_gradients[n2]
+                phi_gradient_nodes[n1]=phi_gradients[n1]
                 phi_gradient_nodes[n2]=phi_gradients[n2]
             n1=n2
 
+        # bcycle likely starts in the middle of either a j_tan_group or i_tan_group.
+        # see if first and last need to be merged
+        if i_tan_groups[0][0]==i_tan_groups[-1][-1]:
+            i_tan_groups[0].extend( i_tan_groups.pop()[:-1] )
+        if j_tan_groups[0][0]==j_tan_groups[-1][-1]:
+            j_tan_groups[0].extend( j_tan_groups.pop()[:-1] )
+            
         # Set the range of psi to [-1,1], and pin some j to 1.0
         low_i=np.argmin(i_tan_groups_i)
         high_i=np.argmax(i_tan_groups_i)
@@ -1116,8 +1216,10 @@ class QuadGen(object):
 
         self.i_dirichlet_nodes=i_dirichlet_nodes
         self.i_tan_groups=i_tan_groups
+        self.i_grad_nodes=psi_gradient_nodes
         self.j_dirichlet_nodes=j_dirichlet_nodes
         self.j_tan_groups=j_tan_groups
+        self.j_grad_nodes=phi_gradient_nodes
         
         Mblocks=[]
         Bblocks=[]

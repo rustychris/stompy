@@ -3308,7 +3308,7 @@ class CompositeField(Field):
         return self.delegate_list[i]
 
     def to_grid(self,nx=None,ny=None,bounds=None,dx=None,dy=None,
-                mask_poly=None,return_stack=False):
+                mask_poly=None,stackup=False):
         """ render the layers to a SimpleGrid tile.
         nx,ny: number of pixels in respective dimensions
         bounds: xxyy bounding rectangle.
@@ -3316,8 +3316,10 @@ class CompositeField(Field):
         mask_poly: a shapely polygon.  only points inside this polygon
         will be generated.
 
-        return_stack: return a list of the layers involve in compositing
+        stackup: 'return': return a list of the layers involve in compositing
         this tile. 
+        'plot': make a figure showing the evolution of the layers as they're
+        stacked up.
         """
         # boil the arguments down to dimensions
         if bounds is None:
@@ -3332,7 +3334,7 @@ class CompositeField(Field):
             nx=1+int(np.round((xmax-xmin)/dx))
             ny=1+int(np.round((ymax-ymin)/dy))
 
-        if return_stack:
+        if stackup:
             stack=[]
 
         # allocate the blank starting canvas
@@ -3478,7 +3480,7 @@ class CompositeField(Field):
             result_data.F[valid] /= total_alpha[valid]
             result_alpha.F  = total_alpha
 
-            if return_stack:
+            if stackup:
                 stack.append( (self.sources['src_name'][src_i],
                                result_data.copy(),
                                src_alpha.copy() ) )
@@ -3487,10 +3489,34 @@ class CompositeField(Field):
         # at least nan out the totally transparent stuff.
         result_data.F[ result_alpha.F==0 ] = np.nan
 
-        if return_stack:
+        if stackup=='return':
             return result_data,stack
-        else:
-            return result_data
+        elif stackup=='plot':
+            self.plot_stackup(result_data,stack)
+        
+        return result_data
+
+    def plot_stackup(self,result_data,stack,num=None,z_factor=5.,cmap='jet'):
+        plt.figure(num=num).clf()
+        nrows=ncols=np.sqrt(len(stack))
+        nrows=int(np.ceil(nrows))
+        ncols=int(np.floor(ncols))
+        if nrows*ncols<len(stack): ncols+=1
+        
+        fig,axs=plt.subplots(nrows,ncols,num=num)
+
+        for ax,(name,data,alpha) in zip( axs.ravel(), stack ):
+            data.plot(ax=ax,vmin=0,vmax=3.5,cmap=cmap)
+            data.plot_hillshade(ax=ax,z_factor=z_factor)
+            ax.axis('off')
+            ax.set_title(name)
+        for ax in axs.ravel()[len(stack):]:
+            ax.axis('off')
+            
+        fig.subplots_adjust(left=0,right=1,top=0.95,bottom=0,hspace=0.08)
+        # fig.
+        return fig
+
 
 class MultiRasterField(Field):
     """ Given a collection of raster files at various resolutions and with possibly overlapping
