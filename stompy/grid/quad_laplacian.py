@@ -58,13 +58,15 @@ class NodeDiscretization(object):
     def __init__(self,g):
         self.g=g
     def construct_matrix(self,op='laplacian',dirichlet_nodes={},
-                         zero_tangential_nodes=[]):
+                         zero_tangential_nodes=[],
+                         gradient_nodes={}):
         """
         Construct a matrix and rhs for the given operation.
         dirichlet_nodes: boundary node id => value
         zero_tangential_nodes: list of lists.  each list gives a set of
           nodes which should be equal to each other, allowing specifying
           a zero tangential gradient BC.  
+        gradient_nodes: boundary node id => gradient unit vector [dx,dy]
         """
         g=self.g
         B=np.zeros(g.Nnodes(),np.float64)
@@ -84,6 +86,17 @@ class NodeDiscretization(object):
                 nodes=[n]
                 alphas=[1]
                 rhs=dirichlet_nodes[n]
+            elif n in gradient_nodes:
+                vec=gradient_nodes[n] # The direction of the gradient
+                normal=[vec[1],-vec[0]] # direction of zero gradient
+                dx_nodes,dx_alphas,_=self.node_discretization(n,op='dx')
+                dy_nodes,dy_alphas,_=self.node_discretization(n,op='dy')
+                assert np.all(dx_nodes==dy_nodes),"Have to be cleverer"
+                nodes=dx_nodes
+                # So if vec = [1,0], then normal=[0,-1]
+                # and I want dx*norma[0]+dy*normal[1] = 0
+                alphas=np.array(dx_alphas)*normal[0] + np.array(dy_alphas)*normal[1]
+                rhs=0
             elif n in tangential_nodes:
                 leader=tangential_nodes[n]
                 if n==leader:
@@ -108,7 +121,10 @@ class NodeDiscretization(object):
 
     def node_dx(self,n0):
         return self.node_discretization(n0,'dx')
-    
+
+    def node_dy(self,n0):
+        return self.node_discretization(n0,'dy')
+
     def node_discretization(self,n0,op='laplacian'):
         def beta(c):
             return 1.0
@@ -247,6 +263,21 @@ class QuadGen(object):
     # How many iterations to execute during the smoothing of the solution grid
     # (smooth_interior_quads)
     smooth_iterations=3
+
+    # When assigning boundary nodes to edges of the generating grid, how tolerant
+    # can we be?  This is a distance in ij space.  For cartesian boundaries can
+    # be small, and is hardcoded at 0.1. For ragged boundaries, compare against
+    # this value.  Seems like the max ought to be a little over 1. This is
+    # probably too generous
+    max_ragged_node_offset=2.0
+
+    # The additional constraints that link psi and phi create an over-determined
+    # system.  Still trying to understand when this is a problem.  The solution
+    # can in some cases become invalid when the gradient terms are either too
+    # strong (maybe) or too loose (true).
+    # 'scaled' will scale the gradient terms according to the number of extra dofs.
+    gradient_scale='scaled'
+    
     def __init__(self,gen,execute=True,cell=None,**kw):
         """
         gen: the design grid. cells of this grid will be filled in with 
@@ -468,6 +499,10 @@ class QuadGen(object):
             if coordinates=='xy':
                 Extrap=utils.LinearNDExtrapolator
 
+                # There is a danger that a triangulation of ij
+                # is not valid in xy space.
+                # Would it work to build the triangulation in xy space,
+                # but then use ij coordinates
                 int_x=Extrap(ijs,xys[:,0])
                 node_x=int_x(g.nodes['x'][pnodes,:])
 
@@ -527,15 +562,27 @@ class QuadGen(object):
                 # [ {nA,nB}, n_local_edges, {i,j}]
                 candidates=np.all( (n_ij>=lower_ij) & (n_ij<=upper_ij),
                                    axis=1)
+                best_lj=None
+                best_offset=np.inf
+                
                 for lj in np.nonzero(candidates)[0]:
                     # is n_ij approximately on the line
                     # local_edge_ijs[lj] ?
                     offset=utils.point_line_distance(n_ij,local_edge_ijs[:,lj,:])
-                    if offset<0.1:
-                        g.nodes['gen_j'][n]=local_edges[lj]
-                        break
+                    if offset<best_offset:
+                        best_lj=lj
+                        best_offset=offset
+                if best_lj is None:
+                    raise Exception("Failed to match up a boundary node: no candidates")
+                dij = np.diff( local_edge_ijs[:,lj,:], axis=0)
+                if np.all(dij!=0): # ragged edge
+                    allowable=self.max_ragged_node_offset
                 else:
-                    raise Exception("Failed to match up a boundary node")
+                    allowable=0.1
+                if best_offset>allowable:
+                    raise Exception("Failed to match up a boundary node: offset %.2f > allowable %.2f"%
+                                    (best_offset,allowable))
+                g.nodes['gen_j'][n]=local_edges[lj]
                 
         g.renumber()
         return g
@@ -925,9 +972,51 @@ class QuadGen(object):
         boundary_linestring = g_tri.extract_linear_strings()[0]
         boundary=g_tri.nodes['x'][boundary_linestring]
         return geometry.Polygon(boundary)
+
+    def calc_bc_gradients(self,gtri):
+        """
+        Calculate gradient vectors for psi and phi along
+        the boundary.
+        """
+        bcycle=gtri.boundary_cycle()
+
+        # First calculate psi gradient per edge:
+        j_grad_psi=np.zeros( (len(bcycle),2), np.float64)
+        for ji,(n1,n2) in enumerate( zip(bcycle[:-1],bcycle[1:]) ):
+            tang_xy=utils.to_unit( gtri.nodes['x'][n2] - gtri.nodes['x'][n1] )
+            tang_ij=utils.to_unit( gtri.nodes['ij'][n2] - gtri.nodes['ij'][n1] )
+
+            # Construct a rotation R such that R.dot(tang_ij)=[1,0],
+            # then apply to tang_ij
+            Rpsi=np.array([[tang_ij[0], tang_ij[1]],
+                           [-tang_ij[1], tang_ij[0]] ] )
+            j_grad_psi[ji,:]=Rpsi.dot(tang_xy)
+
+        # Interpolate to nodes
+        bc_grad_psi=np.zeros( (len(bcycle),2), np.float64)
+
+        N=len(bcycle)
+        for ni in range(N):
+            bc_grad_psi[ni,:]=0.5*( j_grad_psi[ni,:] +
+                                    j_grad_psi[(ni-1)%N,:] )
         
-    def calc_psi_phi(self):
-        gtri=self.g_int
+        bc_grad_phi=np.zeros( (len(bcycle),2), np.float64)
+
+        # 90 CW from psi
+        bc_grad_phi[:,0]=bc_grad_psi[:,1]
+        bc_grad_phi[:,1]=-bc_grad_psi[:,0]
+
+        # Convert to dicts:
+        grad_psi={}
+        grad_phi={}
+        for ni,n in enumerate(bcycle):
+            grad_psi[n]=bc_grad_psi[ni,:]
+            grad_phi[n]=bc_grad_psi[ni,:]
+        return grad_psi,grad_phi
+    
+    def calc_psi_phi(self,gtri=None):
+        if gtri is None:
+            gtri=self.g_int
         self.nd=nd=NodeDiscretization(gtri)
 
         e2c=gtri.edge_to_cells()
@@ -974,19 +1063,23 @@ class QuadGen(object):
         i_grp=None
         j_grp=None
 
+        psi_gradients,phi_gradients=self.calc_bc_gradients(gtri)
+        psi_gradient_nodes={} # node => unit vector of gradient direction
+        phi_gradient_nodes={} # node => unit vector of gradient direction
+
         for n2 in bcycle:
             i1=gtri.nodes['ij'][n1,0]
             i2=gtri.nodes['ij'][n2,0]
             j1=gtri.nodes['ij'][n1,1]
             j2=gtri.nodes['ij'][n2,1]
-            if i1==i2:
+            if np.allclose(i1,i2): # too lazy to track down how i'm getting a 2e-12 offset
                 if i_grp is None:
                     i_grp=[n1]
                     i_tan_groups.append(i_grp)
                     i_tan_groups_i.append(i1)
                     j_grp=None
                 i_grp.append(n2)
-            elif j1==j2:
+            elif np.allclose(j1,j2):
                 if j_grp is None:
                     j_grp=[n1]
                     j_tan_groups.append(j_grp)
@@ -994,7 +1087,11 @@ class QuadGen(object):
                     i_grp=None
                 j_grp.append(n2)
             else:
-                print("Don't know how to deal with non-cartesian edges")
+                # Register gradient BC for n1
+                psi_gradient_nodes[n1]=psi_gradients[n1]
+                phi_gradient_nodes[n1]=phi_gradients[n1]
+                psi_gradient_nodes[n2]=psi_gradients[n2]
+                phi_gradient_nodes[n2]=phi_gradients[n2]
             n1=n2
 
         # Set the range of psi to [-1,1], and pin some j to 1.0
@@ -1011,18 +1108,33 @@ class QuadGen(object):
         dofs=len(i_tan_groups) + len(j_tan_groups) - 3
         assert dofs>0
 
+        if 0: # DBG
+            print("i_dirichlet_nodes:",i_dirichlet_nodes)
+            print("i_tan_groups:",i_tan_groups)
+            print("j_dirichlet_nodes:",j_dirichlet_nodes)
+            print("j_tan_groups:",j_tan_groups)
+
+        self.i_dirichlet_nodes=i_dirichlet_nodes
+        self.i_tan_groups=i_tan_groups
+        self.j_dirichlet_nodes=j_dirichlet_nodes
+        self.j_tan_groups=j_tan_groups
+        
         Mblocks=[]
         Bblocks=[]
         if 1: # PSI
             M_psi_Lap,B_psi_Lap=nd.construct_matrix(op='laplacian',
                                                     dirichlet_nodes=i_dirichlet_nodes,
-                                                    zero_tangential_nodes=i_tan_groups)
+                                                    zero_tangential_nodes=i_tan_groups,
+                                                    gradient_nodes=psi_gradient_nodes)
             Mblocks.append( [M_psi_Lap,None] )
             Bblocks.append( B_psi_Lap )
         if 1: # PHI
+            # including phi_gradient_nodes, and the derivative links below
+            # is redundant but balanced.
             M_phi_Lap,B_phi_Lap=nd.construct_matrix(op='laplacian',
                                                     dirichlet_nodes=j_dirichlet_nodes,
-                                                    zero_tangential_nodes=j_tan_groups)
+                                                    zero_tangential_nodes=j_tan_groups,
+                                                    gradient_nodes=phi_gradient_nodes)
             Mblocks.append( [None,M_phi_Lap] )
             Bblocks.append( B_phi_Lap )
         if 1:
@@ -1040,8 +1152,13 @@ class QuadGen(object):
             # each of those rows constrains 1 dof, and I want the
             # set of derivative rows to constrain dofs. And there
             # are 2*Nnodes() rows.
-            gradient_scale = dofs / (2*gtri.Nnodes())
-            
+            # Hmmm.  Had a case where it needed to be bigger (lagoon)
+            # Not sure why.
+            if self.gradient_scale=='scaled':
+                gradient_scale = dofs / (2*gtri.Nnodes())
+            else:
+                gradient_scale=self.gradient_scale
+
             # PHI-PSI relationship
             # When full dirichlet is used, this doesn't help, but if
             # just zero-tangential-gradient is used, this is necessary.
