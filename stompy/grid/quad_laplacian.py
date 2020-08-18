@@ -42,7 +42,7 @@ from scipy import sparse
 
 import matplotlib.pyplot as plt
 
-from . import unstructured_grid, exact_delaunay,orthogonalize
+from . import unstructured_grid, exact_delaunay,orthogonalize, triangulate_hole
 from .. import utils
 from ..spatial import field
 from . import front
@@ -339,7 +339,7 @@ class QuadGen(object):
     #  of the orthogonal mapping, and then a separate anisotropic grid for the
     #  final result. If anisotropic is False, the isotropic grid is kept, 
     #  and its ij indices will be updated to reflect the anisotropic inputs.
-    anisotropic=True
+    final='anisotropic' # 'isotropic', 'triangle'
 
     # The cell spacing in geographic coordinates for the nominal, isotropic grid
     nom_res=4.0
@@ -362,7 +362,13 @@ class QuadGen(object):
     # can in some cases become invalid when the gradient terms are either too
     # strong (maybe) or too loose (true).
     # 'scaled' will scale the gradient terms according to the number of extra dofs.
-    gradient_scale='scaled'
+    # Possibe that the scaled code was a weak attempt to fix something that was
+    # really a bug elsewhere, and that 1.0 is the best choice
+    gradient_scale=1.0
+
+    # 'tri' or 'quad' -- whether the intermediate grid is a quad grid or triangle
+    # grid.
+    intermediate='tri' # 'quad'
     
     def __init__(self,gen,execute=True,cell=None,**kw):
         """
@@ -403,19 +409,34 @@ class QuadGen(object):
             
     def execute(self):
         self.add_bezier(self.gen)
-        self.g_int=self.create_intermediate_grid(src='IJ')
-        # This now happens as a side effect of smooth_interior_quads
-        # self.adjust_intermediate_bounds()
-        self.smooth_interior_quads(self.g_int)
+        if self.intermediate=='quad':
+            self.g_int=self.create_intermediate_grid_quad(src='IJ')
+            # This now happens as a side effect of smooth_interior_quads
+            # self.adjust_intermediate_bounds()
+            self.smooth_interior_quads(self.g_int)
+        elif self.intermediate=='tri':
+            self.g_int=self.create_intermediate_grid_tri(src='IJ')
+            
         self.calc_psi_phi()
-        if self.anisotropic:
-            self.g_final=self.create_intermediate_grid(src='ij',coordinates='ij')
+        if self.final=='anisotropic':
+            self.g_final=self.create_intermediate_grid_quad(src='ij',coordinates='ij')
             self.adjust_by_psi_phi(self.g_final, src='ij')
-        else:
-            self.g_final=self.g_int.copy()
+        elif self.final=='isotropic':
+            if self.intermediate=='tri':
+                self.g_final=self.create_intermediate_grid_quad(src='IJ',coordinates='ij')
+            else:
+                self.g_final=self.g_int.copy()
             self.adjust_by_psi_phi(self.g_final, src='IJ')
-            # but update ij to reflect the 'ij' in the original input.
             ij=self.remap_ij(self.g_final,src='ij')
+            self.g_final.nodes['ij']=ij
+        elif self.final=='triangle':
+            # Assume that nobody wants to build a quad grid for the intermediate calcs,
+            # but then map it onto a triangle grid. I suppose it could be done, but more
+            # likely it's an error.
+            assert self.intermediate=='tri'
+            self.g_final=self.g_int.copy()
+            map_pp_to_ij=self.psiphi_to_ij(self.gen,self.g_int)
+            ij=map_pp_to_ij( np.c_[self.psi,self.phi])
             self.g_final.nodes['ij']=ij
 
     def node_ij_to_edge(self,g,dest='ij'):
@@ -526,8 +547,8 @@ class QuadGen(object):
                 fill_vals=np.interp( dists[~valid],
                                      dists[valid], s_vals[valid] )
                 node_vals[s[~valid]]=fill_vals
-            
-    def create_intermediate_grid(self,src='ij',coordinates='xy'):
+
+    def create_intermediate_grid_quad(self,src='ij',coordinates='xy'):
         """
         src: base variable name for the ij indices to use.
           i.e. gen.nodes['ij'], gen.nodes['ij_fixed'],
@@ -672,6 +693,66 @@ class QuadGen(object):
                 
         g.renumber()
         return g
+
+    def create_intermediate_grid_tri(self,src='ij',coordinates='xy'):
+        """
+        Create a triangular grid for solving psi/phi.
+
+        src: base variable name for the ij indices to use.
+          i.e. gen.nodes['ij'], gen.nodes['ij_fixed'],
+             and gen.edges['dij']
+
+          the resulting grid will use 'ij' regardless, this just for the
+          generating grid.
+
+        this text needs to be updated after adapting the code below
+        --
+        coordinates: 
+         'xy' will interpolate the gen xy coordinates to get
+          node coordinates for the result.
+         'ij' will leave 'ij' coordinate values in both x and 'ij'
+        """
+        
+        g=unstructured_grid.UnstructuredGrid(max_sides=3,
+                                             extra_edge_fields=[ ('gen_j',np.int32) ],
+                                             extra_node_fields=[ ('ij',np.float64,2) ])
+        g.nodes['ij']=np.nan
+        g.node_defaults['ij']=np.nan
+
+        gen=self.gen
+        
+        for j in gen.valid_edge_iter():
+            # Just to get the length
+            points=self.gen_bezier_linestring(j=j,samples_per_edge=10,span_fixed=False)
+            dist=utils.dist_along(points)[-1]
+            N=max( self.min_steps, int(dist/self.nom_res))
+            points=self.gen_bezier_linestring(j=j,samples_per_edge=N,span_fixed=False)
+
+            # Figure out what IJ to assign:
+            ij0=gen.nodes[src][gen.edges['nodes'][j,0]]
+            ijN=gen.nodes[src][gen.edges['nodes'][j,1]]
+
+            nodes=[]
+            for p_i,p in enumerate(points):
+                n=g.add_or_find_node(x=p,tolerance=0.1)
+                alpha=p_i/(len(points)-1.0)
+                assert alpha>=0
+                assert alpha<=1
+                ij=(1-alpha)*ij0 + alpha*ijN
+                g.nodes['ij'][n]=ij
+                nodes.append(n)
+
+            for a,b in zip(nodes[:-1],nodes[1:]):
+                g.add_edge(nodes=[a,b],gen_j=j)
+
+        # seed=gen.cells_centroid()[0]
+        # This is more robust
+        nodes=g.find_cycles(max_cycle_len=5000)[0]
+        
+        # This will suffice for now.  Probably can use something
+        # less intense.
+        gnew=triangulate_hole.triangulate_hole(g,nodes=nodes,hole_rigidity='all')
+        return gnew
     
     def plot_intermediate(self,num=1):
         plt.figure(num).clf()
@@ -1312,58 +1393,25 @@ class QuadGen(object):
 
         update: if True, actually update g, otherwise return the new values
 
-        g: The grid to be adjusted
+        g: The grid to be adjusted. Must have nodes['ij'] filled in fully.
+
         src: the ij coordinate field in self.gen to use.  Note that this needs to be
           compatible with the ij coordinate field used to create g.
         """
-        gtri=self.g_int # where psi/phi are defined
-        gen=self.gen # generating grid with the target ij
-
-        # when the intermediate grid and gtri were the same:
-        #g=self.g_final=self.g_int.copy()
-        # When we always used the same target:
-        #g=self.g_final=self.create_intermediate_grid(src='ij',coordinates='ij')
-        # Now it's passed in
-
         # Check to be sure that src and g['ij'] are approximately compatible.
         assert np.allclose( g.nodes['ij'].min(), self.gen.nodes[src].min() )
         assert np.allclose( g.nodes['ij'].max(), self.gen.nodes[src].max() )
-        
-        for coord in [0,1]: # i,j
-            gen_valid=(~gen.nodes['deleted'])&(gen.nodes[src+'_fixed'][:,coord])
-            # subset of gtri nodes that map to fixed gen nodes
-            gen_to_gtri_nodes=[gtri.select_nodes_nearest(x)
-                               for x in gen.nodes['x'][gen_valid]]
 
-            # i or j coord:
-            all_coord=gen.nodes[src][gen_valid,coord]
-            if coord==0:
-                all_field=self.psi[gen_to_gtri_nodes]
-            else:
-                all_field=self.phi[gen_to_gtri_nodes]
-
-            # Build the 1-D mapping of i/j to psi/phi
-            # [ {i or j value}, {mean of psi or phi at that i/j value} ]
-            coord_to_field=np.array( [ [k,np.mean(all_field[elts])]
-                                       for k,elts in utils.enumerate_groups(all_coord)] )
-            if coord==0:
-                i_psi=coord_to_field
-            else:
-                j_phi=coord_to_field
-
-        # the mapping isn't necessarily monotonic at this point, but it
-        # needs to be..  so force it.
-        # enumerate_groups will put k in order, but not the field values
-        i_psi[:,1] = np.sort(i_psi[:,1])
-        j_phi[:,1] = np.sort(j_phi[:,1])[::-1]
+        map_ij_to_pp = self.psiphi_to_ij(self.gen,self.g_int,inverse=True)
 
         # Calculate the psi/phi values on the nodes of the target grid
         # (which happens to be the same grid as where the psi/phi fields were
         #  calculated)
-        g_psi=np.interp( g.nodes['ij'][:,0],
-                         i_psi[:,0],i_psi[:,1])
-        g_phi=np.interp( g.nodes['ij'][:,1],
-                         j_phi[:,0], j_phi[:,1])
+        g_psiphi=map_ij_to_pp( g.nodes['ij'] )
+        # g_psi=np.interp( g.nodes['ij'][:,0],
+        #                  psi_i[:,0],psi_i[:,1])
+        # g_phi=np.interp( g.nodes['ij'][:,1],
+        #                  phi_j[:,0], phi_j[:,1])
 
         # Use gtri to go from phi/psi to x,y
         # I think this is where it goes askew.
@@ -1381,7 +1429,7 @@ class QuadGen(object):
         self.interp_image=gtri.nodes['x']
         self.interp_tgt=np.c_[g_psi,g_phi]
         
-        new_xy=interp_xy( np.c_[g_psi,g_phi] )
+        new_xy=interp_xy( g_psiphi )
 
         if update:
             g.nodes['x']=new_xy
@@ -1394,6 +1442,67 @@ class QuadGen(object):
         self.g_final.plot_edges()
         plt.axis('equal')
 
+    def psiphi_to_ij(self,gen,g_int,src='ij',inverse=False):
+        """
+        Return a mapping of psi=>i and phi=>j
+        This is built from fixed nodes of gen, and self.psi,self.phi defined 
+        on all of the nodes of g_int.
+        src defines what field is taken from gen.
+        Nodes are matched by nearest node search.
+
+        For now, this assumes the mapping is independent for the two coordinates.
+        For more complicated domains this mapping will have to become a 
+        function [psi x phi] => [i x j].
+        Currently it's psi=>i, phi=>j.
+
+        Returns a function that takes [N,2] in psi/phi space, and returns [N,2]
+        in ij space (or the inverse of that if inverse is True)
+        """
+        for coord in [0,1]: # i,j
+            gen_valid=(~gen.nodes['deleted'])&(gen.nodes[src+'_fixed'][:,coord])
+            # subset of gtri nodes that map to fixed gen nodes
+            gen_to_int_nodes=[g_int.select_nodes_nearest(x)
+                               for x in gen.nodes['x'][gen_valid]]
+
+            # i or j coord:
+            all_coord=gen.nodes[src][gen_valid,coord]
+            if coord==0:
+                all_field=self.psi[gen_to_int_nodes]
+            else:
+                all_field=self.phi[gen_to_int_nodes]
+
+            # Build the 1-D mapping of i/j to psi/phi
+            # [ {i or j value}, {mean of psi or phi at that i/j value} ]
+            coord_to_field=np.array( [ [k,np.mean(all_field[elts])]
+                                       for k,elts in utils.enumerate_groups(all_coord)] )
+            if coord==0:
+                i_psi=coord_to_field
+            else:
+                j_phi=coord_to_field
+
+        # the mapping isn't necessarily monotonic at this point, but it
+        # needs to be..  so force it.
+        # enumerate_groups will put k in order, but not the field values
+        # Note that phi is sorted decreasing
+        i_psi[:,1] = np.sort(i_psi[:,1])
+        j_phi[:,1] = np.sort(j_phi[:,1])[::-1]
+
+        def mapper(psiphi,i_psi=i_psi,j_phi=j_phi):
+            ij=np.zeros_like(psiphi)
+            ij[:,0]=np.interp(psiphi[:,0],i_psi[:,1],i_psi[:,0])
+            ij[:,1]=np.interp(psiphi[:,1],j_phi[::-1,1],j_phi[::-1,0])
+            return ij
+        def mapper_inv(ij,i_psi=i_psi,j_phi=j_phi):
+            psiphi=np.zeros_like(ij)
+            psiphi[:,0]=np.interp(ij[:,0],i_psi[:,0],i_psi[:,1])
+            psiphi[:,1]=np.interp(ij[:,1],j_phi[:,0],j_phi[:,1])
+            return ij
+
+        if inverse:
+            return mapper_inv
+        else:
+            return mapper
+        
     def remap_ij(self,g,src='ij'):
         """
         g: grid with a nodes['ij'] field
@@ -1442,7 +1551,7 @@ class QuadGen(object):
                         else:
                             break
 
-            # just one coordinte at a time
+            # just one coordinate at a time
             valid=np.isfinite( ij_out[:,coord] )
             interp_IJ_to_ij=utils.LinearNDExtrapolator(IJ_in[valid,:], ij_out[valid,coord])
             ij_out[~valid,coord] = interp_IJ_to_ij(IJ_in[~valid,:])
