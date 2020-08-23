@@ -103,7 +103,8 @@ except ImportError:
 import os.path
 
 if gdal:
-    numpy_type_to_gdal = {np.int8:gdal.GDT_Byte,
+    numpy_type_to_gdal = {np.int8:gdal.GDT_Byte, # meh.  not quite real, most likely
+                          np.uint8:gdal.GDT_Byte,
                           np.float32:gdal.GDT_Float32,
                           np.float64:gdal.GDT_Float64,
                           np.int16:gdal.GDT_Int16,
@@ -681,6 +682,8 @@ class XYZField(Field):
         return interper
     
     def crop(self,rect):
+        if len(rect)==2:
+            rect=[rect[0][0],rect[1][0],rect[0][1],rect[1][1]]
         xmin,xmax,ymin,ymax = rect
 
         good = (self.X[:,0] >= xmin ) & (self.X[:,0] <= xmax ) & (self.X[:,1] >= ymin) & (self.X[:,1]<=ymax)
@@ -1914,9 +1917,10 @@ class SimpleGrid(QuadrilateralGrid):
     int_nan = -9999
 
     # Set to "linear" to have value() calls use linear interpolation
-    default_interpolation = "nearest"
-
-    def __init__(self,extents,F,projection=None):
+    default_interpolation = "linear"
+    dx=None
+    dy=None
+    def __init__(self,extents,F,projection=None,dx=None,dy=None):
         """ extents: minx, maxx, miny, maxy
             NB: these are node-centered values, so if you're reading in
             pixel-based data where the dimensions are given to pixel edges,
@@ -1927,8 +1931,12 @@ class SimpleGrid(QuadrilateralGrid):
 
         QuadrilateralGrid.__init__(self,projection=projection)
 
-        self.dx,self.dy = self.delta()
-
+        if dx is not None:
+            self.dx=dx
+        if dy is not None:
+            self.dy=dy
+        self.delta() # compute those if unspecified
+            
     @property
     def shape(self):
         return self.F.shape
@@ -1937,8 +1945,24 @@ class SimpleGrid(QuadrilateralGrid):
         return SimpleGrid(extents=list(self.extents),F=self.F.copy(),projection=self.projection())
 
     def delta(self):
-        return ( (self.extents[1] - self.extents[0]) / (self.F.shape[1]-1.0),
-                 (self.extents[3] - self.extents[2]) / (self.F.shape[0]-1.0) )
+        """
+        x and y pixel spacing.  If these are not already set (in self.dx, self.dy)
+        compute from extents and F.
+        For zero or singleton dimensions the spacing is set to zero.
+        """
+        if self.dx is None:
+            if self.F.shape[1]>1:
+                self.dx = (self.extents[1] - self.extents[0]) / (self.F.shape[1]-1.0)
+            else:
+                self.dx = 0.0
+        if self.dy is None:
+            assert self.F.shape[0]
+            if self.F.shape[0]>1:
+                self.dy = (self.extents[3] - self.extents[2]) / (self.F.shape[0]-1.0)
+            else:
+                self.dy = 0.0
+
+        return self.dx,self.dy
 
     def trace_contour(self,vmin,vmax,union=True):
         """
@@ -2068,6 +2092,9 @@ class SimpleGrid(QuadrilateralGrid):
         return cgrid.apply_xform(xform)
 
     def rect_to_indexes(self,xxyy):
+        if len(xxyy)==2:
+            xxyy=[xxyy[0][0],xxyy[1][0],xxyy[0][1],xxyy[1][1]]
+        
         xmin,xmax,ymin,ymax = xxyy
 
         dx,dy = self.delta()
@@ -2081,8 +2108,6 @@ class SimpleGrid(QuadrilateralGrid):
         return [min_row,max_row,min_col,max_col]
 
     def crop(self,rect=None,indexes=None):
-        dx,dy = self.delta()
-
         if rect is not None:
             indexes=self.rect_to_indexes(rect)
 
@@ -2090,14 +2115,16 @@ class SimpleGrid(QuadrilateralGrid):
 
         min_row,max_row,min_col,max_col = indexes
         newF = self.F[min_row:max_row+1, min_col:max_col+1]
-        new_extents = [self.extents[0] + min_col*dx,
-                       self.extents[0] + max_col*dx,
-                       self.extents[2] + min_row*dy,
-                       self.extents[2] + max_row*dy ]
+        new_extents = [self.extents[0] + min_col*self.dx,
+                       self.extents[0] + max_col*self.dx,
+                       self.extents[2] + min_row*self.dy,
+                       self.extents[2] + max_row*self.dy ]
 
-        return SimpleGrid(extents = new_extents,
+        result=SimpleGrid(extents = new_extents,
                           F = newF,
-                          projection = self.projection() )
+                          projection = self.projection(),
+                          dx=self.dx,dy=self.dy)
+        return result
 
     def bounds(self):
         return np.array(self.extents)
@@ -2435,7 +2462,10 @@ class SimpleGrid(QuadrilateralGrid):
         pickle.dump( (self.extents,self.F), fp, -1)
         fp.close()
 
-    def write_gdal_rgb(self,output_file,vmin=None,vmax=None):
+    def to_rgba(self,cmap='jet',vmin=None,vmax=None):
+        """
+        map scalar field to pseudocolor rgba.
+        """
         if cm is None:
             raise Exception("No matplotlib - can't map to RGB")
 
@@ -2444,16 +2474,28 @@ class SimpleGrid(QuadrilateralGrid):
         if vmax is None:
             vmax = self.F.max()
 
+        cmap=cm.get_cmap(cmap) # e.g. 'jet' => cm.jet
+        
+        invalid=np.isnan(self.F)
         fscaled = (self.F-vmin)/(vmax-vmin)
-        frgba = (cm.jet(fscaled)*255).astype(np.uint8)
-
+        fscaled[invalid]=0
+        frgba = (cmap(fscaled)*255).astype(np.uint8)
+        frgba[invalid,:3]=255
+        frgba[invalid,3]=0
+        
+        return SimpleGrid(extents=self.extents,F=frgba,projection=self.projection())
+        
+    def write_gdal_rgb(self,output_file,**kw):
+        if len(self.F.shape)==2:
+            # As a convenience convert to RGBA then write
+            return self.to_rgba(**kw).write_gdal_rgb(output_file)
+            
         # Create gtif
         driver = gdal.GetDriverByName("GTiff")
         dst_ds = driver.Create(output_file, self.F.shape[1], self.F.shape[0], 4, gdal.GDT_Byte,
                                ["COMPRESS=LZW"])
-
-        # make nodata areas transparent:
-        frgba[:,:,3] = 255*np.isfinite(self.F)
+        frgba=self.F
+        # assumes that nodata areas are already transparent, or somehow dealt with.
 
         # top left x, w-e pixel resolution, rotation, top left y, rotation, n-s pixel resolution
         # Gdal wants pixel-edge extents, but what we store is pixel center extents...
@@ -2740,6 +2782,55 @@ class SimpleGrid(QuadrilateralGrid):
         ax=ax or plt.gca()
         return shader.plot(ax=ax,**plot_args)
 
+    def overlay_rgba(self,other):
+        """
+        Composite another field over self.
+        Requires that self and other are rgba fields.
+
+        in keeping with matplotlib rgba arrays, values can
+        either be [0-1] floating point or [0-255] integer.
+
+        other will be cast as needed to match self.
+
+        other must have matching resolution and extents (this function does not
+        currently resample to match self)
+        """
+        assert np.allclose( self.extents, other.extents)
+        assert np.array_equal( self.F.shape, other.F.shape)
+        assert self.F.shape[2]==4
+
+        if np.issubdtype(self.F.dtype, np.floating):
+            Fother=other.F
+            if not np.issubdtype(Fother.dtype, np.floating):
+                Fother=(Fother/255).clip(0,1.0)
+            alpha=other.F[:,:,3]
+            my_alpha=self.F[:,:,3]
+            if my_alpha.min()==1.0:
+                inv_alpha=1.0
+            else:
+                new_alpha=alpha + my_alpha*(1-alpha)
+                inv_alpha=1./new_alpha
+                inv_alpha[ new_alpha==0 ]=0                
+        else:
+            # integer
+            Fother=other.F
+            if np.issubdtype(Fother.dtype, np.floating):
+                alpha=other.F[:,:,3]
+                Fother=(Fother.clip(0,1)*255).astype(np.uint8)
+                
+            if self.F[:,:,3].min()==255:
+                # Special case when background is opaque
+                inv_alpha=1.0
+            else:
+                my_alpha=(self.F[:,:,3]/255.).clip(0,1)
+                new_alpha=alpha + my_alpha*(1-alpha)
+                inv_alpha=1./new_alpha
+                inv_alpha[ new_alpha==0 ]=0
+                self.F[:,:,3]=255*new_alpha
+
+        for chan in range(3):
+            self.F[:,:,chan] = (self.F[:,:,chan]*(1-alpha) + other.F[:,:,chan]*alpha) * inv_alpha
+            
     @staticmethod
     def read(fname):
         fp = open(fname,'rb')
@@ -3337,6 +3428,9 @@ class CompositeField(Field):
         if stackup:
             stack=[]
 
+        # in case it came in as 2x2
+        bounds=[xmin,xmax,ymin,ymax]
+            
         # allocate the blank starting canvas
         result_F =np.ones((ny,nx),'f8')
         result_F[:]=-999 # -999 so we don't get nan contamination
@@ -3877,6 +3971,8 @@ class TileMaker(object):
     ty = 1000 # physical size, y, for a tile
     dx = 2    # pixel width
     dy = 2    # pixel height
+    pad = 50  # physical distance to pad tiles in each of 4 directions
+    
     fill_iterations = 10
     smoothing_iterations = 5
     
@@ -3885,6 +3981,11 @@ class TileMaker(object):
 
     filename_fmt = "%(left).0f-%(bottom).0f.tif"
     quantize=True # whether to quantize bounds to tx
+
+    # A function(SimpleGrid,**kw) => SimpleGrid
+    # If set, this is called after rendering each tile, but before the tile
+    # is unpadded.  see code below for the keywords supplied.
+    post_render=None
     
     def __init__(self,f,**kwargs):
         """ f: the field to be gridded
@@ -3897,12 +3998,16 @@ class TileMaker(object):
 
     def tile(self,xmin=None,ymin=None,xmax=None,ymax=None):
         self.tile_fns=[]
-        
-        bounds=self.f.bounds()
-        if xmin is None: xmin=bounds[0]
-        if xmax is None: xmax=bounds[1]
-        if ymin is None: ymin=bounds[2]
-        if ymax is None: ymax=bounds[3]
+
+        if (xmin is None) or (xmax is None) or (ymin is None) or (ymax is None):
+            # some fields don't know their bounds, so hold off calling
+            # this unless we have to.
+            bounds=self.f.bounds()
+
+            if xmin is None: xmin=bounds[0]
+            if xmax is None: xmax=bounds[1]
+            if ymin is None: ymin=bounds[2]
+            if ymax is None: ymax=bounds[3]
 
         if self.quantize:
             xmin=self.tx*np.floor(xmin/self.tx)
@@ -3921,9 +4026,6 @@ class TileMaker(object):
                       ymin+yi*self.ty]
                 ur = [ll[0]+self.tx,
                       ll[1]+self.ty]
-                bounds = np.array( [ll,ur] )
-                print("Tile ",bounds)
-
                 # populate some local variables for giving to the filename format
                 left=ll[0]
                 right=ll[0]+self.tx
@@ -3931,6 +4033,9 @@ class TileMaker(object):
                 top = ll[1]+self.ty
                 dx = self.dx
                 dy = self.dy
+
+                bounds = np.array([left,right,bottom,top])
+                print("Tile ",bounds)
                 
                 output_fn = os.path.join(self.output_dir,self.filename_fmt%locals())
                 self.tile_fns.append(output_fn)
@@ -3938,11 +4043,18 @@ class TileMaker(object):
                 print("Looking for output file: %s"%output_fn)
 
                 if self.force or not os.path.exists(output_fn):
-                    blend = self.f.to_grid(dx=self.dx,dy=self.dy,bounds=bounds)
+                    pad_x=self.pad/self.dx
+                    pad_y=self.pad/self.dy
+                    pad_bounds=np.array([left-pad_x,right+pad_x, bottom-pad_y, top+pad_y])
+                    blend = self.f.to_grid(dx=self.dx,dy=self.dy,bounds=pad_bounds)
                     if self.fill_iterations + self.smoothing_iterations > 0:
                         print("Filling and smoothing")
                         blend.fill_by_convolution(self.fill_iterations,self.smoothing_iterations)
                     print("Saving")
+                    if self.post_render:
+                        blend=self.post_render(blend,output_fn=output_fn,bounds=bounds,pad_bounds=pad_bounds)
+                    if self.pad>0:
+                        blend=blend.crop(bounds)
                     blend.write_gdal( output_fn )
                     print("Done")
                 else:
