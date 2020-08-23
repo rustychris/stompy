@@ -1402,7 +1402,7 @@ class QuadGen(object):
         assert np.allclose( g.nodes['ij'].min(), self.gen.nodes[src].min() )
         assert np.allclose( g.nodes['ij'].max(), self.gen.nodes[src].max() )
 
-        map_ij_to_pp = self.psiphi_to_ij(self.gen,self.g_int,inverse=True)
+        map_ij_to_pp = self.psiphi_to_ij(self.gen,self.g_int,inverse=True,src=src)
 
         # Calculate the psi/phi values on the nodes of the target grid
         # (which happens to be the same grid as where the psi/phi fields were
@@ -1420,13 +1420,12 @@ class QuadGen(object):
         # grid.  Whenever some g_psi or g_phi is close to the boundary,
         # the Delaunay triangulation is going to make things difficult.
         interp_xy=utils.LinearNDExtrapolator( np.c_[self.psi,self.phi],
-                                              gtri.nodes['x'],
-                                              #eps=0.5 ,
+                                              self.g_int.nodes['x'],
                                               eps=None)
         # Save all the pieces for debugging:
         self.interp_xy=interp_xy
         self.interp_domain=np.c_[self.psi,self.phi]
-        self.interp_image=gtri.nodes['x']
+        self.interp_image=self.g_int.nodes['x']
         self.interp_tgt=np.c_[g_psi,g_phi]
         
         new_xy=interp_xy( g_psiphi )
@@ -1462,7 +1461,7 @@ class QuadGen(object):
             gen_valid=(~gen.nodes['deleted'])&(gen.nodes[src+'_fixed'][:,coord])
             # subset of gtri nodes that map to fixed gen nodes
             gen_to_int_nodes=[g_int.select_nodes_nearest(x)
-                               for x in gen.nodes['x'][gen_valid]]
+                              for x in gen.nodes['x'][gen_valid]]
 
             # i or j coord:
             all_coord=gen.nodes[src][gen_valid,coord]
@@ -1496,7 +1495,7 @@ class QuadGen(object):
             psiphi=np.zeros_like(ij)
             psiphi[:,0]=np.interp(ij[:,0],i_psi[:,0],i_psi[:,1])
             psiphi[:,1]=np.interp(ij[:,1],j_phi[:,0],j_phi[:,1])
-            return ij
+            return psiphi
 
         if inverse:
             return mapper_inv
