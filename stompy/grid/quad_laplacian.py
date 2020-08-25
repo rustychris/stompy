@@ -694,25 +694,14 @@ class QuadGen(object):
         g.renumber()
         return g
 
-    def create_intermediate_grid_tri(self,src='ij',coordinates='xy'):
+    def create_intermediate_grid_tri_boundary(self,src='ij',coordinates='xy',scale=None):
         """
-        Create a triangular grid for solving psi/phi.
-
-        src: base variable name for the ij indices to use.
-          i.e. gen.nodes['ij'], gen.nodes['ij_fixed'],
-             and gen.edges['dij']
-
-          the resulting grid will use 'ij' regardless, this just for the
-          generating grid.
-
-        this text needs to be updated after adapting the code below
-        --
-        coordinates: 
-         'xy' will interpolate the gen xy coordinates to get
-          node coordinates for the result.
-         'ij' will leave 'ij' coordinate values in both x and 'ij'
+        Create the boundaries for the intermediate grid, upsampling the bezier edges
+        and assigning 'ij' along the way for fixed nodes.
         """
-        
+        if scale is None:
+            scale=field.ConstantField(self.nom_res)
+            
         g=unstructured_grid.UnstructuredGrid(max_sides=3,
                                              extra_edge_fields=[ ('gen_j',np.int32) ],
                                              extra_node_fields=[ ('ij',np.float64,2) ])
@@ -725,7 +714,8 @@ class QuadGen(object):
             # Just to get the length
             points=self.gen_bezier_linestring(j=j,samples_per_edge=10,span_fixed=False)
             dist=utils.dist_along(points)[-1]
-            N=max( self.min_steps, int(dist/self.nom_res))
+            local_res=scale(points).min(axis=0) # min=>conservative
+            N=max( self.min_steps, int(dist/local_res))
             points=self.gen_bezier_linestring(j=j,samples_per_edge=N,span_fixed=False)
 
             # Figure out what IJ to assign:
@@ -744,6 +734,28 @@ class QuadGen(object):
 
             for a,b in zip(nodes[:-1],nodes[1:]):
                 g.add_edge(nodes=[a,b],gen_j=j)
+        return g
+    
+    def create_intermediate_grid_tri(self,src='ij',coordinates='xy'):
+        """
+        Create a triangular grid for solving psi/phi.
+
+        src: base variable name for the ij indices to use.
+          i.e. gen.nodes['ij'], gen.nodes['ij_fixed'],
+             and gen.edges['dij']
+
+          the resulting grid will use 'ij' regardless, this just for the
+          generating grid.
+
+        this text needs to be updated after adapting the code below
+        --
+        coordinates: 
+         'xy' will interpolate the gen xy coordinates to get
+          node coordinates for the result.
+         'ij' will leave 'ij' coordinate values in both x and 'ij'
+        """
+
+        g=create_intermediate_grid_tri_boundary(src=src,coordinates=coordinates)
 
         # seed=gen.cells_centroid()[0]
         # This is more robust
@@ -1426,7 +1438,7 @@ class QuadGen(object):
         self.interp_xy=interp_xy
         self.interp_domain=np.c_[self.psi,self.phi]
         self.interp_image=self.g_int.nodes['x']
-        self.interp_tgt=np.c_[g_psi,g_phi]
+        self.interp_tgt=g_psiphi
         
         new_xy=interp_xy( g_psiphi )
 

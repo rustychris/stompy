@@ -4492,9 +4492,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         request_square(ax)
         return coll
 
-    def edges_length(self):
-        p1 = self.nodes['x'][self.edges['nodes'][:,0]]
-        p2 = self.nodes['x'][self.edges['nodes'][:,1]]
+    def edges_length(self,sel=slice(None)):
+        p1 = self.nodes['x'][self.edges['nodes'][sel,0]]
+        p2 = self.nodes['x'][self.edges['nodes'][sel,1]]
         return mag( p2-p1 )
 
     def cells_area(self,sel=None):
