@@ -519,7 +519,7 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
         self.add_cell(nodes=[n,c,a])
         
     def tri_insert_in_edge(self,n,loc):
-        """ Takes care splitting the edge and any adjacent cells
+        """ Takes care of splitting the edge and any adjacent cells
         """
         loc_f,loc_type,loc_edge = loc 
 
