@@ -1321,11 +1321,12 @@ class AdvancingFront(object):
 
     StrategyFailed=StrategyFailed
     
-    def __init__(self,grid=None):
+    def __init__(self,grid=None,**kw):
         """
         """
         self.log = logging.getLogger("AdvancingFront")
-
+        utils.set_keywords(self,kw)
+        
         if grid is None:
             grid=unstructured_grid.UnstructuredGrid()
         self.grid = self.instrument_grid(grid)

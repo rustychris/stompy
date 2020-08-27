@@ -519,7 +519,7 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
         self.add_cell(nodes=[n,c,a])
         
     def tri_insert_in_edge(self,n,loc):
-        """ Takes care splitting the edge and any adjacent cells
+        """ Takes care of splitting the edge and any adjacent cells
         """
         loc_f,loc_type,loc_edge = loc 
 
@@ -1815,6 +1815,41 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
                 for j in self.node_to_edges(n)
                 if self.edges['constrained'][j]]
 
+    def init_from_grid(self,g,node_coordinate='x',set_valid=False,
+                       valid_min_area=1e-2):
+        """
+        Initialize from the nodes and edges of an existing grid, making
+        existing edges constrained
+        node_coordinate: supply the name of an alternate coordinate defined
+          on the nodes. g.nodes[node_coordinate] should be an [Ncell,2] field.
+
+        set_valid: if True, add a 'valid' field for cells, and set to Tru
+          for cells of the triangulation that have finite area and fall 
+          within the src grid g.
+        """
+        if set_valid:
+            self.add_cell_field('valid',np.zeros(self.Ncells(),np.bool8),
+                                on_exists='pass')
+            
+        self.bulk_init(g.nodes[node_coordinate][~g.nodes['deleted']])
+        for j in g.valid_edge_iter():
+            self.add_constraint( *g.edges['nodes'][j] )
+
+        if set_valid:
+            from shapely import geometry
+            self.cells['valid']=~self.cells['deleted']
+            # Maybe unnecessary.  Had some issues with 0 fill values here.
+            self.cells['_area']=np.nan
+            self.cells['_center']=np.nan
+            areas=self.cells_area()
+            self.cells['valid'][areas<=valid_min_area]=False
+
+            poly=g.boundary_polygon()
+            centroids=self.cells_centroid()
+            for c in np.nonzero(self.cells['valid'])[0]:
+                if not poly.contains( geometry.Point(centroids[c]) ):
+                    self.cells['valid'][c]=False
+        
     def bulk_init_slow(self,points):
         raise Exception("No - it's really slow.  Don't do this.")
     

@@ -100,7 +100,17 @@ class Diffuser(object):
         self.normal_j = self.grid.edges_normals()
         self.area_c = self.grid.cells_area()
 
-        self.K_j = 100*np.ones(self.grid.Nedges()) 
+        self.K_j = 100*np.ones(self.grid.Nedges())
+
+        print("Checking finite geometry")
+        assert np.all( np.isfinite(self.d_j))
+        assert np.all( np.isfinite(self.l_j))
+        assert np.all( np.isfinite(self.area_c))
+        assert np.all( np.isfinite(self.normal_j))
+        assert np.all( self.d_j > 0 )
+        assert np.all( self.l_j > 0 )
+        assert np.all( self.area_c > 0 )
+
 
     def vector_edge_to_cell(self,F_edge_normal):
         """ given signed values on edges, relative to the natural normal
@@ -366,7 +376,6 @@ class Diffuser(object):
             coll.set_array(evenly_spaced)
             coll.set_clim([0,self.grid.Ncells()])
             plt.draw()
-
 
     def calc_fluxes(self):
         # vector calculation of all fluxes

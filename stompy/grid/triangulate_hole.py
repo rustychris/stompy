@@ -3,9 +3,13 @@ import numpy as np
 from ..spatial import field
 from . import unstructured_grid, front
 
-def triangulate_hole(grid,seed_point,max_nodes=5000,hole_rigidity='cells',
+def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=5000,hole_rigidity='cells',
                      splice=True,return_value='grid',dry_run=False):
     """
+    Specify one of
+      seed_point: find node string surrounding this point
+      nodes: specify CCW ordered nodes making up the hole.
+
     hole_rigidity: 
        'cells' nodes and edges which are part of a cell are considered rigid.
        'all': all nodes and edges of the hole are considered rigid.
@@ -22,7 +26,9 @@ def triangulate_hole(grid,seed_point,max_nodes=5000,hole_rigidity='cells',
     """
     # manually tell it where the region to be filled is.
     # 5000 ought to be plenty of nodes to get around this loop
-    nodes=grid.enclosing_nodestring(seed_point,max_nodes)
+    if nodes is None:
+        nodes=grid.enclosing_nodestring(seed_point,max_nodes)
+
     xy_shore=grid.nodes['x'][nodes]
 
     # Construct a scale based on existing spacing
