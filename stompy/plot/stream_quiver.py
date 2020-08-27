@@ -27,8 +27,8 @@ class StreamlineQuiver(object):
     max_dist=60.
     size=1.0
 
-    # don't start traces outside this xxyy bounding box.  Not implemented
-    # clip=None
+    # don't start traces outside this xxyy bounding box.
+    clip=None
 
     # If True, trace long streamlines, run them out in a deterministic direction,
     # and try to keep just the part that abuts an obstactle
