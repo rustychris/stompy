@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 # do these work in py2?
 from ..spatial import robust_predicates
 from . import unstructured_grid
-from ..utils import circular_pairs
+from ..utils import circular_pairs, dist, point_segment_distance
 
 if six.PY3:
     def cmp(a,b):
@@ -1918,6 +1918,37 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
     #  Calculate the usual circumradius, but for centers which were
     #  adjusted due to a constrained edge also check point-segment
     #  distances.
+
+    def point_clearance(self,x,hint=None):
+        """
+        Return the distance from point x=[p_x,p_y] to the nearest
+        node or constrained segment of the triangulation.
+
+        hint: To speed up consecutive queries with spatial locality, pass
+        a dictionary, and a new dictionary will be returned as the second
+        item in a tuple. The initial dictionary can be empty, or 'c':int
+        to give a starting face of the triangulation.
+        """
+        if hint is not None:
+            loc_face,loc_type,loc_index=self.locate(x,**hint)
+        else:
+            loc_face,loc_type,loc_index=self.locate(x)
+
+        assert loc_type in (self.IN_VERTEX, self.IN_EDGE, self.IN_FACE)
+
+        face_nodes=self.cells['nodes'][loc_face]
+
+        min_clearance=dist( self.nodes['x'][face_nodes], x ).min()
+
+        for j in self.cell_to_edges(loc_face):
+            if self.edges['constrained'][j]:
+                j_clearance=point_segment_distance(x, self.nodes['x'][self.edges['nodes'][j]] )
+                min_clearance=min(min_clearance,j_clearance)
+        if hint is not None:
+            return min_clearance,{'c':loc_face}
+        else:
+            return min_clearance
+    
             
 # Issues:
 #   Calls like edge_to_cells do not scale well right now.  In particular,

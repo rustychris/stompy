@@ -26,7 +26,13 @@ class StreamlineQuiver(object):
     max_t=60.0
     max_dist=60.
     size=1.0
-    clip=None # don't start traces outside this xxyy bounding box
+
+    # don't start traces outside this xxyy bounding box.  Not implemented
+    # clip=None
+
+    # If True, trace long streamlines, run them out in a deterministic direction,
+    # and try to keep just the part that abuts an obstactle
+    pack=False
     
     def __init__(self,g,U,**kw):
         utils.set_keywords(self,kw)
@@ -86,14 +92,42 @@ class StreamlineQuiver(object):
             # should refactor stopping criteria
             self.short_traces=self.max_short_traces + 1
             return
-            
-        # max_t=20.0 was decent.  
-        trace=stream_tracer.steady_streamline_twoways(self.g,self.U,xy,
-                                                      max_t=self.max_t,max_dist=self.max_dist)
+
+        if self.pack:
+            xy=self.pack_starting_point(xy)
+            trace=stream_tracer.steady_streamline_oneway(self.g,self.U,xy,
+                                                         max_t=self.max_t,max_dist=self.max_dist)
+        else:
+            # max_t=20.0 was decent.  
+            trace=stream_tracer.steady_streamline_twoways(self.g,self.U,xy,
+                                                          max_t=self.max_t,max_dist=self.max_dist)
         n_nodes=self.add_trace_to_tri(trace)
         if n_nodes==1:
             print(".",end="")
             self.short_traces+=1
+
+    def pack_starting_point(self,xy):
+        """
+        Pack the given starting point as far upstream as possible, based 
+        on the seed_clearance.
+        """
+        trace=stream_tracer.steady_streamline_oneway(self.g,-self.U,xy,
+                                                     max_t=100*self.max_t,
+                                                     max_dist=100*self.max_dist)
+
+        new_xy_t_idx=0
+        hint={}
+        for t_idx in range(len(trace.time)):
+            xy_i=trace.x.values[t_idx]
+            # quickly test clearance of this point:
+            rad,hint=self.tri.point_clearance(xy_i,hint=hint)
+            if rad < self.seed_clearance:
+                break
+            else:
+                new_xy_t_idx=t_idx
+
+        new_xy=trace.x.values[new_xy_t_idx]
+        return new_xy
 
     def add_trace_to_tri(self,trace,min_clearance=None):
         """
@@ -108,10 +142,15 @@ class StreamlineQuiver(object):
             trace_root=0
 
         xys=trace.x.values
-        if trace.stop_condition.values[0]=='leave_domain':
+        if self.pack:
+            stops=[None,trace.stop_condition.item()]
+        else:
+            stops=trace.stop_conditions.values
+            
+        if stops[0]=='leave_domain':
             xys=xys[1:]
             trace_root=max(0,trace_root-1)
-        if trace.stop_condition.values[-1]=='leave_domain':
+        if stops[-1]=='leave_domain':
             xys=xys[:-1]
 
         # Keep this in the order of the linestring
@@ -127,7 +166,15 @@ class StreamlineQuiver(object):
             return len(recent)
 
         stream_code=self.STREAM
-        for incr in [1,-1]:
+
+        if self.pack:
+            # Starting point is fine, only need to check as we go downstream
+            incrs=[1]
+        else:
+            # Check both ways.
+            incrs=[1,-1]
+        
+        for incr in incrs:
             xy_leg=xys[trace_root+incr::incr]
             na=nroot
             for xy in xy_leg:
@@ -139,6 +186,9 @@ class StreamlineQuiver(object):
                 except self.tri.DuplicateNode:
                     # Essentially a degenerate case of neighbor_clearance
                     # going to 0.
+                    import pdb
+                    pdb.set_trace()
+            
                     print("x",end="")
                     stream_code=self.TRUNC
                     break
