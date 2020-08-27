@@ -439,6 +439,7 @@ class SuntansModel(hm.HydroModel):
     # just StartFiles
     restart=None
     restart_model=None # model instance being restarted
+    restart_symlink=True # default to symlinking restarts
 
     # for partition, run, etc.
     sun_bin_dir=None
@@ -597,7 +598,6 @@ class SuntansModel(hm.HydroModel):
                 z+=self.initial_water_level()
         return z
 
-        
     @classmethod
     def load(cls,fn,load_grid=True,load_met=False,load_ic=False,load_bc=False):
         """
@@ -617,6 +617,10 @@ class SuntansModel(hm.HydroModel):
         model.load_template(fn)
         model.set_run_dir(os.path.dirname(fn),mode='existing')
         # infer number of processors based on celldata files
+        # for restarts, this is overridden in infer_restart() by looking
+        # at the number of restart files, since in some scripts those
+        # are created earlier, while the celldata files aren't created until
+        # partition is called.
         sub_cells=glob.glob( os.path.join(model.run_dir,'celldata.dat.*') )
         if len(sub_cells)>0:
             model.num_procs=len(sub_cells)
@@ -640,6 +644,7 @@ class SuntansModel(hm.HydroModel):
             model.load_ic_ds()
         if load_bc:
             model.load_bc_ds()
+
         return model
     def load_grid(self):
         """
@@ -705,6 +710,14 @@ class SuntansModel(hm.HydroModel):
         if os.path.exists(start_path):
             log.debug("Looks like a restart")
             self.restart=True
+
+            # Get num_procs from the number of restart files.
+            for proc in range(1024):
+                fn=os.path.join(self.run_dir,self.config['StartFile']+".%d"%proc)
+                if not os.path.exists(fn):
+                    break
+            self.num_procs=proc
+            log.info("Restart appears to have %d subdomains"%self.num_procs)
 
             if os.path.islink(start_path):
                 start_path=os.path.realpath(start_path)
@@ -1357,19 +1370,17 @@ class SuntansModel(hm.HydroModel):
                 self.bc_type3[cell][scalar_name].append(da)
 
     def dredge_boundary(self,linestring,dredge_depth):
-        if self.restart is not None:
-            return
-        else:
-            return super(SuntansModel,self).dredge_boundary(linestring,dredge_depth,
-                                                            edge_field='edge_z_bed',
-                                                            cell_field='z_bed')
+        # Restarts appear to be making dredge calls.  Not sure why.
+        print("Call to dredge_boundary, restart is",self.restart)
+
+        return super(SuntansModel,self).dredge_boundary(linestring,dredge_depth,
+                                                        edge_field='edge_z_bed',
+                                                        cell_field='z_bed')
     def dredge_discharge(self,point,dredge_depth):
-        if self.restart is not None:
-            return
-        else:
-            return super(SuntansModel,self).dredge_discharge(point,dredge_depth,
-                                                             edge_field='edge_z_bed',
-                                                             cell_field='z_bed')
+        print("Call to dredge discharge, restart is",self.restart)
+        return super(SuntansModel,self).dredge_discharge(point,dredge_depth,
+                                                         edge_field='edge_z_bed',
+                                                         cell_field='z_bed')
         
     def write_flow_bc(self,bc):
         da=bc.data()
@@ -1377,7 +1388,7 @@ class SuntansModel(hm.HydroModel):
 
         assert len(da.dims)<=1,"Flow must have dims either time, or none"
 
-        if bc.dredge_depth is not None:
+        if (bc.dredge_depth is not None) and (self.restart is None):
             log.info("Dredging grid for flow boundary %s"%bc.name)
             self.dredge_boundary(np.array(bc.geom.coords),
                                  bc.dredge_depth)
@@ -1389,7 +1400,7 @@ class SuntansModel(hm.HydroModel):
     def write_source_sink_bc(self,bc):
         da=bc.data()
 
-        if bc.dredge_depth is not None:
+        if (bc.dredge_depth is not None) and (self.restart is None):
             # Additionally modify the grid to make sure there is a place for inflow to
             # come in.
             log.info("Dredging grid for source/sink BC %s"%bc.name)
@@ -1516,7 +1527,7 @@ class SuntansModel(hm.HydroModel):
             # could also make sure that config['ProfileVariables'] has a default like 'hu'
             #   and ntoutProfs has a reasonable value.
 
-    def restart_copier(self,src,dst):
+    def restart_copier(self,src,dst,on_exists='replace_link'):
         """
         src: source file for copy, relative to present working dir
         dst: destination.
@@ -1525,11 +1536,24 @@ class SuntansModel(hm.HydroModel):
         In order to avoid a limit on chained symlinks, symlinks will point to
         the original file.
         """
+        if os.path.lexists(dst):
+            # Allow replacing symlinks, but if dst is a real file, bail out
+            # to avoid anything sketchy
+            if on_exists=='replace_link' and os.path.islink(dst):
+                os.unlink(dst)
+            elif on_exists=='replace':
+                os.unlink(dst)
+            elif on_exists=='fail':
+                raise Exception("Restart copier %s=>%s found destination already exists. on_exists='fail'"%(src,dst))
+            else:
+                raise Exception("Unknown option for on_exists: %s"%on_exists)
+                
         if self.restart_symlink:
             # this ensures that we don't build up long chains of
             # symlinks
             src=os.path.realpath(src)
             src_rel=os.path.relpath(src,self.run_dir)
+
             os.symlink(src_rel,dst)
         else:
             shutil.copyfile(src,dst)
