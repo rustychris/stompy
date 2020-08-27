@@ -19,7 +19,8 @@ class StreamlineQuiver(object):
     max_short_traces=100 # abort loop when this many traces have come up short.
     short_traces=0 # count of short traces so far.
     streamline_count=1000
-    min_clearance=6.0
+    min_clearance=6.0 # streamlines are truncated when this close to each other
+    seed_clearance = 12.0 # streamlines are started when the circumradius >= this
     cmap='jet'
     clim=[0,1.5]
     max_t=60.0
@@ -80,6 +81,12 @@ class StreamlineQuiver(object):
 
     def process_one_streamline(self):
         xy=self.pick_starting_point()
+        if xy is None:
+            print("Stopping on seed clearance")
+            # should refactor stopping criteria
+            self.short_traces=self.max_short_traces + 1
+            return
+            
         # max_t=20.0 was decent.  
         trace=stream_tracer.steady_streamline_twoways(self.g,self.U,xy,
                                                       max_t=self.max_t,max_dist=self.max_dist)
@@ -174,6 +181,9 @@ class StreamlineQuiver(object):
             radii[ ~np.isfinite(radii)]=0.0
             best=np.argmax(radii)
 
+            if radii[best]<self.seed_clearance:
+                return None
+            
             xy=centers[best]
             print("*",end="") # xy)
 

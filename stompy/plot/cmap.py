@@ -106,10 +106,12 @@ def transform_color(function, cmap):
         
     new_LUT = np.array(list(map(function, old_LUT)))
 
-    if 1:
+    if 0:
         return colors.ListedColormap(new_LUT)
     else:
         # This seems convoluted, and not sure how it's better than just ListedColormap
+        # But ListedColormap above did not work (corrupted ordering), so for now
+        # stick with this.
         # # Now try to make a minimal segment definition of the new LUT
         cdict = {}
         for i, key in enumerate(['red','green','blue']):
