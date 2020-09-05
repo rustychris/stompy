@@ -369,6 +369,10 @@ class QuadGen(object):
     # 'tri' or 'quad' -- whether the intermediate grid is a quad grid or triangle
     # grid.
     intermediate='tri' # 'quad'
+
+    # 'rebay' or 'front'.  When intermediate is 'tri', this chooses the method for
+    # generating the intermediate triangular grid
+    triangle_method='rebay'    
     
     def __init__(self,gen,execute=True,cell=None,**kw):
         """
@@ -618,24 +622,31 @@ class QuadGen(object):
 
                 g.nodes['x'][pnodes]=np.c_[node_x,node_y]
 
-                # delete cells that fall outside of the ij
-                # This seems wrong, though. Using Extrap,
-                # this is only nan when the Extrapolation didn't
-                # extrapolate enough.  The real trimming is in
-                # 'ij' space below.
-                # for n in pnodes[ np.isnan(node_x) ]:
-                #     g.delete_node_cascade(n)
-
             ij_poly=geometry.Polygon(ijs)
-            for cc in patch['cells'].ravel():
-                if g.cells['deleted'][cc]: continue
-                cn=g.cell_to_nodes(cc)
-                c_ij=np.mean(g.nodes['ij'][cn],axis=0)
-                if not ij_poly.contains(geometry.Point(c_ij)):
-                    g.delete_cell(cc)
-            # This part will need to get smarter when there are multiple patches:
-            g.delete_orphan_edges()
-            g.delete_orphan_nodes()
+            # This should be fairly robust since these are mostly
+            # axis-aligned, with integer coordinates.  But exact
+            # comparisons make me nervous, so give it 0.001.
+            ij_poly=ij_poly.buffer(0.001)
+
+            if 1:
+                # Previously trimmed only based on cell center (ish)
+                # but it's the node locations which have to be
+                # calculated, so better to trim based on node location
+                # too.  Do both, since we could have a narrow crannie
+                # that splits a cell but has all valid nodes.  Not likely,
+                # but still..
+                for n in patch['nodes'].ravel():
+                    if not ij_poly.contains(geometry.Point(g.nodes['ij'][n])):
+                        g.delete_node_cascade(n)
+            if 1:
+                for cc in patch['cells'].ravel():
+                    if g.cells['deleted'][cc]: continue
+                    cn=g.cell_to_nodes(cc)
+                    c_ij=np.mean(g.nodes['ij'][cn],axis=0)
+                    if not ij_poly.contains(geometry.Point(c_ij)):
+                        g.delete_cell(cc)
+                g.delete_orphan_edges()
+                g.delete_orphan_nodes()
 
             # Mark nodes as rigid if they match a point in the generator
             for n in g.valid_node_iter():
@@ -755,7 +766,7 @@ class QuadGen(object):
          'ij' will leave 'ij' coordinate values in both x and 'ij'
         """
 
-        g=create_intermediate_grid_tri_boundary(src=src,coordinates=coordinates)
+        g=self.create_intermediate_grid_tri_boundary(src=src,coordinates=coordinates)
 
         # seed=gen.cells_centroid()[0]
         # This is more robust
@@ -763,7 +774,8 @@ class QuadGen(object):
         
         # This will suffice for now.  Probably can use something
         # less intense.
-        gnew=triangulate_hole.triangulate_hole(g,nodes=nodes,hole_rigidity='all')
+        gnew=triangulate_hole.triangulate_hole(g,nodes=nodes,hole_rigidity='all',
+                                               method=self.triangle_method)
         return gnew
     
     def plot_intermediate(self,num=1):

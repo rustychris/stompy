@@ -347,3 +347,17 @@ class RebayAdvancingDelaunay(front.AdvancingFront):
         ccoll.set_clim([0,4])
 
         ax.axis('equal')
+
+    def extract_result(self):
+        """ 
+        Extract a clean grid from the DT
+        (i.e. remove external cells)
+        """
+        g=self.grid.copy()
+
+        for c in np.nonzero(g.cells['stat']==EXT)[0]:
+            g.delete_cell(c)
+        g.delete_orphan_edges()
+        g.delete_orphan_nodes()
+        g.renumber()
+        return g
