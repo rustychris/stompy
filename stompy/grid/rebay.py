@@ -30,9 +30,12 @@ class RebayAdvancingDelaunay(front.AdvancingFront):
     scale=None
     
     # radius scale, for an equilateral triangle follows this:
-    # (1/1.73) 
+    # (1/1.73) = 0.578
     # Generally don't have equilateral, so derate that some.
-    rad_scale_factor=1/1.5
+    # With apollonius scale, 1/1.5 seems to make a layer of too-long
+    # edges just inside the boundary.  But decreasing to 0.625 just
+    # pushes that one row in when used with an apollonius scale.
+    rad_scale_factor=0.667
 
     # queue negative radius so heap tracks max radius
     # should expose this as an option, though.

@@ -420,7 +420,6 @@ class QuadGen(object):
             self.smooth_interior_quads(self.g_int)
         elif self.intermediate=='tri':
             self.g_int=self.create_intermediate_grid_tri(src='IJ')
-            
         self.calc_psi_phi()
         if self.final=='anisotropic':
             self.g_final=self.create_intermediate_grid_quad(src='ij',coordinates='ij')
@@ -790,7 +789,9 @@ class QuadGen(object):
 
     def add_bezier(self,gen):
         """
-        Generate bezier control points for each edge.
+        Generate bezier control points for each edge.  Uses ij in
+        the generating grid to calculate angles at each vertex, and then
+        choose bezier control points to achieve that angle.
         """
         # Need to force the corners to be 90deg angles, otherwise
         # there's no hope of getting orthogonal cells in the interior.
@@ -840,11 +841,10 @@ class QuadGen(object):
             theta1=np.arctan2(deltas[1][1],deltas[1][0])
             dtheta=(theta1 - theta0 + np.pi) % (2*np.pi) - np.pi
 
-            theta_err=dtheta-dtheta_ij # 103: -0.346, slight right but should be straight
-            #theta0_adj = theta0+theta_err/2
-            #theta1_adj = theta1-theta_err/2
-
-            # not sure about signs here.
+            theta_err=dtheta-dtheta_ij
+            # Make sure we're calculating error in the shorter direction
+            theta_err=(theta_err+np.pi)%(2*np.pi) - np.pi
+            
             cp0 = gen.nodes['x'][n] + utils.rot( theta_err/2, 1./3 * deltas[0] )
             cp1 = gen.nodes['x'][n] + utils.rot( -theta_err/2, 1./3 * deltas[1] )
 
@@ -873,8 +873,8 @@ class QuadGen(object):
             B3=t**3
             points = B0[:,None]*bez[0] + B1[:,None]*bez[1] + B2[:,None]*bez[2] + B3[:,None]*bez[3]
 
-            ax.plot(points[:,0],points[:,1],'r-')
-            ax.plot(bez[:,0],bez[:,1],'b-o')
+            ax.plot(points[:,0],points[:,1],'b-',zorder=2,lw=1.5)
+            ax.plot(bez[:,0],bez[:,1],'r-o',zorder=1,alpha=0.5,lw=1.5)
 
     def gen_bezier_curve(self,j=None,samples_per_edge=10,span_fixed=True):
         """

@@ -124,6 +124,11 @@ def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=5000,hole_rigidit
         c=grid_to_pave.add_cell_and_edges(nodes)
         rad=rebay.RebayAdvancingDelaunay(grid=grid_to_pave,scale=apollo,
                                          heap_sign=1)
+        if dry_run:
+            if return_value=='grid':
+                return grid_to_pave
+            else:
+                return rad
         rad.execute()
         # make it look kind of like the advancing triangles output
         g_result=rad.extract_result()
