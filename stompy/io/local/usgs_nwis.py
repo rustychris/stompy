@@ -53,7 +53,8 @@ def nwis_dataset_collection(stations,*a,**k):
 
 def nwis_dataset(station,start_date,end_date,products,
                  days_per_request='M',frequency='realtime',
-                 cache_dir=None,clip=True,cache_only=False):
+                 cache_dir=None,clip=True,cache_only=False,
+                 cache_no_data=False):
     """
     Retrieval script for USGS waterdata.usgs.gov
 
@@ -82,7 +83,12 @@ def nwis_dataset(station,start_date,end_date,products,
     frequency: defaults to "realtime" which should correspond to the original
       sample frequency.  Alternatively, "daily" which access daily average values.
 
-    cache_only: If true, only read from cache, not attempting to fetch any new data.
+    cache_only: only read from cache, not attempting to fetch any new data.
+
+    cache_no_data: periods which successfully download but contain no data are recorded 
+       as empty files. Otherwise it is assumed that there may be a transient error, and 
+       nothing is written to cache. Do not use this for real-time retrievals, since it may
+       cache no-data results from the future.
 
     returns an xarray dataset.
 
@@ -136,6 +142,10 @@ def nwis_dataset(station,start_date,end_date,products,
 
         if (cache_fn is not None) and os.path.exists(cache_fn):
             log.info("Cached   %s -- %s"%(interval_start,interval_end))
+            if os.path.getsize(cache_fn)==0:
+                # Cached no-data result
+                log.warning(" cache for %s -- %s says no-data"%(interval_start,interval_end))
+                continue
             ds=xr.open_dataset(cache_fn)
         elif cache_only:
             log.info("Cache only - no data for %s -- %s"%(interval_start,interval_end))
@@ -145,8 +155,11 @@ def nwis_dataset(station,start_date,end_date,products,
             req=requests.get(base_url,params=params)
             data=req.text
             ds=rdb.rdb_to_dataset(text=data)
-            if ds is None: # There was no data there
+            if ds is None: # There was no data there HERE - would like to have an option to record no data
                 log.warning("    %s: no data found for this period"%base_fn)
+                if (cache_fn is not None) and cache_no_data:
+                    log.warning("    %s: making zero-byte cache file"%base_fn)
+                    with open(cache_fn,'wb') as fp: pass
                 continue
             ds.attrs['url']=req.url
 
