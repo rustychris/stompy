@@ -4085,6 +4085,86 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                              labeler(j,side) )
         return coll
 
+    def trace_node_contour(self,n0,cval,node_field,pos_side):
+        """
+        Specialized contour tracing:
+         Trace a node-centered contour cval, starting from n0, and keeping
+         the increasing direction of node_field to pos_side of the
+         trace.
+        
+        n0: starting node (for now, required, and node_field[n0]==cval)
+        pos_side: 'left' or 'right'
+        cval: value of the contour to trace.
+        node_field: value of field on the nodes.
+        """
+        pnts=[self.nodes['x'][n0]]
+        loc=('node',n0)
+
+        while loc:
+            if loc[0]=='node':
+                # Check for adjacent nodes, and adjacent cells.
+                next_loc=None
+                n_nbrs=self.angle_sort_adjacent_nodes(loc[1])
+                for n_nbr in n_nbrs:
+                    if node_field[n_nbr]==cval:
+                        next_loc=('node',n_nbr)
+                        break
+                if next_loc is None:
+                    # Check for adjacent cell
+                    # nbrs are in CCW order.
+                    for nbr_a,nbr_b in zip(n_nbrs, np.roll(n_nbrs,-1)):
+                        j=self.nodes_to_edge([nbr_a,nbr_b])
+                        if j is None:
+                            continue
+                        # pos_side=='right' => cval should increase to the right
+                        # of the segment.
+                        if (pos_side=='right') and (node_field[nbr_a]>cval) and (node_field[nbr_b]<cval):
+                            # print("Got it right")
+                            break
+                        elif (pos_side=='left') and (node_field[nbr_a]<cval) and (node_field[nbr_b]>cval):
+                            # print("Got it left")
+                            break
+                    else:
+                        print("didn't get it")
+                        break # return to this
+
+                    next_loc=('edge',self.nodes_to_halfedge(nbr_b,nbr_a))
+            elif loc[0]=='edge':
+                he=loc[1]
+                if he.cell()<0:
+                    break # left the domain
+
+                n_opp=he.fwd().node_fwd()
+
+                if node_field[n_opp]==cval:
+                    next_loc=('node',n_opp)
+                elif (node_field[n_opp]<cval)==(node_field[he.node_fwd()]<cval):
+                    # opp and fwd fall on the same side of the contour
+                    next_loc=('edge',he.rev().opposite())
+                elif (node_field[n_opp]<cval)==(node_field[he.node_rev()]<cval):
+                    next_loc=('edge',he.fwd().opposite())
+                else:
+                    ax.plot( [pnts[-1][0]],[pnts[-1][1]],'ro')
+                    raise Exception("Failed to find a way out of this cell")
+
+            if next_loc[0]=='node':
+                pnts.append( self.nodes['x'][next_loc[1]] )
+            elif next_loc[0]=='edge':
+                nbr_a=next_loc[1].node_fwd()
+                nbr_b=next_loc[1].node_rev()
+                alpha=(cval-node_field[nbr_a])/(node_field[nbr_b]-node_field[nbr_a])
+
+                assert alpha>=0
+                assert alpha<=1.0
+
+                pnt=(1-alpha)*self.nodes['x'][nbr_a] + alpha*self.nodes['x'][nbr_b]
+                pnts.append(pnt)
+            #print("%s => %s"%(loc,next_loc))
+            loc=next_loc
+
+        trace=np.array(pnts)
+        return trace
+    
     def scalar_contour(self,scalar,V=10,smooth=True,boundary='reflect'):
         """ Generate a collection of edges showing the contours of a
         cell-centered scalar.

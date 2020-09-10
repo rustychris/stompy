@@ -46,6 +46,15 @@ class RebayAdvancingDelaunay(front.AdvancingFront):
     # a min heap (r) prioritizes a regular grid along the
     # boundary, 
     heap_sign=-1
+
+    # If true, follow the original paper and recover boundary
+    # edges by subdivision. In tight spots (stings) this is not
+    # robust, but relying on constraints may have issues when
+    # cell centers fall outside the domain.
+    # The real solution might be to retain constraints, but
+    # subdivide those edges when a circumcenter is outside the
+    # valid domain.
+    recover_constraints=False
     
     def __init__(self,grid=None,**kw):
         """
@@ -61,7 +70,8 @@ class RebayAdvancingDelaunay(front.AdvancingFront):
         self.new_x=None
 
     def execute(self):
-        self.recover_boundary()
+        if self.recover_constraints:
+            self.recover_boundary()
         self.instrument_grid()
         self.init_rebay()
         while 1:
