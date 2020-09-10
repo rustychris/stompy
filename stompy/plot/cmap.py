@@ -92,6 +92,8 @@ def transform_color(function, cmap):
     """
     if isinstance(cmap,colors.ListedColormap):
         old_LUT=np.asarray(cmap.colors)
+        new_LUT = np.array(list(map(function, old_LUT)))
+        return colors.ListedColormap(new_LUT)
     else:
         cdict = cmap._segmentdata
         step_dict = {}
