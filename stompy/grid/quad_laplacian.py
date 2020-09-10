@@ -1392,9 +1392,10 @@ class QuadGen(object):
         self.psi=psi_phi[:gtri.Nnodes()]
         self.phi=psi_phi[gtri.Nnodes():]
 
-    def plot_psi_phi(self,num=4,thinning=2):
-        plt.figure(num).clf()
-        fig,ax=plt.subplots(num=num)
+    def plot_psi_phi(self,num=4,thinning=2,ax=None):
+        if ax is None:
+            plt.figure(num).clf()
+            fig,ax=plt.subplots(num=num)
 
         di,dj=np.nanmax(self.gen.nodes['ij'],axis=0) - np.nanmin(self.gen.nodes['ij'],axis=0)
 
