@@ -1577,15 +1577,22 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 self.add_cell_and_edges(nodes=nodes)
             elif geo.type=='LineString':
                 coords=np.array(geo)
-                nodes=[self.add_or_find_node(x=x)
-                       for x in coords]
-                for a,b in zip(nodes[:-1],nodes[1:]):
-                    j=self.nodes_to_edge(a,b)
-                    if j is None:
-                        self.add_edge(nodes=[a,b])
+                self.add_linestring(coords)
             else:
                 raise GridException("Not ready for geometry type %s"%geo.type)
         # still need to collapse duplicate nodes
+        
+    def add_linestring(self,coords):
+        nodes=[self.add_or_find_node(x=x)
+               for x in coords]
+        edges=[]
+        for a,b in zip(nodes[:-1],nodes[1:]):
+            j=self.nodes_to_edge(a,b)
+            if j is None:
+                j=self.add_edge(nodes=[a,b])
+            edges.append(j)
+        return nodes,edges
+        
     def from_simple_data(self,points=[],edges=[],cells=[]):
         """
         Convenience method for taking basic descriptions of geometry and
@@ -4085,7 +4092,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                              labeler(j,side) )
         return coll
 
-    def trace_node_contour(self,n0,cval,node_field,pos_side):
+    def trace_node_contour(self,n0,cval,node_field,pos_side,
+                           return_full=False):
         """
         Specialized contour tracing:
          Trace a node-centered contour cval, starting from n0, and keeping
@@ -4096,6 +4104,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         pos_side: 'left' or 'right'
         cval: value of the contour to trace.
         node_field: value of field on the nodes.
+
+        return_full: False=> return just the array of point locations.
+        True=> return a list of [point, element type, element id].
+        point: coordinate for 0-dimensional intersections, else None
+        element_type: 'cell','edge','node'
+        element_id: index of the corresponding element.
         """
         pnts=[self.nodes['x'][n0]]
         loc=('node',n0)

@@ -731,6 +731,19 @@ def point_segments_distance(point,segs,return_alpha=False):
     else:
         return D
 
+
+def segment_segment_intersection(segA,segB):
+    """
+    segA: [2,{x,y}] segment
+    segB: [2,{x,y}] segment
+    returns [2] point intersection
+    """
+    lA=geometry.LineString(segA)
+    lB=geometry.LineString(segB)
+    AB=lA.intersection(lB)
+    assert AB.type=='Point',"Need to handle non-intersecting case"
+    return np.array([AB.x,AB.y])
+    
 # rotate the given vectors/points through the CCW angle in radians
 def rot_fn(angle):
     R = np.array( [[np.cos(angle),-np.sin(angle)],
