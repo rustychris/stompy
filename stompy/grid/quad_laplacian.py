@@ -397,6 +397,9 @@ class QuadGen(object):
             gen.renumber(reorient_edges=False)
         
         self.gen=gen
+        # list of node pairs, referencing nodes in gen, which provide
+        # additional groupings of nodes.
+        self.internal_edges=[]
 
         # Prep the target resolution grid information
         self.coalesce_ij(self.gen)
@@ -410,7 +413,10 @@ class QuadGen(object):
 
         if execute:
             self.execute()
-            
+
+    def add_internal_edge(self,nodes):
+        self.internal_edges.append(nodes)
+        
     def execute(self):
         self.add_bezier(self.gen)
         if self.intermediate=='quad':
@@ -1313,6 +1319,41 @@ class QuadGen(object):
         dofs=len(i_tan_groups) + len(j_tan_groups) - 3
         assert dofs>0
 
+        # Use the internal_edges to combine tangential groups
+        def join_groups(groups,nA,nB):
+            grp_result=[]
+            grpA=grpB=None
+            for grp in groups:
+                if nA in grp:
+                    assert grpA is None
+                    grpA=grp
+                elif nB in grp:
+                    assert grpB is None
+                    grpB=grp
+                else:
+                    grp_result.append(grp)
+            assert grpA is not None
+            assert grpB is not None
+            grp_result.append( list(grpA) + list(grpB) )
+            return grp_result
+        
+        for gen_edge in self.internal_edges:
+            edge=[self.g_int.select_nodes_nearest(x)
+                  for x in self.gen.nodes['x'][gen_edge]]
+            edge_ij=self.gen.nodes['ij'][gen_edge]
+            dij=np.abs( edge_ij[1] - edge_ij[0] )
+            
+            if dij[0]<1e-10: # join on i
+                print("Joining two i_tan_groups")
+                i_tan_groups=join_groups(i_tan_groups,edge[0],edge[1])
+            elif dij[1]<1e-10: # join on j
+                print("Joining two j_tan_groups")
+                j_tan_groups=join_groups(j_tan_groups,edge[0],edge[1])
+            else:
+                import pdb
+                pdb.set_trace()
+                print("Internal edge doesn't appear to join same-valued contours")
+
         if 0: # DBG
             print("i_dirichlet_nodes:",i_dirichlet_nodes)
             print("i_tan_groups:",i_tan_groups)
@@ -1325,7 +1366,7 @@ class QuadGen(object):
         self.j_dirichlet_nodes=j_dirichlet_nodes
         self.j_tan_groups=j_tan_groups
         self.j_grad_nodes=phi_gradient_nodes
-        
+                
         Mblocks=[]
         Bblocks=[]
         if 1: # PSI

@@ -4106,78 +4106,96 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         node_field: value of field on the nodes.
 
         return_full: False=> return just the array of point locations.
-        True=> return a list of [point, element type, element id].
-        point: coordinate for 0-dimensional intersections, else None
+        True=> return a list of [element type, element id, point].
         element_type: 'cell','edge','node'
         element_id: index of the corresponding element.
+        point: coordinate for 0-dimensional intersections, else None
         """
-        pnts=[self.nodes['x'][n0]]
-        loc=('node',n0)
+        def he_to_point(he):
+            """ 
+            Return point along given half-edge that intersects the contour
+            """
+            nbr_a=he.node_fwd()
+            nbr_b=he.node_rev()
+            alpha=(cval-node_field[nbr_a])/(node_field[nbr_b]-node_field[nbr_a])
 
-        while loc:
+            assert alpha>=0
+            assert alpha<=1.0
+
+            pnt=(1-alpha)*self.nodes['x'][nbr_a] + alpha*self.nodes['x'][nbr_b]
+            return pnt
+
+        path=[('node',n0,self.nodes['x'][n0])]
+        
+        while True:
+            loc=path[-1]
+            
             if loc[0]=='node':
                 # Check for adjacent nodes, and adjacent cells.
-                next_loc=None
                 n_nbrs=self.angle_sort_adjacent_nodes(loc[1])
-                for n_nbr in n_nbrs:
-                    if node_field[n_nbr]==cval:
-                        next_loc=('node',n_nbr)
-                        break
-                if next_loc is None:
-                    # Check for adjacent cell
-                    # nbrs are in CCW order.
-                    for nbr_a,nbr_b in zip(n_nbrs, np.roll(n_nbrs,-1)):
-                        j=self.nodes_to_edge([nbr_a,nbr_b])
-                        if j is None:
-                            continue
-                        # pos_side=='right' => cval should increase to the right
-                        # of the segment.
-                        if (pos_side=='right') and (node_field[nbr_a]>cval) and (node_field[nbr_b]<cval):
-                            # print("Got it right")
-                            break
-                        elif (pos_side=='left') and (node_field[nbr_a]<cval) and (node_field[nbr_b]>cval):
-                            # print("Got it left")
-                            break
-                    else:
-                        print("didn't get it")
-                        break # return to this
 
-                    next_loc=('edge',self.nodes_to_halfedge(nbr_b,nbr_a))
+                # Check for adjacent cell
+                # nbrs are in CCW order.
+                for nbr_a,nbr_b in zip(n_nbrs,np.roll(n_nbrs,-1)):
+                    j=self.nodes_to_edge([nbr_a,nbr_b])
+                    if j is None:
+                        continue # that's not into a cell
+
+                    # Are we looking in the correct direction?
+                    if (pos_side=='right') and not (node_field[nbr_a]>node_field[nbr_b]):
+                        continue # nope
+                    if (pos_side=='left') and not (node_field[nbr_a]<node_field[nbr_b]):
+                        continue # nope
+                    
+                    if node_field[nbr_a]==cval:
+                        path.append( ('edge',self.nodes_to_halfedge(n,nbr_a),None) )
+                        path.append( ('node',nbr_a,self.nodes['x'][nbr_a]) )
+                        break
+                    elif node_field[nbr_b]==cval:
+                        path.append( ('edge',self.nodes_to_halfedge(n,nbr_b),None) )
+                        path.append( ('node',nbr_b,self.nodes['x'][nbr_b]) )
+                        break
+                    elif (node_field[nbr_a]<cval) == (node_field[nbr_b]>cval):
+                        he=self.nodes_to_halfedge(nbr_b,nbr_a)
+                        path.append(('cell',he.cell_opp(),None))
+                        path.append(('edge',he,he_to_point(he)))
+                        break
+                    else:
+                        continue
+                else:
+                    print("didn't get it")
+                    # EXIT TOP LOOP
+                    break # return to this
             elif loc[0]=='edge':
                 he=loc[1]
                 if he.cell()<0:
-                    break # left the domain
+                    break # EXIT TOP LOOP
+                
+                path.append( ('cell',he.cell(),None) )
 
                 n_opp=he.fwd().node_fwd()
 
                 if node_field[n_opp]==cval:
-                    next_loc=('node',n_opp)
+                    path.append( ('node',n_opp,self.nodes['x'][n_opp]) )
                 elif (node_field[n_opp]<cval)==(node_field[he.node_fwd()]<cval):
                     # opp and fwd fall on the same side of the contour
-                    next_loc=('edge',he.rev().opposite())
+                    he_next=he.rev().opposite()
+                    path.append( ('edge', he_next, he_to_point(he_next)) )
                 elif (node_field[n_opp]<cval)==(node_field[he.node_rev()]<cval):
-                    next_loc=('edge',he.fwd().opposite())
+                    he_next=he.fwd().opposite()
+                    path.append( ('edge',he_next,he_to_point(he_next)) )
                 else:
                     ax.plot( [pnts[-1][0]],[pnts[-1][1]],'ro')
                     raise Exception("Failed to find a way out of this cell")
 
-            if next_loc[0]=='node':
-                pnts.append( self.nodes['x'][next_loc[1]] )
-            elif next_loc[0]=='edge':
-                nbr_a=next_loc[1].node_fwd()
-                nbr_b=next_loc[1].node_rev()
-                alpha=(cval-node_field[nbr_a])/(node_field[nbr_b]-node_field[nbr_a])
-
-                assert alpha>=0
-                assert alpha<=1.0
-
-                pnt=(1-alpha)*self.nodes['x'][nbr_a] + alpha*self.nodes['x'][nbr_b]
-                pnts.append(pnt)
-            #print("%s => %s"%(loc,next_loc))
-            loc=next_loc
-
-        trace=np.array(pnts)
-        return trace
+        if return_full:
+            return path
+        else:
+            points=[pnt
+                    for typ,idx,pnt in path
+                    if pnt is not None]
+            trace=np.array(points)
+            return trace
     
     def scalar_contour(self,scalar,V=10,smooth=True,boundary='reflect'):
         """ Generate a collection of edges showing the contours of a
