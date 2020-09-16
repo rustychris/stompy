@@ -33,7 +33,8 @@ from matplotlib.path import Path
 from ..spatial import gen_spatial_index, proj_utils
 from ..utils import (mag, circumcenter, circular_pairs,signed_area, poly_circumcenter,
                      orient_intersection,array_append,within_2d, to_unit, progress,
-                     dist_along, recarray_add_fields,recarray_del_fields)
+                     dist_along, recarray_add_fields,recarray_del_fields,
+                     point_segment_distance)
 
 try:
     import netCDF4
@@ -4092,15 +4093,19 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                              labeler(j,side) )
         return coll
 
-    def trace_node_contour(self,n0,cval,node_field,pos_side,
+    def trace_node_contour(self,cval,node_field,pos_side,
+                           n0=None,loc0=None,
                            return_full=False):
         """
         Specialized contour tracing:
-         Trace a node-centered contour cval, starting from n0, and keeping
+         Trace a node-centered contour cval, starting from either node n0
+         or an arbitrary point p0, and keeping
          the increasing direction of node_field to pos_side of the
          trace.
         
-        n0: starting node (for now, required, and node_field[n0]==cval)
+        n0: starting node (node_field[n0]==cval)
+        loc0: explicit starting element, including ('point',None,[x,y])
+
         pos_side: 'left' or 'right'
         cval: value of the contour to trace.
         node_field: value of field on the nodes.
@@ -4125,52 +4130,72 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             pnt=(1-alpha)*self.nodes['x'][nbr_a] + alpha*self.nodes['x'][nbr_b]
             return pnt
 
-        path=[('node',n0,self.nodes['x'][n0])]
-        
+        if n0 is not None:
+            path=[('node',n0,self.nodes['x'][n0])]
+        else:
+            path=[loc0]
+
+        def oriented_edge_intersection(nbr_a,nbr_b):
+            """
+            nbr_a,nbr_b: node indices, with nbr_a to the
+            right of nbr_b when looking that direction.
+            Check orientation and values. If good, add 
+            items to path and return True.
+            Else return False.
+            """
+
+            j=self.nodes_to_edge([nbr_a,nbr_b])
+            if j is None:
+                return False # that's not into a cell
+
+            # Are we looking in the correct direction?
+            if (pos_side=='right') and not (node_field[nbr_a]>node_field[nbr_b]):
+                return False # nope
+            if (pos_side=='left') and not (node_field[nbr_a]<node_field[nbr_b]):
+                return False # nope
+
+            if node_field[nbr_a]==cval:
+                if path[-1][0]=='node':
+                    n=path[-1][1]
+                    path.append( ('edge',self.nodes_to_halfedge(n,nbr_a),None) )
+                path.append( ('node',nbr_a,self.nodes['x'][nbr_a]) )
+                return True
+            elif node_field[nbr_b]==cval:
+                if path[-1][0]=='node':
+                    n=path[-1][1]
+                    path.append( ('edge',self.nodes_to_halfedge(n,nbr_b),None) )
+                path.append( ('node',nbr_b,self.nodes['x'][nbr_b]) )
+                return True
+            elif (node_field[nbr_a]<cval) == (node_field[nbr_b]>cval):
+                he=self.nodes_to_halfedge(nbr_b,nbr_a)
+                path.append(('cell',he.cell_opp(),None))
+                path.append(('edge',he,he_to_point(he)))
+                return True
+            else:
+                return False
+
+            
         while True:
             loc=path[-1]
             
             if loc[0]=='node':
                 # Check for adjacent nodes, and adjacent cells.
+                n=loc[1]
                 n_nbrs=self.angle_sort_adjacent_nodes(loc[1])
 
                 # Check for adjacent cell
                 # nbrs are in CCW order.
                 for nbr_a,nbr_b in zip(n_nbrs,np.roll(n_nbrs,-1)):
-                    j=self.nodes_to_edge([nbr_a,nbr_b])
-                    if j is None:
-                        continue # that's not into a cell
-
-                    # Are we looking in the correct direction?
-                    if (pos_side=='right') and not (node_field[nbr_a]>node_field[nbr_b]):
-                        continue # nope
-                    if (pos_side=='left') and not (node_field[nbr_a]<node_field[nbr_b]):
-                        continue # nope
-                    
-                    if node_field[nbr_a]==cval:
-                        path.append( ('edge',self.nodes_to_halfedge(n,nbr_a),None) )
-                        path.append( ('node',nbr_a,self.nodes['x'][nbr_a]) )
-                        break
-                    elif node_field[nbr_b]==cval:
-                        path.append( ('edge',self.nodes_to_halfedge(n,nbr_b),None) )
-                        path.append( ('node',nbr_b,self.nodes['x'][nbr_b]) )
-                        break
-                    elif (node_field[nbr_a]<cval) == (node_field[nbr_b]>cval):
-                        he=self.nodes_to_halfedge(nbr_b,nbr_a)
-                        path.append(('cell',he.cell_opp(),None))
-                        path.append(('edge',he,he_to_point(he)))
-                        break
-                    else:
-                        continue
+                    if oriented_edge_intersection(nbr_a,nbr_b):
+                        break # and continue OUTER loop
                 else:
                     print("didn't get it")
-                    # EXIT TOP LOOP
-                    break # return to this
+                    # EXIT OUTER loop
+                    break 
             elif loc[0]=='edge':
                 he=loc[1]
                 if he.cell()<0:
-                    break # EXIT TOP LOOP
-                
+                    break # EXIT OUTER loop
                 path.append( ('cell',he.cell(),None) )
 
                 n_opp=he.fwd().node_fwd()
@@ -4187,6 +4212,53 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 else:
                     ax.plot( [pnts[-1][0]],[pnts[-1][1]],'ro')
                     raise Exception("Failed to find a way out of this cell")
+            elif loc[0]=='point':
+                pnt=loc[2]
+
+                # The point could be coincident with a node, lie on an edge,
+                # or fall within a cell.
+
+                # Point in node:
+                n=self.select_nodes_nearest(pnt)
+                if mag( pnt - self.nodes['x'][n] )<1e-10:
+                    # Might want to replace it in path? ... 
+                    path[-1] = ('node',n,self.nodes['x'][n])
+                    # Might not...
+                    # path.append( ('node',n,self.nodes['x'][n]) )
+                    continue
+                
+                # Point in edge:
+                j=self.select_edges_nearest(pnt,fast=False)
+                seg=self.nodes['x'][self.edges['nodes'][j]]
+                # This epsilon includes a little bit of slop for points constructed
+                # along a line with UTM-scaled coordinates ( ~ 1e6 )
+                if point_segment_distance(pnt,seg)<1e-8:
+                    # Still have to orient the half-edge
+                    na,nb=self.edges['nodes'][j]
+
+                    # Are we looking in the correct direction?
+                    if (pos_side=='right') and (node_field[na]>node_field[nb]):
+                        na,nb=nb,na
+                    if (pos_side=='left') and (node_field[na]<node_field[nb]):
+                        na,nb=nb,na
+                    
+                    he=self.nodes_to_halfedge(na,nb)
+                    # path.append(('edge',he,pnt)) # add... 
+                    path[-1]= ('edge',he,pnt) # ... or replace
+                    continue
+
+                # Point in cell:
+                c=self.select_cells_nearest(pnt,inside=True)
+                if c is None:
+                    raise Exception("Couldn't figure out how to start")
+                c_nodes=self.cell_to_nodes(c)
+                for a,b in zip(c_nodes,np.roll(c_nodes,-1)):
+                    if oriented_edge_intersection(a,b):
+                        break # and continue OUTER loop
+                else:
+                    break # EXIT OUTER loop
+            else:
+                raise Exception("Bad element type %s"%loc[0])
 
         if return_full:
             return path
@@ -5228,7 +5300,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             self._node_index = gen_spatial_index.PointIndex(tuples,interleaved=False)
         return self._node_index
 
-    def select_nodes_nearest(self,xy,count=None):
+    def select_nodes_nearest(self,xy,count=None,max_dist=None):
         """ count is None: return a scalar, the closest.
         otherwise, even if count==1, return a list
         """
@@ -5246,8 +5318,11 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     break
             hits=results
 
+        if max_dist is not None:
+            hits=[ hit for hit in hits
+                   if mag(xy - self.nodes['x'][hit])<=max_dist ]
+            
         if count is None:
-            # print "ug: select_nodes_nearest(%s)=%s"%(xy,hits[0])
             if len(hits):
                 return hits[0]
             else:

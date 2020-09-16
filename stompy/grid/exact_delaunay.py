@@ -36,6 +36,9 @@ class BadConstraint(Exception):
 class IntersectingConstraints(BadConstraint):
     edge=None
 
+class DuplicateConstraint(BadConstraint):
+    nodes=None
+
 class ConstraintCollinearNode(IntersectingConstraints):
     """
     Special case of intersections, when a constraint attempts to 
@@ -1743,9 +1746,10 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
         jAB=self.nodes_to_edge([nA,nB])
         if jAB is not None:
             # no work to do - topology already good.
-            assert not self.edges['constrained'][jAB]
+            if self.edges['constrained'][jAB]:
+                raise DuplicateConstraint(nodes=[nA,nB])
             self.edges['constrained'][jAB]=True
-            return
+            return jAB
 
         # inserting an edge from 0-5.
         int_elts=self.find_intersected_elements(nA,nB)
@@ -1788,11 +1792,12 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
         for j in dead_edges:
             self.delete_edge(j)
 
-        self.add_edge(nodes=[nA,nB],constrained=True)
+        j=self.add_edge(nodes=[nA,nB],constrained=True)
             
         # and then sew up the holes!
         self.fill_hole( left_nodes )
         self.fill_hole( right_nodes )
+        return j
 
     def remove_constraint(self,nA=None,nB=None,j=None):
         """ Assumes that there exists a constraint between nodes
@@ -1871,7 +1876,7 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
                 if not poly.contains( geometry.Point(centroids[c]) ):
                     self.cells['valid'][c]=False
                     
-    def add_constraint_and_intersections(self,nA,nB):
+    def add_constraint_and_intersections(self,nA,nB,on_exists='exception'):
         """
         Like add_constraint, but in the case of intersections with existing constraints 
         insert new nodes as needed and update existing and new constrained edges.
@@ -1885,15 +1890,15 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
             
             try:
                 j=self.add_constraint(nA,nB)
-                result_nodes.append(nB)
-                result_edges.append(j)
             except IntersectingConstraints as exc:
                 if isinstance(exc,ConstraintCollinearNode):
                     all_segs.insert(0, [nA,exc.node] )
-
                     all_segs.insert(1, [exc.node,nB] )
+                    continue
                 else:
                     j_other=exc.edge
+                    assert j_other is not None
+                    
                     segA=self.nodes['x'][self.edges['nodes'][j_other]]
                     segB=self.nodes['x'][[nA,nB]]
                     x_int=segment_segment_intersection(segA,segB)
@@ -1913,25 +1918,63 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
                         all_segs.insert(0,[n_new,nB])
                     if nA!=n_new:
                         all_segs.insert(0,[nA,n_new])
+                    continue
+            except DuplicateConstraint as exc:
+                if on_exists=='exception':
+                    raise
+                elif on_exists=='ignore':
+                    j=self.nodes_to_edge(nA,nB)
+                elif on_exists=='stop':
+                    break
+                else:
+                    assert False,"Bad value %s for on_exists"%on_exists
+            result_nodes.append(nB)
+            assert j is not None
+            result_edges.append(j)
+                
         return result_nodes,result_edges
                     
-    def add_constrained_linestring(self,coords,on_intersection='exception'):
+    def add_constrained_linestring(self,coords,
+                                   on_intersection='exception',
+                                   on_exists='exception'):
         """
         Optionally insert new nodes as needed along
         the way.
+        on_intersection: when a constraint intersects an existing constraint,
+          'exception' => re-raise the exception
+          'insert' => insert a constructed node, and divide the new and old constraints.
+        on_exists' => when a constraint to be inserted already exists,
+          'exception' => re-raise the exception
+          'ignore' => keep going
+          'stop' => return
+
+        returns [list of nodes],[list of edges]
         """
         nodes=[self.add_or_find_node(x=x)
                for x in coords]
         result_nodes=[nodes[0]]
         result_edges=[]
-
+        
         for a,b in zip(nodes[:-1],nodes[1:]):
             if on_intersection=='insert':
-                sub_nodes,sub_edges=self.add_constraint_and_intersections(a,b)
+                sub_nodes,sub_edges=self.add_constraint_and_intersections(a,b,
+                                                                          on_exists=on_exists)
                 result_nodes+=sub_nodes[1:]
                 result_edges+=sub_edges
+                
+                if (on_exists=='stop') and (sub_nodes[-1]!=b):
+                    print("Stopping early")
+                    break
             else:
-                j=self.add_constraint(a,b)
+                try:
+                    j=self.add_constraint(a,b)
+                except DuplicateConstraint as exc:
+                    if on_exists=='exception':
+                        raise
+                    elif on_exists=='stop':
+                        break
+                    elif on_exists=='ignore':
+                        j=self.nodes_to_edge(a,b)
                 result_nodes.append(b)
                 result_edges.append(j)
         return result_nodes,result_edges
