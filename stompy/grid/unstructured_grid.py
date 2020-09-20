@@ -3129,6 +3129,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         kw={}
         if x is not None:
             kw['x']=x
+        kw.update(node_args)
         j_new,n_new=self.split_edge_basic(j,**kw)
 
         # edges that would be the logical next edge to split if this

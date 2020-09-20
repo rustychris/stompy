@@ -1905,15 +1905,8 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
                     # Getting an error where x_int is one of the endpoints of
                     # segA.  This is while inserting a contour that ends on
                     # the boundary.
-                    nodes_other=self.edges['nodes'][j_other].copy()
-                    self.remove_constraint(j=j_other)
-
-                    n_new=self.add_or_find_node(x=x_int)
-
-                    if nodes_other[0]!=n_new:
-                        self.add_constraint(nodes_other[0],n_new)
-                    if n_new!=nodes_other[1]:
-                        self.add_constraint(n_new,nodes_other[1])
+                    n_new=self.split_constraint(j=j_other,x=x_int)
+                    
                     if nB!=n_new:
                         all_segs.insert(0,[n_new,nB])
                     if nA!=n_new:
@@ -1933,6 +1926,27 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
             result_edges.append(j)
                 
         return result_nodes,result_edges
+    
+    def split_constraint(self,x,j):
+        nodes_other=self.edges['nodes'][j].copy()
+
+        j_data=unstructured_grid.rec_to_dict(self.edges[j].copy())
+        
+        self.remove_constraint(j=j)
+
+        n_new=self.add_or_find_node(x=x)
+
+        js=[]
+        if nodes_other[0]!=n_new:
+            js.append( self.add_constraint(nodes_other[0],n_new) )
+        if n_new!=nodes_other[1]:
+            js.append( self.add_constraint(n_new,nodes_other[1]) )
+
+        for f in j_data:
+            if f in ['nodes','cells','deleted']: continue
+            self.edges[f][js]=j_data[f]
+            
+        return n_new
                     
     def add_constrained_linestring(self,coords,
                                    on_intersection='exception',

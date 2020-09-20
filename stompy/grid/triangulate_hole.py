@@ -4,7 +4,7 @@ from ..spatial import field
 from . import unstructured_grid, front, rebay
 
 def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=5000,hole_rigidity='cells',
-                     splice=True,return_value='grid',dry_run=False,
+                     splice=True,return_value='grid',dry_run=False,apollo_rate=1.1,
                      method='front'):
     """
     Specify one of
@@ -39,6 +39,9 @@ def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=5000,hole_rigidit
     if nodes is None:
         nodes=grid.enclosing_nodestring(seed_point,max_nodes)
 
+    if len(nodes)<3:
+        raise Exception('Triangulate hole: failed to find the hole')
+
     xy_shore=grid.nodes['x'][nodes]
 
     # Construct a scale based on existing spacing
@@ -63,7 +66,7 @@ def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=5000,hole_rigidit
     sample_xy=np.array(sample_xy)
     sample_scale=np.array(sample_scale)
 
-    apollo=field.PyApolloniusField(X=sample_xy,F=sample_scale)
+    apollo=field.PyApolloniusField(X=sample_xy,F=sample_scale,r=apollo_rate)
 
     # For hole_rigidity=='all', there are no hints, and this stays
     # empty.  Only for method=='front' can there be other values of
@@ -89,20 +92,35 @@ def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=5000,hole_rigidit
         # more general, if it works, to see if a node participates in any cells.
         # At the same time, record original nodes which end up HINT, so they can
         # be removed later on.
+        node_to_src_node={}
         for n in AT.grid.valid_node_iter():
-            n_src=grid.select_nodes_nearest(AT.grid.nodes['x'][n])
-            delta=utils.dist( grid.nodes['x'][n_src], AT.grid.nodes['x'][n] )
-            assert delta<0.1 # should be 0.0
-
+            n_src=grid.select_nodes_nearest(AT.grid.nodes['x'][n],max_dist=0.0)
+            assert n_src is not None,"How are we not finding the original src node?"
+            node_to_src_node[n]=n_src
+            
             if len(grid.node_to_cells(n_src))==0:
                 if hole_rigidity=='cells':
                     # It should be a HINT
                     AT.grid.nodes['fixed'][n]=AT.HINT
                     src_hints.append(n_src)
-                if hole_rigidity in ['cells','all-nodes']:
-                    # And any edges it participates in should not be RIGID either.
-                    for j in AT.grid.node_to_edges(n):
-                        AT.grid.edges['fixed'][j]=AT.UNSET
+                # This misses edges that have no cell, but connect nodes that
+                # do have cells
+                # if hole_rigidity in ['cells','all-nodes']:
+                #     # And any edges it participates in should not be RIGID either.
+                #     for j in AT.grid.node_to_edges(n):
+                #         AT.grid.edges['fixed'][j]=AT.UNSET
+        # Not entirely clear on why I moved away from using the original grid
+        # more directly.  This below may be a regression.
+        if hole_rigidity in ['cells','all-nodes']:
+            for j in AT.grid.valid_edge_iter():
+                n1,n2=AT.grid.edges['nodes'][j]
+                n1s=node_to_src_node[n1]
+                n2s=node_to_src_node[n2]
+                jsrc=grid.nodes_to_edge(n1s,n2s)
+                assert jsrc is not None
+                cells=grid.edge_to_cells(jsrc)
+                if (cells[0]<0) and (cells[1]<0):
+                    AT.grid.edges['fixed'][j]=AT.UNSET
 
         AT.scale=apollo
 
