@@ -1950,7 +1950,8 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
                     
     def add_constrained_linestring(self,coords,
                                    on_intersection='exception',
-                                   on_exists='exception'):
+                                   on_exists='exception',
+                                   closed=False):
         """
         Optionally insert new nodes as needed along
         the way.
@@ -1962,14 +1963,20 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
           'ignore' => keep going
           'stop' => return
 
+        closed: Whether the first and last nodes are also connected
+
         returns [list of nodes],[list of edges]
         """
         nodes=[self.add_or_find_node(x=x)
                for x in coords]
         result_nodes=[nodes[0]]
         result_edges=[]
-        
-        for a,b in zip(nodes[:-1],nodes[1:]):
+
+        if not closed:
+            ab_list=zip(nodes[:-1],nodes[1:])
+        else:
+            ab_list=zip(nodes,np.roll(nodes,-1))
+        for a,b in ab_list:
             if on_intersection=='insert':
                 sub_nodes,sub_edges=self.add_constraint_and_intersections(a,b,
                                                                           on_exists=on_exists)

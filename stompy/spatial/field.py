@@ -2093,8 +2093,8 @@ class SimpleGrid(QuadrilateralGrid):
 
     def xy_to_indexes(self,xy):
         dx,dy = self.delta()
-        row = int( np.round( (xy[1] - self.extents[2]) / dy )
-        col = int( np.round( (xy[0] - self.extents[0]) / dx )
+        row = int( np.round( (xy[1] - self.extents[2]) / dy ) )
+        col = int( np.round( (xy[0] - self.extents[0]) / dx ) )
         return row,col
         
     def rect_to_indexes(self,xxyy):

@@ -4419,7 +4419,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
          2.
         """
         ax=kwargs.pop('ax',None) or plt.gca()
-        tri=self.mpl_triangulation()
+        tri_kwargs=kwargs.pop('tri_kwargs',{})
+        tri=self.mpl_triangulation(**tri_kwargs)
         return ax.tricontourf(tri,values,*args,**kwargs)
     
     def contour_node_values(self,values,*args,**kwargs):
@@ -4427,7 +4428,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         Plot a smooth contour field defined by values at nodes and topology of cells.
         """
         ax=kwargs.pop('ax',None) or plt.gca()
-        tri=self.mpl_triangulation()
+        tri_kwargs=kwargs.pop('tri_kwargs',{})
+        tri=self.mpl_triangulation(**tri_kwargs)
         return ax.tricontour(tri,values,*args,**kwargs)
     
     def average_matrix(self,f=1.0,normalize='area'):
