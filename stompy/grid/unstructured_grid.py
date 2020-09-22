@@ -100,21 +100,30 @@ def request_square(ax,max_bounds=None):
             ax.axis(max_bounds)
 
 
-def find_common_nodes(gA,gB):
+def find_common_nodes(gA,gB,tol=0.0):
     """
     Return a list of [ (nA0, nB0), ... ]
-    for nodes in A and B with exactly the same xy coordinates.
+    for nodes in A and B with exactly the same xy coordinates (default,
+    or within tol distance of each other for tol>0.
+
     Used for merging grids.
     """
     dupes=[]
     xys={}
-    for n in gA.valid_node_iter():
-        k=tuple(gA.nodes['x'][n])
-        xys[k]=n
-    for n in gB.valid_node_iter():
-        k=tuple(gB.nodes['x'][n])
-        if k in xys:
-            dupes.append( [xys[k],n] )
+    if tol==0.0:
+        for n in gA.valid_node_iter():
+            k=tuple(gA.nodes['x'][n])
+            xys[k]=n
+        for n in gB.valid_node_iter():
+            k=tuple(gB.nodes['x'][n])
+            if k in xys:
+                dupes.append( [xys[k],n] )
+    else:
+        # Much slower, but can allow a bit of slop:
+        for n_B in gB.valid_node_iter():
+            n_A=gA.select_nodes_nearest(gB.nodes['x'][n_B],max_dist=tol)
+            if n_A is not None:
+                dupes.append( [n_A,n_B] )
     return dupes
 
 class HalfEdge(object):
@@ -1994,7 +2003,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         self.cells['edges'] = edge_map[self.cells['edges']]
         return edge_map
 
-    def add_grid(self,ugB,merge_nodes=None,log=None):
+    def add_grid(self,ugB,merge_nodes=None,log=None,tol=0.0):
         """
         Add the nodes, edges, and cells from another grid to this grid.
         Copies fields with common names, any other fields are dropped from ugB.
@@ -2002,7 +2011,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         merge_nodes: [ (self_node,ugB_node), ... ]
           Nodes which overlap and will be mapped instead of added.
-        or 'auto' in which case duplicate nodes by coordinate will be chosen for merging.
+        or 'auto' in which case duplicate nodes by coordinate will be chosen for merging,
+         optionally with a non-zero tolerance.
         """
         node_map=np.zeros( ugB.Nnodes(), 'i4')-1
         edge_map=np.zeros( ugB.Nedges(), 'i4')-1
@@ -2010,7 +2020,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         if merge_nodes is not None:
             if merge_nodes is 'auto':
-                merge_nodes=find_common_nodes(self,ugB)
+                merge_nodes=find_common_nodes(self,ugB,tol=tol)
             for my_node,B_node in merge_nodes:
                 node_map[B_node]=my_node
 
