@@ -2578,7 +2578,7 @@ class SimpleGrid(QuadrilateralGrid):
             os.unlink(tmp_dest_fn)
         return result
 
-    def write_gdal(self,output_file,nodata=None,overwrite=False):
+    def write_gdal(self,output_file,nodata=None,overwrite=False,options=None):
         """ Write a Geotiff of the field.
 
         if nodata is specified, nan's are replaced by this value, and try to tell
@@ -2591,10 +2591,12 @@ class SimpleGrid(QuadrilateralGrid):
         if not in_memory:
             # Create gtif
             driver = gdal.GetDriverByName("GTiff")
-            options=["COMPRESS=LZW"]
+            if options is None:
+                options=["COMPRESS=LZW"]
         else:
             driver = gdal.GetDriverByName("MEM")
-            options=[]
+            if options is None:
+                options=[]
 
             if os.path.exists(output_file):
                 if overwrite:
