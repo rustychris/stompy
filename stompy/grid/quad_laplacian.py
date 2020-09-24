@@ -38,7 +38,7 @@ TODO:
 
 import numpy as np
 from collections import defaultdict
-from shapely import geometry
+from shapely import geometry, ops
 from scipy import sparse
 
 import matplotlib.pyplot as plt
