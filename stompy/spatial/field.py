@@ -2011,9 +2011,13 @@ class SimpleGrid(QuadrilateralGrid):
         return ax.contour(X,Y,self.F,*args,**kwargs)
     @with_plt
     def plot(self,**kwargs):
+        F=kwargs.pop('F',self.F)
+        func=kwargs.pop('func',lambda x:x)
+        F=func(F)
+        
         dx,dy = self.delta()
 
-        maskedF = ma.array(self.F,mask=np.isnan(self.F))
+        maskedF = ma.array(self.F,mask=np.isnan(F))
 
         if 'ax' in kwargs:
             kwargs = dict(kwargs)
