@@ -888,6 +888,9 @@ class QuadGen(object):
             ax.plot(points[:,0],points[:,1],'b-',zorder=2,lw=1.5)
             ax.plot(bez[:,0],bez[:,1],'r-o',zorder=1,alpha=0.5,lw=1.5)
 
+        for n12 in self.internal_edges:
+            plt.plot( gen.nodes['x'][n12,0], gen.nodes['x'][n12,1], 'g-')
+
     def gen_bezier_curve(self,j=None,samples_per_edge=10,span_fixed=True):
         """
         j: make a curve for gen.edges[j], instead of the full boundary cycle.
@@ -1445,6 +1448,52 @@ class QuadGen(object):
         for j_grp in j_tan_groups:
             self.phi[j_grp]=self.phi[j_grp].mean()
 
+    def plot_psi_phi_setup(self,num=11):
+        """
+        Plot the BCs that went into the psi_phi calculation:
+        """
+        plt.figure(num).clf()
+        fig,ax=plt.subplots(num=num)
+        self.g_int.plot_edges(color='k',lw=0.5,ax=ax,alpha=0.2)
+        ax.axis('off')
+
+        for i_d in self.i_dirichlet_nodes:
+            ax.annotate( f"$\psi$={self.i_dirichlet_nodes[i_d]}",
+                         self.g_int.nodes['x'][i_d], va='top',
+                         arrowprops=dict(arrowstyle='simple',alpha=0.4))
+        for j_d in self.j_dirichlet_nodes:
+            ax.annotate( f"$\phi$={self.j_dirichlet_nodes[j_d]}",
+                         self.g_int.nodes['x'][i_d], va='bottom' ,
+                         arrowprops=dict(arrowstyle='simple',alpha=0.4))
+
+        from matplotlib import cm
+        from itertools import cycle
+        group_colors=cycle( list(colors.TABLEAU_COLORS.values()) )
+
+        for i_grp in self.i_tan_groups:
+            ax.plot( self.g_int.nodes['x'][i_grp,0],self.g_int.nodes['x'][i_grp,1],
+                     '.',color=next(group_colors))
+
+        for j_grp in self.j_tan_groups:
+            ax.plot( self.g_int.nodes['x'][j_grp,0],self.g_int.nodes['x'][j_grp,1],
+                     '+',color=next(group_colors))
+
+        i_quivs=np.array( [ [self.g_int.nodes['x'][n], self.i_grad_nodes[n] ]
+                            for n in self.i_grad_nodes] )
+        j_quivs=np.array( [ [self.g_int.nodes['x'][n], self.j_grad_nodes[n] ]
+                            for n in self.j_grad_nodes] )
+
+        ax.quiver(i_quivs[:,0,0], i_quivs[:,0,1],
+                  i_quivs[:,1,0], i_quivs[:,1,1],
+                  color='k')
+        ax.quiver(j_quivs[:,0,0], j_quivs[:,0,1],
+                  j_quivs[:,1,0], j_quivs[:,1,1],
+                  color='r')
+
+        ax.set_position([0,0,1,1])
+
+        return fig,ax
+    
     def plot_psi_phi(self,num=4,thinning=2,ax=None):
         if ax is None:
             plt.figure(num).clf()

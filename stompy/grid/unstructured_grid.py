@@ -3997,7 +3997,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         and set scalar values on edges with values
          - values can have size either Nedges, or sum(mask)
         labeler: function(id,rec) => string for adding text labels.  Specify 'id'
-          for the common case of labeling edges by id.
+          for the common case of labeling edges by id, or the name of an edge field
+          to label by str(field_value)
         lw: defaults to a thin line, usually more useful with grids, instead of 
           modern matplotlib default which is thick for data plots.
         """
@@ -4029,7 +4030,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         if labeler is not None:
             if labeler=='id':
                 labeler=lambda i,r: str(i)
-
+            elif labeler in self.edges.dtype.names:
+                field=labeler
+                labeler=lambda i,r: str(r[field])
+                
             ec=self.edges_center()
             # weirdness to account for mask being indices vs. bitmask
             for n in np.arange(self.Nedges())[mask]:
