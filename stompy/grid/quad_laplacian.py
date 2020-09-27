@@ -404,16 +404,6 @@ class QuadGen(object):
         # additional groupings of nodes.
         self.internal_edges=[]
 
-        # Prep the target resolution grid information
-        self.coalesce_ij(self.gen)
-        self.fill_ij_interp(self.gen)
-        self.node_ij_to_edge(self.gen)
-
-        # Prep the nominal resolution grid information
-        self.coalesce_ij_nominal(self.gen,dest='IJ')
-        self.fill_ij_interp(self.gen,dest='IJ')
-        self.node_ij_to_edge(self.gen,dest='IJ')
-
         if execute:
             self.execute()
 
@@ -422,37 +412,9 @@ class QuadGen(object):
         
     def execute(self):
         self.add_bezier(self.gen)
-        if self.intermediate=='quad':
-            self.g_int=self.create_intermediate_grid_quad(src='IJ')
-            # This now happens as a side effect of smooth_interior_quads
-            # self.adjust_intermediate_bounds()
-            self.smooth_interior_quads(self.g_int)
-        elif self.intermediate=='tri':
-            self.g_int=self.create_intermediate_grid_tri(src='IJ')
+        self.g_int=self.create_intermediate_grid_tri()
         self.calc_psi_phi()
-        if self.final=='anisotropic':
-            if self.patchwise:
-                self.g_final=self.create_final_by_patches()
-            else:
-                self.g_final=self.create_intermediate_grid_quad(src='ij',coordinates='ij')
-                self.adjust_by_psi_phi(self.g_final, src='ij')
-        elif self.final=='isotropic':
-            if self.intermediate=='tri':
-                self.g_final=self.create_intermediate_grid_quad(src='IJ',coordinates='ij')
-            else:
-                self.g_final=self.g_int.copy()
-            self.adjust_by_psi_phi(self.g_final, src='IJ')
-            ij=self.remap_ij(self.g_final,src='ij')
-            self.g_final.nodes['ij']=ij
-        elif self.final=='triangle':
-            # Assume that nobody wants to build a quad grid for the intermediate calcs,
-            # but then map it onto a triangle grid. I suppose it could be done, but more
-            # likely it's an error.
-            assert self.intermediate=='tri'
-            self.g_final=self.g_int.copy()
-            map_pp_to_ij=self.psiphi_to_ij(self.gen,self.g_int)
-            ij=map_pp_to_ij( np.c_[self.psi,self.phi])
-            self.g_final.nodes['ij']=ij
+        self.g_final=self.create_final_by_patches()
 
     def node_ij_to_edge(self,g,dest='ij'):
         dij=(g.nodes[dest][g.edges['nodes'][:,1]]
@@ -563,160 +525,7 @@ class QuadGen(object):
                                      dists[valid], s_vals[valid] )
                 node_vals[s[~valid]]=fill_vals
 
-    def create_intermediate_grid_quad(self,src='ij',coordinates='xy'):
-        """
-        src: base variable name for the ij indices to use.
-          i.e. gen.nodes['ij'], gen.nodes['ij_fixed'],
-             and gen.edges['dij']
-
-          the resulting grid will use 'ij' regardless, this just for the
-          generating grid.
-
-        coordinates: 
-         'xy' will interpolate the gen xy coordinates to get
-          node coordinates for the result.
-         'ij' will leave 'ij' coordinate values in both x and 'ij'
-        
-        """
-        # target grid
-        g=unstructured_grid.UnstructuredGrid(max_sides=4,
-                                             extra_node_fields=[('ij',np.float64,2),
-                                                                ('gen_j',np.int32),
-                                                                ('rigid',np.int32)])
-        gen=self.gen
-        for c in gen.valid_cell_iter():
-            local_edges=gen.cell_to_edges(c,ordered=True)
-            flip=(gen.edges['cells'][local_edges,0]!=c)
-            
-            edge_nodes=gen.edges['nodes'][local_edges]
-            edge_nodes[flip,:] = edge_nodes[flip,::-1]
-
-            dijs=gen.edges['d'+src][local_edges] * ((-1)**flip)[:,None]
-            xys=gen.nodes['x'][edge_nodes[:,0]]
-            ij0=gen.nodes[src][edge_nodes[0,0]]
-            ijs=np.cumsum(np.vstack([ij0,dijs]),axis=0)
-
-            # Sanity check to be sure that all the dijs close the loop.
-            assert np.allclose( ijs[0],ijs[-1] )
-
-            ijs=np.array(ijs[:-1])
-            # Actually don't, so that g['ij'] and gen['ij'] match up.
-            # ijs-=ijs.min(axis=0) # force to have ll corner at (0,0)
-            ij0=ijs.min(axis=0)
-            ijN=ijs.max(axis=0)
-            ij_size=ijN-ij0
-
-            # Create in ij space
-            patch=g.add_rectilinear(p0=ij0,
-                                    p1=ijN,
-                                    nx=int(1+ij_size[0]),
-                                    ny=int(1+ij_size[1]))
-            pnodes=patch['nodes'].ravel()
-
-            g.nodes['gen_j'][pnodes]=-1
-
-            # Copy xy to ij, then optionally remap xy
-            g.nodes['ij'][pnodes] = g.nodes['x'][pnodes]
-
-            if coordinates=='xy':
-                Extrap=utils.LinearNDExtrapolator
-
-                # There is a danger that a triangulation of ij
-                # is not valid in xy space.
-                # Would it work to build the triangulation in xy space,
-                # but then use ij coordinates
-                int_x=Extrap(ijs,xys[:,0])
-                node_x=int_x(g.nodes['x'][pnodes,:])
-
-                int_y=Extrap(ijs,xys[:,1])
-                node_y=int_y(g.nodes['x'][pnodes,:])
-
-                g.nodes['x'][pnodes]=np.c_[node_x,node_y]
-
-            ij_poly=geometry.Polygon(ijs)
-            # This should be fairly robust since these are mostly
-            # axis-aligned, with integer coordinates.  But exact
-            # comparisons make me nervous, so give it 0.001.
-            ij_poly=ij_poly.buffer(0.001)
-
-            if 1:
-                # Previously trimmed only based on cell center (ish)
-                # but it's the node locations which have to be
-                # calculated, so better to trim based on node location
-                # too.  Do both, since we could have a narrow crannie
-                # that splits a cell but has all valid nodes.  Not likely,
-                # but still..
-                for n in patch['nodes'].ravel():
-                    if not ij_poly.contains(geometry.Point(g.nodes['ij'][n])):
-                        g.delete_node_cascade(n)
-            if 1:
-                for cc in patch['cells'].ravel():
-                    if g.cells['deleted'][cc]: continue
-                    cn=g.cell_to_nodes(cc)
-                    c_ij=np.mean(g.nodes['ij'][cn],axis=0)
-                    if not ij_poly.contains(geometry.Point(c_ij)):
-                        g.delete_cell(cc)
-                g.delete_orphan_edges()
-                g.delete_orphan_nodes()
-
-            # Mark nodes as rigid if they match a point in the generator
-            for n in g.valid_node_iter():
-                match0=gen.nodes[src][:,0]==g.nodes['ij'][n,0]
-                match1=gen.nodes[src][:,1]==g.nodes['ij'][n,1]
-                match=np.nonzero(match0&match1)[0]
-                if len(match):
-                    # Something is amiss, but this part looks okay in pdb
-                    # import pdb
-                    # pdb.set_trace()
-                    g.nodes['rigid'][n]=RIGID
-
-            # Fill in generating edges for boundary nodes
-            boundary_nodes=g.boundary_cycle()
-            # hmm -
-            # each boundary node in g sits at either a node or
-            # edge of gen.
-            # For any non-rigid node in g, it should sit on
-            # an edge of gen.  ties can go either way, doesn't
-            # matter (for bezier purposes)
-            # Can int_x/y help here?
-            # or just brute force it
-            
-            local_edge_ijs=np.array( [ ijs, np.roll(ijs,-1,axis=0)] )
-            lower_ij=local_edge_ijs.min(axis=0)
-            upper_ij=local_edge_ijs.max(axis=0)
-            
-            for n in boundary_nodes:
-                n_ij=g.nodes['ij'][n]
-
-                # [ {nA,nB}, n_local_edges, {i,j}]
-                candidates=np.all( (n_ij>=lower_ij) & (n_ij<=upper_ij),
-                                   axis=1)
-                best_lj=None
-                best_offset=np.inf
-                
-                for lj in np.nonzero(candidates)[0]:
-                    # is n_ij approximately on the line
-                    # local_edge_ijs[lj] ?
-                    offset=utils.point_line_distance(n_ij,local_edge_ijs[:,lj,:])
-                    if offset<best_offset:
-                        best_lj=lj
-                        best_offset=offset
-                if best_lj is None:
-                    raise Exception("Failed to match up a boundary node: no candidates")
-                dij = np.diff( local_edge_ijs[:,lj,:], axis=0)
-                if np.all(dij!=0): # ragged edge
-                    allowable=self.max_ragged_node_offset
-                else:
-                    allowable=0.1
-                if best_offset>allowable:
-                    raise Exception("Failed to match up a boundary node: offset %.2f > allowable %.2f"%
-                                    (best_offset,allowable))
-                g.nodes['gen_j'][n]=local_edges[lj]
-                
-        g.renumber()
-        return g
-
-    def create_intermediate_grid_tri_boundary(self,src='ij',coordinates='xy',scale=None):
+    def create_intermediate_grid_tri_boundary(self,scale=None):
         """
         Create the boundaries for the intermediate grid, upsampling the bezier edges
         and assigning 'ij' along the way for fixed nodes.
@@ -726,9 +535,11 @@ class QuadGen(object):
             
         g=unstructured_grid.UnstructuredGrid(max_sides=3,
                                              extra_edge_fields=[ ('gen_j',np.int32) ],
-                                             extra_node_fields=[ ('ij',np.float64,2) ])
-        g.nodes['ij']=np.nan
-        g.node_defaults['ij']=np.nan
+                                             extra_node_fields=[ ('gen_n',np.int32) ])
+        g.edges['gen_j']=-1
+        g.nodes['gen_n']=-1
+        g.edge_defaults['gen_j']=-1
+        g.node_defaults['gen_n']=-1
 
         gen=self.gen
         
@@ -739,26 +550,16 @@ class QuadGen(object):
             local_res=scale(points).min(axis=0) # min=>conservative
             N=max( self.min_steps, int(dist/local_res))
             points=self.gen_bezier_linestring(j=j,samples_per_edge=N,span_fixed=False)
-
-            # Figure out what IJ to assign:
-            ij0=gen.nodes[src][gen.edges['nodes'][j,0]]
-            ijN=gen.nodes[src][gen.edges['nodes'][j,1]]
-
-            nodes=[]
-            for p_i,p in enumerate(points):
-                n=g.add_or_find_node(x=p,tolerance=0.1)
-                alpha=p_i/(len(points)-1.0)
-                assert alpha>=0
-                assert alpha<=1
-                ij=(1-alpha)*ij0 + alpha*ijN
-                g.nodes['ij'][n]=ij
-                nodes.append(n)
+            nodes=[g.add_or_find_node(x=p,tolerance=0.1)
+                   for p in points]
+            g.nodes['gen_n'][nodes[0]] =gen.edges['nodes'][j,0]
+            g.nodes['gen_n'][nodes[-1]]=gen.edges['nodes'][j,1]
 
             for a,b in zip(nodes[:-1],nodes[1:]):
                 g.add_edge(nodes=[a,b],gen_j=j)
         return g
     
-    def create_intermediate_grid_tri(self,src='ij',coordinates='xy'):
+    def create_intermediate_grid_tri(self):
         """
         Create a triangular grid for solving psi/phi.
 
@@ -777,16 +578,13 @@ class QuadGen(object):
          'ij' will leave 'ij' coordinate values in both x and 'ij'
         """
 
-        g=self.create_intermediate_grid_tri_boundary(src=src,coordinates=coordinates)
-
-        # seed=gen.cells_centroid()[0]
-        # This is more robust
+        g=self.create_intermediate_grid_tri_boundary()
         nodes=g.find_cycles(max_cycle_len=5000)[0]
-        
-        # This will suffice for now.  Probably can use something
-        # less intense.
         gnew=triangulate_hole.triangulate_hole(g,nodes=nodes,hole_rigidity='all',
                                                method=self.triangle_method)
+        gnew.add_node_field('rigid',
+                            (gnew.nodes['gen_n']>=0) & (self.gen.nodes['fixed'][gnew.nodes['gen_n']]))
+        
         return gnew
     
     def plot_intermediate(self,num=1):
@@ -815,54 +613,46 @@ class QuadGen(object):
 
         gen.add_edge_field('bez', bez, on_exists='overwrite')
 
-        for n in gen.valid_node_iter():
-            js=gen.node_to_edges(n)
-            assert len(js)==2
-            # orient the edges
-            njs=[]
-            deltas=[]
-            dijs=[]
-            flips=[]
-            for j in js:
-                nj=gen.edges['nodes'][j]
-                dij=gen.edges['dij'][j]
-                flip=0
-                if nj[0]!=n:
-                    nj=nj[::-1]
-                    dij=-dij
-                    flip=1
-                assert nj[0]==n
-                njs.append(nj)
-                dijs.append(dij)
-                flips.append(flip)
-                deltas.append( gen.nodes['x'][nj[1]] - gen.nodes['x'][nj[0]] )
-            # now node n's two edges are in njs, as node pairs, with the first
-            # in each pair being n
-            # dij is the ij delta along that edge
-            # flip records whether it was necessary to flip the edge
-            # and deltas records the geometry delta
+        cycles=gen.find_cycles(max_cycle_len=1000)
+        assert len(cycles)==1
+        cycle=cycles[0]
+        
+        for a,b,c in zip( np.roll(cycle,1),
+                          cycle,
+                          np.roll(cycle,-1) ):
+            ab=gen.nodes['x'][b] - gen.nodes['x'][a]
+            bc=gen.nodes['x'][c] - gen.nodes['x'][b]
             
-            # the angle in ij space tells us what it *should* be
-            # these are angles going away from n
-            # How does this work out when it's a straight line in ij space?
-            theta0_ij=np.arctan2( -dijs[0][1], -dijs[0][0])
-            theta1_ij=np.arctan2(dijs[1][1],dijs[1][0]) 
-            dtheta_ij=(theta1_ij - theta0_ij + np.pi) % (2*np.pi) - np.pi
+            j_ab=gen.nodes_to_edge(a,b)
+            j_bc=gen.nodes_to_edge(b,c)
 
-            theta0=np.arctan2(-deltas[0][1],-deltas[0][0])
-            theta1=np.arctan2(deltas[1][1],deltas[1][0])
+            # This makes use of angle being defined relative to a CCW
+            # cycle, not the order of edge['nodes']
+            dtheta_ij=(gen.edges['angle'][j_bc] - gen.edges['angle'][j_ab])*np.pi/180.
+            dtheta_ij=(dtheta_ij+np.pi)%(2*np.pi) - np.pi
+            
+            # Angle of A->B
+            theta0=np.arctan2(ab[1],ab[0])
+            theta1=np.arctan2(bc[1],bc[0])
             dtheta=(theta1 - theta0 + np.pi) % (2*np.pi) - np.pi
 
             theta_err=dtheta-dtheta_ij
             # Make sure we're calculating error in the shorter direction
             theta_err=(theta_err+np.pi)%(2*np.pi) - np.pi
             
-            cp0 = gen.nodes['x'][n] + utils.rot( theta_err/2, 1./3 * deltas[0] )
-            cp1 = gen.nodes['x'][n] + utils.rot( -theta_err/2, 1./3 * deltas[1] )
-
-            # save to the edge
-            gen.edges['bez'][js[0],1+flips[0]] = cp0
-            gen.edges['bez'][js[1],1+flips[1]] = cp1
+            cp0 = gen.nodes['x'][b] + utils.rot(  theta_err/2, 1./3 * -ab )
+            if gen.edges['nodes'][j_ab,0]==b:
+                cp_i=1
+            else:
+                cp_i=2
+            gen.edges['bez'][j_ab,cp_i] = cp0
+            
+            cp1 = gen.nodes['x'][b] + utils.rot( -theta_err/2, 1./3 * bc )
+            if gen.edges['nodes'][j_bc,0]==b:
+                cp_i=1
+            else:
+                cp_i=2
+            gen.edges['bez'][j_bc,cp_i] = cp1
 
     def plot_gen_bezier(self,num=10):
         gen=self.gen
@@ -1220,9 +1010,8 @@ class QuadGen(object):
             grad_phi[n]=bc_grad_phi[ni,:]
         return grad_psi,grad_phi
     
-    def calc_psi_phi(self,gtri=None):
-        if gtri is None:
-            gtri=self.g_int
+    def calc_psi_phi(self):
+        gtri=self.g_int
         self.nd=nd=NodeDiscretization(gtri)
 
         e2c=gtri.edge_to_cells()
@@ -1514,55 +1303,6 @@ class QuadGen(object):
         ax.clabel(cset_psi, fmt="i=%g", fontsize=10, inline=False, use_clabeltext=True)
         ax.clabel(cset_phi, fmt="j=%g", fontsize=10, inline=False, use_clabeltext=True)
         
-    def adjust_by_psi_phi(self,g,update=True,src='ij'):
-        """
-        Move internal nodes of g according to phi and psi fields
-
-        update: if True, actually update g, otherwise return the new values
-
-        g: The grid to be adjusted. Must have nodes['ij'] filled in fully.
-
-        src: the ij coordinate field in self.gen to use.  Note that this needs to be
-          compatible with the ij coordinate field used to create g.
-        """
-        # Check to be sure that src and g['ij'] are approximately compatible.
-        assert np.allclose( g.nodes['ij'].min(), self.gen.nodes[src].min() )
-        assert np.allclose( g.nodes['ij'].max(), self.gen.nodes[src].max() )
-
-        map_ij_to_pp = self.psiphi_to_ij(self.gen,self.g_int,inverse=True,src=src)
-
-        # Calculate the psi/phi values on the nodes of the target grid
-        # (which happens to be the same grid as where the psi/phi fields were
-        #  calculated)
-        g_psiphi=map_ij_to_pp( g.nodes['ij'] )
-        # g_psi=np.interp( g.nodes['ij'][:,0],
-        #                  psi_i[:,0],psi_i[:,1])
-        # g_phi=np.interp( g.nodes['ij'][:,1],
-        #                  phi_j[:,0], phi_j[:,1])
-
-        # Use gtri to go from phi/psi to x,y
-        # I think this is where it goes askew.
-        # This maps {psi,phi} space onto {x,y} space.
-        # But psi,phi is close to rectilinear, and defined on a rectilinear
-        # grid.  Whenever some g_psi or g_phi is close to the boundary,
-        # the Delaunay triangulation is going to make things difficult.
-        interp_xy=utils.LinearNDExtrapolator( np.c_[self.psi,self.phi],
-                                              self.g_int.nodes['x'],
-                                              eps=None)
-        # Save all the pieces for debugging:
-        self.interp_xy=interp_xy
-        self.interp_domain=np.c_[self.psi,self.phi]
-        self.interp_image=self.g_int.nodes['x']
-        self.interp_tgt=g_psiphi
-        
-        new_xy=interp_xy( g_psiphi )
-
-        if update:
-            g.nodes['x']=new_xy
-            g.refresh_metadata()
-        else:
-            return new_xy
-
     def plot_result(self,num=5):
         plt.figure(num).clf()
         self.g_final.plot_edges()
