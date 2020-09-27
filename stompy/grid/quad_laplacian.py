@@ -42,6 +42,8 @@ from shapely import geometry, ops
 from scipy import sparse
 
 import matplotlib.pyplot as plt
+from matplotlib import colors
+import itertools
 
 from . import unstructured_grid, exact_delaunay,orthogonalize, triangulate_hole
 from .. import utils, filters
@@ -978,12 +980,18 @@ class QuadGen(object):
 
         # First calculate psi gradient per edge:
         j_grad_psi=np.zeros( (len(bcycle),2), np.float64)
+        j_angles=self.gen.edges['angle'][ gtri.edges['gen_j'] ] * np.pi/180.
+        # trial and error correction
+        j_angles-=np.pi/2
+
         for ji,(n1,n2) in enumerate( zip(bcycle[:-1],bcycle[1:]) ):
+            j=gtri.nodes_to_edge(n1,n2)
             tang_xy=utils.to_unit( gtri.nodes['x'][n2] - gtri.nodes['x'][n1] )
-            tang_ij=utils.to_unit( gtri.nodes['ij'][n2] - gtri.nodes['ij'][n1] )
+
+            tang_ij=np.r_[ np.cos(j_angles[j]), np.sin(j_angles[j])]
 
             # Construct a rotation R such that R.dot(tang_ij)=[1,0],
-            # then apply to tang_ij
+            # then apply to tang_xy
             Rpsi=np.array([[tang_ij[0], tang_ij[1]],
                            [-tang_ij[1], tang_ij[0]] ] )
             j_grad_psi[ji,:]=Rpsi.dot(tang_xy)
@@ -995,7 +1003,7 @@ class QuadGen(object):
         for ni in range(N):
             bc_grad_psi[ni,:]=0.5*( j_grad_psi[ni,:] +
                                     j_grad_psi[(ni-1)%N,:] )
-        
+
         bc_grad_phi=np.zeros( (len(bcycle),2), np.float64)
 
         # 90 CW from psi
@@ -1009,6 +1017,75 @@ class QuadGen(object):
             grad_psi[n]=bc_grad_psi[ni,:]
             grad_phi[n]=bc_grad_phi[ni,:]
         return grad_psi,grad_phi
+
+    def prepare_angles(self):
+        # Allow missing angles to either be 0 or nan
+        gen=self.gen
+
+        missing=np.isnan(gen.nodes['turn'])
+        gen.nodes['turn'][missing]=0.0
+        no_turn=gen.nodes['turn']==0.0
+        gen.nodes['turn'][no_turn]=180.0
+        gen.add_node_field('fixed',~no_turn,on_exists='pass')
+
+        # Do the angles add up okay?
+        net_turn=(180-gen.nodes['turn']).sum()
+        assert np.abs(net_turn-360.0)<1e-10
+
+        gen.add_edge_field('angle',np.nan*np.zeros(gen.Nedges()),
+                           on_exists='overwrite')
+
+        # relative to the orientation of the first edge
+        # that's encountered, and relative to a CCW traversal
+        # of the cell (so not necessarily the orientation of
+        # the individual edges)
+        orientation=0 
+
+        cycles=gen.find_cycles(max_cycle_len=1000)
+        assert len(cycles)==1,"For now, cannot handle multiple cycles"
+        cycle=cycles[0]
+
+        for a,b in zip( cycle, np.roll(cycle,-1) ):
+            j=gen.nodes_to_edge(a,b)
+            assert j is not None
+            gen.edges['angle'][j]=orientation
+
+            orientation=(orientation + (180-gen.nodes['turn'][b])) % 360.0
+    
+    def internal_edge_angle(self,gen_edge):
+        """
+        not exact, but try a heuristic.
+        use adjacent edges to estimate the +i tangent vector,
+        Then compare to the angle of gen_edge.
+        Returns 0 or 90 (0 vs 180 is not unique)
+        """
+        gen_edge=self.internal_edges[0]
+        gen=self.gen
+        e2c=gen.edge_to_cells()
+        i_tan_vecs=[]
+        for n in gen_edge:
+            for j in gen.node_to_edges(n):
+                angle=gen.edges['angle'][j]
+                tan_vec=np.diff(gen.nodes['x'][ gen.edges['nodes'][j] ],axis=0)[0]
+                tan_vec=utils.to_unit(tan_vec)
+                if e2c[j,0]<0:
+                    # This edge goes opposite the cycle direction
+                    tan_vec*=-1 
+                i_tan_vec=utils.rot(-angle*np.pi/180.,tan_vec)
+                i_tan_vecs.append(i_tan_vec)
+        i_tan=utils.to_unit( np.mean(i_tan_vecs,axis=0) )
+        j_tan=np.array( [i_tan[1],-i_tan[0]] ) # sign may be off, no worries
+
+        d_gen_edge= np.diff(gen.nodes['x'][gen_edge],axis=0)[0]
+
+        j_score=np.dot(j_tan,d_gen_edge)
+        i_score=np.dot(i_tan,d_gen_edge)
+
+        if np.abs(j_score)>np.abs(i_score):
+            return 90
+        else:
+            return 0
+
     
     def calc_psi_phi(self):
         gtri=self.g_int
@@ -1016,30 +1093,6 @@ class QuadGen(object):
 
         e2c=gtri.edge_to_cells()
 
-        # psi and phi are both computed by solving the Laplacian
-        # on the intermediate grid. Input values of i,j in the input
-        # are used to identify strings of boundary nodes with the same
-        # value (zero tangential gradient), and this constraint is
-        # encoded in the matrix. This leaves the system under-determined,
-        # 2*nedges too few constraints.  Three additional constraints
-        # come from setting the scale and location of psi and the location
-        # of phi.
-        # It is still a bit unclear what the remaining degrees of freedom
-        # are, but they can, in practice, be eliminated by additionally
-        # the coupling terms d psi /dy ~ d phi/dx, and vice versa.
-
-        # One approach would be to split the problem into constraints and
-        # costs.  Then the known BCs and Laplacians can be constraints,
-        # and the remaining DOFs can be solved as a least-squares problem.
-        # This is "equality-constrained linear least squares"
-        # For dense matrices:
-        # With Cx=d constraint, minimize Ax=b
-        #  from scipy.linalg import lapack
-        #  # Define the matrices as usual, then
-        #  x = lapack.dgglse(A, C, b, d)[3]
-        # And there is ostensibly a way to do this by solving an augmented
-        # system
-        
         # check boundaries and determine where Laplacian BCs go
         boundary=e2c.min(axis=1)<0
         i_dirichlet_nodes={} # for psi
@@ -1048,8 +1101,8 @@ class QuadGen(object):
         # Block of nodes with a zero-tangential-gradient BC
         i_tan_groups=[]
         j_tan_groups=[]
-        i_tan_groups_i=[] # the input i value
-        j_tan_groups_j=[] # the input j value
+        # i_tan_groups_i=[] # the input i value
+        # j_tan_groups_j=[] # the input j value
 
         # Try zero-tangential-gradient nodes.  Current code will be under-determined
         # without the derivative constraints.
@@ -1062,19 +1115,19 @@ class QuadGen(object):
         psi_gradient_nodes={} # node => unit vector of gradient direction
         phi_gradient_nodes={} # node => unit vector of gradient direction
 
+        j_angles=self.gen.edges['angle'][ gtri.edges['gen_j'] ]
+
         for n2 in bcycle:
-            i1=gtri.nodes['ij'][n1,0]
-            i2=gtri.nodes['ij'][n2,0]
-            j1=gtri.nodes['ij'][n1,1]
-            j2=gtri.nodes['ij'][n2,1]
-            imatch=np.allclose(i1,i2) # too lazy to track down how i'm getting a 2e-12 offset
-            jmatch=np.allclose(j1,j2)
-            
+            j=gtri.nodes_to_edge(n1,n2)
+
+            imatch=j_angles[j] % 180==0
+            jmatch=j_angles[j] % 180==90
+
             if imatch: 
                 if i_grp is None:
                     i_grp=[n1]
                     i_tan_groups.append(i_grp)
-                    i_tan_groups_i.append(i1)
+                    # i_tan_groups_i.append(i1)
                 i_grp.append(n2)
             else:
                 i_grp=None
@@ -1083,11 +1136,11 @@ class QuadGen(object):
                 if j_grp is None:
                     j_grp=[n1]
                     j_tan_groups.append(j_grp)
-                    j_tan_groups_j.append(j1)
+                    # j_tan_groups_j.append(j1)
                 j_grp.append(n2)
             else:
                 j_grp=None
-                
+
             if not (imatch or jmatch):
                 # Register gradient BC for n1
                 psi_gradient_nodes[n1]=psi_gradients[n1]
@@ -1102,14 +1155,6 @@ class QuadGen(object):
             i_tan_groups[0].extend( i_tan_groups.pop()[:-1] )
         if j_tan_groups[0][0]==j_tan_groups[-1][-1]:
             j_tan_groups[0].extend( j_tan_groups.pop()[:-1] )
-            
-        # Set the range of psi to [-1,1], and pin some j to 1.0
-        low_i=np.argmin(i_tan_groups_i)
-        high_i=np.argmax(i_tan_groups_i)
-
-        i_dirichlet_nodes[i_tan_groups[low_i][0]]=-1
-        i_dirichlet_nodes[i_tan_groups[high_i][0]]=1
-        j_dirichlet_nodes[j_tan_groups[1][0]]=1
 
         # Extra degrees of freedom:
         # Each tangent group leaves an extra dof (a zero row)
@@ -1134,17 +1179,15 @@ class QuadGen(object):
             assert grpB is not None
             grp_result.append( list(grpA) + list(grpB) )
             return grp_result
-        
+
         for gen_edge in self.internal_edges:
-            edge=[self.g_int.select_nodes_nearest(x)
+            internal_angle=self.internal_edge_angle(gen_edge)
+            edge=[gtri.select_nodes_nearest(x)
                   for x in self.gen.nodes['x'][gen_edge]]
-            edge_ij=self.gen.nodes['ij'][gen_edge]
-            dij=np.abs( edge_ij[1] - edge_ij[0] )
-            
-            if dij[0]<1e-10: # join on i
+            if internal_angle%180==0: # join on i
                 print("Joining two i_tan_groups")
                 i_tan_groups=join_groups(i_tan_groups,edge[0],edge[1])
-            elif dij[1]<1e-10: # join on j
+            elif internal_angle%180==90: # join on j
                 print("Joining two j_tan_groups")
                 j_tan_groups=join_groups(j_tan_groups,edge[0],edge[1])
             else:
@@ -1152,11 +1195,32 @@ class QuadGen(object):
                 pdb.set_trace()
                 print("Internal edge doesn't appear to join same-valued contours")
 
-        if 0: # DBG
-            print("i_dirichlet_nodes:",i_dirichlet_nodes)
-            print("i_tan_groups:",i_tan_groups)
-            print("j_dirichlet_nodes:",j_dirichlet_nodes)
-            print("j_tan_groups:",j_tan_groups)
+        # find longest consecutive stretch of angle=90 edges 
+        longest=(0,None,None)
+        # start at a nice corner
+        cycle=np.roll( bcycle,-np.nonzero( gtri.nodes['rigid'][bcycle])[0][0] )
+        n_start=cycle[0]
+        dist=0.0
+        for na,nb in zip(cycle[:-1],cycle[1:]):
+            j=gtri.nodes_to_edge(na,nb)
+            assert j is not None
+            angle=self.gen.edges['angle'][gtri.edges['gen_j'][j]]
+            if angle==90:
+                dist+=gtri.edges_length(j)
+            else:
+                if dist>longest[0]:
+                    longest=(dist,n_start,na)
+                n_start=nb
+                dist=0.0
+        if dist>longest[0]:
+            longest=(dist,n_start,nb)
+
+        assert longest[1] is not None
+        assert longest[2] is not None
+        # Can I really decide the sign here?
+        i_dirichlet_nodes[longest[1]]=-1
+        i_dirichlet_nodes[longest[2]]=1
+        j_dirichlet_nodes[j_tan_groups[1][0]]=1
 
         self.i_dirichlet_nodes=i_dirichlet_nodes
         self.i_tan_groups=i_tan_groups
@@ -1164,7 +1228,7 @@ class QuadGen(object):
         self.j_dirichlet_nodes=j_dirichlet_nodes
         self.j_tan_groups=j_tan_groups
         self.j_grad_nodes=phi_gradient_nodes
-                
+
         Mblocks=[]
         Bblocks=[]
         if 1: # PSI
@@ -1194,7 +1258,7 @@ class QuadGen(object):
             # how many dofs are we short?
             # This assumes that the scale of the rows above is of
             # the same order as the scale of a derivative row below.
-            
+
             # each of those rows constrains 1 dof, and I want the
             # set of derivative rows to constrain dofs. And there
             # are 2*Nnodes() rows.
@@ -1222,7 +1286,7 @@ class QuadGen(object):
 
         self.Mblocks=Mblocks
         self.Bblocks=Bblocks
-        
+
         bigM=sparse.bmat( Mblocks )
         rhs=np.concatenate( Bblocks )
 
@@ -1236,7 +1300,7 @@ class QuadGen(object):
             self.psi[i_grp]=self.psi[i_grp].mean()
         for j_grp in j_tan_groups:
             self.phi[j_grp]=self.phi[j_grp].mean()
-
+            
     def plot_psi_phi_setup(self,num=11):
         """
         Plot the BCs that went into the psi_phi calculation:
@@ -1288,8 +1352,13 @@ class QuadGen(object):
             plt.figure(num).clf()
             fig,ax=plt.subplots(num=num)
 
-        di,dj=np.nanmax(self.gen.nodes['ij'],axis=0) - np.nanmin(self.gen.nodes['ij'],axis=0)
-
+        #di,dj=np.nanmax(self.gen.nodes['ij'],axis=0) - np.nanmin(self.gen.nodes['ij'],axis=0)
+        di=self.psi.max() - self.psi.min()
+        dj=self.phi.max() - self.phi.min()
+        delta=max(di,dj)/30 # 30 contours in the larger dimension
+        di/=delta
+        dj/=delta
+        
         self.g_int.plot_edges(color='k',lw=0.5,alpha=0.2)
         cset_psi=self.g_int.contour_node_values(self.psi,int(di/thinning),
                                                 linewidths=1.5,linestyles='solid',colors='orange',
@@ -1300,8 +1369,8 @@ class QuadGen(object):
         ax.axis('tight')
         ax.axis('equal')
 
-        ax.clabel(cset_psi, fmt="i=%g", fontsize=10, inline=False, use_clabeltext=True)
-        ax.clabel(cset_phi, fmt="j=%g", fontsize=10, inline=False, use_clabeltext=True)
+        ax.clabel(cset_psi, fmt="$\psi$=%g", fontsize=10, inline=False, use_clabeltext=True)
+        ax.clabel(cset_phi, fmt="$\phi$=%g", fontsize=10, inline=False, use_clabeltext=True)
         
     def plot_result(self,num=5):
         plt.figure(num).clf()
