@@ -4108,6 +4108,58 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                              labeler(j,side) )
         return coll
 
+    def fields_to_xy(self,target,node_fields,x0):
+        """
+        Special purpose method to traverse a pair of node-centered
+        fields from x0 to find the point x that would linearly interpolate
+        those fields to the value of target.
+
+        target: values of node_fields to locate
+        x0: starting point
+
+        NB: edges['cells'] must be up to date before calling
+        """
+        c=self.select_cells_nearest(x0)
+
+        while 1:
+            c_nodes=self.cell_to_nodes(c)
+            M=np.array( [ node_fields[0][c_nodes],
+                          node_fields[1][c_nodes],
+                          [1,1,1] ] )
+            b=[target[0],target[1],1.0]
+
+            weights=np.linalg.solve(M,b)
+            if min(weights)<0: # not there yet.
+                min_w=np.argmin(weights)
+                c_edges=self.cell_to_edges(c,ordered=True)# nodes 0--1 is edge 0, ...
+                sel_j=c_edges[ (min_w+1)%(len(c_edges)) ]
+                edges=self.edges['cells'][sel_j]
+                if edges[0]==c:
+                    next_c=edges[1]
+                elif edges[1]==c:
+                    next_c=edges[0]
+                else:
+                    raise Exception("Fail.")
+                if next_c<0:
+                    if weights.min()<-1e-5:
+                        print("Left triangulation (min weight: %f)"%weights.min())
+                        # Either the starting cell didn't allow a simple path
+                        # to the target, or the target doesn't fall inside the
+                        # grid (e.g. ragged edge)
+                        return [np.nan,np.nan]
+                    # Clip the answer to be within this cell (will be on an edge
+                    # or node).
+                    weights=weights.clip(0)
+                    weights=weights/weights.sum()
+                    break
+                c=next_c
+                continue
+            else:
+                break
+        x=(self.nodes['x'][c_nodes]*weights[:,None]).sum(axis=0)
+        return x
+
+    
     def trace_node_contour(self,cval,node_field,pos_side,
                            n0=None,loc0=None,
                            return_full=False):

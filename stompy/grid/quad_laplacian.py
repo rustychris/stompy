@@ -348,6 +348,9 @@ class QuadGen(object):
     
     # The cell spacing in geographic coordinates for the nominal, isotropic grid
     nom_res=4.0
+
+    scales=None
+    
     # Minimum number of edges along a boundary segment in the nominal isotropic grid
     min_steps=2
 
@@ -393,6 +396,10 @@ class QuadGen(object):
         utils.set_keywords(self,kw)
         gen=gen.copy()
 
+        if self.scales is None:
+            self.scales=[field.ConstantField(self.nom_res),
+                         field.ConstantField(self.nom_res)]
+        
         if cell is not None:
             for c in range(gen.Ncells()):
                 if c!=cell:
@@ -413,6 +420,7 @@ class QuadGen(object):
         self.internal_edges.append(nodes)
         
     def execute(self):
+        self.prepare_angles()
         self.add_bezier(self.gen)
         self.g_int=self.create_intermediate_grid_tri()
         self.calc_psi_phi()
@@ -423,7 +431,6 @@ class QuadGen(object):
              - g.nodes[dest][g.edges['nodes'][:,0]])
         g.add_edge_field('d'+dest,dij,on_exists='overwrite')
 
-    
     def coalesce_ij_nominal(self,gen,dest='IJ',nom_res=None,min_steps=None,
                             max_cycle_len=1000):
         """ 
@@ -586,7 +593,10 @@ class QuadGen(object):
                                                method=self.triangle_method)
         gnew.add_node_field('rigid',
                             (gnew.nodes['gen_n']>=0) & (self.gen.nodes['fixed'][gnew.nodes['gen_n']]))
-        
+        # Really it should be sufficient to have edge_defaults give -1 for gen_j, but that's
+        # getting lost.  easiest to just fix non-boundary edges:
+        internal=np.all( gnew.edge_to_cells()>=0, axis=1)
+        gnew.edges['gen_j'][internal]=-1
         return gnew
     
     def plot_intermediate(self,num=1):
@@ -1493,7 +1503,6 @@ class QuadGen(object):
         return ij_out
 
     # --- Patch Construction ---
-    
     def map_fixed_int_to_gen(self,g_int,gen):
         """
         Return a dictionary mapping nodes of self.g_int to fixed nodes of 
@@ -1502,54 +1511,56 @@ class QuadGen(object):
         # This code assumes that either ij are both fixed, or neither fixed.
         fixed_int_to_gen={}
         for n in g_int.valid_node_iter():
-            val=g_int.nodes['ij'][n,:]
-            if np.isnan(val[0] + val[1]): continue
-            # does it appear in gen?
-            x=g_int.nodes['x'][n]
-            gn=gen.select_nodes_nearest(x)
-            gx=gen.nodes['x'][gn]
-            delta=utils.dist( x-gx)
-            if delta>0.01: continue
-            if not np.any(gen.nodes['ij_fixed'][gn]): continue
-            fixed_int_to_gen[n]=gn
+            g_n=g_int.nodes['gen_n'][n]
+            if (g_n>=0) and (gen.nodes['fixed'][g_n]):
+                fixed_int_to_gen[n]=g_n
         return fixed_int_to_gen
-    
+
     def create_final_by_patches(self):
         fixed_int_to_gen = self.map_fixed_int_to_gen(self.g_int,self.gen)
         n_fixed=list(fixed_int_to_gen.keys())
 
         g_int=self.g_int
+        angles=np.zeros(g_int.Nedges(),np.float32)
+        angles=np.where( g_int.edges['gen_j']>=0,
+                         self.gen.edges['angle'][g_int.edges['gen_j']],
+                         np.nan )
+        g_int.add_edge_field('angle',angles,on_exists='overwrite')
 
         # misnomer.  Not final.  Just for finding exact intersections
-        g_final=exact_delaunay.Triangulation(extra_edge_fields=[('dij',np.float64,2),
-                                                                ('ij',np.float64,2),
-                                                                ('psiphi',np.float64,2)])
-        g_final.edge_defaults['dij']=np.nan
+        g_final=exact_delaunay.Triangulation(extra_edge_fields=[
+            #('dij',np.float64,2),
+            #('ij',np.float64,2),
+            ('angle',np.float64),
+            ('psiphi',np.float64,2)])
+
+        # g_final.edge_defaults['dij']=np.nan
         # Not great - when edges get split, this will at least leave the fields as nan
         # instead of 0.
-        g_final.edge_defaults['ij']=np.nan
+        # g_final.edge_defaults['ij']=np.nan
         g_final.edge_defaults['psiphi']=np.nan
+        g_final.edge_defaults['angle']=np.nan
 
-        final_traces=[]
-
-        def trace_contour(b,dij):
-            if dij[0]!=0:
+        def trace_contour(b,angle):
+            """
+            angle: 0 is constant psi, with psi increasing to left
+            """
+            if angle==90:
                 # trace constant phi
-                cval=self.phi[b] # The contour to trace
                 node_field=self.phi # the field to trace a contour of
-                if dij[0]<0:
-                    cval_pos='left'
-                else:
-                    cval_pos='right' # guess and check
-            elif dij[1]!=0:
-                cval=self.psi[b]
+                cval_pos='right' # guess and check
+            elif angle==270:
+                node_field=self.phi # the field to trace a contour of
+                cval_pos='left'
+            elif angle==0:
                 node_field=self.psi
-                if dij[1]<0:
-                    cval_pos='left' # guess and check
-                else:
-                    cval_pos='right' # guess and check
+                cval_pos='left' # guess and check
+            elif angle==180:
+                node_field=self.psi
+                cval_pos='right'
             else:
                 raise Exception("what?")
+            cval=node_field[b]
             return g_int.trace_node_contour(n0=b,cval=cval,
                                             node_field=node_field,
                                             pos_side=cval_pos,
@@ -1561,13 +1572,9 @@ class QuadGen(object):
         #     'internal' or 'boundary' )
         node_exits=defaultdict(list)
 
-        def insert_contour(trace_items,dij=None,
-                           psiphi0=[np.nan,np.nan],ij0=[np.nan,np.nan]):
-            assert np.isfinite(ij0[0]) or np.isfinite(ij0[1])
+        def insert_contour(trace_items,angle=None,
+                           psiphi0=[np.nan,np.nan]):
             assert np.isfinite(psiphi0[0]) or np.isfinite(psiphi0[1])
-
-            if dij is not None:
-                dij=np.asarray(dij)
 
             trace_points=np.array( [pnt
                                     for typ,idx,pnt in trace_items
@@ -1581,8 +1588,8 @@ class QuadGen(object):
                     # Feels a bit fragile:
                     j_int=trace_items[i][1].j # it's a halfedge
                     j_gen=g_int.edges['gen_j'][j_int] # from this original edge
-                    dij_gen=self.gen.edges['dij'][j_gen]
-                    if (dij_gen!=0).sum()==2:
+                    angle_gen=self.gen.edges['angle'][j_gen]
+                    if angle_gen%90 != 0:
                         print("Not worrying about contour hitting diagonal")
                         continue
 
@@ -1602,152 +1609,116 @@ class QuadGen(object):
 
             trace_nodes,trace_edges=g_final.add_constrained_linestring(trace_points,on_intersection='insert',
                                                                        on_exists='stop')
-            if dij is not None:
-                g_final.edges['dij'][trace_edges]=dij
-            if ij0 is not None:
-                g_final.edges['ij'][trace_edges]=ij0
+            if angle is not None:
+                g_final.edges['angle'][trace_edges]=angle
+            #if ij0 is not None:
+            #    g_final.edges['ij'][trace_edges]=ij0
             if psiphi0 is not None:
                 g_final.edges['psiphi'][trace_edges]=psiphi0
 
-            trace_data=dict(fin_nodes=trace_nodes,
-                            fin_edges=trace_edges,
-                            items=trace_items,
-                            dij=dij,
-                            psiphi0=psiphi0)
-            final_traces.append(trace_data)
-
             # Update node_exits:
-            exit_dij=dij
+            exit_angle=angle
             for a in trace_nodes[:-1]:
-                node_exits[a].append( (exit_dij,'internal') )
-            if dij is not None:
-                exit_dij=-dij
+                node_exits[a].append( (exit_angle,'internal') )
+            if angle is not None:
+                angle=(angle+180)%360
             for b in trace_nodes[1:]:
-                node_exits[b].append( (exit_dij,'internal') )
+                node_exits[b].append( (exit_angle,'internal') )
 
-        def trace_and_insert_contour(b,dij):
+        def trace_and_insert_contour(b,angle):
             # does dij_angle fall between the angles formed by the boundary, including
             # a little slop.
-            print(f"{dij} looks good")
+            print(f"{angle} looks good")
             gn=fixed_int_to_gen[b] # below we already check to see that b is in there.
 
-            ij0=self.gen.nodes['ij'][gn].copy()
+            # ij0=self.gen.nodes['ij'][gn].copy()
             # only pass the one constant along the contour
-            if dij[0]==0:
-                ij0[1]=np.nan
+            if angle%180==0:
                 psiphi0=[self.psi[b],np.nan]
-            else:
-                ij0[0]=np.nan
+            elif angle%180==90:
                 psiphi0=[np.nan,self.phi[b]]
 
-            trace_items=trace_contour(b,dij)
-            return insert_contour(trace_items,dij=dij,
-                                  psiphi0=psiphi0,
-                                  ij0=ij0)
+            trace_items=trace_contour(b,angle=angle)
+            return insert_contour(trace_items,angle=angle,
+                                  psiphi0=psiphi0)
 
-        def trace_boundary(b,dij):
-            nodes=[b]
-            while 1:
-                nbrs=g_int.node_to_nodes(nodes[-1])
-                last_ij=g_int.nodes['ij'][nodes[-1]]
-                for n in nbrs:
-                    nbr_dij=utils.to_unit( g_int.nodes['ij'][n] - last_ij )
-                    if (dij*nbr_dij).sum() > 0.99:
-                        nodes.append(n)
-                        break
+        def trace_and_insert_boundaries(cycle):
+            for a,b in utils.progress( zip( cycle, np.roll(cycle,-1) )):
+                j=g_int.nodes_to_edge(a,b)
+                angle=g_int.edges['angle'][j] # angle from a to b
+                if angle%90!=0: continue # ragged edge
+
+                trace_points=g_int.nodes['x'][[a,b]]
+                trace_nodes,trace_edges=g_final.add_constrained_linestring(trace_points,on_intersection='insert')
+                g_final.edges['angle'][trace_edges]=angle
+
+                # Update node_exits, which are referenced by nodes in g_final
+                for a_fin in trace_nodes[:-1]:
+                    node_exits[a_fin].append( (angle,'boundary') )
+                opp_angle=(angle+180)%360
+                for b_fin in trace_nodes[1:]:
+                    node_exits[b_fin].append( (opp_angle,'boundary') )
+
+                # This used to also fill in ij, but we don't have that now.
+                # need to update psiphi for these edges, too.
+                if angle%180==0: # psi constant
+                    psiphi=[self.psi[a],np.nan]
+                elif angle%180==90:
+                    psiphi=[np.nan, self.phi[a]]
                 else:
-                    # no good neighbor -- end of while loop
-                    break
-            return nodes
+                    assert False
 
-        def trace_and_insert_boundary(b,dij):
-            if dij is not None:
-                dij=np.asarray(dij)
-
-            trace_int_nodes=trace_boundary(b,dij)
-            trace_int_edges=[g_int.nodes_to_edge(a,b)
-                             for a,b in zip(trace_int_nodes[:-1],trace_int_nodes[1:])]
-            trace_int_cells=[]
-
-            trace_points=g_int.nodes['x'][trace_int_nodes]
-            trace_nodes,trace_edges=g_final.add_constrained_linestring(trace_points,on_intersection='insert')
-            g_final.edges['dij'][trace_edges]=dij
-            # need to update ij,psiphi for these edges, too.
-            gn=fixed_int_to_gen[b]
-            if dij[0]==0:
-                ij=[self.gen.nodes['ij'][gn,0],np.nan]
-                psiphi=[self.psi[b],np.nan]
-            elif dij[1]==0:
-                ij=[np.nan, self.gen.nodes['ij'][gn,1]]
-                psiphi=[np.nan, self.phi[b]]
-            else:
-                assert False
-            g_final.edges['ij'][trace_edges]=ij
-            g_final.edges['psiphi'][trace_edges]=psiphi
-
-            trace_data=dict(int_nodes=trace_int_nodes,
-                            int_cells=trace_int_cells,
-                            int_edges=trace_int_edges,
-                            fin_nodes=trace_nodes,
-                            fin_edges=trace_edges,
-                            dij=dij,
-                            ij0=g_int.nodes['ij'][b])
-            final_traces.append(trace_data)
-
-            # Update node_exits:
-            for a in trace_nodes[:-1]:
-                node_exits[a].append( (dij,'boundary') )
-            for b in trace_nodes[1:]:
-                node_exits[b].append( (-dij,'boundary') )
+                g_final.edges['psiphi'][trace_edges]=psiphi
 
         # Add boundaries when they coincide with contours
         cycle=g_int.boundary_cycle() # could be multiple eventually...
 
+        print("Tracing boundaries...",end="")
+        trace_and_insert_boundaries(cycle)
+        print("done")
+
         # Need to get all of the boundary contours in first, then
         # return with internal.
-        for mode in ['boundary','internal']:
-            for a,b,c in zip(cycle,
-                             np.roll(cycle,-1),
-                             np.roll(cycle,-2)):
-                if b not in fixed_int_to_gen: continue
+        for a,b,c in zip(cycle,
+                         np.roll(cycle,-1),
+                         np.roll(cycle,-2)):
+            # if b==290: # side-channel
+            #     g_int.plot_nodes(mask=g_int.nodes['rigid'],labeler='id')
+            #     g_int.plot_nodes(mask=[a,c], labeler='id')
+            #     g_int.plot_edges(mask=[j_ab,j_bc],labeler='angle')
+            #     import pdb
+            #     pdb.set_trace()
 
-                # First, should the edge a--b be included as a boundary edge coincident
-                # with a contour?
-                ij_a=g_int.nodes['ij'][a]
-                ij_b=g_int.nodes['ij'][b]
-                ij_c=g_int.nodes['ij'][c]
+            if b not in fixed_int_to_gen: continue
 
-                ij_angle_ab=np.arctan2( ij_a[1] - ij_b[1],
-                                        ij_a[0] - ij_b[0] )
-                ij_angle_cb=np.arctan2( ij_c[1] - ij_b[1],
-                                        ij_c[0] - ij_b[0] )
+            j_ab=g_int.nodes_to_edge(a,b)
+            j_bc=g_int.nodes_to_edge(b,c)
+            # flip to be the exit angle
+            angle_ba = (180+g_int.edges['angle'][j_ab])%360
+            angle_bc = g_int.edges['angle'][j_bc]
 
-                for dij in [ [-1,0], [1,0], [0,-1],[0,1]]:
-                    # is dij into the domain?
-                    dij_angle=np.arctan2( dij[1],dij[0] )
-                    trace=None
-                    eps=1e-5
+            for angle in [0,90,180,270]:
+                # is angle into the domain?
+                trace=None
 
-                    # If dij coincides with a boundary, trace it.
-                    # Only check ij_angle_cb, since each boundary edge
-                    # should have a fixed node at each end.
-                    if np.abs( (dij_angle-ij_angle_cb+np.pi)%(2*np.pi)-np.pi)<eps:
-                        if mode!='boundary': continue
-                        print("Trace boundary")
-                        trace_and_insert_boundary(b,dij)
-                    elif ( ( (dij_angle-(ij_angle_cb+eps)) % (2*np.pi) )
-                           < ( (ij_angle_ab-eps-ij_angle_cb)%(2*np.pi))):
-                        if mode!='internal': continue
-                        b_final=g_final.select_nodes_nearest(g_int.nodes['x'][b],max_dist=0.0)
-                        dupe=False
-                        if b_final is not None:
-                            for exit_dij,exit_type in node_exits[b_final]:
-                                if np.all( exit_dij==dij ):
-                                    dupe=True
-                                    print("Duplicate exit for internal trace from %d. Skip"%b)
-                                    break
-                        if not dupe:
-                            trace_and_insert_contour(b,dij)
+                # if angle is left of j_ab and right of j_bc,
+                # then it should be into the domain and can be traced
+                # careful with sting angles
+                # a,b,c are ordered CCW on the cycle, domain is to the
+                # left.
+                # so I want bc - angle - ba to be ordered CCW
+                if ( ((angle_bc==angle_ba) and (angle!=angle_bc))
+                     or (angle-angle_bc)%360 < ((angle_ba-angle_bc)%360) ):
+                    b_final=g_final.select_nodes_nearest(g_int.nodes['x'][b],max_dist=0.0)
+                    dupe=False
+                    if b_final is not None:
+                        for exit_angle,exit_type in node_exits[b_final]:
+                            if exit_angle==angle:
+                                dupe=True
+                                print("Duplicate exit for internal trace from %d. Skip"%b)
+                                break
+                    if not dupe:
+                        trace_and_insert_contour(b,angle)
 
         def tri_to_grid(g_final):
             g_final2=g_final.copy()
@@ -1767,24 +1738,29 @@ class QuadGen(object):
         if 1: 
             # Add any diagonal edges here, so that ragged edges
             # get cells in g_final2, too.
-            ragged=np.nonzero( (self.gen.edges['dij']!=0.0).sum(axis=1)==2 )[0]
-            for gen_j in ragged:
-                j_ints=np.nonzero( g_int.edges['gen_j']==gen_j )[0]
-                for j_int in j_ints:
-                    nodes=[g_final2.add_or_find_node(g_int.nodes['x'][n])
-                           for n in g_int.edges['nodes'][j_int]]
-                    j_fin2=g_final2.nodes_to_edge(nodes)
-                    if j_fin2 is None:
-                        j_fin2=g_final2.add_edge(nodes=nodes,constrained=True,
-                                                 # May need other sentinel values here to simplify
-                                                 # code below
-                                                 dij=[1,1],
-                                                 ij=[np.nan,np.nan],
-                                                 psiphi=[np.nan,np.nan])
+            ragged=np.isfinite(g_int.edges['angle']) & (g_int.edges['angle']%90!=0.0)
+            j_ints=np.nonzero( ragged )[0]
+            for j_int in j_ints:
+                nodes=[g_final2.add_or_find_node(g_int.nodes['x'][n])
+                       for n in g_int.edges['nodes'][j_int]]
+                j_fin2=g_final2.nodes_to_edge(nodes)
+                angle=g_int.edges['angle'][j_int]
+                if j_fin2 is None:
+                    j_fin2=g_final2.add_edge(nodes=nodes,constrained=True,
+                                             angle=angle,
+                                             psiphi=[np.nan,np.nan])
 
             g_final2.make_cells_from_edges()
 
         # Patch grid g_final2 completed.
+        # fixed the missing the ragged edge.
+
+        plt.clf()
+        g_final2.plot_edges()
+        plt.draw()
+
+        #import pdb
+        #pdb.set_trace()
 
         # --- Compile Swaths ---
         e2c=g_final2.edge_to_cells(recalc=True)
@@ -1796,9 +1772,13 @@ class QuadGen(object):
             c1,c2=e2c[j,:]
             if c1<0 or c2<0: continue
 
-            if g_final2.edges['dij'][j,0]==0:
+            # if the di of dij is 0, the edge joins cell in i_adj
+            # I think angle==0 is the same as dij=[1,0]
+
+            #if g_final2.edges['dij'][j,0]==0:
+            if g_final2.edges['angle'][j] % 180==0: # guess failed.
                 i_adj[c1,c2]=i_adj[c2,c1]=True
-            elif g_final2.edges['dij'][j,1]==0:
+            elif g_final2.edges['angle'][j] % 180==90:
                 j_adj[c1,c2]=j_adj[c2,c1]=True
             else:
                 print("What? Ragged edge okay, but it shouldn't have both cell neighbors")
@@ -1826,7 +1806,7 @@ class QuadGen(object):
         # Just figures out the contour values and sets them on the patches.
         patch_to_contour=[{},{}] # coord, cell index=>array of contour values
 
-        def add_swath_contours_new(comp_cells,node_field,coord):
+        def add_swath_contours_new(comp_cells,node_field,coord,scale):
             # Check all of the nodes to find the range ij
             comp_nodes=[ g_final2.cell_to_nodes(c) for c in comp_cells ]
             comp_nodes=np.unique( np.concatenate(comp_nodes) )
@@ -1834,17 +1814,21 @@ class QuadGen(object):
 
             field_values=[]
 
-            comp_ij=np.array(g_final2.edges['ij'][ g_final2.cell_to_edges(comp_cells[0]) ])
+            plt.figure(2).clf()
+            g_final2.plot_edges(color='k',lw=0.5)
+            g_final2.plot_cells(mask=comp_cells)
+            # g_final2.plot_nodes(mask=comp_nodes)
+            plt.draw()
+
+            # comp_ij=np.array(g_final2.edges['ij'][ g_final2.cell_to_edges(comp_cells[0]) ])
             comp_pp=np.array(g_final2.edges['psiphi'][ g_final2.cell_to_edges(comp_cells[0]) ])
 
             # it's actually the other coordinate that we want to consider.
             field_min=np.nanmin( comp_pp[:,1-coord] )
             field_max=np.nanmax( comp_pp[:,1-coord] )
 
-            coord_min=np.nanmin( comp_ij[:,1-coord] )
-            coord_max=np.nanmax( comp_ij[:,1-coord] )
-
-            n_swath_cells=int(np.round(coord_max-coord_min))
+            # coord_min=np.nanmin( comp_ij[:,1-coord] )
+            # coord_max=np.nanmax( comp_ij[:,1-coord] )
 
             # Could do this more directly from topology if it mattered..
             swath_poly=ops.cascaded_union( [g_final2.cell_polygon(c) for c in comp_cells] )
@@ -1868,6 +1852,14 @@ class QuadGen(object):
 
             s=np.cumsum(d_vals*0.5*(o_ds_dval[:-1]+o_ds_dval[1:]))
             s=np.r_[0,s]
+
+            # HERE -- calculate this from resolution
+            # might have i/j swapped.  range of s is 77m, and field
+            # is 1. to 1.08.  better now..
+            local_scale=scale( g_int.nodes['x'][swath_nodes] ).mean(axis=0)
+            n_swath_cells=int(np.round( (s.max() - s.min())/local_scale))
+            n_swath_cells=max(1,n_swath_cells)
+
             s_contours=np.linspace(s[0],s[-1],1+n_swath_cells)
             adj_contours=np.interp( s_contours,
                                     s,o_vals)
@@ -1877,7 +1869,7 @@ class QuadGen(object):
             for c in comp_cells:
                 patch_to_contour[coord][c]=adj_contours
 
-        if 1: # Swath processing        
+        if 1: # Swath processing
             for coord in [0,1]: # i/j
                 print("Coord: ",coord)
                 if coord==0:
@@ -1892,58 +1884,9 @@ class QuadGen(object):
                 for comp in range(n_comp):
                     print("Swath: ",comp)
                     comp_cells=np.nonzero(labels==comp)[0]
-                    add_swath_contours_new(comp_cells,node_field,coord)
+                    add_swath_contours_new(comp_cells,node_field,coord,self.scales[coord])
 
         # Direct grid gen from contour specifications:
-
-        @utils.add_to(g_int)
-        def fields_to_xy(self,target,node_fields,x0):
-            """
-            target: values of node_fields to locate
-            x0: starting point
-
-            NB: edges['cells'] must be up to date before calling
-            """
-            c=self.select_cells_nearest(x0)
-
-            while 1:
-                c_nodes=self.cell_to_nodes(c)
-                M=np.array( [ node_fields[0][c_nodes],
-                              node_fields[1][c_nodes],
-                              [1,1,1] ] )
-                b=[target[0],target[1],1.0]
-
-                weights=np.linalg.solve(M,b)
-                if min(weights)<0: # not there yet.
-                    min_w=np.argmin(weights)
-                    c_edges=self.cell_to_edges(c,ordered=True)# nodes 0--1 is edge 0, ...
-                    sel_j=c_edges[ (min_w+1)%(len(c_edges)) ]
-                    edges=self.edges['cells'][sel_j]
-                    if edges[0]==c:
-                        next_c=edges[1]
-                    elif edges[1]==c:
-                        next_c=edges[0]
-                    else:
-                        raise Exception("Fail.")
-                    if next_c<0:
-                        if weights.min()<-1e-5:
-                            print("Left triangulation (min weight: %f)"%weights.min())
-                            # Either the starting cell didn't allow a simple path
-                            # to the target, or the target doesn't fall inside the
-                            # grid (e.g. ragged edge)
-                            return [np.nan,np.nan]
-                        # Clip the answer to be within this cell (will be on an edge
-                        # or node).
-                        weights=weights.clip(0)
-                        weights=weights/weights.sum()
-                        break
-                    c=next_c
-                    continue
-                else:
-                    break
-            x=(self.nodes['x'][c_nodes]*weights[:,None]).sum(axis=0)
-            return x
-
         patch_grids=[]
 
         g_int.edge_to_cells()
@@ -1967,8 +1910,8 @@ class QuadGen(object):
                                      x0=x0)
                 if np.isnan(x[0]):
                     # If it's a ragged cell, probably okay.
-                    edge_dijs=g_final2.edges['dij'][ g_final2.cell_to_edges(c) ]
-                    ragged_js=(edge_dijs!=0.0).sum(axis=1)
+                    edge_angles=g_final2.edges['angle'][ g_final2.cell_to_edges(c) ]
+                    ragged_js=(edge_angles%90!=0.0)
                     if np.any(ragged_js):
                         print("fields_to_xy() failed, but cell is ragged.")
                         g_patch.delete_node_cascade(n)
@@ -1990,3 +1933,4 @@ class QuadGen(object):
             g.add_grid(g_next,merge_nodes='auto',tol=1e-6)
 
         return g
+
