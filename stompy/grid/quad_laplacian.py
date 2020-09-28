@@ -332,9 +332,14 @@ class QuadsGen(object):
                 
     def plot_result(self,num=5):
         plt.figure(num).clf()
-        self.g_final.plot_edges()
-        plt.axis('tight')
-        plt.axis('equal')
+        fig,ax=plt.subplots(num=num)
+        self.g_final.plot_edges(color='k',lw=0.5,ax=ax)
+        self.g_final.plot_cells(color='0.85',lw=0,zorder=-2,ax=ax)
+        ax.set_position([0,0,1,1])
+        ax.axis('off')
+        ax.axis('tight')
+        ax.axis('equal')
+        return fig,ax
     
 class QuadGen(object):
     
@@ -1381,11 +1386,17 @@ class QuadGen(object):
 
         ax.clabel(cset_psi, fmt="$\psi$=%g", fontsize=10, inline=False, use_clabeltext=True)
         ax.clabel(cset_phi, fmt="$\phi$=%g", fontsize=10, inline=False, use_clabeltext=True)
-        
+
     def plot_result(self,num=5):
         plt.figure(num).clf()
-        self.g_final.plot_edges()
-        plt.axis('equal')
+        fig,ax=plt.subplots(num=num)
+        self.g_final.plot_edges(color='k',lw=0.5,ax=ax)
+        self.g_final.plot_cells(color='0.85',lw=0,zorder=-2,ax=ax)
+        ax.set_position([0,0,1,1])
+        ax.axis('off')
+        ax.axis('tight')
+        ax.axis('equal')
+        return fig,ax
 
     def psiphi_to_ij(self,gen,g_int,src='ij',inverse=False):
         """
