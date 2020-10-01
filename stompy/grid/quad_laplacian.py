@@ -1045,7 +1045,7 @@ class QuadGen(object):
 
         # Do the angles add up okay?
         net_turn=(180-gen.nodes['turn']).sum()
-        assert np.abs(net_turn-360.0)<1e-10
+        assert np.abs(net_turn-360.0)<1e-10,"Net turn %.2f!=0"%net_turn
 
         gen.add_edge_field('angle',np.nan*np.zeros(gen.Nedges()),
                            on_exists='overwrite')
@@ -1825,11 +1825,11 @@ class QuadGen(object):
 
             field_values=[]
 
-            plt.figure(2).clf()
-            g_final2.plot_edges(color='k',lw=0.5)
-            g_final2.plot_cells(mask=comp_cells)
-            # g_final2.plot_nodes(mask=comp_nodes)
-            plt.draw()
+            # plt.figure(2).clf()
+            # g_final2.plot_edges(color='k',lw=0.5)
+            # g_final2.plot_cells(mask=comp_cells)
+            # # g_final2.plot_nodes(mask=comp_nodes)
+            # plt.draw()
 
             # comp_ij=np.array(g_final2.edges['ij'][ g_final2.cell_to_edges(comp_cells[0]) ])
             comp_pp=np.array(g_final2.edges['psiphi'][ g_final2.cell_to_edges(comp_cells[0]) ])
