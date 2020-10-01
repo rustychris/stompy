@@ -15,8 +15,15 @@ import xarray as xr
 from stompy.grid import unstructured_grid
 import stompy.plot.cmap as scmap
 
+import stompy.model.hydro_model as hm
 import stompy.model.delft.waq_scenario as dwaq
 import stompy.model.delft.dflow_model as dfm
+
+# DEV
+import six
+six.moves.reload_module(hm)
+six.moves.reload_module(dfm)
+six.moves.reload_module(dwaq)
 
 ##
 
@@ -56,6 +63,8 @@ def base_model(force=True,num_procs=1,run_dir='dfm_run'):
     # Load defaults from a template:
     model.load_template('dflow-template.mdu')
     model.set_grid(g)
+    # 3D, 5 layers. Defaults to sigma, evenly spaced
+    model.mdu['geometry','Kmx']=5
 
     model.num_procs=num_procs
 
@@ -73,11 +82,20 @@ def base_model(force=True,num_procs=1,run_dir='dfm_run'):
     # enters the domain over 100m along one edge
     # the name is important here -- it can be used when setting up the
     # DWAQ run (where it will become 'inflow_flow')
-    inflow=dfm.FlowBC(name='inflow',
-                      geom=np.array([ [0,0],[0,100]]),
-                      Q=Q)
-    model.add_bcs(inflow)
+    inflow=hm.FlowBC(name='inflow',
+                     geom=np.array([ [0,0],[0,100]]),
+                     flow=Q)
+    # just a little salt, to get some baroclinicity but nothing crazy
+    inflow_salt=hm.ScalarBC(parent=inflow,scalar='salinity',value=2.0)
+    model.add_bcs([inflow,inflow_salt])
 
+    # Also add a steady source BC with a temperature signature
+    point_src=hm.SourceSinkBC(name='pnt_source',
+                              geom=np.array([300,300] ),
+                              flow=10)
+    point_src_temp=hm.ScalarBC(parent=point_src,scalar='temperature',value=10.0)
+    model.add_bcs([point_src,point_src_temp])
+    
     model.projection='EPSG:26910' # some steps want a projection, though in this case it doesn't really matter.
     model.mdu['geometry','WaterLevIni']=0.0
     # turn on DWAQ output at half-hour steps
@@ -91,12 +109,16 @@ def base_model(force=True,num_procs=1,run_dir='dfm_run'):
     # Some preprocessing (this is necessary even if it's not an MPI run)
     model.partition()
     # Do it
-    model.run_model()
-
+    output=model.run_model()
+    # Check to see that it actually ran.
+    if not model.is_completed():
+        print(output.decode())
+        raise Exception('Model run failed')
+    
     return model
 
 # Run/load small hydro run:
-model=base_model(force=False)
+model=base_model(force=True)
 
 ##
 
@@ -152,6 +174,7 @@ wm.substances['unity']=dwaq.Substance(initial=1.0)
 # and a tracer set on the boundary flows. Initial defaults to 0.0
 wm.substances['boundary_dye']=dwaq.Substance()
 wm.add_bc(['inflow'],'boundary_dye',1.0)
+wm.map_output += ('salinity','temp')
 
 wm.cmd_write_hydro()
 wm.cmd_write_inp()
@@ -169,7 +192,7 @@ grid_ds=unstructured_grid.UnstructuredGrid.from_ugrid(ds)
 ## 
 # Plot that up:
 
-tracers=['dye1','unity','boundary_dye']
+tracers=['dye1','unity','boundary_dye','salinity','temp']
 
 fig=plt.figure(1)
 fig.clf()
@@ -182,14 +205,19 @@ cmap=scmap.load_gradient('turbo.cpt')
 for ax,scal in zip(axs,tracers):
     ax.text(0.05,0.95,scal,transform=ax.transAxes,va='top')
 
-for ti in range(len(ds.time)):
+# Drop the last time step -- the DFM tracers are not valid
+# then (not sure why)
+
+for ti in range(len(ds.time)-1):
     for ax,scal in zip(axs,tracers):
         ax.collections=[]
+        clim=dict(salinity=[0,2],temp=[5,12]).get(scal,[0,1])
         ccoll=grid_ds.plot_cells(values=ds[scal].isel(time=ti,layer=0),ax=ax,cmap=cmap,
-                                 clim=[0,1])
+                                 clim=clim)
         ax.axis('equal')
+        # plt.colorbar(ccoll,ax=ax,orientation='horizontal')
 
     plt.draw()
-    plt.pause(0.05)
+    plt.pause(0.025)
 
 ds.close() # keeping this open can interfere with deleting or overwriting the netcdf file.

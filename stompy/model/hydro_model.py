@@ -726,7 +726,13 @@ class StageBC(BC):
         # just write a single node
         self.write_tim(self.data())
 
-class FlowBC(BC):
+class CommonFlowBC(BC):
+    flow=None
+
+    def src_data(self):
+        return self.flow
+
+class FlowBC(CommonFlowBC):
     dredge_depth=-1.0
     standard_name='ocean_volume_transport_across_line'
     flow=None
@@ -736,57 +742,51 @@ class FlowBC(BC):
         super(FlowBC,self).__init__(**kw)
         self.flow=flow
 
-    def filename_base(self):
-        return super(FlowBC,self).filename_base()+"_flow"
+    # def filename_base(self):
+    #     return super(FlowBC,self).filename_base()+"_flow"
 
-    def write_config(self):
-        old_bc_fn=self.model.ext_force_file()
+    # def write_config(self):
+    #     old_bc_fn=self.model.ext_force_file()
+    # 
+    #     with open(old_bc_fn,'at') as fp:
+    #         lines=["QUANTITY=dischargebnd",
+    #                "FILENAME=%s"%self.pli_filename(),
+    #                "FILETYPE=9",
+    #                "METHOD=3",
+    #                "OPERAND=O",
+    #                "\n"]
+    #         fp.write("\n".join(lines))
+    # 
+    # def write_data(self):
+    #     self.write_tim(self.data())
 
-        with open(old_bc_fn,'at') as fp:
-            lines=["QUANTITY=dischargebnd",
-                   "FILENAME=%s"%self.pli_filename(),
-                   "FILETYPE=9",
-                   "METHOD=3",
-                   "OPERAND=O",
-                   "\n"]
-            fp.write("\n".join(lines))
-
-    def src_data(self):
-        # probably need some refactoring here...
-        return self.flow
-
-    def write_data(self):
-        self.write_tim(self.data())
-
-class SourceSinkBC(FlowBC):
+class SourceSinkBC(CommonFlowBC):
     # The grid, at the entry point, will be taken down to this elevation
     # to ensure that prescribed flows are not prevented due to a dry cell.
 
-    # could allow this to come in as a point, though it is probably not
-    # supported in the code below at this point.
-    geom_type=None
+    geom_type='Point'
     z='bed'
 
     dredge_depth=-1.0
-    def filename_base(self):
-        return super(SourceSinkBC,self).filename_base()+"_flow"
-
-    def write_config(self):
-        assert self.flow is not None
-
-        old_bc_fn=self.model.ext_force_file()
-
-        with open(old_bc_fn,'at') as fp:
-            lines=["QUANTITY=discharge_salinity_temperature_sorsin",
-                   "FILENAME=%s"%self.pli_filename(),
-                   "FILETYPE=9",
-                   "METHOD=1", # how is this different than method=3?
-                   "OPERAND=O",
-                   "\n"]
-            fp.write("\n".join(lines))
-            
-    def write_data(self):
-        self.write_tim(self.data())
+    
+    # def filename_base(self):
+    #     return super(SourceSinkBC,self).filename_base()+"_flow"
+    # 
+    # def write_config(self):
+    #     assert self.flow is not None
+    # 
+    #     old_bc_fn=self.model.ext_force_file()
+    # 
+    #     with open(old_bc_fn,'at') as fp:
+    #         lines=["QUANTITY=discharge_salinity_temperature_sorsin",
+    #                "FILENAME=%s"%self.pli_filename(),
+    #                "FILETYPE=9",
+    #                "METHOD=1", # how is this different than method=3?
+    #                "OPERAND=O",
+    #                "\n"]
+    #         fp.write("\n".join(lines))
+    # def write_data(self):
+    #     self.write_tim(self.data())
 
 class WindBC(BC):
     """
