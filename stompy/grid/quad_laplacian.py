@@ -385,9 +385,13 @@ class QuadGen(object):
 
     # 'rebay' or 'front'.  When intermediate is 'tri', this chooses the method for
     # generating the intermediate triangular grid
-    triangle_method='rebay'    
+    triangle_method='rebay'
+
+    # How internal angles are specified.  'node' is only valid when a single cell
+    # is selected in gen.
+    angle_source='halfedge' # 'halfedge' or 'node'
     
-    def __init__(self,gen,execute=True,cell=None,**kw):
+    def __init__(self,gen,execute=True,cells=None,**kw):
         """
         gen: the design grid. cells of this grid will be filled in with 
         quads.  
@@ -405,24 +409,25 @@ class QuadGen(object):
             self.scales=[field.ConstantField(self.nom_res),
                          field.ConstantField(self.nom_res)]
         
-        if cell is not None:
+        if cells is not None:
             for c in range(gen.Ncells()):
-                if c!=cell:
+                if (c not in cells) and (not gen.cells['deleted'][c]):
                     gen.delete_cell(c)
-            gen.delete_orphan_edges()
-            gen.delete_orphan_nodes()
-            gen.renumber(reorient_edges=False)
+        gen.delete_orphan_edges()
+        gen.delete_orphan_nodes()
+        gen.renumber(reorient_edges=False)
         
         self.gen=gen
-        # list of node pairs, referencing nodes in gen, which provide
+        # [ [node_a,node_b,angle], ...]
+        # node indices reference gen, which provide
         # additional groupings of nodes.
         self.internal_edges=[]
 
         if execute:
             self.execute()
 
-    def add_internal_edge(self,nodes):
-        self.internal_edges.append(nodes)
+    def add_internal_edge(self,nodes,angle=None):
+        self.internal_edges.append( [nodes[0], nodes[1],angle] )
         
     def execute(self):
         self.prepare_angles()
@@ -696,7 +701,11 @@ class QuadGen(object):
             ax.plot(bez[:,0],bez[:,1],'r-o',zorder=1,alpha=0.5,lw=1.5)
 
         for n12 in self.internal_edges:
-            plt.plot( gen.nodes['x'][n12,0], gen.nodes['x'][n12,1], 'g-')
+            ax.plot( gen.nodes['x'][n12[:2],0],
+                     gen.nodes['x'][n12[:2],1], 'g-')
+            i_angle=self.internal_edge_angle(n12)
+            mid=gen.nodes['x'][n12[:2],:].mean(axis=0)
+            ax.text( mid[0],mid[1], str(i_angle),color='g')
 
     def gen_bezier_curve(self,j=None,samples_per_edge=10,span_fixed=True):
         """
@@ -1034,6 +1043,16 @@ class QuadGen(object):
         return grad_psi,grad_phi
 
     def prepare_angles(self):
+        if self.angle_source=='node':
+            self.prepare_angles_nodes()
+        else:
+            self.prepare_angles_halfedge()
+        
+    def prepare_angles_nodes(self):
+        """
+        Move angles from turns at node to
+        absolute orientations of edges.
+        """
         # Allow missing angles to either be 0 or nan
         gen=self.gen
 
@@ -1074,11 +1093,14 @@ class QuadGen(object):
         Then compare to the angle of gen_edge.
         Returns 0 or 90 (0 vs 180 is not unique)
         """
-        gen_edge=self.internal_edges[0]
+        # Use the specified angle if it's set:
+        if gen_edge[2] is not None:
+            return gen_edge[2]
+        
         gen=self.gen
         e2c=gen.edge_to_cells()
         i_tan_vecs=[]
-        for n in gen_edge:
+        for n in gen_edge[:2]:
             for j in gen.node_to_edges(n):
                 angle=gen.edges['angle'][j]
                 tan_vec=np.diff(gen.nodes['x'][ gen.edges['nodes'][j] ],axis=0)[0]
@@ -1091,7 +1113,7 @@ class QuadGen(object):
         i_tan=utils.to_unit( np.mean(i_tan_vecs,axis=0) )
         j_tan=np.array( [i_tan[1],-i_tan[0]] ) # sign may be off, no worries
 
-        d_gen_edge= np.diff(gen.nodes['x'][gen_edge],axis=0)[0]
+        d_gen_edge= np.diff(gen.nodes['x'][gen_edge[:2]],axis=0)[0]
 
         j_score=np.dot(j_tan,d_gen_edge)
         i_score=np.dot(i_tan,d_gen_edge)
@@ -1100,7 +1122,6 @@ class QuadGen(object):
             return 90
         else:
             return 0
-
     
     def calc_psi_phi(self):
         gtri=self.g_int
@@ -1198,7 +1219,7 @@ class QuadGen(object):
         for gen_edge in self.internal_edges:
             internal_angle=self.internal_edge_angle(gen_edge)
             edge=[gtri.select_nodes_nearest(x)
-                  for x in self.gen.nodes['x'][gen_edge]]
+                  for x in self.gen.nodes['x'][gen_edge[:2]]]
             if internal_angle%180==0: # join on i
                 print("Joining two i_tan_groups")
                 i_tan_groups=join_groups(i_tan_groups,edge[0],edge[1])

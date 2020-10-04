@@ -4108,7 +4108,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                              labeler(j,side) )
         return coll
 
-    def fields_to_xy(self,target,node_fields,x0):
+    def fields_to_xy(self,target,node_fields,x0,eps=1e-6):
         """
         Special purpose method to traverse a pair of node-centered
         fields from x0 to find the point x that would linearly interpolate
@@ -4121,7 +4121,11 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         """
         c=self.select_cells_nearest(x0)
 
-        while 1:
+        for loop in range(self.Ncells()):
+            # if loop>self.Ncells()-10:
+            #     import pdb
+            #     pdb.set_trace()
+                
             c_nodes=self.cell_to_nodes(c)
             M=np.array( [ node_fields[0][c_nodes],
                           node_fields[1][c_nodes],
@@ -4129,7 +4133,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             b=[target[0],target[1],1.0]
 
             weights=np.linalg.solve(M,b)
-            if min(weights)<0: # not there yet.
+            if min(weights)<-eps: # not there yet.
                 min_w=np.argmin(weights)
                 c_edges=self.cell_to_edges(c,ordered=True)# nodes 0--1 is edge 0, ...
                 sel_j=c_edges[ (min_w+1)%(len(c_edges)) ]
@@ -4155,10 +4159,13 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 c=next_c
                 continue
             else:
+                weights=weights.clip(0)
+                weights=weights/weights.sum()
                 break
+        else:
+            raise Exception("Failed to terminate in fields_to_xy()")
         x=(self.nodes['x'][c_nodes]*weights[:,None]).sum(axis=0)
         return x
-
     
     def trace_node_contour(self,cval,node_field,pos_side,
                            n0=None,loc0=None,
