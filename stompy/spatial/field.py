@@ -3562,7 +3562,7 @@ class CompositeField(Field):
             # dangerous! executing code from a shapefile!
             for mode in [self.data_mode[src_i],self.alpha_mode[src_i]]:
                 if mode is None or mode.strip() in ['',b'']: continue
-                eval(mode)
+                exec(mode) # used to be eval.
 
             data_missing=np.isnan(src_data.F)
             src_alpha.F[data_missing]=0.0

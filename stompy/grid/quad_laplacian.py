@@ -1047,7 +1047,82 @@ class QuadGen(object):
             self.prepare_angles_nodes()
         else:
             self.prepare_angles_halfedge()
-        
+
+    def prepare_angles_halfedge(self):
+        """
+        Move turn angles from half edges to absolute angles of edges.
+        Internal edges will get an angle, then be removed from
+        gen and recorded instead in self.internal_edges
+        """
+        # Might get smarter in the future, but for now we save some internal
+        # edge info, sum turns to nodes, have prepare_angles_nodes() do its
+        # thing, then return to complete the internal edge info
+
+        gen=self.gen
+        e2c=gen.edge_to_cells()
+
+        internals=[]
+
+        gen.add_node_field('turn',np.nan*np.zeros(gen.Nnodes(),np.float32), on_exists='overwrite')
+
+        valid_fwd=(e2c[:,0]>=0) & np.isfinite(gen.edges['turn_fwd']) & (gen.edges['turn_fwd']!=0)
+        valid_rev=(e2c[:,1]>=0) & np.isfinite(gen.edges['turn_rev']) & (gen.edges['turn_rev']!=0)
+
+        # iterate over nodes, so that edges can use default values 
+        fixed_nodes=np.unique( np.concatenate( (gen.edges['nodes'][valid_fwd,1],
+                                                gen.edges['nodes'][valid_rev,0]) ) )
+
+        j_int={}
+        for n in fixed_nodes:
+            turn=0
+            nbrs=gen.node_to_nodes(n)
+            he=he0=gen.nodes_to_halfedge(nbrs[0],n)
+            # Start on the CCW-most external edge:
+            while he.cell_opp()>=0:
+                he=he.fwd().opposite()
+                assert he!=he0
+            he0=he
+
+            while 1:
+                if he.cell()>=0:
+                    if he.orient==0:
+                        sub_turn=gen.edges['turn_fwd'][he.j]
+                    else:
+                        sub_turn=gen.edges['turn_rev'][he.j]
+                    if np.isnan(sub_turn): sub_turn=180
+                    elif sub_turn==0.0: sub_turn=180
+                    turn=turn+sub_turn
+                else:
+                    sub_turn=np.nan
+
+                he=he.fwd().opposite()
+
+                if (e2c[he.j,0]>=0) and (e2c[he.j,1]>=0):
+                    if he.j not in j_int:
+                        j_int[he.j]=1
+                        print(f"Adding j={he.j} as an internal edge")
+                        internals.append( dict(j=he.j,
+                                               nodes=[he.node_fwd(),he.node_rev()],
+                                               turn=turn,
+                                               j0=he0.j) )
+
+
+                if he==he0: break
+            gen.nodes['turn'][n]=turn
+
+        # Come back for handling of internal edges
+        for internal in internals:
+            print("Internal edge: ",internal['nodes'])
+            gen.merge_cells(j=internal['j'])
+
+        self.prepare_angles_nodes()
+
+        for internal in internals:
+            self.add_internal_edge(internal['nodes'],
+                                   gen.edges['angle'][internal['j0']]+internal['turn'])
+        self.internals=internals # just for debugging
+
+            
     def prepare_angles_nodes(self):
         """
         Move angles from turns at node to

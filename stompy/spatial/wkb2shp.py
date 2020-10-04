@@ -114,10 +114,16 @@ def wkb2shp(shp_name,
     elif fields is not None and isinstance(fields,np.ndarray):
         dt = fields.dtype
 
+        # Special case to round-trip shp2geom->wkb2shp
+        # Not working yet
+        if input_wkbs is None:
+            input_wkbs=fields['geom']
+
         # Note that each field may itself have some shape - so we need to enumerate those
         # dimensions, too.
         field_names = []
         for name in dt.names:
+            if name=='geom': continue
             # ndindex iterates over tuples which index successive elements of the field
             for index in np.ndindex( dt[name].shape ):
                 name_idx = name + "_".join([str(i) for i in index])
@@ -127,6 +133,7 @@ def wkb2shp(shp_name,
         for i in range(len(fields)):
             fields_onerow = []
             for name in dt.names:
+                if name=='geom': continue
                 for index in np.ndindex( dt[name].shape ):
                     if index != ():
                         fields_onerow.append( fields[i][name][index] )
