@@ -567,6 +567,118 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         return UnstructuredGrid(edges=g.edges,points=g.points,cells=g.cells)
 
     @staticmethod
+    def read_gmsh(fn):
+        """
+        Limited read support for ASCII gmsh output
+        """
+        with open(fn,'rt') as fp:
+            head_start=fp.readline()
+            assert head_start.strip()=='$MeshFormat'
+            ver,asc_bin,data_size,*one = fp.readline().strip().split()
+            assert asc_bin=='0',"Not ready for binary"
+            head_end=fp.readline()
+            assert head_end.strip()=='$EndMeshFormat'
+
+            while 1:
+                blk_start=fp.readline().strip()
+                if blk_start=='':
+                    break
+                print("Reading ",blk_start)
+                assert blk_start[0]=='$'
+
+
+                blk_end=blk_start.replace('$','$End')
+
+                if blk_start=='$Entities':
+                    npoints,ncurves,nsurf,nvols=[int(s) for s in fp.readline().strip().split()]
+                    # Not worrying about these now...
+                elif blk_start=='$Nodes':
+                    nblocks,nnodes,min_node_tag,max_node_tag = [int(s) for s in fp.readline().strip().split()]
+                    node_xy=np.nan*np.zeros((max_node_tag-min_node_tag+1,2))
+
+                    for blk_i in range(nblocks):
+                        ent_dim,ent_tag,param,blk_nnodes=[int(s) for s in fp.readline().strip().split()]
+                        tags=[]
+                        xyzs=[]
+                        for blk_n in range(blk_nnodes):
+                            tags.append(int(fp.readline().strip()))
+                        for blk_n in range(blk_nnodes):
+                            xyz=[float(s) for s in fp.readline().strip().split()]
+                            xyzs.append(xyz)
+                        for tag,xyz in zip(tags,xyzs):
+                            node_xy[tag-min_node_tag,:]=xyz[:2]
+                elif blk_start=='$Elements':
+                    nblocks,nelts,min_tag,max_tag = [int(s) for s in fp.readline().strip().split()]
+
+                    tris=[]
+
+                    for blk_i in range(nblocks):
+                        ent_dim,ent_tag,ent_typ,blk_nelts=[int(s) for s in fp.readline().strip().split()]
+                        elt_nnodes={15:1, # nodes
+                                    1:2,  # edges
+                                    2:3}  # triangles
+                        tags=[]
+
+                        for blk_nelt in range(blk_nelts):
+                            tags=[int(s) for s in fp.readline().strip().split()]
+                            elt_tag=tags[0]
+                            node_tags=tags[1:]
+                            assert len(node_tags)==elt_nnodes[ent_typ]
+                            if ent_typ==2:
+                                tris.append(node_tags)
+                    tris=np.array(tris)-min_node_tag
+
+                while fp.readline().strip()!=blk_end:
+                    pass
+        g=UnstructuredGrid(max_sides=3)
+        g.from_simple_data(points=node_xy,cells=tris)
+        g.make_edges_from_cells_fast()    
+        return g
+
+    def write_gmsh_geo(self,fn):
+        """
+        Limited writing of gmsh geometry input file
+        This will likely acquire more parameters.  For now, it
+        writes nodes, edges, boundary cycles, and a single plane
+        surface for the whole domain.  It's not for writing out
+        cells (except one large cell for the area).
+        """
+        with open(fn,'wt') as fp:
+            fp.write("// Boundary geometry\n")
+            el=self.edges_length()
+            for n in range(self.Nnodes()):
+                p=self.nodes['x'][n]
+                #  s=scale(p)
+                js=self.node_to_edges(n)
+                s=el[js].max()
+                # x,y,z, scale
+                fp.write("Point(%d) = {%.4f, %.4f, 0, %g};\n"%
+                         (n+1,p[0],p[1],s))
+            for j in range(self.Nedges()):
+                n12=self.edges['nodes'][j]
+                fp.write("Line(%d) = {%d, %d};\n"%(j+1,n12[0]+1,n12[1]+1))
+
+            cycles=self.find_cycles(max_cycle_len=self.Nnodes())
+
+            for cyc_i,cycle in enumerate(cycles):
+                cycle=cycles[0]
+
+                j1_list=[]
+                for a,b in zip(cycle,np.roll(cycle,-1)):
+                    j=self.nodes_to_edge(a,b)
+                    if self.edges['nodes'][j,0]==a:
+                        j1=j+1
+                    else:
+                        j1=-(j+1)
+                    j1_list.append(j1)
+
+                fp.write("Curve Loop(%d) = {%s};\n"%
+                         (cyc_i+1,", ".join(["%d"%j1 for j1 in j1_list])))
+
+            fp.write("Plane Surface(1) = {%s};\n"%
+                     ", ".join([str(c+1) for c in range(len(cycles))]))
+    
+    @staticmethod
     def read_ugrid(*a,**kw):
         return UnstructuredGrid.from_ugrid(*a,**kw)
     

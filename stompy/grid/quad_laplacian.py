@@ -383,7 +383,7 @@ class QuadGen(object):
     # grid.
     intermediate='tri' # 'quad'
 
-    # 'rebay' or 'front'.  When intermediate is 'tri', this chooses the method for
+    # 'rebay', 'front', 'gmsh'.  When intermediate is 'tri', this chooses the method for
     # generating the intermediate triangular grid
     triangle_method='rebay'
 
@@ -598,9 +598,19 @@ class QuadGen(object):
         """
 
         g=self.create_intermediate_grid_tri_boundary()
-        nodes=g.find_cycles(max_cycle_len=5000)[0]
-        gnew=triangulate_hole.triangulate_hole(g,nodes=nodes,hole_rigidity='all',
-                                               method=self.triangle_method)
+
+        if self.triangle_method=='gmsh':
+            fn='tmp.geo'
+            g.write_gmsh_geo(fn)
+            import subprocess
+            subprocess.run(["gmsh",fn,'-2'])
+            g_gmsh=unstructured_grid.UnstructuredGrid.read_gmsh('tmp.msh')
+            g.add_grid(g_gmsh,merge_nodes='auto',tol=1e-3)
+            gnew=g
+        else:    
+            nodes=g.find_cycles(max_cycle_len=g.Nnodes()+1)[0]
+            gnew=triangulate_hole.triangulate_hole(g,nodes=nodes,hole_rigidity='all',
+                                                   method=self.triangle_method)
         gnew.add_node_field('rigid',
                             (gnew.nodes['gen_n']>=0) & (self.gen.nodes['fixed'][gnew.nodes['gen_n']]))
         # Really it should be sufficient to have edge_defaults give -1 for gen_j, but that's
@@ -1295,6 +1305,18 @@ class QuadGen(object):
             internal_angle=self.internal_edge_angle(gen_edge)
             edge=[gtri.select_nodes_nearest(x)
                   for x in self.gen.nodes['x'][gen_edge[:2]]]
+
+            if np.any( self.gen.nodes['turn'][gen_edge[:2]]==180.0):
+                # This may still be too lenient.  Might be better to
+                # check whether the angle of the internal edge is parallel
+                # to edges for the two nodes. Or rather than joining groups
+                # create a new group. The code as is assumes that both
+                # nodes of gen_edge[:2] have adjacent edges parallel to
+                # the internal edge, such that they both have existing groups
+                # that can be joined.
+                print("Internal edge connects straight boundaries. No join")
+                continue
+                
             if internal_angle%180==0: # join on i
                 print("Joining two i_tan_groups")
                 i_tan_groups=join_groups(i_tan_groups,edge[0],edge[1])
@@ -1447,12 +1469,14 @@ class QuadGen(object):
         j_quivs=np.array( [ [self.g_int.nodes['x'][n], self.j_grad_nodes[n] ]
                             for n in self.j_grad_nodes] )
 
-        ax.quiver(i_quivs[:,0,0], i_quivs[:,0,1],
-                  i_quivs[:,1,0], i_quivs[:,1,1],
-                  color='k')
-        ax.quiver(j_quivs[:,0,0], j_quivs[:,0,1],
-                  j_quivs[:,1,0], j_quivs[:,1,1],
-                  color='r')
+        if len(i_quivs):
+            ax.quiver(i_quivs[:,0,0], i_quivs[:,0,1],
+                      i_quivs[:,1,0], i_quivs[:,1,1],
+                      color='k')
+        if len(j_quivs):
+            ax.quiver(j_quivs[:,0,0], j_quivs[:,0,1],
+                      j_quivs[:,1,0], j_quivs[:,1,1],
+                      color='r')
 
         ax.set_position([0,0,1,1])
 
