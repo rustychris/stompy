@@ -1104,9 +1104,10 @@ class PyApolloniusField(XYZField):
             
             for i in range(len(layer)):
                 geo = layer['geom'][i]
-
-                lines.append(np.array(geo.coords))
-                values.append(layer[value_field][i])
+                scale=layer[value_field][i]
+                if np.isfinite(scale) and scale>0.0:
+                    lines.append(np.array(geo.coords))
+                    values.append(scale)
         return PyApolloniusField.from_polylines(lines,values,
                                                 r=r,redundant_factor=redundant_factor)
 
@@ -1126,6 +1127,7 @@ class PyApolloniusField(XYZField):
 
             # remove duplicates:
             mask = np.all(coords[0:-1,:] == coords[1:,:],axis=1)
+            mask=np.r_[False,mask]
             if np.sum(mask)>0:
                 print("WARNING: removing duplicate points in shapefile")
                 print(coords[mask])
