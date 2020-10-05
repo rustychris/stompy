@@ -1862,9 +1862,9 @@ class QuadGen(object):
         # Patch grid g_final2 completed.
         # fixed the missing the ragged edge.
 
-        plt.clf()
-        g_final2.plot_edges()
-        plt.draw()
+        # plt.clf()
+        # g_final2.plot_edges()
+        # plt.draw()
 
         #import pdb
         #pdb.set_trace()
