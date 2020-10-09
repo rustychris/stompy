@@ -62,7 +62,8 @@ class NodeDiscretization(object):
         self.g=g
     def construct_matrix(self,op='laplacian',dirichlet_nodes={},
                          zero_tangential_nodes=[],
-                         gradient_nodes={}):
+                         gradient_nodes={},
+                         skip_dirichlet=True):
         """
         Construct a matrix and rhs for the given operation.
         dirichlet_nodes: boundary node id => value
@@ -70,6 +71,8 @@ class NodeDiscretization(object):
           nodes which should be equal to each other, allowing specifying
           a zero tangential gradient BC.  
         gradient_nodes: boundary node id => gradient unit vector [dx,dy]
+
+        skip_dirichlet: should dirichlet nodes be omitted from other BCs?
         """
         g=self.g
         # Adjust tangential node data structure for easier use
@@ -100,7 +103,7 @@ class NodeDiscretization(object):
             nlaplace_rows=0
             laplace_nodes={}
             for n in range(g.Nnodes()):
-                if n in dirichlet_nodes: continue
+                if skip_dirichlet and (n in dirichlet_nodes): continue
                 if n in gradient_nodes: continue
                 if n in tangential_nodes: continue
                 laplace_nodes[n]=True
@@ -1209,6 +1212,123 @@ class QuadGen(object):
             return 0
     
     def calc_psi_phi(self):
+        if False:
+            self.psi_phi_setup(n_j_dirichlet=1)
+            self.psi_phi_solve_coupled()
+        else:
+            self.psi_phi_setup(n_j_dirichlet=2)
+            self.psi_phi_solve_separate()
+
+    def psi_phi_solve_separate(self):
+        """
+        Solve psi and phi fields separately, each fully determined.
+        Assumes that psi_phi_setup() has already been called, and with
+        n_j_dirichlet=2 specified (so that the phi system is fully
+        determined)
+        """
+        for coord in [0,1]: # signify we're working on psi vs. phi
+            if coord==0:
+                grad_nodes=dict(self.i_grad_nodes)
+                dirichlet_nodes=dict(self.i_dirichlet_nodes)
+                tan_groups=self.i_tan_groups
+            else:
+                grad_nodes=dict(self.j_grad_nodes)
+                dirichlet_nodes=dict(self.j_dirichlet_nodes)
+                tan_groups=self.j_tan_groups
+
+            # Find these automatically.
+            # For ragged edges: not sure, but punt by dropping the
+            # the gradient BC on the acute end (node 520)
+            noflux_tris=[]
+            for n in np.nonzero(self.g_int.nodes['rigid'])[0]:
+                gen_n=self.g_int.nodes['gen_n'][n]
+                assert gen_n>=0
+                gen_angle=self.gen.nodes['turn'][gen_n]
+                # For now, ignore non-cartesian, and 90
+                # degree doesn't count
+                if (gen_angle>90) and (gen_angle<180):
+                    # A ragged edge -- try out removing the gradient BC
+                    # here
+                    if n in grad_nodes:
+                        print(f"n {n}: angle={gen_angle} Dropping gradient BC")
+                        del grad_nodes[n]
+                    continue
+
+                if gen_angle not in [270,360]: continue
+                if gen_angle==270:
+                    print(f"n {n}: angle=270")
+                elif gen_angle==360:
+                    print(f"n {n}: angle=360")
+
+                js=self.g_int.node_to_edges(n)
+                e2c=self.g_int.edge_to_cells()
+
+                for j in js:
+                    if (e2c[j,0]>=0) and (e2c[j,1]>=0): continue
+                    gen_j=self.g_int.edges['gen_j'][j]
+                    angle=self.gen.edges['angle'][gen_j]
+                    if self.g_int.edges['nodes'][j,0]==n:
+                        nbr=self.g_int.edges['nodes'][j,1]
+                    else:
+                        nbr=self.g_int.edges['nodes'][j,0]
+                    print(f"j={j}  {n} -- {nbr}  angle={angle}")
+                    # Does the angle 
+                    if (angle + 90*coord)%180. == 90.:
+                        print("YES")
+                        c=e2c[j,:].max()
+                        tri=self.g_int.cells['nodes'][c]
+                        while tri[2] in [n,nbr]:
+                            tri=np.roll(tri,1)
+                        noflux_tris.append( tri )
+
+            nf_block=sparse.dok_matrix( (len(noflux_tris),self.g_int.Nnodes()), np.float64)
+            nf_rhs=np.zeros( len(noflux_tris) )
+            node_xy=self.g_int.nodes['x'][:,:]
+
+            for idx,tri in enumerate(noflux_tris):
+                target_dof=idx # just controls where the row is written
+                d01=node_xy[tri[1],:] - node_xy[tri[0],:]
+                d02=node_xy[tri[2],:] - node_xy[tri[0],:]
+                # Derivation in sympy below
+                nf_block[target_dof,:]=0 # clear old
+                nf_block[target_dof,tri[0]]= -d01[0]**2 + d01[0]*d02[0] - d01[1]**2 + d01[1]*d02[1]
+                nf_block[target_dof,tri[1]]= -d01[0]*d02[0] - d01[1]*d02[1]
+                nf_block[target_dof,tri[2]]= d01[0]**2 + d01[1]**2
+                nf_rhs[target_dof]=0
+
+
+            M_Lap,B_Lap=self.nd.construct_matrix(op='laplacian',
+                                               dirichlet_nodes=dirichlet_nodes,
+                                               skip_dirichlet=False,
+                                               zero_tangential_nodes=tan_groups,
+                                               gradient_nodes=grad_nodes)
+
+
+            M=sparse.bmat( [ [M_Lap],[nf_block]] )
+            B=np.concatenate( [B_Lap,nf_rhs] )
+
+            assert M.shape[0] == M.shape[1]
+
+            # Direct solve is reasonably fast and gave better results.
+            soln=sparse.linalg.spsolve(M.tocsr(),B)
+            assert np.all(np.isfinite(soln))
+
+            for grp in tan_groups:
+                # Making the tangent groups exact helps in contour tracing later
+                soln[grp]=soln[grp].mean()
+
+            if coord==0:
+                self.psi=soln
+            else:
+                self.phi=soln
+
+    def psi_phi_setup(self,n_j_dirichlet=1):
+        """
+        Build the lists of BCs for solving psi/phi.
+
+        n_j_dirichlet: whether to include just a location BC or both location and scale
+        for the phi/j field.
+        """
         gtri=self.g_int
         self.nd=nd=NodeDiscretization(gtri)
 
@@ -1277,12 +1397,6 @@ class QuadGen(object):
         if j_tan_groups[0][0]==j_tan_groups[-1][-1]:
             j_tan_groups[0].extend( j_tan_groups.pop()[:-1] )
 
-        # Extra degrees of freedom:
-        # Each tangent group leaves an extra dof (a zero row)
-        # and the above BCs constrain 3 of those
-        dofs=len(i_tan_groups) + len(j_tan_groups) - 3
-        assert dofs>0
-
         # Use the internal_edges to combine tangential groups
         def join_groups(groups,nA,nB):
             grp_result=[]
@@ -1328,32 +1442,42 @@ class QuadGen(object):
                 pdb.set_trace()
                 print("Internal edge doesn't appear to join same-valued contours")
 
-        # find longest consecutive stretch of angle=90 edges 
-        longest=(0,None,None)
-        # start at a nice corner
-        cycle=np.roll( bcycle,-np.nonzero( gtri.nodes['rigid'][bcycle])[0][0] )
-        n_start=cycle[0]
-        dist=0.0
-        for na,nb in zip(cycle[:-1],cycle[1:]):
-            j=gtri.nodes_to_edge(na,nb)
-            assert j is not None
-            angle=self.gen.edges['angle'][gtri.edges['gen_j'][j]]
-            if angle==90:
-                dist+=gtri.edges_length(j)
-            else:
-                if dist>longest[0]:
-                    longest=(dist,n_start,na)
-                n_start=nb
-                dist=0.0
-        if dist>longest[0]:
-            longest=(dist,n_start,nb)
+        # find longest consecutive stretch of angle=target_angle edges
+        def longest_straight(target_angle):
+            longest=(0,None,None)
+            # start at a nice corner
+            cycle=np.roll( bcycle,-np.nonzero( gtri.nodes['rigid'][bcycle])[0][0] )
+            n_start=cycle[0]
+            dist=0.0
+            for na,nb in zip(cycle[:-1],cycle[1:]):
+                j=gtri.nodes_to_edge(na,nb)
+                assert j is not None
+                angle=self.gen.edges['angle'][gtri.edges['gen_j'][j]]
+                if angle==target_angle:
+                    dist+=gtri.edges_length(j)
+                else:
+                    if dist>longest[0]:
+                        longest=(dist,n_start,na)
+                    n_start=nb
+                    dist=0.0
+            if dist>longest[0]:
+                longest=(dist,n_start,nb)
 
-        assert longest[1] is not None
-        assert longest[2] is not None
+            assert longest[1] is not None
+            assert longest[2] is not None
+            return longest
+
+        i_longest=longest_straight(90)
+        j_longest=longest_straight(0)
+        
         # Can I really decide the sign here?
-        i_dirichlet_nodes[longest[1]]=-1
-        i_dirichlet_nodes[longest[2]]=1
-        j_dirichlet_nodes[j_tan_groups[1][0]]=1
+        i_dirichlet_nodes[i_longest[1]]=-1
+        i_dirichlet_nodes[i_longest[2]]=1
+        j_dirichlet_nodes[j_longest[1]]=1
+        if n_j_dirichlet==2:
+            # Not entirely sure, but I think this is correct for the relationship between
+            # psi/phi vs. i/j
+            j_dirichlet_nodes[j_longest[2]]=-1
 
         self.i_dirichlet_nodes=i_dirichlet_nodes
         self.i_tan_groups=i_tan_groups
@@ -1362,22 +1486,25 @@ class QuadGen(object):
         self.j_tan_groups=j_tan_groups
         self.j_grad_nodes=phi_gradient_nodes
 
+    def psi_phi_solve(self):
+        gtri=self.g_int
+        
         Mblocks=[]
         Bblocks=[]
         if 1: # PSI
             M_psi_Lap,B_psi_Lap=nd.construct_matrix(op='laplacian',
-                                                    dirichlet_nodes=i_dirichlet_nodes,
-                                                    zero_tangential_nodes=i_tan_groups,
-                                                    gradient_nodes=psi_gradient_nodes)
+                                                    dirichlet_nodes=self.i_dirichlet_nodes,
+                                                    zero_tangential_nodes=self.i_tan_groups,
+                                                    gradient_nodes=self.i_grad_nodes)
             Mblocks.append( [M_psi_Lap,None] )
             Bblocks.append( B_psi_Lap )
         if 1: # PHI
             # including phi_gradient_nodes, and the derivative links below
             # is redundant but balanced.
             M_phi_Lap,B_phi_Lap=nd.construct_matrix(op='laplacian',
-                                                    dirichlet_nodes=j_dirichlet_nodes,
-                                                    zero_tangential_nodes=j_tan_groups,
-                                                    gradient_nodes=phi_gradient_nodes)
+                                                    dirichlet_nodes=self.j_dirichlet_nodes,
+                                                    zero_tangential_nodes=self.j_tan_groups,
+                                                    gradient_nodes=self.j_grad_nodes)
             Mblocks.append( [None,M_phi_Lap] )
             Bblocks.append( B_phi_Lap )
         if 1:
@@ -1397,6 +1524,13 @@ class QuadGen(object):
             # are 2*Nnodes() rows.
             # Hmmm.  Had a case where it needed to be bigger (lagoon)
             # Not sure why.
+
+            # Extra degrees of freedom:
+            # Each tangent group leaves an extra dof (a zero row)
+            # and the above BCs constrain 3 of those
+            dofs=len(i_tan_groups) + len(j_tan_groups) - 3
+            assert dofs>0
+            
             if self.gradient_scale=='scaled':
                 gradient_scale = dofs / (2*gtri.Nnodes())
             else:
@@ -1449,7 +1583,7 @@ class QuadGen(object):
                          arrowprops=dict(arrowstyle='simple',alpha=0.4))
         for j_d in self.j_dirichlet_nodes:
             ax.annotate( f"$\phi$={self.j_dirichlet_nodes[j_d]}",
-                         self.g_int.nodes['x'][i_d], va='bottom' ,
+                         self.g_int.nodes['x'][j_d], va='bottom' ,
                          arrowprops=dict(arrowstyle='simple',alpha=0.4))
 
         from matplotlib import cm
