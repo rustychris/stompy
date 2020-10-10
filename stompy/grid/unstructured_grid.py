@@ -4359,9 +4359,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 return True
             else:
                 return False
-
             
-        while True:
+        for _ in range(self.Nnodes()+self.Nedges()):
             loc=path[-1]
             
             if loc[0]=='node':
@@ -4445,6 +4444,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     break # EXIT OUTER loop
             else:
                 raise Exception("Bad element type %s"%loc[0])
+        else:
+            raise Exception("Failed to exit trace contour")
 
         if return_full:
             return path

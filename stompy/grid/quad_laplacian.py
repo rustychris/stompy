@@ -1473,11 +1473,10 @@ class QuadGen(object):
         # Can I really decide the sign here?
         i_dirichlet_nodes[i_longest[1]]=-1
         i_dirichlet_nodes[i_longest[2]]=1
-        j_dirichlet_nodes[j_longest[1]]=1
+        j_dirichlet_nodes[j_longest[1]]=-1
         if n_j_dirichlet==2:
-            # Not entirely sure, but I think this is correct for the relationship between
-            # psi/phi vs. i/j
-            j_dirichlet_nodes[j_longest[2]]=-1
+            # When the signs were opposite this, tracing failed on phi
+            j_dirichlet_nodes[j_longest[2]]=1
 
         self.i_dirichlet_nodes=i_dirichlet_nodes
         self.i_tan_groups=i_tan_groups
