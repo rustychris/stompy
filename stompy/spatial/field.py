@@ -257,6 +257,9 @@ class Field(object):
           dx,dy: specify resolution in each dimension
 
         interp used to default to nn, but that is no longer available in mpl, so now use linear.
+
+        bounds is interpreted as the range of center locations of pixels.  This gets a bit
+        gross, but that is how some of the tile functions below work.
         """
         if bounds is None:
             xmin,xmax,ymin,ymax = self.bounds()
@@ -626,16 +629,19 @@ class XYZField(Field):
                 xmax,ymax = bounds[1]
 
         if dx is not None: # Takes precedence of nx/ny
+            # This seems a bit heavy handed
             # round xmin/ymin to be an even multiple of dx/dy
-            xmin = xmin - (xmin%dx)
-            ymin = ymin - (ymin%dy)
+            # xmin = xmin - (xmin%dx)
+            # ymin = ymin - (ymin%dy)
 
-            nx = int( (xmax-xmin)/dx )
-            ny = int( (ymax-ymin)/dy )
-            xmax = xmin + nx*dx
-            ymax = ymin + ny*dy
+            # The 1+, -1, stuff feels a bit sketch.  But this is how
+            # CompositeField calculates sizes
+            nx = 1 + int( (xmax-xmin)/dx )
+            ny = 1 + int( (ymax-ymin)/dy )
+            xmax = xmin + (nx-1)*dx
+            ymax = ymin + (ny-1)*dy
 
-        # hopefully this is more compatibale between versions, also exposes more of what's
+        # hopefully this is more compatible between versions, also exposes more of what's
         # going on
         if interp == 'nn':
             interper = self.nn_interper(aspect=aspect)
@@ -3488,6 +3494,11 @@ class CompositeField(Field):
             mask=src_alpha.polygon_mask(src_geom)
             src_alpha.F[~mask] = 0.0
 
+            # Use nan's to mask data, rather than masked arrays.
+            # Convert as necessary here:
+            if isinstance(src_data.F,np.ma.masked_array):
+                src_data.F=src_data.F.filled(np.nan)
+
             # create an alpha tile. depending on alpha_mode, this may draw on the lower data,
             # the polygon and/or the data tile.
             # modify the data tile according to the data mode - so if the data mode is 
@@ -3514,10 +3525,22 @@ class CompositeField(Field):
                 if pixels>0:
                     niters=np.maximum( pixels//3, 2 )
                     src_data.fill_by_convolution(iterations=niters)
-            #def blur(dist):
-            #    "smooth data channel with gaussian filter - this allows spreading beyond original poly!"
-            #    pixels=int(round(float(dist)/dx))
-            #    src_data.F=ndimage.gaussian_filter(src_data.F,pixels)
+            def blur(dist):
+                "smooth data channel with gaussian filter - this allows spreading beyond original poly!"
+                pixels=int(round(float(dist)/dx))
+                #import pdb
+                #pdb.set_trace()
+                Fzed=src_data.F.copy()
+                valid=np.isfinite(Fzed)
+                Fzed[~valid]=0.0
+                weights=ndimage.gaussian_filter(1.0*valid,pixels)
+                blurred=ndimage.gaussian_filter(Fzed,pixels)
+                blurred[weights<0.5]=np.nan
+                blurred[weights>=0.5] /= weights[weights>=0.5]
+                src_data.F=blurred
+
+            def diffuser():
+                self.diffuser(source,src_data,src_geom,result_data)
 
             def overlay():
                 pass
@@ -3560,7 +3583,7 @@ class CompositeField(Field):
                 if pixels>0:
                     Fsoft=dist_xform(1-src_alpha.F)
                     src_alpha.F = (1-Fsoft/pixels).clip(0,1)
-
+                
             # dangerous! executing code from a shapefile!
             for mode in [self.data_mode[src_i],self.alpha_mode[src_i]]:
                 if mode is None or mode.strip() in ['',b'']: continue
@@ -3603,6 +3626,47 @@ class CompositeField(Field):
             self.plot_stackup(result_data,stack)
         
         return result_data
+    
+    def diffuser(self,src,src_data,src_geom,result_data):
+        """
+        src: the source for the layer. Ignored unless it's an XYZField
+        in which case the point samples are included.
+        src_data: where the diffused field will be saved
+        src_geom: polygon to work in
+        result_data: the stackup result from previous layers
+        """
+        from scipy import sparse
+        from ..grid import triangulate_hole,quad_laplacian, unstructured_grid
+        from . import linestring_utils
+
+        dx=3*src_data.dx # rough guess
+        curve=linestring_utils.resample_linearring(np.array(src_geom.exterior),
+                                                   dx,closed_ring=1)
+        g=unstructured_grid.UnstructuredGrid()
+        nodes,edges=g.add_linestring(curve,closed=True)
+        g=triangulate_hole.triangulate_hole(g,nodes=nodes,hole_rigidity='all',method='rebay')
+        bnodes=g.boundary_cycle()
+        bvals=result_data(g.nodes['x'][bnodes])
+
+        nd=quad_laplacian.NodeDiscretization(g)
+        dirich={ n:val
+                 for n,val in zip(bnodes,bvals) }
+        if isinstance(src,XYZField):
+            for xy,z in zip(src.X,src.F):
+                c=g.select_cells_nearest([x,y],inside=True)
+                if c is None: continue
+                n=g.select_nodes_nearest([x,y])
+                dirich[n]=z
+
+        M,b=nd.construct_matrix(op='laplacian',dirichlet_nodes=dirich)
+        diffed=sparse.linalg.spsolve(M.tocsr(),b)
+
+        fld=XYZField(X=g.nodes['x'],F=diffed)
+        fld._tri=g.mpl_triangulation()
+        rast=fld.to_grid(bounds=result_data.bounds(),
+                         dx=result_data.dx,dy=result_data.dy)
+        src_data.F[:,:]=rast.F
+        return rast
 
     def plot_stackup(self,result_data,stack,num=None,z_factor=5.,cmap='jet'):
         plt.figure(num=num).clf()
@@ -3644,6 +3708,7 @@ class MultiRasterField(Field):
     Cell/region queries will have to wait for another day
 
     Some effort is made to keep only the most-recently used rasters in memory, since it is not feasible
+
     to load all rasters at one time. to this end, it is most efficient for successive queries to have some
     spatial locality.
     """

@@ -54,6 +54,7 @@ def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=5000,hole_rigidit
 
     for na,nb in utils.circular_pairs(nodes):
         j=grid.nodes_to_edge([na,nb])
+        assert j is not None
         if hole_rigidity=='cells':
             if np.all( grid.edges['cells'][j] < 0):
                 continue

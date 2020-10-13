@@ -85,126 +85,86 @@ class NodeDiscretization(object):
                 assert member not in tangential_nodes
                 tangential_nodes[member]=leader
 
-        if 0:
-            # previously nodes constrained by a BC were omitted from the
-            # regular equations, so the resulting matrix is always square,
-            # but can have some zero rows.
-            B=np.zeros(g.Nnodes(),np.float64)
-            M=sparse.dok_matrix( (g.Nnodes(),g.Nnodes()),np.float64)
-            multiple=False
-        else:
-            # Now I want to allow multiple BCs to constrain the same node.
-            # How many rows will I end up with?
+        # Now I want to allow multiple BCs to constrain the same node.
+        # How many rows will I end up with?
 
-            # First count up the nodes that will get a regular laplacian
-            # row.  This includes boundary nodes that have a no-flux BC.
-            # (because that's the behavior of the discretization on a
-            # boundary)
-            nlaplace_rows=0
-            laplace_nodes={}
-            for n in range(g.Nnodes()):
-                if skip_dirichlet and (n in dirichlet_nodes): continue
-                if n in gradient_nodes: continue
-                if n in tangential_nodes: continue
-                laplace_nodes[n]=True
-                nlaplace_rows+=1
+        # First count up the nodes that will get a regular laplacian
+        # row.  This includes boundary nodes that have a no-flux BC.
+        # (because that's the behavior of the discretization on a
+        # boundary)
+        nlaplace_rows=0
+        laplace_nodes={}
+        for n in range(g.Nnodes()):
+            if skip_dirichlet and (n in dirichlet_nodes): continue
+            if n in gradient_nodes: continue
+            if n in tangential_nodes: continue
+            laplace_nodes[n]=True
+            nlaplace_rows+=1
 
-            ndirichlet_nodes=len(dirichlet_nodes)
-            # Each group of tangential gradient nodes provides len-1 constraints
-            ntangential_nodes=len(tangential_nodes) - len(zero_tangential_nodes)
-            ngradient_nodes=len(gradient_nodes)
+        ndirichlet_nodes=len(dirichlet_nodes)
+        # Each group of tangential gradient nodes provides len-1 constraints
+        ntangential_nodes=len(tangential_nodes) - len(zero_tangential_nodes)
+        ngradient_nodes=len(gradient_nodes)
 
-            nrows=nlaplace_rows + ndirichlet_nodes + ntangential_nodes + ngradient_nodes
-            
-            B=np.zeros(nrows,np.float64)
-            M=sparse.dok_matrix( (nrows,g.Nnodes()),np.float64)
-            multiple=True
+        nrows=nlaplace_rows + ndirichlet_nodes + ntangential_nodes + ngradient_nodes
 
-        if not multiple:
-            for n in range(g.Nnodes()):
-                if n in dirichlet_nodes:
-                    nodes=[n]
-                    alphas=[1]
-                    rhs=dirichlet_nodes[n]
-                elif n in gradient_nodes:
-                    vec=gradient_nodes[n] # The direction of the gradient
-                    normal=[vec[1],-vec[0]] # direction of zero gradient
-                    dx_nodes,dx_alphas,_=self.node_discretization(n,op='dx')
-                    dy_nodes,dy_alphas,_=self.node_discretization(n,op='dy')
-                    assert np.all(dx_nodes==dy_nodes),"Have to be cleverer"
-                    nodes=dx_nodes
-                    # So if vec = [1,0], then normal=[0,-1]
-                    # and I want dx*norma[0]+dy*normal[1] = 0
-                    alphas=np.array(dx_alphas)*normal[0] + np.array(dy_alphas)*normal[1]
-                    rhs=0
-                elif n in tangential_nodes:
-                    leader=tangential_nodes[n]
-                    if n==leader:
-                        # Really should drop the row
-                        rhs=0.0
-                        nodes=[n]
-                        alphas=[0]
-                    else:
-                        rhs=0.0
-                        nodes=[n,leader]
-                        alphas=[1,-1]
-                else:
-                    nodes,alphas,rhs=self.node_discretization(n,op=op)
-                    # could add to rhs here
-                B[n]=rhs
-                for node,alpha in zip(nodes,alphas):
-                    M[n,node]=alpha
-        else:
-            # Very similar code, but messy to refactor so write a new loop.
-            ndirichlet_nodes=len(dirichlet_nodes)
-            # Each group of tangential gradient nodes provides len-1 constraints
-            ntangential_nodes=len(tangential_nodes) - len(zero_tangential_nodes)
-            ngradient_nodes=len(gradient_nodes)
+        print(f"row breakdown: N={g.Nnodes()}  Lap: {nlaplace_rows}  "
+              f"Dir: {ndirichlet_nodes}  Tan: {ntangential_nodes} "
+              f"({len(zero_tangential_nodes)} grps)  Grad: {ngradient_nodes}")
 
-            nrows=nlaplace_rows + ndirichlet_nodes + ntangential_nodes + ngradient_nodes
-            
-            B=np.zeros(nrows,np.float64)
-            M=sparse.dok_matrix( (nrows,g.Nnodes()),np.float64)
-            multiple=True
+        B=np.zeros(nrows,np.float64)
+        M=sparse.dok_matrix( (nrows,g.Nnodes()),np.float64)
 
-            row=0
-            for n in laplace_nodes:
-                nodes,alphas,rhs=self.node_discretization(n,op=op)
-                B[row]=rhs
-                for node,alpha in zip(nodes,alphas):
-                    M[row,node]=alpha
-                row+=1
-                
-            for n in dirichlet_nodes:
-                B[row]=dirichlet_nodes[n]
-                M[row,n]=1
-                row+=1
+        # Very similar code, but messy to refactor so write a new loop.
+        ndirichlet_nodes=len(dirichlet_nodes)
+        # Each group of tangential gradient nodes provides len-1 constraints
+        ntangential_nodes=len(tangential_nodes) - len(zero_tangential_nodes)
+        ngradient_nodes=len(gradient_nodes)
 
-            for n in gradient_nodes:
-                vec=gradient_nodes[n] # The direction of the gradient
-                normal=[vec[1],-vec[0]] # direction of zero gradient
-                dx_nodes,dx_alphas,_=self.node_discretization(n,op='dx')
-                dy_nodes,dy_alphas,_=self.node_discretization(n,op='dy')
-                assert np.all(dx_nodes==dy_nodes),"Have to be cleverer"
-                nodes=dx_nodes
-                # So if vec = [1,0], then normal=[0,-1]
-                # and I want dx*norma[0]+dy*normal[1] = 0
-                alphas=np.array(dx_alphas)*normal[0] + np.array(dy_alphas)*normal[1]
-                B[row]=0
-                for node,alpha in zip(nodes,alphas):
-                    M[row,node]=alpha
-                row+=1
-                    
-            for n in tangential_nodes:
-                leader=tangential_nodes[n]
-                if n==leader:
-                    print("skip leader")
-                    continue
-                M[row,n]=1
-                M[row,leader]=-1
-                B[row]=0.0
-                row+=1
-            assert row==nrows
+        nrows=nlaplace_rows + ndirichlet_nodes + ntangential_nodes + ngradient_nodes
+
+        B=np.zeros(nrows,np.float64)
+        M=sparse.dok_matrix( (nrows,g.Nnodes()),np.float64)
+        multiple=True
+
+        row=0
+        for n in laplace_nodes:
+            nodes,alphas,rhs=self.node_discretization(n,op=op)
+            B[row]=rhs
+            for node,alpha in zip(nodes,alphas):
+                M[row,node]=alpha
+            row+=1
+
+        for n in dirichlet_nodes:
+            B[row]=dirichlet_nodes[n]
+            M[row,n]=1
+            row+=1
+
+        for n in gradient_nodes:
+            vec=gradient_nodes[n] # The direction of the gradient
+            normal=[vec[1],-vec[0]] # direction of zero gradient
+            dx_nodes,dx_alphas,_=self.node_discretization(n,op='dx')
+            dy_nodes,dy_alphas,_=self.node_discretization(n,op='dy')
+            assert np.all(dx_nodes==dy_nodes),"Have to be cleverer"
+            nodes=dx_nodes
+            # So if vec = [1,0], then normal=[0,-1]
+            # and I want dx*norma[0]+dy*normal[1] = 0
+            alphas=np.array(dx_alphas)*normal[0] + np.array(dy_alphas)*normal[1]
+            B[row]=0
+            for node,alpha in zip(nodes,alphas):
+                M[row,node]=alpha
+            row+=1
+
+        for n in tangential_nodes:
+            leader=tangential_nodes[n]
+            if n==leader:
+                # print("skip leader")
+                continue
+            M[row,n]=1
+            M[row,leader]=-1
+            B[row]=0.0
+            row+=1
+        assert row==nrows
             
         return M,B
     
@@ -1219,6 +1179,8 @@ class QuadGen(object):
             self.psi_phi_setup(n_j_dirichlet=2)
             self.psi_phi_solve_separate()
 
+    i_nf_cells=None
+    j_nf_cells=None
     def psi_phi_solve_separate(self):
         """
         Solve psi and phi fields separately, each fully determined.
@@ -1226,7 +1188,11 @@ class QuadGen(object):
         n_j_dirichlet=2 specified (so that the phi system is fully
         determined)
         """
-        for coord in [0,1]: # signify we're working on psi vs. phi
+            
+        for coord in [0,1]:
+            # signify we're working on psi vs. phi
+            nf_cells=[]
+            
             if coord==0:
                 grad_nodes=dict(self.i_grad_nodes)
                 dirichlet_nodes=dict(self.i_dirichlet_nodes)
@@ -1243,22 +1209,23 @@ class QuadGen(object):
             for n in np.nonzero(self.g_int.nodes['rigid'])[0]:
                 gen_n=self.g_int.nodes['gen_n'][n]
                 assert gen_n>=0
-                gen_angle=self.gen.nodes['turn'][gen_n]
+                gen_turn=self.gen.nodes['turn'][gen_n]
                 # For now, ignore non-cartesian, and 90
                 # degree doesn't count
-                if (gen_angle>90) and (gen_angle<180):
+                if (gen_turn>90) and (gen_turn<180):
                     # A ragged edge -- try out removing the gradient BC
                     # here
                     if n in grad_nodes:
-                        print(f"n {n}: angle={gen_angle} Dropping gradient BC")
+                        # This is maybe causing a problem with phi in cell 1.
+                        print(f"n {n}: angle={gen_turn} Dropping gradient BC")
                         del grad_nodes[n]
                     continue
 
-                if gen_angle not in [270,360]: continue
-                if gen_angle==270:
-                    print(f"n {n}: angle=270")
-                elif gen_angle==360:
-                    print(f"n {n}: angle=360")
+                if gen_turn not in [270,360]: continue
+                if gen_turn==270:
+                    print(f"n {n}: turn=270")
+                elif gen_turn==360:
+                    print(f"n {n}: turn=360")
 
                 js=self.g_int.node_to_edges(n)
                 e2c=self.g_int.edge_to_cells()
@@ -1271,21 +1238,48 @@ class QuadGen(object):
                         nbr=self.g_int.edges['nodes'][j,1]
                     else:
                         nbr=self.g_int.edges['nodes'][j,0]
-                    print(f"j={j}  {n} -- {nbr}  angle={angle}")
+                    print(f"j={j}  {n} -- {nbr}  angle={angle} coord={coord}")
                     # Does the angle 
                     if (angle + 90*coord)%180. == 90.:
-                        print("YES")
+                        print("  YES")
                         c=e2c[j,:].max()
                         tri=self.g_int.cells['nodes'][c]
+                        nf_cells.append(c)
                         while tri[2] in [n,nbr]:
                             tri=np.roll(tri,1)
-                        noflux_tris.append( tri )
+                        noflux_tris.append( (n,tri) )
+                    else:
+                        print("  NO")
 
+            if coord==0:
+                self.i_nf_cells=nf_cells
+                joins=self.i_tan_joins
+            else:
+                self.j_nf_cells=nf_cells
+                joins=self.j_tan_joins
+
+            # Drop an nf_cell constraint for every internal edge
+            print(f"About to process joins, starting with {len(noflux_tris)} nf tris")
+            for join in joins:
+                found=False
+                slim_noflux_tris=[]
+                print(f"Looking for an nf_tri to drop for join {join[0]}--{join[1]}")
+                for idx,(n,tri) in enumerate(noflux_tris):
+                    if (not found) and (n in join):
+                        print(f"  will drop {n}")
+                        # Skip this, and copy the rest
+                        found=True
+                    else:
+                        slim_noflux_tris.append( (n,tri) )
+                if not found:
+                    print(f"  Uh-oh! couldn't find a no-flux tri to drop for this internal edge")
+                noflux_tris=slim_noflux_tris
+                
             nf_block=sparse.dok_matrix( (len(noflux_tris),self.g_int.Nnodes()), np.float64)
             nf_rhs=np.zeros( len(noflux_tris) )
             node_xy=self.g_int.nodes['x'][:,:]
 
-            for idx,tri in enumerate(noflux_tris):
+            for idx,(n,tri) in enumerate(noflux_tris):
                 target_dof=idx # just controls where the row is written
                 d01=node_xy[tri[1],:] - node_xy[tri[0],:]
                 d02=node_xy[tri[2],:] - node_xy[tri[0],:]
@@ -1295,19 +1289,24 @@ class QuadGen(object):
                 nf_block[target_dof,tri[1]]= -d01[0]*d02[0] - d01[1]*d02[1]
                 nf_block[target_dof,tri[2]]= d01[0]**2 + d01[1]**2
                 nf_rhs[target_dof]=0
-
+                        
 
             M_Lap,B_Lap=self.nd.construct_matrix(op='laplacian',
-                                               dirichlet_nodes=dirichlet_nodes,
-                                               skip_dirichlet=False,
-                                               zero_tangential_nodes=tan_groups,
-                                               gradient_nodes=grad_nodes)
-
+                                                 dirichlet_nodes=dirichlet_nodes,
+                                                 skip_dirichlet=False,
+                                                 zero_tangential_nodes=tan_groups,
+                                                 gradient_nodes=grad_nodes)
 
             M=sparse.bmat( [ [M_Lap],[nf_block]] )
             B=np.concatenate( [B_Lap,nf_rhs] )
 
-            assert M.shape[0] == M.shape[1]
+            if M.shape[0] != M.shape[1]:
+                print(f"M.shape: {M.shape}")
+                self.M_Lap=M_Lap
+                self.B_Lap=B_Lap
+                self.nf_block=nf_block
+                self.nf_rhs=nf_rhs
+                raise Exception("Matrix did not end up square!")
 
             # Direct solve is reasonably fast and gave better results.
             soln=sparse.linalg.spsolve(M.tocsr(),B)
@@ -1329,6 +1328,10 @@ class QuadGen(object):
         n_j_dirichlet: whether to include just a location BC or both location and scale
         for the phi/j field.
         """
+        # Record internal edges that actually led to a join.
+        self.i_tan_joins=[]
+        self.j_tan_joins=[]
+        
         gtri=self.g_int
         self.nd=nd=NodeDiscretization(gtri)
 
@@ -1389,6 +1392,7 @@ class QuadGen(object):
                 phi_gradient_nodes[n1]=phi_gradients[n1]
                 phi_gradient_nodes[n2]=phi_gradients[n2]
             n1=n2
+            
 
         # bcycle likely starts in the middle of either a j_tan_group or i_tan_group.
         # see if first and last need to be merged
@@ -1397,6 +1401,29 @@ class QuadGen(object):
         if j_tan_groups[0][0]==j_tan_groups[-1][-1]:
             j_tan_groups[0].extend( j_tan_groups.pop()[:-1] )
 
+        # a turn=360 node should induce a tan_group (to drop it's no-flux BC)
+        for n in np.nonzero(self.g_int.nodes['rigid'])[0]:
+            gen_n=self.g_int.nodes['gen_n'][n]
+            assert gen_n>=0
+            gen_turn=self.gen.nodes['turn'][gen_n]
+            if gen_turn!=360: continue
+            idx=np.nonzero(bcycle==n)[0][0]
+            N=len(bcycle)
+            prv=bcycle[(idx-1)%N]
+            nxt=bcycle[(idx+1)%N]
+            jprv=gtri.nodes_to_edge(prv,n)
+            jnxt=gtri.nodes_to_edge(n,nxt)
+            assert (jprv is not None) and (jnxt is not None)
+            if (j_angles[jprv]%180==90) and (j_angles[jnxt]%180==90):
+                i_tan_groups.append([n])
+                phi_gradient_nodes[n]=phi_gradients[n]
+            elif (j_angles[jprv]%180==0) and (j_angles[jnxt]%180==0):
+                j_tan_groups.append([n])
+                psi_gradient_nodes[n]=psi_gradients[n]
+            else:
+                print('Yikes - turn is 360, but not axis-aligned')
+
+            
         # Use the internal_edges to combine tangential groups
         def join_groups(groups,nA,nB):
             grp_result=[]
@@ -1434,43 +1461,61 @@ class QuadGen(object):
             if internal_angle%180==0: # join on i
                 print("Joining two i_tan_groups")
                 i_tan_groups=join_groups(i_tan_groups,edge[0],edge[1])
+                self.i_tan_joins.append( edge )
             elif internal_angle%180==90: # join on j
                 print("Joining two j_tan_groups")
                 j_tan_groups=join_groups(j_tan_groups,edge[0],edge[1])
+                self.j_tan_joins.append( edge )
             else:
                 import pdb
                 pdb.set_trace()
                 print("Internal edge doesn't appear to join same-valued contours")
 
-        # find longest consecutive stretch of angle=target_angle edges
+        # find longest consecutive stretch of the target_angle,
+        # bounded by edges that are perpendicular to the target_angle
+        # Possible that a domain could fail to have this!  If it had lots of
+        # weird ragged edges
+        el=gtri.edges_length()
+
         def longest_straight(target_angle):
             longest=(0,None,None)
             # start at a nice corner
             cycle=np.roll( bcycle,-np.nonzero( gtri.nodes['rigid'][bcycle])[0][0] )
-            n_start=cycle[0]
-            dist=0.0
-            for na,nb in zip(cycle[:-1],cycle[1:]):
-                j=gtri.nodes_to_edge(na,nb)
-                assert j is not None
-                angle=self.gen.edges['angle'][gtri.edges['gen_j'][j]]
-                if angle==target_angle:
-                    dist+=gtri.edges_length(j)
-                else:
-                    if dist>longest[0]:
-                        longest=(dist,n_start,na)
-                    n_start=nb
-                    dist=0.0
-            if dist>longest[0]:
-                longest=(dist,n_start,nb)
+            j_cycle=[gtri.nodes_to_edge(na,nb) for na,nb in zip(cycle, np.roll(cycle,-1))]
+            j_angles=self.gen.edges['angle'][gtri.edges['gen_j'][j_cycle]]
+
+            N=len(j_angles)
+            breaks=np.r_[0, 1+np.nonzero(np.diff(j_angles))[0], N]
+
+            for run_start,run_stop in zip(breaks[:-1],breaks[1:]):
+                run_angle=j_angles[run_start]
+                prv_angle=j_angles[(run_start-1)%N]
+                nxt_angle=j_angles[(run_stop+1)%N]
+                # Look for runs aligned with target_angle
+                if run_angle != target_angle:
+                    continue
+                # And the ends must be perpendicular to target
+                # specifically they need to be part of a tan_group, I think
+                if (prv_angle%180) != ( (target_angle+90)%180):
+                    continue
+                if (nxt_angle%180) != ( (target_angle+90)%180):
+                    continue
+                dist=el[j_cycle[run_start:run_stop]].sum()
+                if dist>longest[0]:
+                    # nth edge joins the nth node and n+1th node
+                    n_start=cycle[run_start]
+                    n_stop =cycle[run_stop%N] # maybe?
+                    longest=(dist,n_start,n_stop)
 
             assert longest[1] is not None
             assert longest[2] is not None
             return longest
 
+        # Can I really decide the sign here?  As long as they are consistent with each
+        # other. The longest stretches need to be oriented, not just parallel
         i_longest=longest_straight(90)
         j_longest=longest_straight(0)
         
-        # Can I really decide the sign here?
         i_dirichlet_nodes[i_longest[1]]=-1
         i_dirichlet_nodes[i_longest[2]]=1
         j_dirichlet_nodes[j_longest[1]]=-1
@@ -1589,13 +1634,15 @@ class QuadGen(object):
         from itertools import cycle
         group_colors=cycle( list(colors.TABLEAU_COLORS.values()) )
 
-        for i_grp in self.i_tan_groups:
+        for idx,i_grp in enumerate(self.i_tan_groups):
             ax.plot( self.g_int.nodes['x'][i_grp,0],self.g_int.nodes['x'][i_grp,1],
-                     '.',color=next(group_colors))
+                     '.',color=next(group_colors),label=f"i grp {idx}")
 
-        for j_grp in self.j_tan_groups:
+        for idx,j_grp in enumerate(self.j_tan_groups):
             ax.plot( self.g_int.nodes['x'][j_grp,0],self.g_int.nodes['x'][j_grp,1],
-                     '+',color=next(group_colors))
+                     '+',color=next(group_colors),label=f"j grp {idx}")
+
+        ax.legend(loc='upper right')
 
         i_quivs=np.array( [ [self.g_int.nodes['x'][n], self.i_grad_nodes[n] ]
                             for n in self.i_grad_nodes] )
@@ -1603,14 +1650,21 @@ class QuadGen(object):
                             for n in self.j_grad_nodes] )
 
         if len(i_quivs):
-            ax.quiver(i_quivs[:,0,0], i_quivs[:,0,1],
-                      i_quivs[:,1,0], i_quivs[:,1,1],
-                      color='k')
+            i_qkey=ax.quiver(i_quivs[:,0,0], i_quivs[:,0,1],
+                             i_quivs[:,1,0], i_quivs[:,1,1],
+                             color='k')
+            ax.quiverkey(i_qkey,0.15,0.95,1.0,"I gradient",coordinates='figure')
         if len(j_quivs):
-            ax.quiver(j_quivs[:,0,0], j_quivs[:,0,1],
-                      j_quivs[:,1,0], j_quivs[:,1,1],
-                      color='r')
+            j_qkey=ax.quiver(j_quivs[:,0,0], j_quivs[:,0,1],
+                             j_quivs[:,1,0], j_quivs[:,1,1],
+                             color='r')
+            ax.quiverkey(j_qkey,0.3,0.95,1.0,"J gradient",coordinates='figure')
 
+        if self.i_nf_cells:
+            self.g_int.plot_cells(mask=self.i_nf_cells,color='r',alpha=0.4)
+        if self.j_nf_cells:
+            self.g_int.plot_cells(mask=self.j_nf_cells,color='0.6',alpha=0.4)
+            
         ax.set_position([0,0,1,1])
 
         return fig,ax
@@ -1771,12 +1825,16 @@ class QuadGen(object):
         """
         Return a dictionary mapping nodes of self.g_int to fixed nodes of 
         self.gen
+
+        This is more specific than just looking at gen's nodes['fixed'].
+        Omit nodes that have an angle of 180
         """
         # This code assumes that either ij are both fixed, or neither fixed.
         fixed_int_to_gen={}
         for n in g_int.valid_node_iter():
             g_n=g_int.nodes['gen_n'][n]
-            if (g_n>=0) and (gen.nodes['fixed'][g_n]):
+            #if (g_n>=0) and (gen.nodes['fixed'][g_n]):
+            if (g_n>=0) and (gen.nodes['turn'][g_n]!=180):
                 fixed_int_to_gen[n]=g_n
         return fixed_int_to_gen
 
@@ -1881,11 +1939,11 @@ class QuadGen(object):
                 g_final.edges['psiphi'][trace_edges]=psiphi0
 
             # Update node_exits:
+            assert angle is not None,"Pretty sure this should always be supplied"
             exit_angle=angle
             for a in trace_nodes[:-1]:
                 node_exits[a].append( (exit_angle,'internal') )
-            if angle is not None:
-                angle=(angle+180)%360
+            exit_angle=(exit_angle+180)%360
             for b in trace_nodes[1:]:
                 node_exits[b].append( (exit_angle,'internal') )
 
@@ -1937,19 +1995,31 @@ class QuadGen(object):
         # Add boundaries when they coincide with contours
         cycle=g_int.boundary_cycle() # could be multiple eventually...
 
+        print("Bulk init with boundaries")
+        # Bulk init with the points, then come back to fix metadata
+        # Don't add the constraints, since that would mean adding
+        # ragged edges potentially too early. This saves a huge amount
+        # of time in building the DT, and the constraint handling is
+        # relatively fast.
+        g_final.bulk_init(g_int.nodes['x'][cycle])
         print("Tracing boundaries...",end="")
         trace_and_insert_boundaries(cycle)
         print("done")
 
-        # Need to get all of the boundary contours in first, then
+        # Add internal contours
         # return with internal.
         for a,b,c in zip(cycle,
                          np.roll(cycle,-1),
                          np.roll(cycle,-2)):
-            # if b==290: # side-channel
+            # if b in [331,434]: # side-channel
+            #     plt.figure(1).clf()
+            #     g_int.plot_edges()
             #     g_int.plot_nodes(mask=g_int.nodes['rigid'],labeler='id')
             #     g_int.plot_nodes(mask=[a,c], labeler='id')
             #     g_int.plot_edges(mask=[j_ab,j_bc],labeler='angle')
+            #     zoom=(552573.3257994705, 552606.492118541, 4124415.575118965, 4124440.2893760786)
+            #     plt.axis(zoom)
+            #     plt.draw()
             #     import pdb
             #     pdb.set_trace()
 
@@ -1961,10 +2031,10 @@ class QuadGen(object):
             angle_ba = (180+g_int.edges['angle'][j_ab])%360
             angle_bc = g_int.edges['angle'][j_bc]
 
+            b_final=None # lazy lookup
             for angle in [0,90,180,270]:
                 # is angle into the domain?
-                trace=None
-
+                # cruft trace=None
                 # if angle is left of j_ab and right of j_bc,
                 # then it should be into the domain and can be traced
                 # careful with sting angles
@@ -1973,14 +2043,15 @@ class QuadGen(object):
                 # so I want bc - angle - ba to be ordered CCW
                 if ( ((angle_bc==angle_ba) and (angle!=angle_bc))
                      or (angle-angle_bc)%360 < ((angle_ba-angle_bc)%360) ):
-                    b_final=g_final.select_nodes_nearest(g_int.nodes['x'][b],max_dist=0.0)
+                    if b_final is None:
+                        b_final=g_final.select_nodes_nearest(g_int.nodes['x'][b],max_dist=0.0)
                     dupe=False
-                    if b_final is not None:
-                        for exit_angle,exit_type in node_exits[b_final]:
-                            if exit_angle==angle:
-                                dupe=True
-                                print("Duplicate exit for internal trace from %d. Skip"%b)
-                                break
+                    assert b_final is not None # should be in there from trace_boundaries
+                    for exit_angle,exit_type in node_exits[b_final]:
+                        if exit_angle==angle:
+                            dupe=True
+                            print("Duplicate exit for internal trace from %d. Skip"%b)
+                            break
                     if not dupe:
                         trace_and_insert_contour(b,angle)
 
@@ -2016,15 +2087,16 @@ class QuadGen(object):
 
             g_final2.make_cells_from_edges()
 
-        # Patch grid g_final2 completed.
-        # fixed the missing the ragged edge.
-
-        # plt.clf()
-        # g_final2.plot_edges()
-        # plt.draw()
-
-        #import pdb
-        #pdb.set_trace()
+        # DBG
+        self.g_not_final=g_final
+        self.g_final2=g_final2
+        
+        # import pdb
+        # pdb.set_trace()
+        
+        #print("Bailing early")
+        #return
+        # /DBG
 
         # --- Compile Swaths ---
         e2c=g_final2.edge_to_cells(recalc=True)
@@ -2078,21 +2150,14 @@ class QuadGen(object):
 
             field_values=[]
 
-            # plt.figure(2).clf()
-            # g_final2.plot_edges(color='k',lw=0.5)
-            # g_final2.plot_cells(mask=comp_cells)
-            # # g_final2.plot_nodes(mask=comp_nodes)
-            # plt.draw()
-
-            # comp_ij=np.array(g_final2.edges['ij'][ g_final2.cell_to_edges(comp_cells[0]) ])
-            comp_pp=np.array(g_final2.edges['psiphi'][ g_final2.cell_to_edges(comp_cells[0]) ])
-
-            # it's actually the other coordinate that we want to consider.
-            field_min=np.nanmin( comp_pp[:,1-coord] )
-            field_max=np.nanmax( comp_pp[:,1-coord] )
-
-            # coord_min=np.nanmin( comp_ij[:,1-coord] )
-            # coord_max=np.nanmax( comp_ij[:,1-coord] )
+            # To do this, need to do it over all cells, not just picking comp_cells[0]
+            field_min=np.inf
+            field_max=-np.inf
+            for comp_cell in comp_cells:
+                comp_pp=np.array(g_final2.edges['psiphi'][ g_final2.cell_to_edges(comp_cell) ])
+                # it's actually the other coordinate that we want to consider.
+                field_min=min(field_min,np.nanmin( comp_pp[:,1-coord] ))
+                field_max=max(field_max,np.nanmax( comp_pp[:,1-coord] ))
 
             # Could do this more directly from topology if it mattered..
             swath_poly=ops.cascaded_union( [g_final2.cell_polygon(c) for c in comp_cells] )
@@ -2130,6 +2195,7 @@ class QuadGen(object):
             adj_contours[0]=field_min
             adj_contours[-1]=field_max
 
+            assert np.all(np.diff(adj_contours)>0),"should be monotonic, right?"
             for c in comp_cells:
                 patch_to_contour[coord][c]=adj_contours
 
@@ -2156,6 +2222,9 @@ class QuadGen(object):
         g_int.edge_to_cells()
 
         for c in utils.progress(g_final2.valid_cell_iter()):
+            # if c==31:
+            #     import pdb
+            #     pdb.set_trace()
             psi_cvals=patch_to_contour[1][c]
             phi_cvals=patch_to_contour[0][c]
 
@@ -2179,6 +2248,7 @@ class QuadGen(object):
                     if np.any(ragged_js):
                         print("fields_to_xy() failed, but cell is ragged.")
                         g_patch.delete_node_cascade(n)
+                        continue 
                     else:
                         print("ERROR: fields_to_xy() failed. Cell not ragged.")
                 g_patch.nodes['x'][n]=x
