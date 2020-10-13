@@ -397,8 +397,42 @@ class QuadGen(object):
         self.add_bezier(self.gen)
         self.g_int=self.create_intermediate_grid_tri()
         self.calc_psi_phi()
+        self.set_scales()
         self.g_final=self.create_final_by_patches()
 
+    def set_scales(self):
+        # Probably not what I'll end up with, but try a diffusion approach
+        i_scale_dir={}
+        j_scale_dir={}
+
+        for j in np.nonzero( self.g_int.edges['gen_j']>= 0)[0]:
+            gen_j=self.g_int.edges['gen_j'][j]
+            scale=self.gen.edges['scale'][gen_j]
+            if scale in [0,np.nan]: continue
+            orient=self.gen.edges['angle'][gen_j] % 180
+            if orient==0:
+                # Add to i scale (?)
+                for n in self.g_int.edges['nodes'][j]:
+                    i_scale_dir[n]=scale
+            elif orient==90:
+                # Add to j scale (?)
+                for n in self.g_int.edges['nodes'][j]:
+                    j_scale_dir[n]=scale
+
+        nd=self.nd
+        M,B=nd.construct_matrix(op='laplacian',
+                                dirichlet_nodes=i_scale_dir,
+                                skip_dirichlet=True)
+        i_scale=sparse.linalg.spsolve(M.tocsr(),B)
+        M,B=nd.construct_matrix(op='laplacian',
+                                dirichlet_nodes=j_scale_dir,
+                                skip_dirichlet=True)
+        j_scale=sparse.linalg.spsolve(M.tocsr(),B)
+
+        self.i_scale=field.XYZField(X=self.g_int.nodes['x'],F=i_scale)
+        self.j_scale=field.XYZField(X=self.g_int.nodes['x'],F=j_scale)
+        self.scales=[self.i_scale,self.j_scale]
+        
     def node_ij_to_edge(self,g,dest='ij'):
         dij=(g.nodes[dest][g.edges['nodes'][:,1]]
              - g.nodes[dest][g.edges['nodes'][:,0]])
