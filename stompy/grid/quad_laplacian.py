@@ -1530,10 +1530,14 @@ class QuadGen(object):
                     continue
                 # And the ends must be perpendicular to target
                 # specifically they need to be part of a tan_group, I think
-                if (prv_angle%180) != ( (target_angle+90)%180):
-                    continue
-                if (nxt_angle%180) != ( (target_angle+90)%180):
-                    continue
+                # Actually that's too restrictive.  They just need to *not*
+                # be laplacian nodes.  But any node with a turn is not laplacian,
+                # we're set.
+                if False:
+                    if (prv_angle%180) != ( (target_angle+90)%180):
+                        continue
+                    if (nxt_angle%180) != ( (target_angle+90)%180):
+                        continue
                 dist=el[j_cycle[run_start:run_stop]].sum()
                 if dist>longest[0]:
                     # nth edge joins the nth node and n+1th node
@@ -2138,14 +2142,26 @@ class QuadGen(object):
         i_adj=np.zeros( (g_final2.Ncells(), g_final2.Ncells()), np.bool8)
         j_adj=np.zeros( (g_final2.Ncells(), g_final2.Ncells()), np.bool8)
 
+        # tag ragged cells
+        j_ragged=g_final2.edges['angle']%90 != 0.0
+        c_ragged=np.unique( g_final2.edge_to_cells()[j_ragged,:] )
+        c_ragged=c_ragged[c_ragged>=0]
+
         for j in g_final2.valid_edge_iter():
             c1,c2=e2c[j,:]
             if c1<0 or c2<0: continue
-
             # if the di of dij is 0, the edge joins cell in i_adj
             # I think angle==0 is the same as dij=[1,0]
+            
+            # Need to ignore ragged edges here -- if a contour intersects
+            # a ragged edge, the join is not guaranteed at the ragged
+            # boundary, and that can create a ragged cell that erroneously
+            # joins two parallel swaths.  Not sure how this will affect
+            # downstream handling of ragged cells, but try omitting them
+            # entirely here.
+            if (c1 in c_ragged) or (c2 in c_ragged):
+                continue
 
-            #if g_final2.edges['dij'][j,0]==0:
             if g_final2.edges['angle'][j] % 180==0: # guess failed.
                 i_adj[c1,c2]=i_adj[c2,c1]=True
             elif g_final2.edges['angle'][j] % 180==90:
@@ -2177,6 +2193,10 @@ class QuadGen(object):
         patch_to_contour=[{},{}] # coord, cell index=>array of contour values
 
         def add_swath_contours_new(comp_cells,node_field,coord,scale):
+            if len(comp_cells)==1 and comp_cells[0] in c_ragged:
+                # Ragged cells are handled afterwards by compiling
+                # contours from neighboring cells
+                return
             # Check all of the nodes to find the range ij
             comp_nodes=[ g_final2.cell_to_nodes(c) for c in comp_cells ]
             comp_nodes=np.unique( np.concatenate(comp_nodes) )
@@ -2250,6 +2270,35 @@ class QuadGen(object):
                     comp_cells=np.nonzero(labels==comp)[0]
                     add_swath_contours_new(comp_cells,node_field,coord,self.scales[coord])
 
+            # come back to handle ragged cells
+            for c in c_ragged:
+                c_contours=[[],[]]
+
+                for j in g_final2.cell_to_edges(c):
+                    c1,c2 = g_final2.edges['cells'][j]
+                    if min(c1,c2)<0: continue # only internal edges matter
+                    if c1==c:
+                        c_nbr=c2
+                    elif c2==c:
+                        c_nbr=c1
+                    else:
+                        raise Exception("Sanity lost")
+
+                    if c_nbr in c_ragged:
+                        print("Brave! Two ragged cells adjacent to each other")
+                        continue
+                    # similar logic as above
+                    orient=g_final2.edges['angle'][j] % 180
+
+                    if orient==0:
+                        c_contours[0].append( patch_to_contour[0][c_nbr] )
+                    elif orient==90:
+                        c_contours[1].append( patch_to_contour[1][c_nbr] )
+                # import pdb
+                # pdb.set_trace()
+                patch_to_contour[0][c]=np.unique(np.concatenate(c_contours[0]))
+                patch_to_contour[1][c]=np.unique(np.concatenate(c_contours[1]))
+                    
         # Direct grid gen from contour specifications:
         patch_grids=[]
 
