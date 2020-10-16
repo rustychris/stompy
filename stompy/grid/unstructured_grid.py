@@ -3521,8 +3521,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         # not the fastest, but easy!
         x=self.edge_center(j)
         self.delete_edge_cascade(j)
-        return self.add_cell_at_point(x)
-
+        c_new=self.add_cell_at_point(x)
+        assert c_new is not None,"Might have a max_sides problem"
+        return c_new
 
     def merge_nodes(self,n0,n1):
         """

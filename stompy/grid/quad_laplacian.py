@@ -293,7 +293,7 @@ def prepare_angles_halfedge(gen):
         he,angle=stack.pop()
         if he.cell()<0: continue
 
-        print(f"Setting angle={angle} for {he}")
+        # print(f"Setting angle={angle} for {he}")
 
         existing_angle=he_angle(he)
         if np.isfinite(existing_angle):
@@ -307,7 +307,8 @@ def prepare_angles_halfedge(gen):
                            color='red',scale=20,width=0.01)
                 plt.axis('tight')
                 plt.axis('equal')
-                plt.axis((552491.7439203339, 552769.9733637376, 4124312.4010451823, 4124500.4431583737))
+                # plt.axis((552491.7439203339, 552769.9733637376, 4124312.4010451823, 4124500.4431583737))
+                gen.plot_edges(mask=[he.j],color='r',lw=3)
                 raise Exception("Angle mismatch")
             continue
         else:
@@ -316,14 +317,14 @@ def prepare_angles_halfedge(gen):
 
         he_fwd=he.fwd()
         angle_fwd=(angle+j_turns[he.j,he.orient])%360
-        print(f"  fwd: he={he_fwd}  angle_fwd={angle_fwd}")
+        # print(f"  fwd: he={he_fwd}  angle_fwd={angle_fwd}")
         stack.append( (he_fwd,angle_fwd) )
 
         he_opp=he.opposite()
         if he_opp.cell()<0: continue
         he_rev=he_opp.fwd()
         angle_rev=(angle+180+j_turns[he.j,1-he.orient])%360
-        print(f"  rev: he={he_rev}  angle_fwd={angle_rev}")
+        # print(f"  rev: he={he_rev}  angle_fwd={angle_rev}")
 
         stack.append( (he_rev,angle_rev) )
 
@@ -442,6 +443,7 @@ class QuadGen(object):
         """
         utils.set_keywords(self,kw)
         gen=gen.copy()
+        gen.modify_max_sides( gen.Nnodes() )
 
         # Process angles on the whole quad grid, so we can also get
         # scales
@@ -858,7 +860,7 @@ class QuadGen(object):
                 self.add_internal_edge(gen.edges['nodes'][j],
                                        gen.edges['angle'][j])
             gen.merge_cells(j=j)
-
+            
         cycles=gen.find_cycles(max_cycle_len=1000)
         assert len(cycles)==1,"For now, cannot handle multiple cycles"
         cycle=cycles[0]
