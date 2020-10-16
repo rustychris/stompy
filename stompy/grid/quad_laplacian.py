@@ -888,7 +888,8 @@ class QuadGen(object):
             
             gen.nodes['fixed'][n] = angle_prv!=angle_nxt
             # These are internal angles
-            gen.nodes['turn'][n] = 180 - (angle_nxt-angle_prv)
+            # funky 1 is for internal angle of 360
+            gen.nodes['turn'][n] = (180 - (angle_nxt-angle_prv) -1 ) % 360 + 1
     
     def internal_edge_angle(self,gen_edge):
         """
