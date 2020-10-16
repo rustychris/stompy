@@ -1990,8 +1990,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         node_map[:-1][nsort[:Nactive]] = np.arange(self.Nnodes())
         node_map[-1] = -1 # missing nodes map -1 to -1
 
-        self.edges['nodes'] = node_map[self.edges['nodes']]
-        self.cells['nodes'] = node_map[self.cells['nodes']]
+        enodes=self.edges['nodes'].copy()
+        enodes[self.edges['deleted'],:]=-1
+        self.edges['nodes'] = node_map[enodes]
+        cnodes=self.cells['nodes'].copy()
+        cnodes[self.cells['deleted'],:]=-1
+        self.cells['nodes'] = node_map[cnodes]
 
         self._node_to_edges = None
         self._node_to_cells = None
