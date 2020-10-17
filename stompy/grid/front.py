@@ -2284,8 +2284,8 @@ class AdvancingTriangles(AdvancingFront):
     Specialization which roughly mimics tom, creating only triangles
     """
     scale=None
-    def __init__(self,grid=None,scale=None):
-        super(AdvancingTriangles,self).__init__(grid=grid)
+    def __init__(self,grid=None,scale=None,**kw):
+        super(AdvancingTriangles,self).__init__(grid=grid,**kw)
         if scale is not None:
             self.set_edge_scale(scale)
     def set_edge_scale(self,scale):

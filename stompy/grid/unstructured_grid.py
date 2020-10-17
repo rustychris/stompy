@@ -632,7 +632,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     pass
         g=UnstructuredGrid(max_sides=3)
         g.from_simple_data(points=node_xy,cells=tris)
-        g.make_edges_from_cells_fast()    
+        g.make_edges_from_cells_fast()
+        g.update_cell_edges() # or could set to unknown
         return g
 
     def write_gmsh_geo(self,fn):
@@ -1924,12 +1925,14 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         return node_map,edge_map,cell_map
         
-    def renumber(self,reorient_edges=True):
+    def renumber(self,reorient_edges=True,reorient_cells=True):
         """
         Renumber all nodes, edges and cells to omit
         deleted items.
         reorient_edges: also flip edges to keep interior of domain to the
           left (see orient_edges)
+        reorient_cells: force cells to have positive area by reversing node
+           order as needed
         """
         node_map=self.renumber_nodes()
         edge_map=self.renumber_edges()
@@ -1937,6 +1940,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         if reorient_edges:
             self.orient_edges()
+
+        if reorient_cells:
+            self.orient_cells()
+            
         return dict(node_map=node_map,edge_map=edge_map,cell_map=cell_map)
 
     def orient_edges(self,on_bare_edge='fail'):
@@ -1962,6 +1969,16 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                                   cells=[rec['cells'][1],rec['cells'][0]] )
         if on_bare_edge=='return':
             return bare
+
+    def orient_cells(self):
+        A=self.cells_area()
+        flip=np.nonzero(A<0)[0]
+        for c in flip:
+            nodes=self.cell_to_nodes(c)
+            self.cells['nodes'][c,:len(nodes)] = nodes[::-1]
+        # Might be able to be smarter about which edges
+        self.edge_to_cells(recalc=True)
+        self.cells_area(sel=flip)
         
     def renumber_nodes_ordering(self):
         return np.argsort(self.nodes['deleted'],kind='mergesort')
@@ -2332,12 +2349,18 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 return j
         return None
 
-    def edge_to_cells(self,e=slice(None),recalc=False):
+    def edge_to_cells(self,e=slice(None),recalc=False,
+                      on_missing='error'):
         """
         recalc: if True, forces recalculation of all edges.
 
         e: limit output to a single edge, a slice or a bitmask
           may also limit updates to the requested edges
+
+        on_missing: Invalid mesh may have cells which do not
+          have corresponding edges.
+         'error': raise Exception
+         
         """
         # try to be a little clever about recalculating -
         # it can be very slow to check all edges for UNKNOWN
@@ -2387,7 +2410,15 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 b=nodes[(i+1)%len(nodes)]
                 j=self.nodes_to_edge(a,b)
                 if j is None:
-                    print( "Failed to find an edge, c=%d, nodes=%d,%d"%(c,a,b) )
+                    msg="Failed to find an edge, c=%d, nodes=%d,%d"%(c,a,b) 
+                    if on_missing=='error':
+                        raise Exception(msg)
+                    elif on_missing=='add':
+                        print(msg+" -- adding edge")
+                        j=self.add_edge(nodes=[a,b])
+                    elif on_missing=='delete':
+                        print(msg+" -- deleting cell")
+                        self.delete_cell(c)
                     continue
                 # will have to trial-and-error to get the right
                 # left/right sense here.
@@ -2492,8 +2523,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         #order=np.argsort( new_edges, order=['a','b'], kind='stable') # 2s
         # 5x faster
-        orderb=np.argsort( new_edges['b'], kind='stable') # 0.3s
-        ordera=np.argsort( new_edges['a'][orderb], kind='stable' )
+        # kind='stable' is only in numpy >=1.15.0
+        # 'mergesort' is also stable (and probably internally they are identical)
+        orderb=np.argsort( new_edges['b'], kind='mergesort') # 0.3s
+        ordera=np.argsort( new_edges['a'][orderb], kind='mergesort' )
         order=orderb[ordera]
 
         new_edges=new_edges[order]
@@ -3537,7 +3570,6 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         n0 and n1, or if a single cell contains both n0 and n1.
         """
         # -- Sanity checks - does not yet allow for collapsing edges.
-
         # if they share any cells, would update the cells, but for now
         # just signal failure.
         n0_cells=list(self.node_to_cells(n0))
@@ -3604,7 +3636,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
             for ji,j in enumerate(cedges):
                 if j in edge_map:
-                    # is there were edges['cells'] should be updated?
+                    # is this where edges['cells'] should be updated?
 
                     # sever the edge=>cell pointer, to p
                     # could just set to [-1,-1], but this keeps things very explicit
@@ -3624,8 +3656,24 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     elif list( self.edges['nodes'][j]).index(n1) == 1-list(self.edges['nodes'][jo]).index(n0):
                         jo_cells_side=1-j_cells_side
                     else:
+                        plt.figure(1).clf()
+                        self.plot_edges(color='k',lw=0.4)
+                        self.plot_edges(mask=[j,jo],color='r',lw=1,labeler='id')
+                        self.plot_cells(mask=[c],color='r',alpha=0.3,labeler='id')
+                        plt.axis('tight')
+                        plt.axis('equal')
+                        plt.axis((552453., 552569, 4123965., 4124066.) )
                         raise Exception("Failed in some tedium")
-                    assert jo_cells[jo_cells_side]<0
+                    if jo_cells[jo_cells_side]>=0:
+                        plt.figure(1).clf()
+                        self.plot_edges(color='k',lw=0.4)
+                        self.plot_edges(mask=[j,jo],color='r',lw=1,labeler='id')
+                        self.plot_cells(mask=[c],color='r',alpha=0.3,labeler='id',centroid=True)
+                        plt.axis('tight')
+                        plt.axis('equal')
+                        # plt.axis((552453., 552569, 4123965., 4124066.) )
+                        raise Exception("jo_cells[%d]=%s, expected <0"%(jo_cells_side,
+                                                                        jo_cells[jo_cells_side]))
                     jo_cells[jo_cells_side]=c
                     self.modify_edge(edge_map[j],cells=jo_cells)
                     # yikes.  any chance that worked?
@@ -4061,7 +4109,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         return within_2d(self.nodes['x'],clip)
 
     def plot_nodes(self,ax=None,mask=None,values=None,sizes=20,labeler=None,clip=None,
-                   masked_values=None,
+                   masked_values=None,label_jitter=0.0,
                    **kwargs):
         """ plot nodes as scatter
         labeler: callable taking (node index, node record), return string
@@ -4089,11 +4137,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 field=labeler
                 labeler=lambda i,r: str(r[field])
 
+            x=self.nodes['x']
+            if label_jitter!=0.0:
+                x=x+label_jitter*(np.random.random( (self.Nnodes(),2) )-0.5)
             # weirdness to account for mask being indices vs. bitmask
             for n in np.arange(self.Nnodes())[mask]: # np.nonzero(mask)[0]:
-                ax.text(self.nodes['x'][n,0],
-                        self.nodes['x'][n,1],
-                        labeler(n,self.nodes[n]))
+                ax.text(x[n,0],x[n,1], labeler(n,self.nodes[n]))
 
         coll=ax.scatter(self.nodes['x'][mask][:,0],
                         self.nodes['x'][mask][:,1],
@@ -4112,7 +4161,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         return coll
 
     def plot_edges(self,ax=None,mask=None,values=None,clip=None,labeler=None,
-                   lw=0.8,**kwargs):
+                   label_jitter=0.0,lw=0.8,**kwargs):
         """
         plot edges as a LineCollection.
         optionally select a subset of edges with boolean array mask.
@@ -4159,6 +4208,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 labeler=lambda i,r: str(r[field])
                 
             ec=self.edges_center()
+            if label_jitter!=0.0:
+                ec=ec+label_jitter*(np.random.random( (self.Nedges(),2) )-0.5)
+                
             # weirdness to account for mask being indices vs. bitmask
             for n in np.arange(self.Nedges())[mask]:
                 ax.text(ec[n,0], ec[n,1],

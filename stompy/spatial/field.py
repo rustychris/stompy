@@ -3587,6 +3587,7 @@ class CompositeField(Field):
             # dangerous! executing code from a shapefile!
             for mode in [self.data_mode[src_i],self.alpha_mode[src_i]]:
                 if mode is None or mode.strip() in ['',b'']: continue
+                # This is getting a SyntaxError when using python 2.
                 exec(mode) # used to be eval.
 
             data_missing=np.isnan(src_data.F)

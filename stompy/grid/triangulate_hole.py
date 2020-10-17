@@ -1,11 +1,65 @@
 from .. import utils
 import numpy as np
+from textwrap import dedent
 from ..spatial import field
 from . import unstructured_grid, front, rebay
+import pickle
+
+class Gmsher(object):
+    scale_file='scale.pkl'
+    geo_file='tmp.geo'
+    msh_file='tmp.msh'
+    gmsh='gmsh'
+    output='capture'
+    tol=1e-3
+    def __init__(self,g_in,scale):
+        self.g_in=g_in
+        self.scale=scale
+    def execute(self):
+        import subprocess
+        with open(self.scale_file,'wb') as fp:
+            pickle.dump(self.scale,fp)
+
+        self.g_in.write_gmsh_geo(self.geo_file)
+
+        with open(self.geo_file,'at') as fp:
+            # Turns out exec() in field.py is not python2 compatible.
+            # hack fix force python3
+            fp.write(dedent("""
+            Field[1] = ExternalProcess;
+            Field[1].CommandLine = "python3 -m stompy.grid.gmsh_scale_helper %s";
+            Field[2] = MathEval;
+            // helps avoid subdividing boundaries
+            Field[2].F = "F1*1.5";
+
+            Background Field = 2;
+            Mesh.CharacteristicLengthExtendFromBoundary = 0;
+            Mesh.CharacteristicLengthFromPoints = 0;
+            Mesh.CharacteristicLengthFromCurvature = 0;
+            """%(self.scale_file)) )
+
+        # When this is invoked inside QGIS, have to be careful
+        # not to send output to stdout.  QGIS is frozen while this
+        # runs, and stdout will (I think) clog up and lead to a
+        # deadlock.
+        sub_args={}
+        if self.output=='capture':
+            sub_args['stdout']=subprocess.PIPE
+            sub_args['stderr']=subprocess.PIPE
+
+        self.process=subprocess.run([self.gmsh,self.geo_file,'-2'],**sub_args)
+        self.grid=unstructured_grid.UnstructuredGrid.read_gmsh(self.msh_file)
+        self.grid.orient_cells()
+
+        for n in self.g_in.valid_node_iter():
+            x_in=self.g_in.nodes['x'][n]
+            n_new=self.grid.select_nodes_nearest(x_in, max_dist=self.tol)
+            if n_new is not None:
+                self.grid.nodes['x'][n_new] = x_in
 
 def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=5000,hole_rigidity='cells',
                      splice=True,return_value='grid',dry_run=False,apollo_rate=1.1,
-                     method='front'):
+                     method='front',method_kwargs={}):
     """
     Specify one of
       seed_point: find node string surrounding this point
@@ -16,6 +70,7 @@ def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=5000,hole_rigidit
         slowly.
      'rebay': use rebay.py, much faster, but without any guarantees on cell quality,
         and without support for sliding boundaries (hole_rigidity must be 'all')
+     'gmsh': invoke gmsh as a subprocess.
 
     hole_rigidity: 
        'cells' nodes and edges which are part of a cell are considered rigid.
@@ -70,7 +125,7 @@ def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=5000,hole_rigidit
     apollo=field.PyApolloniusField(X=sample_xy,F=sample_scale,r=apollo_rate)
 
     # For hole_rigidity=='all', there are no hints, and this stays
-    # empty.  Only for method=='front' can there be other values of
+    # empty.  Only for method=='front' or gmsh can there be other values of
     # hole_rigidity.
     src_hints=[]
 
@@ -78,7 +133,7 @@ def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=5000,hole_rigidit
     if method=='front':
         grid_to_pave=unstructured_grid.UnstructuredGrid(max_sides=6)
 
-        AT=front.AdvancingTriangles(grid=grid_to_pave)
+        AT=front.AdvancingTriangles(grid=grid_to_pave,**method_kwargs)
 
         AT.add_curve(xy_shore)
         # This should be safe about not resampling existing edges
@@ -133,7 +188,6 @@ def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=5000,hole_rigidit
 
         if AT.loop():
             AT.grid.renumber()
-            g_result=AT.grid
         else:
             print("Grid generation failed")
             return AT # for debugging -- need to keep a handle on this to see what's up.
@@ -142,7 +196,7 @@ def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=5000,hole_rigidit
         nodes=[grid_to_pave.add_node(x=xy) for xy in xy_shore]
         c=grid_to_pave.add_cell_and_edges(nodes)
         rad=rebay.RebayAdvancingDelaunay(grid=grid_to_pave,scale=apollo,
-                                         heap_sign=1)
+                                         heap_sign=1,**method_kwargs)
         if dry_run:
             if return_value=='grid':
                 return grid_to_pave
@@ -150,9 +204,30 @@ def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=5000,hole_rigidit
                 return rad
         rad.execute()
         # make it look kind of like the advancing triangles output
-        g_result=rad.extract_result()
         AT=rad
+        AT.grid=rad.extract_result()
+    elif method=='gmsh':
+        # make it look kind of like the advancing triangles output
+        g_in=unstructured_grid.UnstructuredGrid()
+        g_in.add_linestring(xy_shore,closed=True)
 
+        # refactor!
+        for n in g_in.valid_node_iter():
+            n_src=grid.select_nodes_nearest(g_in.nodes['x'][n],max_dist=0.0)
+            assert n_src is not None,"How are we not finding the original src node?"
+
+            if len(grid.node_to_cells(n_src))==0:
+                if hole_rigidity=='cells':
+                    src_hints.append(n_src)
+        
+        AT=Gmsher(g_in=g_in,scale=apollo)
+        AT.gmsh=method_kwargs.pop('gmsh','gmsh')
+        AT.output=method_kwargs.pop('output','capture')
+        AT.execute()
+        
+    else:
+        raise Exception("Bad method '%s'"%method)
+        
     if not splice:
         if return_value=='grid':
             return AT.grid
@@ -162,9 +237,9 @@ def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=5000,hole_rigidit
         for n in src_hints:
             grid.delete_node_cascade(n)
 
-        grid.add_grid(g_result)
+        grid.add_grid(AT.grid)
 
-        # Surprisingly, this works!
+        # Surprisingly, this works!  Usually.
         grid.merge_duplicate_nodes()
 
         grid.renumber(reorient_edges=False)
