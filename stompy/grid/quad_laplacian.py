@@ -2030,9 +2030,6 @@ class QuadGen(object):
         g_int.edge_to_cells()
 
         for c in utils.progress(g_final2.valid_cell_iter()):
-            # if c==31:
-            #     import pdb
-            #     pdb.set_trace()
             psi_cvals=patch_to_contour[1][c]
             phi_cvals=patch_to_contour[0][c]
 
@@ -2073,6 +2070,9 @@ class QuadGen(object):
         g=patch_grids[0]
         for g_next in patch_grids[1:]:
             g.add_grid(g_next,merge_nodes='auto',tol=1e-6)
+
+        # seem to be making a lot of CW cells
+        g.orient_cells()
 
         return g
 
