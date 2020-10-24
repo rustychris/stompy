@@ -894,7 +894,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     #def read_rgfgrid(grd_fn):
     #    HERE
     @staticmethod
-    def read_ras2d(hdf_fname, twod_area_name=None):
+    def read_ras2d(hdf_fname, twod_area_name=None, elevations=True):
         """
         Read a RAS2D grid from HDF.
         hdf_fname: path to hdf file
@@ -902,6 +902,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
           attempt to detect this, but will fail if the number of valid names
           is not exactly 1.
         Acknowledgements: Original code by Stephen Andrews.
+
+        elevations: If elevation-related fields (currently just min elevation in 
+          cells and faces) are found, add them to the grid.
         """
         import h5py # import here, since most of stompy does not rely on h5py
         h = h5py.File(hdf_fname, 'r')
@@ -961,6 +964,17 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
             grd = UnstructuredGrid(edges=edges, points=points,
                                    cells=cells, max_sides=max_cell_faces)
+
+            if elevations:
+                cell_key='Geometry/2D Flow Areas/' + twod_area_name + '/Cells Minimum Elevation'
+                edge_key='Geometry/2D Flow Areas/' + twod_area_name + '/Faces Minimum Elevation'
+                if cell_key in h:
+                    Nc=grd.Ncells() # to trim out trailing ghost cells
+                    grd.add_cell_field('cell_z_min',
+                                       h[cell_key][:Nc])
+                if edge_key in h:
+                    grd.add_edge_field('edge_z_min',
+                                       h[edge_key])
             return grd
         finally:
             h.close()
@@ -6685,20 +6699,39 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         ys=np.linspace(p0[1],p1[1],ny)
 
         # create the nodes
-        for xi,x in enumerate(xs):
-            for yi,y in enumerate(ys):
-                node_ids[xi,yi] = self.add_node(x=[x,y])
+        if self.Nnodes()>0:
+            for xi,x in enumerate(xs):
+                for yi,y in enumerate(ys):
+                    node_ids[xi,yi] = self.add_node(x=[x,y])
+        else: # faster, but untested
+            node_ids=np.arange(nx*ny).reshape( (nx,ny) )
+            self.nodes=np.zeros( nx*ny, self.node_dtype)
+            Y,X=np.meshgrid( ys,xs)
+            self.nodes['x'][:,0]=X.ravel()
+            self.nodes['x'][:,1]=Y.ravel()
 
         cell_ids=np.zeros( (nx-1,ny-1), int)-1
 
-        # create the cells
-        for xi in range(nx-1):
-            for yi in range(ny-1):
-                nodes=[ node_ids[xi,yi],
-                        node_ids[xi+1,yi],
-                        node_ids[xi+1,yi+1],
-                        node_ids[xi,yi+1] ]
-                cell_ids[xi,yi]=self.add_cell_and_edges(nodes=nodes)
+        if self.Ncells()>0:
+            # slower, but probably plays nicer with existing topology
+            for xi in range(nx-1):
+                for yi in range(ny-1):
+                    nodes=[ node_ids[xi,yi],
+                            node_ids[xi+1,yi],
+                            node_ids[xi+1,yi+1],
+                            node_ids[xi,yi+1] ]
+                    cell_ids[xi,yi]=self.add_cell_and_edges(nodes=nodes)
+        else:
+            # Blank canvas - just create all in one go
+            cells=np.c_[ node_ids[:-1,:-1].ravel(),
+                         node_ids[1:,:-1].ravel(),
+                         node_ids[1:,1:].ravel(),
+                         node_ids[:-1,1:].ravel() ]
+            self.cells=np.zeros(len(cells),self.cell_dtype)
+            self.cells['nodes'][:,:4]=cells
+            # TODO: fill in cell_ids
+            self.make_edges_from_cells_fast()
+            
         return {'cells':cell_ids,
                 'nodes':node_ids}
 
