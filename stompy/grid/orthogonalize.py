@@ -10,7 +10,7 @@ from stompy.grid import unstructured_grid
 from stompy.utils import (mag, circumcenter, circular_pairs,signed_area, poly_circumcenter,
                           orient_intersection,array_append,within_2d, to_unit,
                           recarray_add_fields,recarray_del_fields)
-
+from scipy import interpolate
 
 # approach: adjust a single node relative to all of its
 # surrounding cells, at first worrying only about orthogonality
@@ -197,7 +197,69 @@ class Tweaker(object):
             if (free_nodes is not None) and (n not in free_nodes): continue
             self.nudge_node_orthogonal(n)
 
+    # orientation-specific smoothing of quads
+    def smooth_to_scale(self,n_free,target_scales,smooth_iters=1,nudge_iters=1):
+        """
+        n_free: sequence of nodes to relax
+        target_scales: (self.g.Nedges()) array of target length scales.
 
+        nudge: iterations to nudge to orthogonal after smoothing
+        """
+        g=self.g
+
+        for smooth_it in range(smooth_iters):
+            el=g.edges_length()
+            node_moves=np.zeros( (len(n_free),2), np.float64)
+            for ni,n in enumerate(n_free):
+                nbrs=g.angle_sort_adjacent_nodes(n)
+
+                j_nbrs=[g.nodes_to_edge(n,nbr) for nbr in nbrs]
+
+                for orient in [0,90]:
+                    pair=[(j,nbr) for j,nbr in zip(j_nbrs,nbrs)
+                          if g.edges['orient'][j]==orient]
+                    if len(pair)!=2:
+                        continue
+
+                    nodes=[pair[0][1],n,pair[1][1]]
+                    js=   [pair[0][0], pair[1][0]]
+
+                    node_xy=g.nodes['x'][nodes]
+                    s=[-1,0,1]
+
+                    x_tck=interpolate.splrep( s, node_xy[:,0], k=2 )
+                    y_tck=interpolate.splrep( s, node_xy[:,1], k=2 )
+
+                    jls=el[js] # lengths of those
+                    jts=target_scales[js]
+
+                    # What I want is
+                    # (jls[0]+dl)/jts[0] ~ (jls[1]-dl)/jts[1]
+                    # with dl the move towards nodes[2]
+                    #  (jls[0]+dl)/jts[0] - (jls[1]-dl)/jts[1] = 0
+                    #  jls[0]/jts[0] + dl/jts[0] - ( jls[1]/jts[1] - dl/jts[1]) = 0
+                    #  jls[0]/jts[0] + dl/jts[0] - jls[1]/jts[1] + dl/jts[1] = 0
+                    #  dl/jts[0] + dl/jts[1] = jls[1]/jts[1] - jls[0]/jts[0]
+                    #  dl= (jls[1]/jts[1] - jls[0]/jts[0]) / ( 1/jts[0] + 1/jts[1])
+                    dl=(jls[1]/jts[1] - jls[0]/jts[0]) / ( 1/jts[0] + 1/jts[1])
+                    if dl>0:
+                        ds=dl/jls[1]
+                    else:
+                        ds=dl/jls[0]
+
+                    new_xy=np.array( [interpolate.splev(ds, x_tck),
+                                      interpolate.splev(ds, y_tck)] )
+                    assert np.all( np.isfinite(new_xy) )
+                    node_moves[ni]+=new_xy-node_xy[1]
+
+            for ni,n in enumerate(n_free):
+                g.modify_node(n,x=g.nodes['x'][n] + 0.5*node_moves[ni])
+
+        for nudge_it in range(nudge_iters):
+            for n in n_free:
+                self.nudge_node_orthogonal(n)
+    
+            
 # A conformal mapping approach to smoothing.
 # May be useful in the future, but as it is now it is too sensitive
 # and restrictive.  It tries to fit a simple mapping to a large group
@@ -294,3 +356,133 @@ class Tweaker(object):
 #               g.modify_node(n,x=new_node_x[ni])
 #       return node_idxs
             
+
+
+# These might be useful, esp. the precalc stencils code that
+# would broaden the times that quad-based smoothing can work.
+# 0.8s.  hrrm.
+#@utils.add_to(tweaker)
+def precalc_stencils(self,n_free):
+    g=self.g
+    stencil_radius=1
+    
+    stencils=np.zeros( (len(n_free),1+2*stencil_radius,1+2*stencil_radius), np.int32) - 1
+
+    ij0=np.array([stencil_radius,stencil_radius])
+
+    all_Nsides=np.array([g.cell_Nsides(c) for c in range(g.Ncells())])
+    dij=np.array([1,0])
+    rot=np.array([[0,1],[-1,0]])
+
+    for ni,n in enumerate(n_free):
+        # this is a bit more restrictive than it needs to be
+        # but it's too much to make it general right now.
+        cells=g.node_to_cells(n)
+        if len(cells)!=4: continue
+        if any( all_Nsides[cells] != 4):
+            continue
+
+        stencils[ni,ij0[0],ij0[1]]=n
+
+        nbrs=g.node_to_nodes(n)
+
+        he=g.nodes_to_halfedge(n,nbrs[0])
+
+        for nbr in nbrs:
+            he=g.nodes_to_halfedge(n,nbr)
+            stencils[ni,ij0[0]+dij[0],ij0[1]+dij[1]]=he.node_fwd()
+            he_fwd=he.fwd()
+            ij_corner=ij0+dij+rot.dot(dij)
+            stencils[ni,ij_corner[0],ij_corner[1]]=he_fwd.node_fwd()
+            dij=rot.dot(dij)
+    return stencils
+
+# so a node
+#@utils.add_to(tweaker)
+def local_smooth_flex(self,node_idxs,n_iter=3,free_nodes=None,
+                      min_halo=2):
+    """
+    Fit regular grid patches iteratively within the subset of nodes given
+    by node_idxs.
+    Currently requires that node_idxs has a sufficiently large footprint
+    to have some extra nodes on the periphery.
+
+    node_idxs: list of node indices
+    n_iter: count of how many iterations of smoothing are applied.
+    free_subset: node indexes (i.e. indices of g.nodes) that are allowed 
+     to move.  Defaults to all of node_idxs subject to the halo.
+    """
+    g=self.g
+    stencil_radius=1
+    
+    node_stencils=self.precalc_stencils(node_idxs)
+    node_stencils=node_stencils.reshape([-1,3*3])
+    
+    pad=1+stencil_radius
+    
+    stencil_rows=[]
+    for i in range(-stencil_radius,stencil_radius+1):
+        for j in range(-stencil_radius,stencil_radius+1):
+            stencil_rows.append([i,j])
+    design=np.array(stencil_rows)
+
+    # And fit a surface to the X and Y components
+    #  Want to fit an equation
+    #   x= a*i + b*j + c
+    M=np.c_[design,np.ones(len(design))]
+
+    XY=g.nodes['x']
+    new_XY=XY.copy()
+
+    if free_nodes is not None:
+        # use dict for faster tests
+        free_nodes={n:True for n in free_nodes}
+
+    moved_nodes={}
+    stencil_ctr=stencil_radius*(2*stencil_radius+1) + stencil_radius
+    
+    for count in range(n_iter):
+        new_XY[...]=XY
+        for ni,n in enumerate(node_idxs):
+            if node_stencils[ni,stencil_ctr]<0:
+                continue
+            if (free_nodes is not None) and (n not in free_nodes): continue
+
+            # Query XY to estimate where n "should" be.
+            # [9,{x,y}] rhs
+            XY_sten=XY[node_stencils[ni],:] - XY[n]
+
+            valid=np.isfinite(XY_sten[:,0])
+
+            xcoefs,resid,rank,sing=np.linalg.lstsq(M[valid],XY_sten[valid,0],rcond=-1)
+            ycoefs,resid,rank,sing=np.linalg.lstsq(M[valid],XY_sten[valid,1],rcond=-1)
+
+            delta=np.array( [xcoefs[2],
+                             ycoefs[2]])
+
+            new_x=XY[n] + delta
+            if np.isfinite(new_x[0]):
+                new_XY[n]=new_x
+                moved_nodes[n]=True
+            else:
+                pass # print("Hit nans.")
+        # Update all at once to avoid adding variance due to the order of nodes.
+        XY[...]=new_XY
+
+    # Update grid
+    count=0
+    for ni,n in enumerate(node_idxs):
+        if n not in moved_nodes: continue
+
+        dist=utils.mag(XY[n] - g.nodes['x'][n])
+        if dist>1e-6:
+            g.modify_node(n,x=XY[n])
+            count+=1
+
+    for n in list(moved_nodes.keys()):
+        for nbr in g.node_to_nodes(n):
+            if nbr not in moved_nodes:
+                moved_nodes[nbr]=True
+    for n in moved_nodes.keys():
+        if (free_nodes is not None) and (n not in free_nodes): continue
+        self.nudge_node_orthogonal(n)

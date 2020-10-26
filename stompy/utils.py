@@ -743,7 +743,48 @@ def segment_segment_intersection(segA,segB):
     AB=lA.intersection(lB)
     assert AB.type=='Point',"Need to handle non-intersecting case"
     return np.array([AB.x,AB.y])
+
+def segment_segment_alphas(segA,segB):
+    """
+    Solve for the two alpha values for an intersection
+
+    (1-a) * segAB[0,0] + a*segAB[1,0] =  (1-b) * seg[0,0] + b*seg[1,0]
     
+    Return [a,b], unless lines are parallel, then [nan,nan]
+    """
+    # a * segAB[0,1] + (1-a)*segAB[1,1] - b * seg[0,1] - (1-b)*seg[1,1] = 0
+    # a * segAB[0,0] + segAB[1,0] - a*segAB[1,0],  -b * seg[0,0] - seg[1,0] + b*seg[1,0] = 0
+    # a * segAB[0,0] - a*segAB[1,0],  -b * seg[0,0] + b*seg[1,0] = -segAB[1,0] + seg[1,0]
+
+    mat=np.array( [ [segA[1,0]-segA[0,0], -segB[1,0]+segB[0,0]],
+                    [segA[1,1]-segA[0,1], -segB[1,1]+segB[0,1]]],
+                  np.float64)
+    b=np.array( [ -segA[0,0] + segB[0,0],
+                  -segA[0,1] + segB[0,1] ],
+                np.float64 )
+    try:
+        x=np.linalg.solve(mat,b)
+    except np.linalg.LinAlgError:
+        # Don't get into the details, just bail
+        # collinear or parallel
+        return np.array( [np.nan,np.nan] )
+    return x
+
+def segment_segment_intersection(segA,segB):
+    """
+    If segA and segB intersect, return a 
+    """
+    alphas=segment_segment_alphas(segA,segB)
+    if np.isnan(alphas[0]):
+        # collinear or parallel. may not overlap at all
+        return None,alphas
+    if ((alphas[0]>=0) and (alphas[1]>=0) and
+        (alphas[0]<=1) and (alphas[1]<=1) ):
+        a=alphas[0]
+        return (1-a)*segA[0]+a*segA[1], alphas
+    return None,alphas
+
+
 # rotate the given vectors/points through the CCW angle in radians
 def rot_fn(angle):
     R = np.array( [[np.cos(angle),-np.sin(angle)],

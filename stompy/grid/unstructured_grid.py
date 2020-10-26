@@ -390,6 +390,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         self.update_element_defaults()
 
+        self.edge_defaults['cells']=self.UNMESHED
+        self.cell_defaults['edges']=self.UNKNOWN
+
         if grid is not None:
             self.copy_from_grid(grid)
         else:
@@ -2472,8 +2475,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     def make_edges_from_cells(self):
         edge_map = {} # keys are tuples of node indices, mapping to index into new_edges
         new_edges = [] # each entry is [n1,n2,c1,c2].  assume for now that c1 is on the left of the edge n1->n2
+        self._node_to_edges=None
 
-        for c in range(self.Ncells()):
+        cell_count=0
+        for c in self.valid_cell_iter():
+            cell_count+=1
+            
             for i,(a,b) in enumerate(circular_pairs(self.cell_to_nodes(c))):
                 if a<b:
                     k = (a,b)
@@ -2494,15 +2501,16 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         new_edges = np.array(new_edges)
         self.edges = np.zeros( len(new_edges),self.edge_dtype )
-        self.edges['nodes'] = new_edges[:,:2]
-        self.edges['cells'] = new_edges[:,2:4]
-        self._node_to_edges=None
+        if len(new_edges):
+            self.edges['nodes'] = new_edges[:,:2]
+            self.edges['cells'] = new_edges[:,2:4]
 
     def make_edges_from_cells_fast(self):
         """
         vectorized version.  might be buggy.
         new June 2020
         """
+        self._node_to_edges=None
         valid_cells=~self.cells['deleted']
 
         def pair_iter():
@@ -2535,6 +2543,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             edge_sets.append(new_edges)
         new_edges=np.concatenate(edge_sets)
 
+        if len(new_edges)==0:
+            assert valid_cells.sum()==0
+            print("Careful -- no edges found!")
+            
         #order=np.argsort( new_edges, order=['a','b'], kind='stable') # 2s
         # 5x faster
         # kind='stable' is only in numpy >=1.15.0
@@ -2558,7 +2570,6 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         has_right=new_edges['c2']>=0
         self.edges['cells'][j[has_left],0]=new_edges['c1'][has_left]
         self.edges['cells'][j[has_right],0]=new_edges['c2'][has_right]
-        self._node_to_edges=None
 
     def refresh_metadata(self):
         """ Call this when the cells, edges and nodes may be out of sync with indices
@@ -3163,7 +3174,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         #         self.delete_cell(c)
         #     self.edges['cells'][j,ci]=self.UNKNOWN
 
-        for c in self.edge_to_cells(j):
+        for c in self.edge_to_cells(j,recalc=True):
             if c>=0:
                 self.delete_cell(c)
             # this should be handled by the delete_cell() code.
@@ -3760,20 +3771,19 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             self._cell_center_index.delete(i,pnt[self.xxyy])
 
         # remove links from edges:
-        for j in self.cell_to_edges(i): # self.cells['edges'][i]:
-            if j>=0:
-                # hmm - how would j be negative?
-                for lr in [0,1]:
-                    if self.edges['cells'][j,lr]==i:
-                        self.edges['cells'][j,lr]=self.UNMESHED
-                        break
+        for j in self.cell_to_edges(i):
+            assert j>=0,"Used to test, but this should always be true"
+            for lr in [0,1]:
+                if self.edges['cells'][j,lr]==i:
+                    self.edges['cells'][j,lr]=self.UNMESHED
+                    break
 
         if self._node_to_cells is not None:
             for n in self.cell_to_nodes(i):
                 self._node_to_cells[n].remove(i)
 
         self.push_op(self.undelete_cell,i,self.cells[i].copy())
-
+        
         self.cells['deleted'][i]=True
 
         # special case for undo:
@@ -5181,9 +5191,13 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         """
         return self.cells_area().sum()
 
-    def extract_linear_strings(self,edge_select=None):
+    def extract_linear_strings(self,edge_select=None,end_func=None):
         """
         extract contiguous linestrings as sequences of nodes.
+        
+        end_func: lambda node, [list of edges]: True/False
+           test function to say whether the given node should be the end 
+           of a linear string.
         """
         # there are at least three choices of how greedy to be.
         #  min: each edge is its own feature
@@ -5192,6 +5206,16 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         # go with mid
         strings=[]
         edge_marks=np.zeros(self.Nedges(), np.bool8)
+
+        def degree2_predicate(n,js):
+            """
+            returns true if the node n, with selected edges js,
+            should be considered an end of a string.
+            """
+            return len(js)!=2
+
+        if end_func is None:
+            end_func=degree2_predicate
 
         for j0 in self.valid_edge_iter():
             if (edge_select is not None) and (not edge_select[j0]):
@@ -5214,7 +5238,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     if edge_select is not None:
                         js=[j for j in js if edge_select[j]]
 
-                    if len(js)!=2:
+                    # if len(js)!=2:
+                    if end_func(trav[1],js):
                         break
 
                     for j in js:
@@ -6710,9 +6735,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             self.nodes['x'][:,0]=X.ravel()
             self.nodes['x'][:,1]=Y.ravel()
 
-        cell_ids=np.zeros( (nx-1,ny-1), int)-1
 
         if self.Ncells()>0:
+            cell_ids=np.zeros( (nx-1,ny-1), int)-1
             # slower, but probably plays nicer with existing topology
             for xi in range(nx-1):
                 for yi in range(ny-1):
@@ -6728,9 +6753,11 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                          node_ids[1:,1:].ravel(),
                          node_ids[:-1,1:].ravel() ]
             self.cells=np.zeros(len(cells),self.cell_dtype)
+            self.cells[:]=self.cell_defaults
             self.cells['nodes'][:,:4]=cells
-            # TODO: fill in cell_ids
             self.make_edges_from_cells_fast()
+            # May need to flip this:
+            cell_ids=np.arange((nx-1)*(ny-1)).reshape( [nx-1,ny-1] )
             
         return {'cells':cell_ids,
                 'nodes':node_ids}
