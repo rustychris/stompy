@@ -50,6 +50,10 @@ from .. import utils, filters
 from ..spatial import field
 from . import front
 
+import logging
+
+log=logging.getLogger('quad_laplacian')
+
 import six
 
 ##
@@ -108,10 +112,10 @@ class NodeDiscretization(object):
 
         nrows=nlaplace_rows + ndirichlet_nodes + ntangential_nodes + ngradient_nodes
 
-        print(f"row breakdown:  Lap: {nlaplace_rows}  "
-              f"Dir: {ndirichlet_nodes}  Tan: {ntangential_nodes} "
-              f"({len(zero_tangential_nodes)} grps)  Grad: {ngradient_nodes}")
-        print(f"nrows={nrows} N={g.Nnodes()}")
+        log.info(f"row breakdown:  Lap: {nlaplace_rows}  "
+                 f"Dir: {ndirichlet_nodes}  Tan: {ntangential_nodes} "
+                 f"({len(zero_tangential_nodes)} grps)  Grad: {ngradient_nodes}")
+        log.info(f"nrows={nrows} N={g.Nnodes()}")
 
         B=np.zeros(nrows,np.float64)
         M=sparse.dok_matrix( (nrows,g.Nnodes()),np.float64)
@@ -396,7 +400,7 @@ def linear_scales(gen):
     bad=(extraps[0]<=0) | (extraps[1]<=0)
     if np.any(bad):
         idxs=np.nonzero(bad)[0]
-        print("Bad nodes:",gen_tri.nodes['x'][idxs])
+        log.error("Bad nodes:",gen_tri.nodes['x'][idxs])
         raise Exception("Probably disconnected cells with no scale")
     return i_field, j_field
 
@@ -425,6 +429,12 @@ def add_bezier(gen):
             continue
         hes=[gen.nodes_to_halfedge(n,nbr) for nbr in nbrs]
 
+        # Filter out non-quad grid edges in there, which will have angle=nan
+        hes=[he for he in hes if np.isfinite(gen.edges['angle'][he.j])]
+
+        if len(hes)==0:
+            continue
+        
         # Each of those half-edges has an angle in ij space, relative
         # to natural edge direction.
         def he_ij_angle(he):
@@ -435,13 +445,13 @@ def add_bezier(gen):
             delta=B-A
             return 180/np.pi * np.arctan2(delta[1],delta[0])
 
-        ij_angles=[he_ij_angle(he) for he in hes]
-        xy_angles=[he_xy_angle(he) for he in hes]
-
+        ij_angles=np.array( [he_ij_angle(he) for he in hes] )
+        xy_angles=np.array( [he_xy_angle(he) for he in hes] )
+        
         # overall rotation -
         # 0 degress in xy space is rot degrees from 0 degrees in
         # ij space.
-        xy_to_ij=np.pi/180 * (np.array(ij_angles)-np.array(xy_angles))
+        xy_to_ij=np.pi/180 * (ij_angles-xy_angles)
         rot=180/np.pi * np.arctan2( np.sin(xy_to_ij).mean(),
                                     np.cos(xy_to_ij).mean())
         xy_tgts=ij_angles - rot
@@ -481,7 +491,8 @@ def plot_gen_bezier(gen,num=10):
 class QuadGen(object):
     # The cell spacing in geographic coordinates for the nominal, isotropic grid
     nom_res=4.0
-
+    gmsh_path="gmsh"
+    
     scales=None
     
     # Minimum number of edges along a boundary segment in the nominal isotropic grid
@@ -619,6 +630,8 @@ class QuadGen(object):
             points=self.gen_bezier_linestring(j=j,samples_per_edge=10,span_fixed=False)
             dist=utils.dist_along(points)[-1]
             local_res=scale(points).min(axis=0) # min=>conservative
+            assert local_res>0
+            assert np.isfinite(dist)
             N=max( self.min_steps, int(dist/local_res))
             points=self.gen_bezier_linestring(j=j,samples_per_edge=N,span_fixed=False)
             nodes=[g.add_or_find_node(x=p,tolerance=0.1)
@@ -655,7 +668,7 @@ class QuadGen(object):
             fn='tmp.geo'
             g.write_gmsh_geo(fn)
             import subprocess
-            subprocess.run(["gmsh",fn,'-2'])
+            subprocess.run([self.gmsh_path,fn,'-2'])
             g_gmsh=unstructured_grid.UnstructuredGrid.read_gmsh('tmp.msh')
             g.add_grid(g_gmsh,merge_nodes='auto',tol=1e-3)
             gnew=g
@@ -857,7 +870,7 @@ class QuadGen(object):
                         parallel_count+=1
                         break # parallel. good
             if parallel_count<2:
-                print(f"Will skip potential internal edge {j}")
+                log.info(f"Will skip potential internal edge {j}")
             else:
                 self.add_internal_edge(gen.edges['nodes'][j],
                                        gen.edges['angle'][j])
@@ -978,15 +991,15 @@ class QuadGen(object):
                     # here
                     if n in grad_nodes:
                         # This is maybe causing a problem with phi in cell 1.
-                        print(f"n {n}: angle={gen_turn} Dropping gradient BC")
+                        log.info(f"n {n}: angle={gen_turn} Dropping gradient BC")
                         del grad_nodes[n]
                     continue
 
                 if gen_turn not in [270,360]: continue
                 if gen_turn==270:
-                    print(f"n {n}: turn=270")
+                    log.info(f"n {n}: turn=270")
                 elif gen_turn==360:
-                    print(f"n {n}: turn=360")
+                    log.info(f"n {n}: turn=360")
 
                 js=self.g_int.node_to_edges(n)
                 e2c=self.g_int.edge_to_cells()
@@ -999,10 +1012,10 @@ class QuadGen(object):
                         nbr=self.g_int.edges['nodes'][j,1]
                     else:
                         nbr=self.g_int.edges['nodes'][j,0]
-                    print(f"j={j}  {n} -- {nbr}  angle={angle} coord={coord}")
+                    log.info(f"j={j}  {n} -- {nbr}  angle={angle} coord={coord}")
                     # Does the angle 
                     if (angle + 90*coord)%180. == 90.:
-                        print("  YES")
+                        log.info("  YES")
                         c=e2c[j,:].max()
                         tri=self.g_int.cells['nodes'][c]
                         nf_cells.append(c)
@@ -1010,7 +1023,7 @@ class QuadGen(object):
                             tri=np.roll(tri,1)
                         noflux_tris.append( (n,tri) )
                     else:
-                        print("  NO")
+                        log.info("  NO")
 
             if coord==0:
                 self.i_nf_cells=nf_cells
@@ -1020,20 +1033,20 @@ class QuadGen(object):
                 joins=self.j_tan_joins
 
             # Drop an nf_cell constraint for every internal edge
-            print(f"About to process joins, starting with {len(noflux_tris)} nf tris")
+            log.info(f"About to process joins, starting with {len(noflux_tris)} nf tris")
             for join in joins:
                 found=False
                 slim_noflux_tris=[]
-                print(f"Looking for an nf_tri to drop for join {join[0]}--{join[1]}")
+                log.info(f"Looking for an nf_tri to drop for join {join[0]}--{join[1]}")
                 for idx,(n,tri) in enumerate(noflux_tris):
                     if (not found) and (n in join):
-                        print(f"  will drop {n}")
+                        log.info(f"  will drop {n}")
                         # Skip this, and copy the rest
                         found=True
                     else:
                         slim_noflux_tris.append( (n,tri) )
                 if not found:
-                    print(f"  Uh-oh! couldn't find a no-flux tri to drop for this internal edge")
+                    log.warning(f"  Uh-oh! couldn't find a no-flux tri to drop for this internal edge")
                 noflux_tris=slim_noflux_tris
                 
             nf_block=sparse.dok_matrix( (len(noflux_tris),self.g_int.Nnodes()), np.float64)
@@ -1062,7 +1075,7 @@ class QuadGen(object):
             B=np.concatenate( [B_Lap,nf_rhs] )
 
             if M.shape[0] != M.shape[1]:
-                print(f"M.shape: {M.shape}")
+                log.error(f"M.shape: {M.shape}")
                 self.M_Lap=M_Lap
                 self.B_Lap=B_Lap
                 self.nf_block=nf_block
@@ -1182,8 +1195,7 @@ class QuadGen(object):
                 j_tan_groups.append([n])
                 psi_gradient_nodes[n]=psi_gradients[n]
             else:
-                print('Yikes - turn is 360, but not axis-aligned')
-
+                log.error('Yikes - turn is 360, but not axis-aligned')
             
         # Use the internal_edges to combine tangential groups
         def join_groups(groups,nA,nB):
@@ -1216,21 +1228,21 @@ class QuadGen(object):
                 # nodes of gen_edge[:2] have adjacent edges parallel to
                 # the internal edge, such that they both have existing groups
                 # that can be joined.
-                print("Internal edge connects straight boundaries. No join")
+                log.info("Internal edge connects straight boundaries. No join")
                 continue
                 
             if internal_angle%180==0: # join on i
-                print("Joining two i_tan_groups")
+                log.info("Joining two i_tan_groups")
                 i_tan_groups=join_groups(i_tan_groups,edge[0],edge[1])
                 self.i_tan_joins.append( edge )
             elif internal_angle%180==90: # join on j
-                print("Joining two j_tan_groups")
+                log.info("Joining two j_tan_groups")
                 j_tan_groups=join_groups(j_tan_groups,edge[0],edge[1])
                 self.j_tan_joins.append( edge )
             else:
-                import pdb
-                pdb.set_trace()
-                print("Internal edge doesn't appear to join same-valued contours")
+                #import pdb
+                #pdb.set_trace()
+                raise Exception("Internal edge doesn't appear to join same-valued contours")
 
         # find longest consecutive stretch of the target_angle,
         # bounded by edges that are perpendicular to the target_angle
@@ -1675,7 +1687,7 @@ class QuadGen(object):
                     j_gen=g_int.edges['gen_j'][j_int] # from this original edge
                     angle_gen=self.gen.edges['angle'][j_gen]
                     if angle_gen%90 != 0:
-                        print("Not worrying about contour hitting diagonal")
+                        log.info("Not worrying about contour hitting diagonal")
                         continue
 
                     # Force that point into an existing constrained edge of g_final
@@ -1713,7 +1725,7 @@ class QuadGen(object):
         def trace_and_insert_contour(b,angle):
             # does dij_angle fall between the angles formed by the boundary, including
             # a little slop.
-            print(f"{angle} looks good")
+            log.info(f"{angle} looks good")
             gn=fixed_int_to_gen[b] # below we already check to see that b is in there.
 
             # ij0=self.gen.nodes['ij'][gn].copy()
@@ -1758,16 +1770,16 @@ class QuadGen(object):
         # Add boundaries when they coincide with contours
         cycle=g_int.boundary_cycle() # could be multiple eventually...
 
-        print("Bulk init with boundaries")
+        log.info("Bulk init with boundaries")
         # Bulk init with the points, then come back to fix metadata
         # Don't add the constraints, since that would mean adding
         # ragged edges potentially too early. This saves a huge amount
         # of time in building the DT, and the constraint handling is
         # relatively fast.
         g_final.bulk_init(g_int.nodes['x'][cycle])
-        print("Tracing boundaries...",end="")
+        log.info("Tracing boundaries...")
         trace_and_insert_boundaries(cycle)
-        print("done")
+        log.info("done")
 
         # Add internal contours
         # return with internal.
@@ -1813,7 +1825,7 @@ class QuadGen(object):
                     for exit_angle,exit_type in node_exits[b_final]:
                         if exit_angle==angle:
                             dupe=True
-                            print("Duplicate exit for internal trace from %d. Skip"%b)
+                            log.info("Duplicate exit for internal trace from %d. Skip"%b)
                             break
                     if not dupe:
                         trace_and_insert_contour(b,angle)
@@ -1892,7 +1904,7 @@ class QuadGen(object):
             elif g_final2.edges['angle'][j] % 180==90:
                 j_adj[c1,c2]=j_adj[c2,c1]=True
             else:
-                print("What? Ragged edge okay, but it shouldn't have both cell neighbors")
+                log.warning("What? Ragged edge okay, but it shouldn't have both cell neighbors")
 
         n_comp_i,labels_i=sparse.csgraph.connected_components(i_adj.astype(np.int32),directed=False)
         n_comp_j,labels_j=sparse.csgraph.connected_components(j_adj,directed=False)
@@ -1980,7 +1992,7 @@ class QuadGen(object):
 
         if 1: # Swath processing
             for coord in [0,1]: # i/j
-                print("Coord: ",coord)
+                log.info("Coord: %s"%coord)
                 if coord==0:
                     labels=labels_i
                     n_comp=n_comp_i
@@ -1991,7 +2003,7 @@ class QuadGen(object):
                     node_field=self.psi
 
                 for comp in range(n_comp):
-                    print("Swath: ",comp)
+                    log.info("Swath: %s"%comp)
                     comp_cells=np.nonzero(labels==comp)[0]
                     add_swath_contours_new(comp_cells,node_field,coord,self.scales[coord])
 
@@ -2010,7 +2022,7 @@ class QuadGen(object):
                         raise Exception("Sanity lost")
 
                     if c_nbr in c_ragged:
-                        print("Brave! Two ragged cells adjacent to each other")
+                        log.info("Brave! Two ragged cells adjacent to each other")
                         continue
                     # similar logic as above
                     orient=g_final2.edges['angle'][j] % 180
@@ -2051,11 +2063,11 @@ class QuadGen(object):
                     edge_angles=g_final2.edges['angle'][ g_final2.cell_to_edges(c) ]
                     ragged_js=(edge_angles%90!=0.0)
                     if np.any(ragged_js):
-                        print("fields_to_xy() failed, but cell is ragged.")
+                        log.info("fields_to_xy() failed, but cell is ragged.")
                         g_patch.delete_node_cascade(n)
                         continue 
                     else:
-                        print("ERROR: fields_to_xy() failed. Cell not ragged.")
+                        log.error("ERROR: fields_to_xy() failed. Cell not ragged.")
                 g_patch.nodes['x'][n]=x
                 # Hmm -
                 # When it works, this probably reduces the search time considerably,

@@ -1901,7 +1901,7 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
                     
                     segA=self.nodes['x'][self.edges['nodes'][j_other]]
                     segB=self.nodes['x'][[nA,nB]]
-                    x_int=segment_segment_intersection(segA,segB)
+                    x_int,alphas=segment_segment_intersection(segA,segB)
                     # Getting an error where x_int is one of the endpoints of
                     # segA.  This is while inserting a contour that ends on
                     # the boundary.

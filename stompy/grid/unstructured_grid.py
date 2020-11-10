@@ -5609,7 +5609,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         """ count is None: return a scalar, the closest.
         otherwise, even if count==1, return a list
         """
+        xy_orig=xy
         xy=np.asarray(xy)
+        assert xy.shape==(2,),"select nodes nearest was given '%s'"%str(xy_orig)
+        
         real_count=count
         if count is None:
             real_count=1
