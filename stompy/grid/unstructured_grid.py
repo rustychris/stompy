@@ -2528,9 +2528,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         edge_sets=[]
         for a,b,cell in pair_iter():
-            print( len(a) )
             flip=a>b
-
             new_edges=np.zeros( len(a), [('a',np.int32),
                                          ('b',np.int32),
                                          ('c1',np.int32),
@@ -6737,7 +6735,6 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             Y,X=np.meshgrid( ys,xs)
             self.nodes['x'][:,0]=X.ravel()
             self.nodes['x'][:,1]=Y.ravel()
-
 
         if self.Ncells()>0:
             cell_ids=np.zeros( (nx-1,ny-1), int)-1
