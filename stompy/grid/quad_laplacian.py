@@ -368,10 +368,14 @@ def linear_scales(gen):
 
     # First, the i scale:
     extraps=[]
+    el=gen.edges_length()
     for edge_list in [i_edges,j_edges]:
         dirich={}
         for j in edge_list:
             scale=scales[j]
+            if scale<0:
+                scale=el[j]/(-scale)
+                
             for n in gen.edges['nodes'][j]:
                 if n in dirich:
                     dirich[n] = 0.5*(scale+dirich[n])
@@ -535,7 +539,12 @@ class QuadGen(object):
 
         # Process angles on the whole quad grid, so we can also get
         # scales
-        prepare_angles_halfedge(gen)
+        if self.angle_source=='halfedge':
+            prepare_angles_halfedge(gen)
+        elif self.angle_source=='existing':
+            pass
+        else:
+            raise Exception("bad angle source: %s"%self.angle_source)
         add_bezier(gen)
         
         if self.scales is None:
