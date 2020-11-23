@@ -774,6 +774,8 @@ def segment_segment_intersection(segA,segB):
     """
     If segA and segB intersect, return a 
     """
+    segA=np.asarray(segA)
+    segB=np.asarray(segB)
     alphas=segment_segment_alphas(segA,segB)
     if np.isnan(alphas[0]):
         # collinear or parallel. may not overlap at all
