@@ -428,6 +428,7 @@ class XYZField(Field):
                 newF=np.ma.filled(newF,np.nan)
                 bad=np.isnan(newF)
                 if np.any(bad):
+                    # Old approach, use nearest:
                     newF[bad]=self.interpolate(X[bad],'nearest')
         else:
             raise Exception("Bad value for interpolation method %s"%interpolation)
