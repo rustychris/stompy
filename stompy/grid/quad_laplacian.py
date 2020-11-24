@@ -410,6 +410,16 @@ def prepare_angles_halfedge(gen):
     gen.add_edge_field('angle',edge_angles,on_exists='overwrite')
 
 def linear_scales(gen,method='adhoc'):
+    """
+    Infer scales from the edges of the generating grid
+    Create a scale field for the two canonical coordinates.
+
+    method: 'adhoc' reverts to a simple extrapolation approach, rather 
+    than solving a proper laplacian.  The Laplacian code turned out be
+    brittle on the very coarse triangulation of gen.
+
+    
+    """
     scales=gen.edges['scale']
     scales=np.where( np.isfinite(scales), scales, 0.0)
 
@@ -2236,24 +2246,43 @@ class SimpleQuadGen(object):
       by a negative scale value.
     """
     nom_res=3.5 # needs to be adaptive..
+    triangle_method='gmsh'
+    gmsh_path='gmsh'
     
-    def __init__(self,gen,cells=None,**kw):
+    def __init__(self,gen,cells=None,execute=True,**kw):
         utils.set_keywords(self,kw)
         self.gen=gen
-        snap_angles(gen)
-        prepare_angles_halfedge(gen)
-        add_bezier(gen)
+        self.cells=cells
+        if execute:
+            self.execute()
+            
+    def execute(self):
+        snap_angles(self.gen)
+        prepare_angles_halfedge(self.gen)
+        add_bezier(self.gen)
 
         self.grids=[]
         self.qgs=[]
         
-        for c in cells:
+        for c in self.cells:
             qg=self.process_one_cell(c)
             self.grids.append(qg.g_final)
-            self.qgs.append(qg)
+
+        self.g_final=self.merge_grids()
+        return self.g_final
+    
+    def merge_grids(self):
+        g=unstructured_grid.UnstructuredGrid(max_sides=4)
+        for sub_g in self.grids:
+            g.add_grid(sub_g)
+        return g
             
     def process_one_cell(self,c):
-        qg=SimpleSingleQuadGen(self.gen,cell=c)
+        qg=SimpleSingleQuadGen(self.gen,cell=c,
+                               triangle_method=self.triangle_method,
+                               gmsh_path=self.gmsh_path,
+                               nom_res=self.nom_res)
+        self.qgs.append(qg)
         qg.execute()
         return qg
 
@@ -2338,10 +2367,10 @@ class SimpleSingleQuadGen(QuadGen):
     """
     Rewrite of portions of QuadGen to handle the local single-cell portion.
     """
+    triangle_method='gmsh'
+    angle_source='existing'
     def __init__(self,gen,cell,**kw):
         super(SimpleSingleQuadGen,self).__init__(gen,execute=False,cells=[cell],
-                                                 angle_source='existing',triangle_method='gmsh',
-                                                 nom_res=self.nom_res,
                                                  **kw)
 
     def discretize_perimeter(self):
@@ -2430,7 +2459,13 @@ class SimpleSingleQuadGen(QuadGen):
                     pnts=np.concatenate( [self.perimeter[idx_a:],
                                           self.perimeter[:idx_b+1]] )
                 assert len(pnts)>0
-                seg=linestring_utils.resample_linearring(pnts,density,closed_ring=0)
+                # First part of a defense against discontinuity in the density
+                # field. This at least makes it continuous along the linestring,
+                # though we can still get into trouble. The second step is to
+                # move density calculation out to the perimeter code, where we
+                # can pull proper density from the original gen nodes.
+                dens_pc=density(pnts)
+                seg=linestring_utils.resample_linearring(pnts,dens_pc,closed_ring=0)
                 rigid=np.zeros(len(seg),np.bool8)
                 rigid[0]=rigid[-1]=True
             else:
@@ -2467,6 +2502,9 @@ class SimpleSingleQuadGen(QuadGen):
         while 1:
             af=(af_low+af_high)/2
             assert abs(af)<4.9
+            if not af_high-af_low>1e-8:
+                import pdb
+                pdb.set_trace()
             pnts0,rigid0=self.discretize_string(left,(2**af)*density)
             pnts1,rigid1=self.discretize_string(right,(0.5**af)*density)
             c0=len(pnts0)
