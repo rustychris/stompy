@@ -233,12 +233,38 @@ def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=5000,hole_rigidit
             return AT.grid
         else:
             return AT
-    else:    
+    else:
+        # Scan src_hints once to find edges that need to be replaced after the merge.
+        # These are edges that aren't involved in cells, but also not part of the
+        # boundary linestring.
+        edges_to_replace=[] # node in AT.grid and node in grid that should get an edge after merge
+        for n in src_hints:
+            n_nbrs=grid.node_to_nodes(n)
+            if len(n_nbrs)<=2: continue # can't have any extra edges
+            
+            # Not quite good enough to just check neighbors against
+            # n_nbrs, since the fixed nodes will be neighbors of n
+            # but not in src_hints.
+            for nbr in n_nbrs:
+                if nbr in src_hints: continue
+                if len(grid.node_to_cells(nbr))>0: continue
+                n_new=AT.grid.select_nodes_nearest( grid.nodes['x'][n] )
+                # so there is an edge in the original grid n--nbr and I want
+                # that to become n_new--nbr in the merge. 
+                # tempting to pass these as merge_nodes to add_grid, but then I
+                # have to clean up the edges, and I would get the old location of
+                # the node.
+                edges_to_replace.append( [n_new,nbr] )
+        # Scan again, this time deleting
         for n in src_hints:
             grid.delete_node_cascade(n)
 
-        grid.add_grid(AT.grid)
+        # Merge, then add those edges back in
+        node_map,edge_map,cell_map = grid.add_grid(AT.grid)
+        for n_new,nbr in edges_to_replace:
+            grid.add_edge( nodes=[node_map[n_new],nbr] )
 
+        # Constrained nodes match exactly and get merged here
         # Surprisingly, this works!  Usually.
         grid.merge_duplicate_nodes()
 
