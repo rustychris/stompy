@@ -2248,6 +2248,7 @@ class SimpleQuadGen(object):
     nom_res=3.5 # needs to be adaptive..
     triangle_method='gmsh'
     gmsh_path='gmsh'
+    merge_tol=0.01
     
     def __init__(self,gen,cells=None,execute=True,**kw):
         utils.set_keywords(self,kw)
@@ -2274,7 +2275,7 @@ class SimpleQuadGen(object):
     def merge_grids(self):
         g=unstructured_grid.UnstructuredGrid(max_sides=4)
         for sub_g in self.grids:
-            g.add_grid(sub_g)
+            g.add_grid(sub_g,merge_nodes='auto',tol=self.merge_tol)
         return g
             
     def process_one_cell(self,c):
@@ -2624,6 +2625,8 @@ class SimpleSingleQuadGen(QuadGen):
         self.psi_field,self.phi_field=self.field_interpolators()
 
         self.position_patch_nodes()
+        self.patch.cells['_area']=np.nan # force recalculation
+        self.patch.orient_cells() # heavy handed -- could be done more gracefully during construction
         self.smooth_patch_psiphi_implicit()
         return self.patch
 
