@@ -57,7 +57,7 @@ class Gmsher(object):
             if n_new is not None:
                 self.grid.nodes['x'][n_new] = x_in
 
-def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=5000,hole_rigidity='cells',
+def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=-1,hole_rigidity='cells',
                      splice=True,return_value='grid',dry_run=False,apollo_rate=1.1,
                      method='front',method_kwargs={}):
     """
@@ -90,7 +90,7 @@ def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=5000,hole_rigidit
         raise Exception("Currently rebay can only handle fully rigid hole (hole_rigidity='all')")
     
     # manually tell it where the region to be filled is.
-    # 5000 ought to be plenty of nodes to get around this loop
+    # max_nodes defaults to -1 which implies Nnodes.
     if nodes is None:
         nodes=grid.enclosing_nodestring(seed_point,max_nodes)
 
@@ -107,14 +107,25 @@ def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=5000,hole_rigidit
     ec=grid.edges_center()
     el=grid.edges_length()
 
+    src_hint_edges=[]
+
+    # Scan the node string to both (a) find hint edges that
+    # can be removed before merging, and (b) select length scales
+    # for the density field.
     for na,nb in utils.circular_pairs(nodes):
         j=grid.nodes_to_edge([na,nb])
         assert j is not None
-        if hole_rigidity=='cells':
-            if np.all( grid.edges['cells'][j] < 0):
-                continue
-        elif hole_rigidity in ['all','all-nodes']:
-            pass 
+        has_no_cells=np.all( grid.edges['cells'][j] < 0)
+        if has_no_cells:
+            # if hole_rigidity is 'all', the edge will exactly exist
+            # in both the new and original grids. Not a problem to delete
+            # it, though might lose some edge-data.
+            src_hint_edges.append(j)
+
+        if hole_rigidity=='cells' and has_no_cells:
+            # This edge doesn't impart any scale constraints
+            continue
+        # elif hole_rigidity in ['all','all-nodes']: pass
         sample_xy.append(ec[j])
         sample_scale.append(el[j])
 
@@ -125,7 +136,7 @@ def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=5000,hole_rigidit
     apollo=field.PyApolloniusField(X=sample_xy,F=sample_scale,r=apollo_rate)
 
     # For hole_rigidity=='all', there are no hints, and this stays
-    # empty.  Only for method=='front' or gmsh can there be other values of
+    # empty.  Only for method=='front' or 'gmsh' can there be other values of
     # hole_rigidity.
     src_hints=[]
 
@@ -211,7 +222,8 @@ def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=5000,hole_rigidit
         g_in=unstructured_grid.UnstructuredGrid()
         g_in.add_linestring(xy_shore,closed=True)
 
-        # refactor!
+        # refactor!  a little tricky, as the three methods all have slightly
+        # different capacities to deal with hint edges/nodes in the input.
         for n in g_in.valid_node_iter():
             n_src=grid.select_nodes_nearest(g_in.nodes['x'][n],max_dist=0.0)
             assert n_src is not None,"How are we not finding the original src node?"
@@ -255,7 +267,12 @@ def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=5000,hole_rigidit
                 # have to clean up the edges, and I would get the old location of
                 # the node.
                 edges_to_replace.append( [n_new,nbr] )
-        # Scan again, this time deleting
+        if hole_rigidity!='all':
+            # if hole_rigidity were 'all', then prefer to keep these
+            # edges since they may have some data on them.
+            for j in src_hint_edges:
+                grid.delete_edge(j)
+        # Scan nodes again, this time deleting
         for n in src_hints:
             grid.delete_node_cascade(n)
 
