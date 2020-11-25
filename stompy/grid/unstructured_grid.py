@@ -586,9 +586,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 blk_start=fp.readline().strip()
                 if blk_start=='':
                     break
-                print("Reading ",blk_start)
+                logging.info("Reading %s"%blk_start)
                 assert blk_start[0]=='$'
-
 
                 blk_end=blk_start.replace('$','$End')
 
@@ -2304,7 +2303,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         for j in starting_edges:
             if j % 10000==0:
-                print("Edge %d/%d, %d cycles"%(j,self.Nedges(),len(cycles)))
+                logging.info("Edge %d/%d, %d cycles"%(j,self.Nedges(),len(cycles)))
             # iterate over the two half-edges
             for A,B in (self.edges['nodes'][j], self.edges['nodes'][j,::-1]):
                 cycle=[A]
@@ -3695,7 +3694,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                         plt.axis('tight')
                         plt.axis('equal')
                         # plt.axis((552453., 552569, 4123965., 4124066.) )
-                        raise Exception("jo_cells[%d]=%s, expected <0"%(jo_cells_side,
+                        raise Exception("jo_cells[%d]=%s, expected <0. Verify CELL AREA!"%(jo_cells_side,
                                                                         jo_cells[jo_cells_side]))
                     jo_cells[jo_cells_side]=c
                     self.modify_edge(edge_map[j],cells=jo_cells)
