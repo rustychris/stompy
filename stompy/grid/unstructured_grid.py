@@ -3886,13 +3886,13 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         # This whole chunk needs testing.
         # maybe some confusion over when edges has to be set
         edges=self.cell_to_edges(i,ordered=True)
-
-        if 'edges' not in kwargs:
-            # wait - is this circular??
-            self.cells['edges'][i,:len(edges)]=edges
-            self.cells['edges'][i,len(edges):]=self.UNDEFINED
-
         nodes=self.cell_to_nodes(i)
+
+        # if 'edges' not in kwargs: 
+        # Been having trouble with calls that edges
+        # but it's empty. Safer just to set them.
+        self.cells['edges'][i,:len(edges)]=edges
+        self.cells['edges'][i,len(edges):]=self.UNDEFINED
 
         for side in range(len(edges)):
             j=edges[side]
@@ -6708,10 +6708,15 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         return np.nan*np.ones(len(self.edges),np.float64)
 
     #--# generation methods
-    def add_rectilinear(self,p0,p1,nx,ny):
+    def add_rectilinear(self,p0,p1,nx,ny,reverse_cells=False):
         """
         add nodes,edges and cells defining a rectilinear grid.
         nx gives the number of nodes in the x-direction (nx-1 cells)
+
+        reverse_cells: If True, the order of nodes in each cell will be reversed.
+          With a typical call where p0<p1, the default behavior creates proper 
+          cells with positive area / CCW nodes.  But if the grid is going to be 
+          mapped through a reflection, this option allows reversing the nodes.
 
         returns a dict with nodes=> [nx,ny] array of node indices
            cells=>[nx-1,ny-1] array of cell indices.
@@ -6744,6 +6749,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                             node_ids[xi+1,yi],
                             node_ids[xi+1,yi+1],
                             node_ids[xi,yi+1] ]
+                    if reverse_cells:
+                        nodes=nodes[::-1]
                     cell_ids[xi,yi]=self.add_cell_and_edges(nodes=nodes)
         else:
             # Blank canvas - just create all in one go
@@ -6751,6 +6758,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                          node_ids[1:,:-1].ravel(),
                          node_ids[1:,1:].ravel(),
                          node_ids[:-1,1:].ravel() ]
+            if reverse_cells:
+                cells=cells[:,::-1]
             self.cells=np.zeros(len(cells),self.cell_dtype)
             self.cells[:]=self.cell_defaults
             self.cells['nodes'][:,:4]=cells

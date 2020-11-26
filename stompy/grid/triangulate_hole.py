@@ -5,6 +5,9 @@ from ..spatial import field
 from . import unstructured_grid, front, rebay
 import pickle
 
+import logging
+logger=logging.getLogger(__name__)
+
 class Gmsher(object):
     scale_file='scale.pkl'
     geo_file='tmp.geo'
@@ -204,8 +207,8 @@ def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=-1,hole_rigidity=
             return AT # for debugging -- need to keep a handle on this to see what's up.
     elif method=='rebay':
         grid_to_pave=unstructured_grid.UnstructuredGrid(max_sides=len(xy_shore))
-        nodes=[grid_to_pave.add_node(x=xy) for xy in xy_shore]
-        c=grid_to_pave.add_cell_and_edges(nodes)
+        pave_nodes=[grid_to_pave.add_node(x=xy) for xy in xy_shore]
+        c=grid_to_pave.add_cell_and_edges(pave_nodes)
         rad=rebay.RebayAdvancingDelaunay(grid=grid_to_pave,scale=apollo,
                                          heap_sign=1,**method_kwargs)
         if dry_run:
@@ -253,20 +256,39 @@ def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=-1,hole_rigidity=
         for n in src_hints:
             n_nbrs=grid.node_to_nodes(n)
             if len(n_nbrs)<=2: continue # can't have any extra edges
+
+            n_idx=nodes.index(n)
             
             # Not quite good enough to just check neighbors against
             # n_nbrs, since the fixed nodes will be neighbors of n
             # but not in src_hints.
             for nbr in n_nbrs:
-                if nbr in src_hints: continue
-                if len(grid.node_to_cells(nbr))>0: continue
-                n_new=AT.grid.select_nodes_nearest( grid.nodes['x'][n] )
-                # so there is an edge in the original grid n--nbr and I want
-                # that to become n_new--nbr in the merge. 
-                # tempting to pass these as merge_nodes to add_grid, but then I
-                # have to clean up the edges, and I would get the old location of
-                # the node.
-                edges_to_replace.append( [n_new,nbr] )
+                # This is an older check:
+                #if nbr in src_hints: continue
+                #if len(grid.node_to_cells(nbr))>0: continue
+                if nbr not in nodes:
+                    n_new=AT.grid.select_nodes_nearest( grid.nodes['x'][n] )
+                    # so there is an edge in the original grid n--nbr and I want
+                    # that to become n_new--nbr in the merge. 
+                    # tempting to pass these as merge_nodes to add_grid, but then I
+                    # have to clean up the edges, and I would get the old location of
+                    # the node.
+                    # Have to annotate the nodes with which grid they refer to, since
+                    # new nodes are going to get remapped
+                    edges_to_replace.append( [('new',n_new),('old',nbr)] )
+                else:
+                    nbr_idx=nodes.index(nbr)
+                    N=len(nodes)
+                    if nbr_idx in [ (n_idx+1)%N, (n_idx-1)%N]:
+                        # Just a hint edge 
+                        continue
+                    else:
+                        # A special case, untested at this point.
+                        logger.warning("Untested territory -- a non-hint edge joining two hint nodes")
+                        n_new=AT.grid.select_nodes_nearest( grid.nodes['x'][n] )
+                        nbr_new=AT.grid.select_nodes_nearest( grid.nodes['x'][nbr] )
+                        edges_to_replace.append( [('new',n_new), ('new',nbr_new)] )
+
         if hole_rigidity!='all':
             # if hole_rigidity were 'all', then prefer to keep these
             # edges since they may have some data on them.
@@ -278,8 +300,13 @@ def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=-1,hole_rigidity=
 
         # Merge, then add those edges back in
         node_map,edge_map,cell_map = grid.add_grid(AT.grid)
-        for n_new,nbr in edges_to_replace:
-            grid.add_edge( nodes=[node_map[n_new],nbr] )
+        for (new_src,n_new),(nbr_src,nbr) in edges_to_replace:
+            if new_src=='new':
+                n_new=node_map[n_new]
+            if nbr_src=='new':
+                nbr=node_map[nbr]
+                
+            grid.add_edge( nodes=[n_new,nbr] )
 
         # Constrained nodes match exactly and get merged here
         # Surprisingly, this works!  Usually.

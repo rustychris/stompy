@@ -498,7 +498,7 @@ def linear_scales(gen,method='adhoc'):
     bad=(extraps[0]<=0) | (extraps[1]<=0)
     if np.any(bad):
         idxs=np.nonzero(bad)[0]
-        log.error("Bad nodes:",gen_tri.nodes['x'][idxs])
+        log.error("Bad nodes: %s"%str(gen_tri.nodes['x'][idxs]))
         raise Exception("Probably disconnected cells with no scale")
     return i_field, j_field
 
@@ -772,7 +772,11 @@ class QuadGen(object):
             g.write_gmsh_geo(fn)
             import subprocess
             subprocess.run([self.gmsh_path,fn,'-2'])
-            g_gmsh=unstructured_grid.UnstructuredGrid.read_gmsh('tmp.msh')
+            try:
+                g_gmsh=unstructured_grid.UnstructuredGrid.read_gmsh('tmp.msh')
+            except:
+                log.error("Intermediate grid generation failed. Check for self-intersection in bezier grid")
+                raise
             g.add_grid(g_gmsh,merge_nodes='auto',tol=1e-3)
             gnew=g
         else:    
@@ -2287,7 +2291,8 @@ class SimpleQuadGen(object):
         qg.execute()
         return qg
 
-def patch_contours(g_int,node_field,scale,count=None,Mdx=None,Mdy=None):
+def patch_contours(g_int,node_field,scale,count=None,Mdx=None,Mdy=None,
+                   lowpass_ds_dval=True):
     """
     Given g_int, a node field (psi/phi) defined on g_int, a scale field, and 
     a count of edges, return the contour values of the node field which
@@ -2334,10 +2339,23 @@ def patch_contours(g_int,node_field,scale,count=None,Mdx=None,Mdy=None):
     # Particularly near the ends there are a lot of
     # duplicate swath_vals.
     # Try a bit of lowpass to even things out.
-    if 1:
-        winsize=int(len(o_vals)/5)
+    if lowpass_ds_dval:
+        # HERE this needs to be scale-aware!!
+        # could use count, but we may not have it, and
+        # it ends up being evenly spread out, which isn't
+        # ideal.
+        # How bad is it to just drop this? Does have an effect,
+        # particularly in the lateral
+        if count is None:
+            # There is probably something more clever to do using the actual
+            # swath vals.
+            winsize=int(len(o_vals)/10)
+        else:
+            winsize=int(len(o_vals)/count)
         if winsize>1:
             o_ds_dval=filters.lowpass_fir(o_ds_dval,winsize)
+    else:
+        print("No lowpass on ds_dval")
 
     s=np.cumsum(d_vals*0.5*(o_ds_dval[:-1]+o_ds_dval[1:]))
     s=np.r_[0,s]
@@ -2370,6 +2388,9 @@ class SimpleSingleQuadGen(QuadGen):
     """
     triangle_method='gmsh'
     angle_source='existing'
+    # The lowpass seems like it would defeat some of the scale handling.
+    lowpass_ds_dval=True
+    
     def __init__(self,gen,cell,**kw):
         super(SimpleSingleQuadGen,self).__init__(gen,execute=False,cells=[cell],
                                                  **kw)
@@ -2572,7 +2593,9 @@ class SimpleSingleQuadGen(QuadGen):
                                                  extra_edge_fields=[('orient',np.float32)])
         elts=patch.add_rectilinear( [0,0],
                                     [len(self.left_i)-1, len(self.left_j)-1],
-                                    len(self.left_i), len(self.left_j) )
+                                    len(self.left_i), len(self.left_j),
+                                    reverse_cells=True)
+        
         # Fill in orientation
         segs=patch.nodes['x'][ patch.edges['nodes'] ]
         deltas=segs[:,1,:] - segs[:,0,:]
@@ -2613,8 +2636,10 @@ class SimpleSingleQuadGen(QuadGen):
         nd=NodeDiscretization(self.g_int)
         Mdx,_=nd.construct_matrix(op='dx') # discard rhs, it's all 0.
         Mdy,_=nd.construct_matrix(op='dy') # discard rhs
-        self.i_contours=patch_contours(self.g_int,self.phi,self.scales[0], len(self.left_i),Mdx=Mdx,Mdy=Mdy)
-        self.j_contours=patch_contours(self.g_int,self.psi,self.scales[1], len(self.left_j),Mdx=Mdx,Mdy=Mdy)
+        self.i_contours=patch_contours(self.g_int,self.phi,self.scales[0], len(self.left_i),
+                                       Mdx=Mdx,Mdy=Mdy,lowpass_ds_dval=self.lowpass_ds_dval)
+        self.j_contours=patch_contours(self.g_int,self.psi,self.scales[1], len(self.left_j),
+                                       Mdx=Mdx,Mdy=Mdy,lowpass_ds_dval=self.lowpass_ds_dval)
 
         # Now I have the target psi/phi contours
         # I know which nodes should be rigid, and their locations.
@@ -2625,9 +2650,12 @@ class SimpleSingleQuadGen(QuadGen):
         self.psi_field,self.phi_field=self.field_interpolators()
 
         self.position_patch_nodes()
-        self.patch.cells['_area']=np.nan # force recalculation
-        self.patch.orient_cells() # heavy handed -- could be done more gracefully during construction
         self.smooth_patch_psiphi_implicit()
+        
+        self.patch.cells['_area']=np.nan # force recalculation
+        # heavy handed -- could be done more gracefully during construction
+        # in fact, this shouldn't be necessary at all anymore.
+        self.patch.orient_cells() 
         return self.patch
 
     def position_patch_nodes(self):
@@ -2810,7 +2838,9 @@ class SimpleSingleQuadGen(QuadGen):
             patch.nodes['x'][n]=self.g_int.fields_to_xy(patch.nodes['pp'][n],
                                                         [self.psi,self.phi],
                                                         x_orig)
-
+            
+        # Invalid circumcenters.  May need to invalidate other geometry, too.
+        patch.cells['_center']=np.nan
 ##
 
 # # HERE: try some relaxation approaches.
