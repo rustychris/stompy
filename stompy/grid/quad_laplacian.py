@@ -2320,9 +2320,9 @@ def patch_contours(g_int,node_field,scale,count=None,Mdx=None,Mdy=None,
     # preprocessing for contour placement
     nd=NodeDiscretization(g_int)
     if Mdx is None:
-        Mdx,_=nd.construct_matrix(op='dx') # could be saved between calls.
+        Mdx,_=nd.construct_matrix(op='dx') 
     if Mdy is None:
-        Mdy,_=nd.construct_matrix(op='dy') #
+        Mdy,_=nd.construct_matrix(op='dy') 
         
     field_dx=Mdx.dot(node_field)
     field_dy=Mdy.dot(node_field)
@@ -2331,8 +2331,11 @@ def patch_contours(g_int,node_field,scale,count=None,Mdx=None,Mdy=None,
 
     order=np.argsort(swath_vals)
     o_vals=swath_vals[order]
-    o_dval_ds=swath_grad[order]
-    o_ds_dval=1./o_dval_ds
+    o_dval_ds=swath_grad[order] # s: coordinate perpendicular to contours
+    local_scale=scale( g_int.nodes['x'][swath_nodes[order]] )
+
+    # local_scale is ds/di or ds/dj, so now s is approx. grid index
+    o_ds_dval=1./(o_dval_ds*local_scale)
 
     # trapezoid rule integration
     d_vals=np.diff(o_vals)
@@ -2363,14 +2366,10 @@ def patch_contours(g_int,node_field,scale,count=None,Mdx=None,Mdy=None,
     # calculate this from resolution
     # might have i/j swapped.  range of s is 77m, and field
     # is 1. to 1.08.  better now..
-    local_scale=scale( g_int.nodes['x'][swath_nodes] ).mean(axis=0)
     if count is None:
-        n_swath_cells=int(np.round( (s.max() - s.min())/local_scale))
-        n_swath_cells=max(1,n_swath_cells)
-    else:
-        n_swath_cells=count-1
+        count=max(2,int(np.round(s.max())))
 
-    s_contours=np.linspace(s[0],s[-1],1+n_swath_cells)
+    s_contours=np.linspace(s[0],s[-1],count)
     adj_contours=np.interp( s_contours,
                             s,o_vals)
     
@@ -2404,6 +2403,7 @@ class SimpleSingleQuadGen(QuadGen):
          self.angle_to_segments: map each of the 4 cardinal angles to a list of segments,
            proceeding CCW around the cell. each segment is a start node end node, and a count
              if count was specified in the input (i.e. gen.edges['scale'] has negative value)
+         self.perimeter_scale: [N] - linearly interpolated scale along the perimeter nodes
         """
         def he_angle(he):
             # return (he.grid.edges['angle'][he.j] + 180*he.orient)%360.0
@@ -2424,6 +2424,8 @@ class SimpleSingleQuadGen(QuadGen):
         he0=he
         idx=0 # current location into list of perimeter samples
         perimeter=[]
+        perimeter_scales=[] # [N,2] scale interpolated along boundary
+        
         node_to_idx={}
         angle_to_segments={0:[],
                            90:[],
@@ -2434,10 +2436,25 @@ class SimpleSingleQuadGen(QuadGen):
 
         while 1:
             pnts=self.gen_bezier_linestring(he.j,span_fixed=False)
+            
             if he.orient:
                 pnts=pnts[::-1]
             perimeter.append(pnts[:-1])
-            node_to_idx[he.node_rev()]=idx
+
+            nA=he.node_rev()
+            nB=he.node_fwd()
+
+            # As long as scales is 1:1 to nodes of gen, I can query directly:
+            scales0=np.linspace( self.scales[0].F[nA], self.scales[0].F[nB], len(pnts))
+            scales1=np.linspace( self.scales[1].F[nA], self.scales[1].F[nB], len(pnts))
+            # otherwise have to interpolate:
+            # scales0=np.linspace( self.scales[0](pnts[0]), self.scales[0](pnts[-1]), len(pnts))
+            # scales1=np.linspace( self.scales[1](pnts[0]), self.scales[1](pnts[-1]), len(pnts))
+            
+            scales=np.c_[scales0,scales1]
+            perimeter_scales.append(scales[:-1])
+            
+            node_to_idx[nA]=idx
             idx+=len(pnts)-1
             he_fwd=he.fwd()
             angle=he_angle(he)
@@ -2456,6 +2473,7 @@ class SimpleSingleQuadGen(QuadGen):
             if he==he0:
                 break
         self.perimeter=np.concatenate(perimeter)
+        self.perimeter_scales=np.concatenate(perimeter_scales)
         self.angle_to_segments=angle_to_segments
         self.node_to_idx=node_to_idx
 
@@ -2464,7 +2482,7 @@ class SimpleSingleQuadGen(QuadGen):
         string: a node string with counts, 
            [ (start node, end node, count), ... ]
            where a count of 0 means use the provided density
-        density: a density (scale) field
+        density: NEW: density evaluated at perimeter points. (old: a density field)
         returns: (N,2) discretized linestring and (N,) bool array of
          rigid-ness.
         """
@@ -2477,29 +2495,40 @@ class SimpleSingleQuadGen(QuadGen):
                 idx_b=self.node_to_idx[b]
                 if idx_a<idx_b:
                     pnts=self.perimeter[idx_a:idx_b+1]
+                    dens_pc=density[idx_a:idx_b+1]
                 else:
                     pnts=np.concatenate( [self.perimeter[idx_a:],
                                           self.perimeter[:idx_b+1]] )
+                    dens_pc=np.concatenate( [density[idx_a:],
+                                             density[:idx_b+1]] )
                 assert len(pnts)>0
-                # First part of a defense against discontinuity in the density
-                # field. This at least makes it continuous along the linestring,
-                # though we can still get into trouble. The second step is to
-                # move density calculation out to the perimeter code, where we
-                # can pull proper density from the original gen nodes.
-                dens_pc=density(pnts)
+                # To defend against discontinuity in the density field,
+                # use a precalculated density continuous along the linestring,
+                # dens_pc=density(pnts) # old usage
                 seg=linestring_utils.resample_linearring(pnts,dens_pc,closed_ring=0)
                 rigid=np.zeros(len(seg),np.bool8)
                 rigid[0]=rigid[-1]=True
             else:
                 pnt_a=self.gen.nodes['x'][a]
                 pnt_b=self.gen.nodes['x'][b]
-                # HERE: really this should use the bezier segment.  Just need to be
-                # sure that the result doesn't have any dependence on which of the
-                # two cells we're processing, so that each patch will get the same
-                # nodes here (bit-equal not necessary since the grids will be merged
-                # with some small tolerance, but we should be talking machine-precision)
-                seg=np.c_[ np.linspace(pnt_a[0], pnt_b[0], count+1),
-                           np.linspace(pnt_a[1], pnt_b[1], count+1) ]
+                j=self.gen.nodes_to_edge(a,b)
+                
+                if j is None:
+                    log.warning("Rigid segment doesn't match a single edge in gen?")
+                    seg=np.c_[ np.linspace(pnt_a[0], pnt_b[0], count+1),
+                               np.linspace(pnt_a[1], pnt_b[1], count+1) ]
+                else:
+                    # Try using bezier:
+                    # need to be sure that the result doesn't have any dependence on which of the
+                    # two cells we're processing, so that each patch will get the same
+                    # nodes here (bit-equal not necessary since the grids will be merged
+                    # with some small tolerance, but we should be talking machine-precision)
+                    # Should be okay.
+                    # count is correct, shouldn't have +1 here.
+                    seg=self.gen_bezier_linestring(j=j,samples_per_edge=count,span_fixed=False)
+                    if self.gen.edges['nodes'][j,1]==a:
+                        seg=seg[::-1]
+
                 rigid=np.ones(len(seg),np.bool8)
             result.append(seg[:-1])
             rigids.append(rigid[:-1])
@@ -2513,7 +2542,7 @@ class SimpleSingleQuadGen(QuadGen):
         """
         Shift node densities to get the count on opposite sides to match up.
         left,right: lists of segments as in self.angle_to_segments (node start, stop, count)
-        density: the coordinate-specific density field.
+        density: the coordinate-specific density field, already evaluated at perimeter points.
 
         returns: (points along left, rigid markers for left), (points along right, rigid markers for right)
         NB: the assumption is that left and right have opposite orientations (i.e. both are CCW, so anti-parallel)
@@ -2525,6 +2554,7 @@ class SimpleSingleQuadGen(QuadGen):
             af=(af_low+af_high)/2
             assert abs(af)<4.9
             if not af_high-af_low>1e-8:
+                #raise Exception("Calculate coord count failed to converge")
                 import pdb
                 pdb.set_trace()
             pnts0,rigid0=self.discretize_string(left,(2**af)*density)
@@ -2559,12 +2589,14 @@ class SimpleSingleQuadGen(QuadGen):
         """
         self.discretize_perimeter()
 
+        # Precalculate density fields along perimeter:
+
         (left_i,left_i_rigid),(right_i,right_i_rigid)=self.calculate_coord_count(self.angle_to_segments[0],
                                                                                  self.angle_to_segments[180],
-                                                                                 self.scales[0])
+                                                                                 self.perimeter_scales[:,0])
         (left_j,left_j_rigid),(right_j,right_j_rigid)=self.calculate_coord_count(self.angle_to_segments[90],
                                                                                  self.angle_to_segments[270],
-                                                                                 self.scales[1])
+                                                                                 self.perimeter_scales[:,1])
 
         # Necessary to have order match grid order below
         left_i=left_i[::-1]
