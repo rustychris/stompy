@@ -2273,8 +2273,9 @@ class SimpleQuadGen(object):
             qg=self.process_one_cell(c)
             self.grids.append(qg.g_final)
 
-        self.g_final=self.merge_grids()
-        return self.g_final
+        if self.grids:
+            self.g_final=self.merge_grids()
+            return self.g_final
     
     def merge_grids(self):
         g=unstructured_grid.UnstructuredGrid(max_sides=4)
@@ -2282,11 +2283,13 @@ class SimpleQuadGen(object):
             g.add_grid(sub_g,merge_nodes='auto',tol=self.merge_tol)
         return g
             
-    def process_one_cell(self,c):
-        qg=SimpleSingleQuadGen(self.gen,cell=c,
-                               triangle_method=self.triangle_method,
-                               gmsh_path=self.gmsh_path,
-                               nom_res=self.nom_res)
+    def process_one_cell(self,c,**kw):
+        kwargs=dict(cell=c,
+                    triangle_method=self.triangle_method,
+                    gmsh_path=self.gmsh_path,
+                    nom_res=self.nom_res)
+        kwargs.update(kw)
+        qg=SimpleSingleQuadGen(self.gen,**kwargs)
         self.qgs.append(qg)
         qg.execute()
         return qg
@@ -2389,6 +2392,7 @@ class SimpleSingleQuadGen(QuadGen):
     angle_source='existing'
     # The lowpass seems like it would defeat some of the scale handling.
     lowpass_ds_dval=True
+    smooth_patch=True
     
     def __init__(self,gen,cell,**kw):
         super(SimpleSingleQuadGen,self).__init__(gen,execute=False,cells=[cell],
@@ -2444,12 +2448,12 @@ class SimpleSingleQuadGen(QuadGen):
             nA=he.node_rev()
             nB=he.node_fwd()
 
-            # As long as scales is 1:1 to nodes of gen, I can query directly:
-            scales0=np.linspace( self.scales[0].F[nA], self.scales[0].F[nB], len(pnts))
-            scales1=np.linspace( self.scales[1].F[nA], self.scales[1].F[nB], len(pnts))
-            # otherwise have to interpolate:
-            # scales0=np.linspace( self.scales[0](pnts[0]), self.scales[0](pnts[-1]), len(pnts))
-            # scales1=np.linspace( self.scales[1](pnts[0]), self.scales[1](pnts[-1]), len(pnts))
+            # It's possible to trace the nodes here back to nodes of the original
+            # gen, and then query the scale values directly.  But note that
+            # these are not the same node indices, since gen has been renumbered
+            # after selecting a single cell. For now, just interpolate:
+            scales0=np.linspace( self.scales[0](pnts[0]), self.scales[0](pnts[-1]), len(pnts))
+            scales1=np.linspace( self.scales[1](pnts[0]), self.scales[1](pnts[-1]), len(pnts))
             
             scales=np.c_[scales0,scales1]
             perimeter_scales.append(scales[:-1])
@@ -2554,9 +2558,9 @@ class SimpleSingleQuadGen(QuadGen):
             af=(af_low+af_high)/2
             assert abs(af)<4.9
             if not af_high-af_low>1e-8:
-                #raise Exception("Calculate coord count failed to converge")
-                import pdb
-                pdb.set_trace()
+                raise Exception("Calculate coord count failed to converge")
+                #import pdb
+                #pdb.set_trace()
             pnts0,rigid0=self.discretize_string(left,(2**af)*density)
             pnts1,rigid1=self.discretize_string(right,(0.5**af)*density)
             c0=len(pnts0)
@@ -2682,7 +2686,8 @@ class SimpleSingleQuadGen(QuadGen):
         self.psi_field,self.phi_field=self.field_interpolators()
 
         self.position_patch_nodes()
-        self.smooth_patch_psiphi_implicit()
+        if self.smooth_patch:
+            self.smooth_patch_psiphi_implicit()
         
         self.patch.cells['_area']=np.nan # force recalculation
         # heavy handed -- could be done more gracefully during construction
