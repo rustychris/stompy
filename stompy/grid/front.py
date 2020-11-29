@@ -1519,7 +1519,14 @@ class AdvancingFront(object):
             # N.B. possible for trav0 to be SLIDE
             degree=self.grid.node_degree(n)
 
-            return ( (n==trav0) or (self.grid.nodes['fixed'][n]==self.HINT)) and (degree==2)
+            # 2020-11-28: there used to be a blanket exception for trav0,
+            # but it's only in the case that trav0 is SLIDE that we want
+            # to return True for it.
+            if n==trav0 and self.grid.nodes['fixed'][n]==self.SLIDE:
+                return True
+            if self.grid.nodes['fixed'][n]==self.HINT and (degree==2):
+                return True
+            return False
 
         while pred(trav) and (trav != anchor) and (span<max_span):
             span += utils.dist( self.grid.nodes['x'][last] -
