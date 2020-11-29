@@ -1158,7 +1158,12 @@ class TriangleSite(FrontSite):
         probably better here, as part of the site.
         """
         a,b,c = self.abc
-        local_length = self.af.scale( self.points().mean(axis=0) )
+        # local_length = self.af.scale( self.points().mean(axis=0) )
+        # Possible that the site has very long edges ab or bc.
+        # averaging the position can give a point far from the actual
+        # site of the action which is b.
+        # This is safer:
+        local_length = self.af.scale( self.points()[1] )
         
         grid=self.af.grid
         self.resample_status=True
@@ -1522,9 +1527,11 @@ class AdvancingFront(object):
             # 2020-11-28: there used to be a blanket exception for trav0,
             # but it's only in the case that trav0 is SLIDE that we want
             # to return True for it.
+            if degree>2:
+                return False
             if n==trav0 and self.grid.nodes['fixed'][n]==self.SLIDE:
                 return True
-            if self.grid.nodes['fixed'][n]==self.HINT and (degree==2):
+            if self.grid.nodes['fixed'][n]==self.HINT:
                 return True
             return False
 
