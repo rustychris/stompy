@@ -550,16 +550,35 @@ def add_bezier(gen):
         # 0 degress in xy space is rot degrees from 0 degrees in
         # ij space.
         xy_to_ij=np.pi/180 * (ij_angles-xy_angles)
-        rot=180/np.pi * np.arctan2( np.sin(xy_to_ij).mean(),
-                                    np.cos(xy_to_ij).mean())
-        xy_tgts=ij_angles - rot
+
+        # when a node is part of multple cells, but those
+        # cells have no edges in common, treat it as two separate
+        # groups of angles
+        
+        # label nodes:
+        node_groups=np.arange(len(hes))
+        for a in range(len(hes)):
+            b=(a+1)%len(hes)
+            he_a=hes[a]
+            he_b=hes[b]
+            if he_a.cell()>=0 and he_a.cell()==he_b.cell_opp():
+                node_groups[ node_groups==node_groups[b] ] = node_groups[a]
+
+        xy_tgts=0*ij_angles
+        for grp in np.arange(len(hes)):
+            sel=node_groups==grp
+            if np.all(~sel): continue
+            
+            rot=180/np.pi * np.arctan2( np.sin(xy_to_ij[sel]).mean(),
+                                        np.cos(xy_to_ij[sel]).mean())
+            xy_tgts[sel]=ij_angles[sel] - rot
+            
         xy_errs=xy_angles - xy_tgts
 
         for he,xy_err in zip(hes,xy_errs):
             vec=gen.nodes['x'][he.node_fwd()] - gen.nodes['x'][he.node_rev()]
             cp=gen.nodes['x'][n] + utils.rot(-xy_err*np.pi/180., 1./3 * vec)
             gen.edges['bez'][he.j,1+he.orient]=cp
-
 
 
 def plot_gen_bezier(gen,num=10):
