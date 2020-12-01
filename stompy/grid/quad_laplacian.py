@@ -2751,7 +2751,7 @@ class SimpleSingleQuadGen(QuadGen):
                 self.patch.nodes['pp'][n]=pp
                 self.patch.nodes['rigid'][n]=rigid
 
-    def smooth_patch_psiphi_implicit(self,aniso=0.02):
+    def smooth_patch_psiphi_implicit(self,aniso=0.02,monotonify=True):
         """
         Anisotropic, implicit smoothing of psi/phi values.
         Using the target contours in self.{i,j}_contours
@@ -2762,6 +2762,15 @@ class SimpleSingleQuadGen(QuadGen):
         is.  "On-axis" means how much each grid line follows a
         contour, and "off-axis" means how much the spacing between
         grid lines is evened out.
+
+        monotonify: if True, then check for monotonicity of coordinates
+        and iteratively decrease anisotropy until monotonic. 
+        This is a hack fallback for boundary spacing that's not even,
+        when the default anisotropy would cause self-intersections.
+        There might be a better solution where the requested resolution
+        information could be incorporated into the psiphi setup. The
+        goal of this hack is to make sure the generation step completes.
+
         """
         patch=self.patch
         patch_nodes=self.patch_elts['nodes']
@@ -2781,52 +2790,69 @@ class SimpleSingleQuadGen(QuadGen):
 
         N=patch.Nnodes()
 
-        Ms=[None,None]
-        bs=[None,None]
+        dpp_smooths=[None,None]
         nrows,ncols=patch_nodes.shape
 
         # dc/dt= d/dx Kx dc/dx + d/dy Ky dc/dy
         # steady state, uniform K, dx=dy=1
         #  0 = Kx c[-1,0] + Kx c[1,0] + Ky c[0,-1] + Ky c[0,1] - (2Kx+2Ky) c[0,0]
         for coord in [0,1]:
-            M=sparse.dok_matrix( (N,N), np.float64)
-            Ms[coord]=M
-            b=np.zeros(N,np.float64)
-            bs[coord]=b
-            K=[1,1]
-            K[1-coord]*=0.02
-            rigid_this_coord=[rigid_r0,rigid_r1][coord]
-            dirich=dpp[:,coord]
+            adj_aniso=aniso
+            while 1: # monotonify loop
 
-            for row in range(nrows):
-                for col in range(ncols):
-                    n=patch_nodes[row,col]
-                    if rigid_this_coord[row,col]:
-                        M[n,n]=1
-                        b[n]=dirich[n]
+                M=sparse.dok_matrix( (N,N), np.float64)
+                b=np.zeros(N,np.float64)
+                K=[1,1]
+                K[1-coord]*=adj_aniso
+                rigid_this_coord=[rigid_r0,rigid_r1][coord]
+                dirich=dpp[:,coord]
+
+                for row in range(nrows):
+                    for col in range(ncols):
+                        n=patch_nodes[row,col]
+                        if rigid_this_coord[row,col]:
+                            M[n,n]=1
+                            b[n]=dirich[n]
+                        else:
+                            b[n]=0.0
+                            M[n,n]=-2*(K[0]+K[1])
+                            if row==0:
+                                M[n,patch_nodes[row+1,col]]=2*K[0]
+                            elif row==nrows-1:
+                                M[n,patch_nodes[row-1,col]]=2*K[0]
+                            else:
+                                M[n,patch_nodes[row-1,col]]=K[0]
+                                M[n,patch_nodes[row+1,col]]=K[0]
+                            if col==0:
+                                M[n,patch_nodes[row,col+1]]=2*K[1]
+                            elif col==ncols-1:
+                                M[n,patch_nodes[row,col-1]]=2*K[1]
+                            else:
+                                M[n,patch_nodes[row,col-1]]=K[1]
+                                M[n,patch_nodes[row,col+1]]=K[1]
+
+                dpp_smooths[coord]=sparse.linalg.spsolve(M.tocsr(),b)
+                if monotonify:
+                    # Check for monotonicity
+                    result=target_pp[...,coord] + dpp_smooths[coord]
+                    result_r=result[patch_nodes]
+                    if coord==0:
+                        if np.all(np.diff(result_r,axis=1-coord)>0):
+                            break
+                    else: # coord==1
+                        if np.all(np.diff(result_r,axis=1-coord)<0):
+                            break
+                    adj_aniso*=2
+                    if adj_aniso>=1:
+                        log.warning("Could not adjust anisotropy enough to regain monotonicity")
+                        break
                     else:
-                        b[n]=0.0
-                        M[n,n]=-2*(K[0]+K[1])
-                        if row==0:
-                            M[n,patch_nodes[row+1,col]]=2*K[0]
-                        elif row==nrows-1:
-                            M[n,patch_nodes[row-1,col]]=2*K[0]
-                        else:
-                            M[n,patch_nodes[row-1,col]]=K[0]
-                            M[n,patch_nodes[row+1,col]]=K[0]
-                        if col==0:
-                            M[n,patch_nodes[row,col+1]]=2*K[1]
-                        elif col==ncols-1:
-                            M[n,patch_nodes[row,col-1]]=2*K[1]
-                        else:
-                            M[n,patch_nodes[row,col-1]]=K[1]
-                            M[n,patch_nodes[row,col+1]]=K[1]
-
-            Ms[coord]=M.tocsr()
-        dpp0_smooth=sparse.linalg.spsolve(Ms[0],bs[0])
-        dpp1_smooth=sparse.linalg.spsolve(Ms[1],bs[1])
-        dpp_smooth=np.c_[dpp0_smooth,dpp1_smooth]
-
+                        log.warning("Will smooth with decreased anisotropy (%g)"%adj_aniso)
+                else:
+                    break
+                
+        dpp_smooth=np.c_[dpp_smooths[0],dpp_smooths[1]]
+        
         # Copy back to pp
         sel=~patch.nodes['rigid']
         patch.nodes['pp'][sel] = target_pp[sel] + dpp_smooth[sel]
@@ -2838,6 +2864,49 @@ class SimpleSingleQuadGen(QuadGen):
                                                         [self.psi,self.phi],
                                                         x_orig)
 
+    def nudge_boundaries_monotonic(self):
+        """
+        Check that boundary nodes have monotonic psi/phi, and 
+        nudge any violating nodes to be linearly interpolated between
+        the okay nodes.
+
+        Updates pp and x for offending nodes.
+        This was a halfway solution for non-monotonic nodes before
+        the smoothing code above was adapted to adjust for non-monotonicity.
+        Currently nothing uses this method.
+        """
+        nodes_r=self.patch_elts['nodes']
+
+        for nlist,coord,sign in [ (nodes_r[:,0],1,-1),
+                                  (nodes_r[:,-1],1,-1),
+                                  (nodes_r[0,:],0,1),
+                                  (nodes_r[-1,:],0,1)]:
+            # nlist: node indices into patch
+            # coord: which coordinate of pp to adjust
+            # sign: +1 for increasing, -1 for decreasing
+            vals=self.patch.nodes['pp'][nlist,coord]
+            if np.all(sign*np.diff(vals)>0): continue
+
+            rigid=self.patch.nodes['rigid'][nlist]
+            # At least the rigid ones better be monotonic.
+            assert np.all(sign*np.diff(vals[rigid]))>0
+
+            i=np.arange(len(vals))
+            # each entry is the index of the next rigid node, self included.
+            i_next=i[rigid][ np.searchsorted(i[rigid],i) ]
+            # each entry is the index of the previous rigid node, self included
+            i_prev=i[rigid][::-1][ np.searchsorted(-i[rigid][::-1],-i) ]
+            assert np.all( i_prev[ i[rigid] ] == i[rigid] )
+            assert np.all( i_next[ i[rigid] ] == i[rigid] )
+
+            bad= (~rigid) & ( (sign*vals[i_prev] >= sign*vals) | (sign*vals[i_next]<=sign*vals))
+            print(bad.sum())
+            vals[bad] = np.interp(i[bad], i[~bad], vals[~bad] )
+            self.patch.nodes['pp'][nlist,coord]=vals
+            for n in nlist[bad]:
+                x=self.g_int.fields_to_xy(self.patch.nodes['pp'][n],[self.psi,self.phi],
+                                          self.patch.nodes['x'][n])
+                self.patch.nodes['x'][n]=x
                 
     def smooth_patch_psiphi(self,n_iter=10):
         """
