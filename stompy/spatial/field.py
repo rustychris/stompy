@@ -1037,15 +1037,20 @@ class PyApolloniusField(XYZField):
         """
         if X is None:
             assert F is None
-            X=np.zeros( (0,2), np.float64)
-            F=np.zeros( 0, np.float64)
-            
-        super(PyApolloniusField,self).__init__(X,F)
+
         self.r = r
         self.redundant_factor = redundant_factor
         self.offset=np.array([0,0]) # not using an offset for now.
-        
-        # self.W = -(self.F / (self.r-1.0) ) # weights
+            
+        if (X is None) or (redundant_factor is not None):
+            super(PyApolloniusField,self).__init__(X=np.zeros( (0,2), np.float64),
+                                                   F=np.zeros( 0, np.float64))
+        else:
+            super(PyApolloniusField,self).__init__(X=X,F=F)
+            
+        if self.redundant_factor is not None:
+            for i in range(F.shape[0]):
+                self.insert(X[i],F[i])
 
     def insert(self,xy,f):
         """ directly insert a point into the Apollonius graph structure
@@ -1055,13 +1060,18 @@ class PyApolloniusField(XYZField):
         returns False if redundant checks are enabled and the point was
         deemed redundant.
         """
-        # w = -(f / (self.r-1.0) ) # the weight
-
-        self.X=array_append(self.X,xy)
-        self.F=array_append(self.F,f)
-        # self.W=array_append(self.W, -(f / (self.r-1.0) ))
         
-        return True
+        if (self.X.shape[0]==0) or (self.redundant_factor is None):
+            redundant=False
+        else:
+            existing=self.interpolate(xy)
+            redundant=existing*self.redundant_factor < f
+        if not redundant:
+            self.X=array_append(self.X,xy)
+            self.F=array_append(self.F,f)
+            return True
+        else:
+            return False
 
     def value(self,X):
         return self.interpolate(X)
@@ -3677,7 +3687,7 @@ class CompositeField(Field):
         ncols=int(np.floor(ncols))
         if nrows*ncols<len(stack): ncols+=1
         
-        fig,axs=plt.subplots(nrows,ncols,num=num)
+        fig,axs=plt.subplots(nrows,ncols,num=num,squeeze=False)
 
         for ax,(name,data,alpha) in zip( axs.ravel(), stack ):
             data.plot(ax=ax,vmin=0,vmax=3.5,cmap=cmap)

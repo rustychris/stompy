@@ -2705,6 +2705,8 @@ class SimpleSingleQuadGen(QuadGen):
         self.psi_field,self.phi_field=self.field_interpolators()
 
         self.position_patch_nodes()
+        self.patch.cells['_center']=np.nan # otherwise all 0...
+        
         if self.smooth_patch:
             self.smooth_patch_psiphi_implicit()
         

@@ -2384,7 +2384,6 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             self.edges['cells'][:,:]=self.UNMESHED
             self.log.info("Recalculating edge to cells" )
             all_c=np.nonzero( ~self.cells['deleted'] )[0]
-            # range(self.Ncells())
         else:
             if e is None:
                 e=slice(None)
@@ -3165,19 +3164,15 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         self.add_edge(**d)
 
     def delete_edge_cascade(self,j):
-        # for ci in [0,1]:
-        #     c=self.edges['cells'][j,ci]
-        #     if c>=0:
-        #         self.delete_cell(c)
-        #     self.edges['cells'][j,ci]=self.UNKNOWN
-
-        for c in self.edge_to_cells(j,recalc=True):
+        # This used to add recalc=True, but that actually
+        # forces recalculation of *all* edges, not just j.
+        # If that becomes a problem, need to root out where
+        # edges['cells'] gets corrupted, and not just blindly
+        # recalculated all the time.
+        for c in self.edge_to_cells(j):
             if c>=0:
                 self.delete_cell(c)
-            # this should be handled by the delete_cell() code.
-            # self.edges['cells'][j,ci]=self.UNKNOWN
         self.delete_edge(j)
-
 
     def merge_edges(self,edges=None,node=None):
         """ Given a pair of edges sharing a node,

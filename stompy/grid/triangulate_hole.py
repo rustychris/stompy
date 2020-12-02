@@ -62,7 +62,7 @@ class Gmsher(object):
 
 def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=-1,hole_rigidity='cells',
                      splice=True,return_value='grid',dry_run=False,apollo_rate=1.1,
-                     method='front',method_kwargs={}):
+                     density=None,method='front',method_kwargs={}):
     """
     Specify one of
       seed_point: find node string surrounding this point
@@ -84,6 +84,10 @@ def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=-1,hole_rigidity=
 
     splice: if true, the new grid is spliced into grid. if false, just returns
      the grid covering the hole.
+
+    density: By default an Apollonius scale field is generated from the rigid
+     edges of the hole and apollo_rate. Use this argument to provide a non-default
+     density field.
 
     return_value: grid: return the resulting grid
     front: advancing front instance
@@ -132,11 +136,13 @@ def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=-1,hole_rigidity=
         sample_xy.append(ec[j])
         sample_scale.append(el[j])
 
-    assert len(sample_xy)
-    sample_xy=np.array(sample_xy)
-    sample_scale=np.array(sample_scale)
-
-    apollo=field.PyApolloniusField(X=sample_xy,F=sample_scale,r=apollo_rate)
+    if density is not None:
+        scale=density
+    else:
+        assert len(sample_xy)
+        sample_xy=np.array(sample_xy)
+        sample_scale=np.array(sample_scale)
+        scale=field.PyApolloniusField(X=sample_xy,F=sample_scale,r=apollo_rate)
 
     # For hole_rigidity=='all', there are no hints, and this stays
     # empty.  Only for method=='front' or 'gmsh' can there be other values of
@@ -192,7 +198,7 @@ def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=-1,hole_rigidity=
                 if (cells[0]<0) and (cells[1]<0):
                     AT.grid.edges['fixed'][j]=AT.UNSET
 
-        AT.scale=apollo
+        AT.scale=scale
 
         if dry_run:
             if return_value=='grid':
@@ -209,7 +215,7 @@ def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=-1,hole_rigidity=
         grid_to_pave=unstructured_grid.UnstructuredGrid(max_sides=len(xy_shore))
         pave_nodes=[grid_to_pave.add_node(x=xy) for xy in xy_shore]
         c=grid_to_pave.add_cell_and_edges(pave_nodes)
-        rad=rebay.RebayAdvancingDelaunay(grid=grid_to_pave,scale=apollo,
+        rad=rebay.RebayAdvancingDelaunay(grid=grid_to_pave,scale=scale,
                                          heap_sign=1,**method_kwargs)
         if dry_run:
             if return_value=='grid':
@@ -235,7 +241,7 @@ def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=-1,hole_rigidity=
                 if hole_rigidity=='cells':
                     src_hints.append(n_src)
         
-        AT=Gmsher(g_in=g_in,scale=apollo)
+        AT=Gmsher(g_in=g_in,scale=scale)
         AT.gmsh=method_kwargs.pop('gmsh','gmsh')
         AT.output=method_kwargs.pop('output','capture')
         AT.execute()
