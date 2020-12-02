@@ -1034,7 +1034,11 @@ class HydroModel(object):
 
     def set_grid(self,grid):
         if isinstance(grid,six.string_types):
-            grid=dfm_grid.DFMGrid(grid)
+            if grid.endswith('_net.nc'):
+                grid=ugrid.UnstructuredGrid.read_dfm(grid)
+            else: # if grid.endswith('.nc'):
+                grid=ugrid.UnstructuredGrid.read_ugrid(grid)
+                
         self.grid=grid
 
     default_grid_target_filename='grid_net.nc'
