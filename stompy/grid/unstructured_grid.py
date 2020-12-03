@@ -6009,7 +6009,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         else:
             return hits
 
-    def select_cells_nearest(self,xy,count=None,inside=False):
+    def select_cells_nearest(self,xy,count=None,inside=False,method='auto'):
         """
         xy: coordinate to query around
         count: if None, return a single index, otherwise return an array of
@@ -6023,12 +6023,26 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
            return value will be a single index.
           'try' => first try to find a cell containing xy, but if that fails, return the
            'closest' as if inside=False
+        method: 
+          'cc_index': find candidate cells from cell center index, then check candidates
+          'node_index': get candidate cells from nearby nodes
+          'auto': heuristic.  If inside is True, try cell centers, fallback to nodes. If
+           inside is False, just use cell centers and hope.
         """
         xy=np.asarray(xy)
         real_count=count
         if count is None:
             real_count=1
 
+        if method=='auto':
+            if inside:
+                c=self.select_cells_nearest(xy,inside=True,method='cc_index')
+                if c is None:
+                    c=self.select_cells_nearest(xy,inside=True,method='node_index')
+                return c
+            else:
+                method='cc_index'
+            
         if inside:
             # Now use count t
             # assert real_count==1
@@ -6039,15 +6053,20 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 real_count=10
             count=1
 
-        hits = self.cell_center_index().nearest(xy[self.xxyy],real_count)
-
-        if isinstance( hits, types.GeneratorType): # usual for recent versions
-            results=[]
-            for hit in hits:
-                results.append(hit)
-                if len(results)==real_count:
-                    break
-            hits=results
+        if method=='cc_index':
+            hits = self.cell_center_index().nearest(xy[self.xxyy],real_count)
+            if isinstance( hits, types.GeneratorType): # usual for recent versions
+                results=[]
+                for hit in hits:
+                    results.append(hit)
+                    if len(results)==real_count:
+                        break
+                hits=results
+        elif method=='node_index':
+            cells=set()
+            for n in self.select_nodes_nearest(xy,real_count):
+                cells.update(self.node_to_cells(n))
+            hits=list(cells)
 
         # this is only necessary with spatial indexes that don't deal with
         # deletion.  bandaid.
