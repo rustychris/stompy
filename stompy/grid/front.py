@@ -732,22 +732,88 @@ class CutoffStrategy(Strategy):
     def execute(self,site):
         grid=site.grid
         na,nb,nc=site.abc
-        j0=grid.nodes_to_edge(na,nb)
-        j1=grid.nodes_to_edge(nb,nc)
-        j2=grid.nodes_to_edge(nc,na)
-        if j2 is None:
-            # typical, but if we're finishing off the last triangle, this edge
-            # exists.
-            j2=grid.add_edge(nodes=[nc,na],cells=[grid.UNMESHED,grid.UNMESHED])
+
+        he_ab=grid.nodes_to_halfedge(na,nb)
+        he_bc=grid.nodes_to_halfedge(nb,nc)
+        # Special case detect final quad
+        he_da=he_ab.rev()
+        he_cd=he_bc.fwd()
+        j_ab=he_ab.j
+        j_bc=he_bc.j
+
+        ret={'cells':[]}
         
-        c=site.grid.add_cell(nodes=site.abc,
-                             edges=[j0,j1,j2])
+        if he_da.node_rev()==he_cd.node_fwd():
+            # Quad handling:
+            nd=he_cd.node_fwd()
+            abcd=[na,nb,nc,nd]
+            x=grid.nodes['x'][abcd]
+            delta_x=np.roll(x,-1,axis=0) - x
+            seg_theta=np.arctan2(delta_x[:,1],delta_x[:,0])
+            internal_angles=((np.pi - ((np.roll(seg_theta,-1) - seg_theta))) % (2*np.pi))
+            # first of these is internal angle of abc, and should be the smallest (based on
+            # how sites are chosen).
+            cutoff_bd=internal_angles[0]+internal_angles[2]
+            cutoff_ac=internal_angles[1]+internal_angles[3]
+
+            if cutoff_bd>cutoff_ac:
+                # angles at b and d are larger, so should add the edge b--d
+                j_bd=grid.add_edge(nodes=[nb,nd],cells=[grid.UNMESHED,grid.UNMESHED])
+                c_abd=site.grid.add_cell(nodes=[na,nb,nd],
+                                         edges=[j_ab,j_bd,he_da.j])
+                c_bcd=site.grid.add_cell(nodes=[nb,nc,nd],
+                                         edges=[j_bc,he_cd.j,j_bd])
+                ret['cells'].extend( [c_abd,c_bcd] )
+            else:
+                j_ca=grid.add_edge(nodes=[nc,na],cells=[grid.UNMESHED,grid.UNMESHED])
+
+                c_abc=site.grid.add_cell(nodes=site.abc,
+                                         edges=[j_ab,j_bc,j_ca])
+                c_cda=site.grid.add_cell(nodes=[nc,nd,na],
+                                         edges=[he_cd.j,he_da.j,j_ca])
+                ret['cells'].extend([c_abc,c_cda])
+        else:
+            # non-quad handling:
+            nd=None
         
-        return {'cells':[c] }
+            j_ca=grid.nodes_to_edge(nc,na)
+            if j_ca is None:
+                # typical, but if we're finishing off the last triangle, this edge
+                # exists.
+                j_ca=grid.add_edge(nodes=[nc,na],cells=[grid.UNMESHED,grid.UNMESHED])
+
+            c=site.grid.add_cell(nodes=site.abc,
+                                 edges=[j_ab,j_bc,j_ca])
+            ret['cells'].append(c)
+        return ret
+
+class SplitQuadStrategy(Strategy):
+    """
+    When the remaining node string has 4 nodes, often splitting this
+    into two triangles and calling it done is the thing to do.
+    """
+    def __str__(self):
+        return "<SplitQuad>"
+    def metric(self,site):
+        he_ab=site.grid.nodes_to_halfedge(site.abc[0],site.abc[1])
+        he_da=he_ab.rev()
+        he_cd=he_da.rev()
+        c_maybe=he_cd.node_rev()
+        d=he_cd.node_fwd()
+        
+        if c_maybe!=site.abc[2]:
+            return np.inf # not a quad
+        # Otherwise see if the scale is close:
+        L=utils.dist_along( site.grid.nodes['x'][ site.abc + [d] + [site.abc[0]]] )[-1]
+        scale_factor = L / (4*site.local_length)
+        # if scale_factor<1, definitely want to try this.
+        # if scale_factor>2, probably not.
+        return 0.05 * 500**(scale_factor-1)
+
 
 class JoinStrategy(Strategy):
     """ 
-    Given an inside angle, merge the two edges
+    Given an inside angle, merge the two edges.
     """
     def __str__(self):
         return "<Join>"
@@ -759,7 +825,6 @@ class JoinStrategy(Strategy):
         # Cutoff wants a small-ish internal angle
         # If the sites edges are long, scale_factor > 1
         # and we'd like to be making smaller edges, so ideal angle gets smaller
-        # 
         if theta> 89*np.pi/180:
             return np.inf # not allowed
         else:
