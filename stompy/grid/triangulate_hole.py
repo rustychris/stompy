@@ -156,10 +156,12 @@ def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=-1,hole_rigidity=
         AT=front.AdvancingTriangles(grid=grid_to_pave,**method_kwargs)
 
         AT.add_curve(xy_shore)
+        
         # This should be safe about not resampling existing edges
-        AT.scale=field.ConstantField(50000)
+        # HERE: that's a problem. it defeats non-local strategy.
+        AT.scale=scale # field.ConstantField(50000)
 
-        AT.initialize_boundaries()
+        AT.initialize_boundaries(upsample=False)
 
         AT.grid.nodes['fixed'][:]=AT.RIGID
         AT.grid.edges['fixed'][:]=AT.RIGID
@@ -198,8 +200,9 @@ def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=-1,hole_rigidity=
                 if (cells[0]<0) and (cells[1]<0):
                     AT.grid.edges['fixed'][j]=AT.UNSET
 
-        AT.scale=scale
-
+        # resample edges that are not fixed
+        AT.resample_cycles()
+        
         if dry_run:
             if return_value=='grid':
                 return AT.grid

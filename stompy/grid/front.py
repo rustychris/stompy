@@ -1904,6 +1904,29 @@ class AdvancingFront(object):
     def resample_neighbors(self,site):
         return site.resample_neighbors()
 
+    def resample_cycles(self):
+        """
+        Resample all edges along cycles. Useful when the boundary has
+        a mix of rigid and non-rigid, with coarse spacing that needs 
+        to be resampled.
+        """
+        cycs=self.grid.find_cycles(max_cycle_len=self.grid.Nnodes())
+
+        for cyc in cycs:
+            n0=cyc[0]
+            he=self.grid.nodes_to_halfedge(cyc[0],cyc[1])
+
+            while 1:
+                a=he.node_rev()
+                b=he.node_fwd()
+
+                res=self.resample(b,a,
+                                  scale=self.scale(self.grid.nodes['x'][a]),
+                                  direction=1)
+                he=self.grid.nodes_to_halfedge(a,res).fwd()
+                if he.node_rev()==n0:
+                    break # full circle.
+
     def cost_function(self,n):
         raise Exception("Implement in subclass")
 
