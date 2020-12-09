@@ -2624,14 +2624,22 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
     def edge_center(self,j):
         return self.nodes['x'][self.edges['nodes'][j]].mean(axis=0)
-    def edges_center(self):
-        centers=np.zeros( (self.Nedges(), 2), 'f8')
-        valid=~self.edges['deleted']
-        centers[valid,:] = self.nodes['x'][self.edges['nodes'][valid,:]].mean(axis=1)
-        centers[~valid,:]=np.nan
+    def edges_center(self,edges=None):
+        """
+        edges: sequence of edge indices to compute subset
+        """
+        if edges is None:
+            centers=np.zeros( (self.Nedges(), 2), np.float64)
+            valid=~self.edges['deleted']
+            centers[valid,:] = self.nodes['x'][self.edges['nodes'][valid,:]].mean(axis=1)
+            centers[~valid,:]=np.nan
+        else:
+            edges=np.asarray(edges)
+            centers=np.zeros( (len(edges), 2), np.float64)
+            valid=~self.edges['deleted'][edges]
+            centers[valid,:] = self.nodes['x'][self.edges['nodes'][edges[valid],:]].mean(axis=1)
+            centers[~valid,:]=np.nan
 
-        # unsafe for deleted edges referencing deleted/truncated nodes
-        # return self.nodes['x'][self.edges['nodes']].mean(axis=1)
         return centers
 
     def cells_centroid(self,ids=None,method='py'):
@@ -6138,11 +6146,19 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         print("  Mean angle error: %.2f deg"%( errs[sel].mean() ) )
         print("  Max angle error: %.2f deg"%( errs[sel].max() ) )
 
-    def circumcenter_errors(self,radius_normalized=False,cells=None):
+    def circumcenter_errors(self,radius_normalized=False,cells=None,
+                            cc=None):
+        """
+        cc: if provided, an up-to-date circumcenter array for the whole
+        grid.
+        """
         if cells is None:
             cells=slice(None)
 
-        centers = self.cells_center()[cells]
+        if cc is None:
+            centers = self.cells_center()[cells]
+        else:
+            centers=cc[cells]
         errors=np.zeros( len(self.cells[cells]),'f8')
 
         for nsi in range(3,self.max_sides+1):
@@ -6176,7 +6192,84 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                / mag(edge_vecs) )
         angle_err=(np.arccos(dots) - np.pi/2)
         return angle_err
+    
+    def edge_clearance(self,edges=None,mode='min',cc=None,Ac=None,
+                       eps_Ac=1e-5,recalc_e2c=False):
+        """
+        For each edge, calculate signed distance between
+        adjacent circumcenters and the edge center.
+        Normalize by sqrt(cell area).
+        By default, does *not* recalculate edge_to_cells.
 
+        mode: 'min': return the smallest of the two clearances.
+        'double': return half of the signed distance between the two cell
+        centers. (half so that the result is same scale as 'min').
+
+        cc,Ac: in performance-critical loops, pass in cc (circumcenters)
+        and/or Ac (cell areas). Both should be for the full grid, regardless
+        of edges selected.
+
+        eps_Ac: lower bound for areas, to protect against negative areas.
+        """
+        ec=self.edges_center(edges=edges)
+
+        if edges is not None:
+            en=self.edges_normals(edges)
+            e_sel=edges
+        else:
+            en=self.edges_normals()
+            e_sel=slice(None)
+
+        if recalc_e2c:
+            if edges is not None:
+                e2c=self.edge_to_cells(edges)
+            else:
+                e2c=self.edge_to_cells()
+        else:
+            e2c=self.edges['cells'][e_sel]
+
+        valid=(e2c[:,:]>=0)
+        if cc is None:
+            if edges is not None:
+                # not really much of a speedup.
+                cells=np.unique(e2c[e2c>=0])
+                cc=self.cells_center(refresh=cells) # still returns alls
+            else:
+                cc=self.cells_center()
+
+        cc0=cc[e2c[:,0]]
+        cc1=cc[e2c[:,1]]
+
+        d0=((ec-cc0)*en).sum(axis=1)
+        d1=((cc1-ec)*en).sum(axis=1)
+        d=np.c_[d0,d1]
+
+        if Ac is None:
+            Ac=self.cells_area()
+        L=np.sqrt(Ac[e2c[:,:]].clip(eps_Ac))
+
+        nd=d/L
+        nd[~valid]=np.nan
+        nd_double=np.sum(nd,axis=1)
+
+        orig=np.seterr()
+        np.seterr(invalid='ignore')
+        edge_quality_single=np.nanmin(nd,axis=1)
+        np.seterr(**orig)
+        
+        assert np.all( np.isfinite(edge_quality_single) | self.edges['deleted'][e_sel] )
+        
+        edge_quality_double=nd_double/2
+        if (mode=='min') or (mode=='single'):
+            edge_quality=edge_quality_single
+        elif mode=='double':
+            edge_quality=edge_quality_double
+        else:
+            assert False,"what do you want, friend?"
+
+        return edge_quality
+
+    
     @staticmethod
     def read_pickle(fn):
         with open(fn,'rb') as fp:

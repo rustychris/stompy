@@ -61,6 +61,127 @@ class Tweaker(object):
         for n in self.g.cell_to_nodes(c):
             self.nudge_node_orthogonal(n)
 
+    def nudge_all_orthogonal(self,cell_thresh=0.01,max_iter=10,
+                            expand_after=4):
+        g=self.g
+        for it in range(max_iter):
+            cell_errors=g.circumcenter_errors(radius_normalized=True)
+            bad_cells=cell_errors>cell_thresh
+
+            print(f"Iteration {it}: {bad_cells.sum()}/{len(cell_errors)} cells have error>{cell_thresh}")
+
+            if it>expand_after:
+                bad_cells=cell_errors>cell_thresh
+                # Spread out the neighborhood:
+                for extra in range(it-expand_after):
+                    for c in np.nonzero(bad_cells)[0]:
+                        nbrs=g.cell_to_cells(c)
+                        bad_cells[nbrs]=True
+            print(f"   tweaking {bad_cells.sum()} cells")
+            for c in np.nonzero(bad_cells)[0]:
+                self.nudge_cell_orthogonal(c)
+
+            if bad_cells.sum()==0:
+                break
+            
+    def adjust_for_edge_quality(self,j,expand=True):
+        """
+        Adjust node positions to improve edge quality
+        for edge j.
+
+        expand: False => adjust nodes of j, and adjacent cells
+         True => adjust nodes one ring out from there
+        """
+        g=self.g
+
+        # First, decide the set of nodes that will be modified
+        nodes=np.unique(np.concatenate([g.cell_to_nodes(c)
+                                       for c in g.edge_to_cells(j)] ))
+        if expand:
+            n_orig=len(nodes)
+            nodes=np.unique( np.concatenate( [g.node_to_nodes(n) for n in nodes] ) )
+            # print(f"Increasing neighborhood {n_orig} to {len(nodes)}")
+
+        # Then what cells will be modified by moving those nodes:
+        adj_cells=np.unique( np.concatenate([g.node_to_cells(n) for n in nodes] ))
+        # And the adjacent edges that might have their quality affected
+        adj_edges=np.unique( np.concatenate([g.cell_to_edges(c) for c in adj_cells]) )
+
+        # Choose a central point to recenter the optimization
+        x0=g.nodes['x'][nodes].mean(axis=0)
+
+        # Make sure grid topology is good
+        g.edge_to_cells(e=adj_edges)
+        # g.cells_area()
+
+        def cost(X,adj_cells=adj_cells,adj_edges=adj_edges,x0=x0):
+            # recenter to give fmin a clue on scale
+            g.nodes['x'][nodes] = x0 + X.reshape( (len(nodes),2) )
+
+            cc=g.cells_center(refresh=adj_cells) # returns all cells
+            g.cells['_area'][adj_cells]=np.nan
+            g.cells_area(sel=adj_cells) # only returns the selected cells
+            Ac=g.cells['_area']
+
+            # For cell errors, small is good.
+            cell_errors=g.circumcenter_errors(cells=adj_cells,radius_normalized=True,
+                                              cc=cc)
+            # For edge errors, small is bad, and it can be negative. Flip sign.
+            edge_errors=-g.edge_clearance(adj_edges,cc=cc,Ac=Ac)
+
+            # A 'bad' cell is >=0.04 or so.
+            # A 'bad' edge is >=-0.05 or so.
+            cost=cell_errors.max()/0.04 + edge_errors.max()/0.05
+
+            return cost
+
+        # backups=dict(edges=g.edges.copy(),
+        #              cells=g.cells.copy(),
+        #              nodes=g.nodes.copy())
+
+        X_init=(g.nodes['x'][nodes] - x0).ravel()
+        cost(X_init) # make sure we leave the grid in the best state
+
+        from scipy.optimize import fmin
+
+        X=fmin(cost,X_init)
+        final_cost=cost(X)
+
+    def merge_all_by_edge_clearance(self):
+        g=self.g
+
+        # Search for potential tri-tri => quads
+        bad_edges=g.edge_clearance(recalc_e2c=True)
+        bad_edges2=g.edge_clearance(mode='double',recalc_e2c=True)
+
+        # bad_edges2 threshold of 0.2 might be worth looking at.
+        # prioritize low values, only tri-tri edges.
+        # At first only in cases where a 0 or 1 adjacent cells are quads.
+
+        # Identify join candidates:
+        clearance_thresh=0.2
+
+        j_candidates=np.nonzero( np.isfinite(bad_edges2) & (bad_edges2<clearance_thresh) )[0]
+        order=np.argsort( bad_edges2[j_candidates] )
+        j_candidates=j_candidates[order]
+
+        e2c=g.edge_to_cells()
+
+        for j_cand in j_candidates:
+            if g.edges['deleted'][j_cand]: continue
+            clearance=g.edge_clearance([j_cand],mode='double',recalc_e2c=True)
+            if clearance > clearance_thresh: continue
+
+            c0,c1=e2c[j,:]
+            if c0<0 or c1<0: continue
+            if g.cell_Nsides(c0)!=3 or g.cell_Nsides(c1)!=3:
+                continue
+
+            # Try the join
+            # cp=g.checkpoint()
+            print(f"Joining edge {j_cand}")
+            g.merge_cells(j=j_cand)
+        
     def calc_halo(self, node_idxs, max_halo=20):
         """
         calculate how many steps each node in node_idxs is away
