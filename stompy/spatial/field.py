@@ -397,6 +397,15 @@ class XYZField(Field):
     # the convex hull
     outside_hull_fallback=True
     def interpolate(self,X,interpolation=None):
+        """
+        X: [...,2] coordinates at which to interpolate.
+        interpolation: should have been called 'method'.
+           The type of interpolation.
+           'nearest': select nearest source point
+           'naturalneighbor': Deprecated (only works with very old MPL)
+             Delaunay triangulation-based natural neighbor interpolation.
+           'linear': Delaunay-based linear interpolation.
+        """
         if interpolation is None:
             interpolation=self.default_interpolation
         # X should be a (N,2) vectors - make it so
