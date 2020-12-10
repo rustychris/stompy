@@ -6257,7 +6257,6 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         edge_quality_single=np.nanmin(nd,axis=1)
         np.seterr(**orig)
         
-        assert np.all( np.isfinite(edge_quality_single) | self.edges['deleted'][e_sel] )
         
         edge_quality_double=nd_double/2
         if (mode=='min') or (mode=='single'):
@@ -6268,7 +6267,6 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             assert False,"what do you want, friend?"
 
         return edge_quality
-
     
     @staticmethod
     def read_pickle(fn):

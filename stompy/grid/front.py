@@ -2418,7 +2418,7 @@ class AdvancingTriangles(AdvancingFront):
     # reject edit that puts a cell circumcenter outside the cell
     reject_cc_outside_cell=True
     # If a numeric value, check distance between adjacent circumcenters
-    # reject if signed distance below this value
+    # reject if signed distance below this value, normalize by sqrt(cell area)
     reject_cc_distance_factor=None
     def check_edits(self,edits):
         """
