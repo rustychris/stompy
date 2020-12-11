@@ -1019,6 +1019,8 @@ class QuadGen(object):
                 assert np.all(gen.edges['nodes'][j]==[b,a])
                 gen.edges['angle'][j]=(gen.edges['angle'][j]+180)%360
 
+        gen.add_node_field('turn',np.zeros(gen.Nnodes(),np.float64), on_exists='overwrite')
+        
         for prv,n,nxt in zip( cycle, np.roll(cycle,-1),np.roll(cycle,-2) ):
             jprv=gen.nodes_to_edge(prv,n)
             jnxt=gen.nodes_to_edge(n,nxt)
@@ -2457,6 +2459,13 @@ class SimpleSingleQuadGen(QuadGen):
 
         last_fixed_node=he.node_rev()
 
+        # scale here is just for edges with exact number of
+        # cells (negative).
+        if 'scale' in self.gen.edges.dtype.names:
+            edge_scale=self.gen.edges['scale']
+        else:
+            edge_scale=np.zeros(self.gen.Nedges())
+        
         while 1:
             pnts=self.gen_bezier_linestring(he.j,span_fixed=False)
             
@@ -2482,11 +2491,12 @@ class SimpleSingleQuadGen(QuadGen):
             he_fwd=he.fwd()
             angle=he_angle(he)
             angle_fwd=he_angle(he_fwd)
+                
             if  ( (angle!=angle_fwd) # a corner
-                  or (self.gen.edges['scale'][he.j]<0)
-                  or (self.gen.edges['scale'][he_fwd.j]<0) ):
-                if self.gen.edges['scale'][he.j]<0:
-                    count=-int( self.gen.edges['scale'][he.j] )
+                  or (edge_scale[he.j]<0)
+                  or (edge_scale[he_fwd.j]<0) ):
+                if edge_scale[he.j]<0:
+                    count=-int( edge_scale[he.j] )
                 else:
                     count=0
                 angle_to_segments[angle].append( [last_fixed_node,he.node_fwd(),count] )

@@ -3562,6 +3562,10 @@ class CompositeField(Field):
             def diffuser():
                 self.diffuser(source,src_data,src_geom,result_data)
 
+            def ortho_diffuser(res,aniso=1e-5):
+                self.ortho_diffuser(res=res,aniso=aniso,source=source,
+                                    src_data=src_data,src_geom=src_geom,result_data=result_data)
+
             def overlay():
                 pass
             # alpha channel operations:
@@ -3647,6 +3651,21 @@ class CompositeField(Field):
             self.plot_stackup(result_data,stack)
         
         return result_data
+
+    def ortho_diffuser(self,res,aniso,source,src_data,src_geom,result_data):
+        """
+        Strong curvilinear anisotropic interpolatio
+        """
+        from . import interp_orthogonal
+        oink=interp_orthogonal.OrthoInterpolator(region=src_geom,
+                                                 background_field=result_data,
+                                                 anisotropy=aniso,
+                                                 nom_res=res)
+        fld=oink.field()
+        
+        rast=fld.to_grid(bounds=result_data.bounds(),
+                         dx=result_data.dx,dy=result_data.dy)
+        src_data.F[:,:]=rast.F
     
     def diffuser(self,src,src_data,src_geom,result_data):
         """
