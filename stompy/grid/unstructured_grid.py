@@ -8160,15 +8160,24 @@ def cleanup_dfm_multidomains(grid):
     multiple domains stitched together, fix some of the extraneous
     geometries left behind.
     Grid doesn't have to have been read as a DFMGrid.
+
+    Cell indices are preserved, but node and edge indices are not.
     """
     grid.log.info("Regenerating edges")
     grid.make_edges_from_cells()
     grid.log.info("Removing orphaned nodes")
     grid.delete_orphan_nodes()
     grid.log.info("Removing duplicate nodes")
-    grid.merge_duplicate_nodes()
+    grid.merge_duplicate_nodes() # this can delete edges
+    
+    # To avoid downstream errors when the 'deleted' flags
+    # are not handled, renumber.
+    
     grid.log.info("Renumbering nodes")
     grid.renumber_nodes()
+    grid.log.info("Renumbering edges") 
+    grid.renumber_edges()
+    
     grid.log.info("Extracting grid boundary")
     return grid
 
