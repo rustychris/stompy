@@ -172,7 +172,7 @@ class Tweaker(object):
             clearance=g.edge_clearance([j_cand],mode='double',recalc_e2c=True)
             if clearance > clearance_thresh: continue
 
-            c0,c1=e2c[j,:]
+            c0,c1=e2c[j_cand,:]
             if c0<0 or c1<0: continue
             if g.cell_Nsides(c0)!=3 or g.cell_Nsides(c1)!=3:
                 continue
