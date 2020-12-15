@@ -731,9 +731,10 @@ class StageBC(BC):
         Return the water level at the given time (np.datetime64).
         Useful for setting initial water level.
         """
-        data=self.data()
-        water_level=np.interp( utils.to_dnum(t),
-                               utils.to_dnum(data.time), data.values )
+        water_level=self.data()
+        if 'time' in water_level.dims:
+            water_level=np.interp( utils.to_dnum(t),
+                                   utils.to_dnum(water_level.time), water_level.values )
         return water_level
     
 class CommonFlowBC(BC):

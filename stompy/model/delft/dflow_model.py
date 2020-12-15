@@ -210,7 +210,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         or query output history files.
         """
         fn=self.mdu.filepath(['output','ObsFile'])
-        if os.path.exists(fn):
+        if fn and os.path.exists(fn):
             stations=pd.read_csv(self.mdu.filepath(['output','ObsFile']),
                                  sep=' ',names=['x','y','name'],quotechar="'")
             stations['geom']=[geometry.Point(x,y) for x,y in stations.loc[ :, ['x','y']].values ]
@@ -523,13 +523,20 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         else:
             super(DFlowModel,self).write_bc(bc)
 
-    def write_tim(self,da,file_path):
+    # If True, timesteps in the forcing data beyond the run
+    # will be trimmed out.
+    bc_trim_time=True
+    
+    def write_tim(self,da,file_path,trim_time=None):
         """
         Write a DFM tim file based on the timeseries in the DataArray.
         da must have a time dimension.  No support yet for vector-values here.
         file_path is relative to the working directory of the script, not
         the run_dir.
         """
+        if trim_time is None:
+            trim_time=self.bc_trim_time
+            
         ref_date,start,stop = self.mdu.time_range()
         dt=np.timedelta64(60,'s') # always minutes
 
@@ -540,6 +547,15 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         else:
             times=da.time.values
             values=da.values
+
+            if trim_time:
+                sel=(times>=start)&(times<=stop)
+                # Expand by one
+                sel[:-1] = sel[1:] | sel[:-1]
+                sel[1:] = sel[1:] | sel[:-1]
+                times=times[sel]
+                values=values[sel]
+            
         elapsed_time=(times - ref_date)/dt
         data=np.c_[elapsed_time,values]
 
@@ -736,7 +752,6 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         """
         return float(self.mdu['geometry','WaterLevIni'])
 
-
     def update_initial_water_level(self):
         """
         Automatically set an initial water level based on the first
@@ -746,7 +761,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         for bc in self.bcs:
             if isinstance(bc,hm.StageBC):
                 wl=bc.evaluate(t=self.run_start)
-                self.mdu['geometry','WaterLevIni']=wl
+                self.mdu['geometry','WaterLevIni']=float(wl)
                 self.log.info("Pulling initial water level from BC: %.3f"%wl)
                 return
         self.log.info("Could not find BC to get initial water level")
