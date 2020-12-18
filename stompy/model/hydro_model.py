@@ -46,6 +46,8 @@ class BC(object):
     # set BC.
     mode='overwrite'
 
+    on_insufficient_data='exception'
+
     # extend the data before/after the model period by this much
     pad=np.timedelta64(24,'h')
 
@@ -369,6 +371,27 @@ class BC(object):
     def data(self):
         da=self.src_data()
         da=self.as_data_array(da)
+        if 'time' in da.dims:
+            #on_insufficient_data='exception'
+            data_start=da.time.values.min()
+            data_stop=da.time.values.max()
+            
+            if ( (data_start > self.model.run_start) or
+                 (data_stop < self.model.run_stop) ):
+                msg="Run: %s -- %s, but BC data for %s is %s -- %s"%(
+                    self.model.run_start,self.model.run_stop,self.name,
+                    data_start,data_stop)
+                
+                if self.on_insufficient_data=='exception':
+                    raise Exception(msg)
+                elif self.on_insufficient_data=='log':
+                    log.warning(msg)
+                elif self.on_insufficient_data=='ignore':
+                    pass
+                else:
+                    raise Exception("Bad setting for on_insufficient_data='%s'"%
+                                    self.on_insufficient_dat)
+                    
         da=self.transform_output(da)
         return da
 
