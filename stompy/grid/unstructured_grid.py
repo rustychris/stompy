@@ -2565,7 +2565,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         has_left=new_edges['c1']>=0
         has_right=new_edges['c2']>=0
         self.edges['cells'][j[has_left],0]=new_edges['c1'][has_left]
-        self.edges['cells'][j[has_right],0]=new_edges['c2'][has_right]
+        self.edges['cells'][j[has_right],1]=new_edges['c2'][has_right]
 
     def refresh_metadata(self):
         """ Call this when the cells, edges and nodes may be out of sync with indices
@@ -5115,6 +5115,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     if marked[trav.j]:
                         print("maybe hit a dead end -- boundary maybe not closed")
                         print("edge centered at %s traversed twice"%(self.edges_center()[trav.j]))
+                        import pdb
+                        pdb.set_trace()
                         break
                     this_line_nodes.append(trav.node_fwd())
                     marked[trav.j]=True
