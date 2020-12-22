@@ -5545,7 +5545,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             
             kdt=cKDTree(points)
             cc=self.cells_center()
-            radii=utils.dist( cc, self.nodes['x'][self.cells['nodes'][:,0]])
+            radii=mag( cc - self.nodes['x'][self.cells['nodes'][:,0]])
             # A little slop on radius in case cells are not perfectly
             # orthogonal.
             pnts=kdt.query_ball_point(cc,1.05*radii)
