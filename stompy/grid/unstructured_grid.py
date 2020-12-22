@@ -5464,11 +5464,32 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     sel.append(c)
         return sel
 
-    def points_to_cells(self,points,method='point_index'):
+    def points_to_cells(self,points,method='kdtree'):
         """
         Map a large number of points to the containing cells.
         This can achieve some significant speedups, but much is
         in the details.
+
+        method: 
+        'point_index': construct a point index (via gen_spatial_index,
+           which is usually based on libspatialindex r-trees), which 
+           is then queried per cell, and refined via cell_path.
+        'cell_index': build a rectangular index of cell bounding boxes, 
+           then iterate over points and query the cell index.
+        'cells_nearest':
+           iterate and use self.select_cells_nearest.
+        'kdtree': build a kdtree of the points, query by circumcenter and
+           circumradius of each cell, and refine via cell_path.
+
+        For small inputs, 'cells_nearest' may be fastest, especially if
+        a cell index is already built.
+        
+        For large inputs, kdtree is fast. A test with 500k points and a
+        grid with 57k cells:
+          point_index: 10.3s
+          cell_index: 23.2s
+          cells_nearest: 85.9s
+          kdtree: 3.3s
         """
         cells=-np.ones(len(points),np.int32)
 
@@ -5519,6 +5540,21 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 c=self.select_cells_nearest(points[i], inside=True)
                 if c is None: continue
                 cells[i]=c
+        elif method=='kdtree':
+            from scipy.spatial import cKDTree
+            
+            kdt=cKDTree(samples)
+            cc=self.cells_center()
+            radii=utils.dist( cc, self.nodes['x'][self.cells['nodes'][:,0]])
+            # A little slop on radius in case cells are not perfectly
+            # orthogonal.
+            pnts=kdt.query_ball_point(cc,1.05*radii)
+
+            for c,candidates in enumerate(pnts):
+                p=self.cell_path(c)
+                hits=[cand for cand in candidates 
+                      if p.contains_point(samples[cand])]
+                cells[hits]=c
         else:
             raise Exception("bad method %s"%method)
             
