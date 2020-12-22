@@ -5543,7 +5543,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         elif method=='kdtree':
             from scipy.spatial import cKDTree
             
-            kdt=cKDTree(samples)
+            kdt=cKDTree(points)
             cc=self.cells_center()
             radii=utils.dist( cc, self.nodes['x'][self.cells['nodes'][:,0]])
             # A little slop on radius in case cells are not perfectly
@@ -5553,7 +5553,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             for c,candidates in enumerate(pnts):
                 p=self.cell_path(c)
                 hits=[cand for cand in candidates 
-                      if p.contains_point(samples[cand])]
+                      if p.contains_point(points[cand])]
                 cells[hits]=c
         else:
             raise Exception("bad method %s"%method)
