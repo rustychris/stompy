@@ -454,14 +454,19 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                     "[structure]",
                     "type         = %s"%s['type'],
                     "id           = %s"%s['name'],
-                    "polylinefile = %s.pli"%s['name'],
-                    "door_height  = %.3f"%s['door_height'],
-                    "lower_edge_level = %.3f"%s['lower_edge_level'],
-                    "opening_width = %.3f"%s['opening_width'],
-                    "sill_level     = %.3f"%s['sill_level'],
-                    "horizontal_opening_direction = %s"%s['horizontal_opening_direction'],
-                    "\n"
-                ]
+                    "polylinefile = %s.pli"%s['name']
+                    ]
+                for k in s:
+                    if k in ['type','name','geom']: continue
+                    lines.append( "%s = %s"%(k,s[k]) )
+                lines.append("\n")
+                # "door_height  = %.3f"%s['door_height'],
+                # "lower_edge_level = %.3f"%s['lower_edge_level'],
+                # "opening_width = %.3f"%s['opening_width'],
+                # "sill_level     = %.3f"%s['sill_level'],
+                # "horizontal_opening_direction = %s"%s['horizontal_opening_direction'],
+                # "\n"
+
                 fp.write("\n".join(lines))
                 pli_fn=os.path.join(self.run_dir,s['name']+'.pli')
                 if 'geom' in s:
@@ -634,9 +639,39 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         # would be present.  Try dropping the suffix here.
         bc_id=bc.name # +"_" + quantity
 
-        assert bc.geom.type==bc.geom_type
-        pli_data=[ (bc_id, np.array(bc.geom.coords)) ]
-        pli_fn=bc_id+'.pli'
+        assert isinstance(bc.geom_type,list),"Didn't fully refactor, looks like"
+        assert bc.geom.type in bc.geom_type
+
+        coords=np.array(bc.geom.coords)
+        ndim=coords.shape[1] # 2D or 3D geometry
+
+        # Special handling when it's a source/sink, with z/z_src specified
+        if quantity=='source':
+            if ndim==2 and bc.z is not None:
+                # construct z
+                missing=-9999.
+                z_coords=missing*np.ones(coords.shape[0],np.float64)
+                for z_val,idx in [ (bc.z,-1),
+                                   (bc.z_src,0) ]:
+                    if z_val is None: continue
+                    if z_val=='bed':
+                        z_val=-10000
+                    elif z_val=='surface':
+                        z_val=10000
+                    z_coords[idx]=z_val
+                if z_coords[0]==missing:
+                    z_coords[0]=z_coords[-1]
+                # middle coordinates, if any, don't matter
+                coords=np.c_[ coords, z_coords ]
+                ndim=3
+                
+        pli_data=[ (bc_id, coords) ]
+        
+        if ndim==2:
+            pli_fn=bc_id+'.pli'
+        else:
+            pli_fn=bc_id+'.pliz'
+            
         dio.write_pli(os.path.join(self.run_dir,pli_fn),pli_data)
 
         with open(self.ext_force_file(),'at') as fp:

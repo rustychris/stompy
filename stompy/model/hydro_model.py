@@ -32,8 +32,10 @@ class BC(object):
     _geom=None
     # set geom_type in subclasses to limit the matching geometries
     # to just 'Point', 'LineString', etc.   Avoids conflicts if
-    # there are multiple features with the same name
-    geom_type=None
+    # there are multiple features with the same name. Should be a list
+    # since some BCs (source/sink) can be defined with either a Point
+    # or a LineString
+    geom_type=[]
 
     # not sure if I'll keep these -- may be better to query at time of use
     grid_edge=None
@@ -106,8 +108,9 @@ class BC(object):
     def get_depth(self,grid_edge=None):
         """
         Estimate the water column depth associated with this BC.
-        This is currently limited to a constant value, calculated for
-        self.grid_edge.
+        This is currently limited to a constant value, 
+        by default calculated for self.grid_edge. 
+        
         For the purposes here, this is a strictly positive quantity.
         """
         if grid_edge is None:
@@ -712,7 +715,7 @@ class StageBC(BC):
     # If other than None, can compare to make sure it's the same as the model
     # datum.
     datum=None
-    geom_type='LineString'
+    geom_type=['LineString']
     standard_name='sea_surface_height'
     water_level=None
 
@@ -770,7 +773,7 @@ class FlowBC(CommonFlowBC):
     dredge_depth=-1.0
     standard_name='ocean_volume_transport_across_line'
     flow=None
-    geom_type='LineString'
+    geom_type=['LineString']
 
     def __init__(self,flow=None,**kw):
         super(FlowBC,self).__init__(**kw)
@@ -798,29 +801,12 @@ class SourceSinkBC(CommonFlowBC):
     # The grid, at the entry point, will be taken down to this elevation
     # to ensure that prescribed flows are not prevented due to a dry cell.
 
-    geom_type='Point'
-    z='bed'
-
+    # Note that only DFM supports LineString here.
+    geom_type=['Point','LineString']
+    z='bed' # elevation of the mass source
+    z_src='bed' # elevation of mass sink, if two-ended
     dredge_depth=-1.0
     
-    # def filename_base(self):
-    #     return super(SourceSinkBC,self).filename_base()+"_flow"
-    # 
-    # def write_config(self):
-    #     assert self.flow is not None
-    # 
-    #     old_bc_fn=self.model.ext_force_file()
-    # 
-    #     with open(old_bc_fn,'at') as fp:
-    #         lines=["QUANTITY=discharge_salinity_temperature_sorsin",
-    #                "FILENAME=%s"%self.pli_filename(),
-    #                "FILETYPE=9",
-    #                "METHOD=1", # how is this different than method=3?
-    #                "OPERAND=O",
-    #                "\n"]
-    #         fp.write("\n".join(lines))
-    # def write_data(self):
-    #     self.write_tim(self.data())
 
 class WindBC(BC):
     """
@@ -1272,11 +1258,16 @@ class HydroModel(object):
         returned by shp2geom.
         there is special handling for several values:
           'geom_type' is the geom_type attribute of the geometry itself,
-          e.g. 'LineString' or 'Point'
+          e.g. 'LineString' or 'Point'. feat can specify a list of geom_type
+        values
         """
         for k in kws:
             if k=='geom_type':
                 feat_val=feat['geom'].geom_type
+                if isinstance(kws[k],list):
+                    if feat_val in kws[k]: continue
+                else:
+                    if feat_val==kws[k]: continue
             else:
                 try:
                     feat_val=feat[k]
@@ -1284,10 +1275,10 @@ class HydroModel(object):
                     return False
                 except ValueError: # depending on type of feat can get either
                     return False
-            if feat_val==kws[k]:
-                continue
-            else:
-                return False
+                if feat_val==kws[k]:
+                    continue
+                else:
+                    return False
         return True
 
     # having these classes as attributes reduces headaches in importing,
