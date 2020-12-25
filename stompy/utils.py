@@ -1414,20 +1414,34 @@ def to_jdate(t):
     doy=dt.toordinal() - dt0.toordinal()
     return dt0.year * 1000 + doy
 
+def clamp_dt64_helper(func,t,dt,t0=np.datetime64("1970-01-01 00:00:00")):
+    """
+    Common code for ceil/floor/round datetime64
+    """
+    decimal=np.asarray( (t-t0) / dt )
+    clamped=func(decimal).astype(np.int64)
+    return t0+dt*clamped
+    
 def floor_dt64(t,dt,t0=np.datetime64("1970-01-01 00:00:00")):    
     """
     Round the given t down to an integer number of dt from
     a reference time (defaults to unix epoch)
     """
-    return t0+dt*(np.floor( (t-t0) / dt )).astype(np.int64)
+    return clamp_dt64_helper(np.floor,t,dt,t0)
 
 def ceil_dt64(t,dt,t0=np.datetime64("1970-01-01 00:00:00")):
     """
     Round the given t up to an integer number of dt from
     a reference time (defaults to unix epoch)
     """
-    return t0+dt*int(np.ceil( (t-t0) / dt ))
+    return clamp_dt64_helper(np.ceil,t,dt,t0)
 
+def round_dt64(t,dt,t0=np.datetime64("1970-01-01 00:00:00")):
+    """
+    Round the given t to the nearest integer number of dt
+    from a reference time (defaults to unix epoch)
+    """
+    return clamp_dt64_helper(np.round,t,dt,t0)
 
 def unix_to_dt64(t):
     """
@@ -1533,6 +1547,12 @@ def strftime(d,fmt="%Y-%m-%d %H:%M"):
 # pandas includes some of this functionality, but trying to
 # keep utils.py pandas-free (no offense, pandas)
 
+def dnum_mat_to_py(x):
+    return np.asarray(x)-366
+def dnum_py_to_mat(x):
+    return np.asarray(x)+366
+
+    
 def dt64_to_dnum(dt64):
     # get some reference points:
 
