@@ -2175,7 +2175,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         cell_map=np.zeros( ugB.Ncells(), 'i4')-1
 
         if merge_nodes is not None:
-            if merge_nodes is 'auto':
+            if isinstance(merge_nodes,str) and merge_nodes=='auto':
                 merge_nodes=find_common_nodes(self,ugB,tol=tol)
             for my_node,B_node in merge_nodes:
                 node_map[B_node]=my_node
@@ -5436,7 +5436,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         finite cell.
          if 'centroid', test against the centroid
         """
-        if as_type is 'mask':
+        if isinstance(as_type,str) and as_type=='mask':
             sel = np.zeros(self.Ncells(),np.bool8) # initialized to False
         else:
             sel = []
@@ -5457,7 +5457,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 test=geom.intersects( self.cell_polygon(c) )
             if invert:
                 test = not test # not in numpy land, so don't invert with ~
-            if as_type is 'mask':
+            if isinstance(as_type,str) and as_type=='mask':
                 sel[c] = test
             else:
                 if test:
@@ -7451,7 +7451,7 @@ class UnTRIM08Grid(UnstructuredGrid):
             extent is area or length
             depth is ... depth_mean or depth_max
             """
-            if selector is 'missing':
+            if isinstance(selector,str) and selector=='missing':
                 overwrite=False
                 selector = range(len(elements))
             else:
