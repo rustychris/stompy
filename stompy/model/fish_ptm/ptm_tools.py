@@ -19,7 +19,7 @@ import pandas as pd
 class PtmBin(object):
     # when True, load particle data as memory map rather than np.fromstring.
     use_memmap=True
-    def __init__(self,fn,release_name=None):
+    def __init__(self,fn,release_name=None,idx_fn='auto'):
         self.fn = fn
 
         if release_name is None:
@@ -43,11 +43,25 @@ class PtmBin(object):
         self.offsets = {} # map timestep => start of date header for that timestep
         self.offsets[0] = self.fp.tell()
 
-        # Get the time information
-        self.getTime()
+        if idx_fn=='auto':
+            idx_fn=fn.replace('_bin.out','_bin.idx')
+        if os.path.exists(idx_fn):
+            self.idx_fn=idx_fn
+            self.read_index()
+        else:
+            # Get the time information
+            self.getTime()
 
+    def read_index(self):
+        # 20x faster
+        df=pd.read_csv(self.idx_fn,sep='\s+',
+                       names=['year','month','day','hour','minute','offset','count']) # 5ms
+        df['time']=pd.to_datetime(df[['year','month','day','hour','minute']])
+        # mimic what getTime and scan would have done:
+        self.time=df.time.dt.to_pydatetime()
+        self.offsets=dict(zip(df.index.values,df.offset.values))
+                          
     def read_bin_header(self):
-
         self.Nattr = int( np.fromstring(self.fp.read(4),np.int32) )
 
         # print "Nattr: ",self.Nattr
@@ -255,11 +269,17 @@ class PtmBin(object):
 
         return cell_cache_fn
 
+def release_log_dataframe(fn):
+    """
+    Parse release_log into pandas DataFrame
+    """
+    return pd.read_csv(fn,sep='\s+',
+                       names=['id','gid','x','y','z','k','cell','date','time'],
+                       parse_dates=[ ['date','time'] ])
+    
 class ReleaseLog(object):
     def __init__(self,fn):
-        self.data=pd.read_csv(fn,sep='\s+',
-                              names=['id','gid','x','y','z','k','cell','date','time'],
-                              parse_dates=[ ['date','time'] ])
+        self.data=release_log_dataframe(fn)
         self.intervals=self.to_intervals(self.data)
     def to_intervals(self,data):
         # group by interval

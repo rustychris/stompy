@@ -5480,7 +5480,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         'cell_index': build a rectangular index of cell bounding boxes, 
            then iterate over points and query the cell index.
         'cells_nearest':
-           iterate and use self.select_cells_nearest.
+           iterate and use self.select_cells_nearest. This allows near
+           matches, unlike the other methods which require points to fall
+           inside the cells
         'kdtree': build a kdtree of the points, query by circumcenter and
            circumradius of each cell, and refine via cell_path.
 
@@ -5540,7 +5542,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 # inverting the loop to be over cells, and check all points against
                 # a single cell at a time was equally slow with 500k points and 50k
                 # cells.
-                c=self.select_cells_nearest(points[i], inside=True)
+                c=self.select_cells_nearest(points[i], inside=False)
                 if c is None: continue
                 cells[i]=c
         elif method=='kdtree':
