@@ -28,6 +28,42 @@ def poly_to_grid(poly,nom_res):
     sqg.execute()
     return sqg.qgs[0].g_final
 
+def simple_quad_gen_to_grid(sqg,aniso=None):
+    """
+    Combine the patches in the given instance of 
+    SimpleQuadGen, assigning 'K' to the edges.
+    sqg.gen.cells should have a field 'anisotropy'
+    which specifies how much smaller the off-axis
+    diffusion coefficient is than the on-axis
+    diffusion coefficient.
+    Returns a grid with 'K' defined on edges.
+    """
+    joined=None
+    for qg in sqg.qgs:
+        grid=qg.g_final.copy()
+        Klong=1.0
+        try:
+            Kshort=qg.gen.cells['anisotropy'][0]
+        except ValueError:
+            Kshort=aniso
+
+        if len(qg.right_i)>len(qg.right_j):
+            j_long=grid.edges['orient']==0
+        else:
+            j_long=grid.edges['orient']==90
+        K=np.where( j_long, Klong, Kshort)
+        grid.add_edge_field('K',K,on_exists='overwrite')
+
+        grid.orient_cells()
+
+        if joined:
+            node_map,edge_map,cell_map=joined.add_grid(grid,merge_nodes='auto',
+                                                       tol=0.01)
+            joined.edges['K'][edge_map] = 0.5*(joined.edges['K'][edge_map] + grid.edges['K'])
+        else:
+            joined=grid
+    return joined
+
 class OrthoInterpolator(object):
     """
     Given either a curvilinear grid or a boundary for a curvilinear 
@@ -43,16 +79,33 @@ class OrthoInterpolator(object):
 
     background_field=None
 
+    # If True, only samples contained in the grid outline are retained.
+    clip_samples=True
+
     # No support yet for weights.
     # background_weight=0.02
     
     def __init__(self,region,samples=None,**kw):
+        """
+        region: curvilinear UnstructuredGrid instance or 
+         shapely.Polygon suitable for automatic quad generation
+         (simple, 4 smallest internal angles are corners)
+         or SimpleQuadGen instance that has been executed, and
+         optionally has a cell-field called 'anisotropy'
+
+        samples: if given, a pd.DataFrame with x,y, and value
+        background field: if given, a field.Field that can be
+        queried to get extra data along boundaries.
+        """
         utils.set_keywords(self,kw)
 
         self.region=region
 
         if isinstance(region,unstructured_grid.UnstructuredGrid):
             self.grid=self.region
+        elif isinstance(region,quads.SimpleQuadGen):
+            # aniso is only used if sqg.gen doesn't have anisotropy
+            self.grid=simple_quad_gen_to_grid(region,aniso=self.anisotropy)
         else:
             assert self.nom_res is not None
             self.grid=poly_to_grid(self.region,self.nom_res)
@@ -79,12 +132,23 @@ class OrthoInterpolator(object):
     
     def solve(self):
         grid=self.grid
+
+        if self.clip_samples:
+            boundary=grid.boundary_polygon()
+            sel=[boundary.contains(geometry.Point(xy))
+                 for xy in self.samples[['x','y']].values]
+            samples=self.samples.iloc[sel,:]
+        else:
+            samples=self.samples
+            
         dirich_idxs=[grid.select_nodes_nearest(xy)
-                     for xy in self.samples.loc[:,['x','y']].values]
-        dirich_vals=self.samples['value'].values
+                     for xy in samples.loc[:,['x','y']].values]
+        dirich_vals=samples['value'].values
         dirich={idx:val for idx,val in zip(dirich_idxs,dirich_vals)}
 
         # Recover the row/col indexes of the quads:
+        # Note that the order of ijs corresponds to node_idxs,
+        # not natural node index.
         node_idxs,ijs=grid.select_quad_subset(grid.nodes['x'][0])
         
         ij_span = ijs.max(axis=0) - ijs.min(axis=0)
@@ -95,26 +159,93 @@ class OrthoInterpolator(object):
         # force start at 0
         ijs-= ijs.min(axis=0)
         nrows,ncols=1+ijs.max(axis=0) # ij max is 1 less than count
-
+        
         # 2D index array to simplify things below
-        patch_nodes=np.zeros( (nrows,ncols),np.int32)
-        assert nrows*ncols==len(node_idxs)
+        patch_nodes=np.zeros( (nrows,ncols),np.int32)-1
+        # Map row,col back to grid.node index
         patch_nodes[ijs[:,0],ijs[:,1]]=node_idxs
         
+        if nrows*ncols!=len(node_idxs):
+            print("Brave new territory. Nodes are not in a dense rectangle")
+        if not np.all(patch_nodes>=0):
+            print("Yep, brave new territory.")
+            
         # Build the matrix:
         N=len(node_idxs)
         M=sparse.dok_matrix( (N,N), np.float64)
         b=np.zeros(N,np.float64)
-        K=[1,self.anisotropy]
 
+        # With the SQG code, there are two differences:
+        #  grid may not be dense
+        #  K is already given on edges, rather than just
+        #  by grid direction
+
+        try:
+            Kedge=grid.edges['K']
+            Kij=None
+            print("Will use K from edges")
+        except:
+            Kedge=None
+            Kij=[1,self.anisotropy]
+            print("Will use K by grid orientation")
+
+        # For now we only handle cases where the quad subset
+        # includes the whole grid.
+        # That means that the matrix here is indexed by grid.nodes,
+        # rather than going through node_idxs
+        
         # could be faster but no biggie right now.
+        # While we iterate over nrows and ncols of patch_nodes,
+        #  the matrix itself is constructed in terms of grid.node
+        #  indexes.
         for row in range(nrows):
             for col in range(ncols):
                 n=patch_nodes[row,col]
+                if n<0:
+                    continue
+                
                 if n in dirich:
                     M[n,n]=1
                     b[n]=dirich[n]
                 else:
+                    # For each cardinal direction either None,
+                    # or a (node,K) tuple
+                    if row==0:
+                        node_north=-1
+                    else:
+                        node_north=patch_nodes[row-1,col]
+                    if row==nrows-1:
+                        node_south=-1
+                    else:
+                        node_south=patch_nodes[row+1,col]
+                    if col==0:
+                        node_west=-1
+                    else:
+                        node_west=patch_nodes[row,col-1]
+                    if col==ncols-1:
+                        node_east=-1
+                    else:
+                        node_east=patch_nodes[row,col+1]
+
+                    # mirror missing nodes for a no-flux BC
+                    if node_north<0: node_north=node_south
+                    if node_south<0: node_south=node_north
+                    if node_west<0: node_west=node_east
+                    if node_east<0: node_east=node_west
+                    nbrs=[node_north,node_south,node_west,node_east]
+                    assert np.array(nbrs).min()>=0
+                    if Kedge is not None:
+                        Ks=[Kedge[grid.nodes_to_edge(n,nbr)]
+                            for nbr in nbrs ]
+                    else:
+                        Ks=[Kij[0], Kij[0], Kij[1], Kij[1]]
+
+                    M[n,n]=-np.sum(Ks)
+                    for nbr,K in zip(nbrs,Ks):
+                        M[n,nbr] = M[n,nbr] + K
+                    
+                # old code:
+                if 0:
                     M[n,n]=-2*(K[0]+K[1])
                     if row==0:
                         M[n,patch_nodes[row+1,col]]=2*K[0]
@@ -131,16 +262,25 @@ class OrthoInterpolator(object):
                         M[n,patch_nodes[row,col-1]]=K[1]
                         M[n,patch_nodes[row,col+1]]=K[1]
 
+        # This soln is indexed by node_idxs
         soln=sparse.linalg.spsolve(M.tocsr(),b)
+        self.b=b # 0 for computational, and value for dirichlet.
         
         return soln
         
-    def plot_result(self,**kw):
-        plt.figure(1).clf()
-        fig,ax=plt.subplots(num=1)
+    def plot_result(self,num=1,**kw):
+        plt.figure(num).clf()
+        fig,ax=plt.subplots(num=num)
 
-        ccoll=self.grid.plot_cells(values=self.result,ax=ax,cmap='jet',
-                                   **kw)
+        # Wrong -- result is node centered
+        #ccoll=self.grid.plot_cells(values=self.result,ax=ax,cmap='jet',
+        #                           **kw)
+        #tri=self.grid.mpl_triangulation()
+        #ccoll=ax.tripcolor(tri,self.result,cmap='jet',shading='gouraud',
+        #                   **kw)
+        ccoll=self.grid.contourf_node_values(self.result,32,cmap='jet',
+                                             **kw)
+        
         scat=ax.scatter( self.samples['x'] ,self.samples['y'], 40,
                          self.samples['value'], cmap='jet',
                          norm=ccoll.norm)
