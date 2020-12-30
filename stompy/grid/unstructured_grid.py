@@ -5292,6 +5292,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         if node_set is None:
             j=self.select_edges_nearest(ctr)
             he=self.halfedge(j,0)
+            if he.cell()<0:
+                he=he.opposite()
+            assert he.cell()>=0
         else:
             n=node_set[0]
             node_set=set(node_set)
