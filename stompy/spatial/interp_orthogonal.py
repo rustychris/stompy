@@ -111,6 +111,14 @@ class OrthoInterpolator(object):
             self.grid=poly_to_grid(self.region,self.nom_res)
 
         if samples is not None:
+            # Clipping only applies to these samples, not background
+            # samples.  Otherwise we have to worry about boundary
+            # points falling just outside the grid boundary.
+            if self.clip_samples:
+                boundary=grid.boundary_polygon()
+                sel=[boundary.contains(geometry.Point(xy))
+                     for xy in samples[['x','y']].values]
+                samples=samples.iloc[sel,:]
             self.samples=samples
         else:
             self.samples=pd.DataFrame()
@@ -133,13 +141,7 @@ class OrthoInterpolator(object):
     def solve(self):
         grid=self.grid
 
-        if self.clip_samples:
-            boundary=grid.boundary_polygon()
-            sel=[boundary.contains(geometry.Point(xy))
-                 for xy in self.samples[['x','y']].values]
-            samples=self.samples.iloc[sel,:]
-        else:
-            samples=self.samples
+        samples=self.samples
             
         dirich_idxs=[grid.select_nodes_nearest(xy)
                      for xy in samples.loc[:,['x','y']].values]

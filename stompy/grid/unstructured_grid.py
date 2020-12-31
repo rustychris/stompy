@@ -6724,6 +6724,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         """ write this grid out in the ptm grid format.
         subgrid: append cell and edge subgrid data.  this is
         really just faked, with a single sub-element per item.
+
+        2020-12-31: Force update of all cells['edges']. Not clear
+         where edges are getting out of order in cells, but it
+         happens and in PTM grd file that's bad.
         """
         vertex_hdr = " Vertex Data: vertex_number, x, y"
         poly_hdr = " Polygon Data: polygon_number, number_of_sides,center_x, center_y, center_depth, side_indices(number_of_sides), marker(0=internal,1=open boundary)"
@@ -6754,9 +6758,11 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             fp.write(poly_hdr+"\n")
             cell_write_str1 = " %10d %10d %16.7f %16.7f %16.7f "
             cell_depths = self.cells['cell_depth']
-            # Make sure cells['edges'] is set, but don't replace
-            # data if it is already there.
-            self.update_cell_edges(select='missing')
+            # OLD: Make sure cells['edges'] is set, but don't replace
+            #   data if it is already there.
+            # 2020-12-31: Some issues with grids having out of order
+            #  cells['edges']. Force full update.
+            self.update_cell_edges(select='all')
             cc=self.cells_center()
             for c in range(self.Ncells()):
                 edges = self.cells['edges'][c,:]
