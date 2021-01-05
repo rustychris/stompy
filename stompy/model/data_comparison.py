@@ -346,7 +346,10 @@ def calibration_figure_3panel(all_sources,combined=None,
     ts_ax = fig.add_subplot(gs[:-3, :])
     lp_ax = fig.add_subplot(gs[-3:-1, :-1])
     scat_ax=fig.add_subplot(gs[-3:-1, 2])
-    txt_ax= fig.add_subplot(gs[-1,:])
+    if lowpass:
+        txt_ax= fig.add_subplot(gs[-1,:])
+    else:
+        txt_ax=lp_ax
 
     offsets=combined.mean(dim='time').values
     if offset_source is not None:
@@ -408,9 +411,16 @@ def calibration_figure_3panel(all_sources,combined=None,
         plt.setp(list(ax.spines.values()),visible=0)
         ax.xaxis.set_visible(0)
         ax.yaxis.set_visible(0)
-        
-        ax.text(0.05,0.95,tbl,va='top',transform=ax.transAxes,
-                family='monospace',fontsize=8)
+
+        if lowpass:
+            fontsize=8
+            x=0.05
+        else:
+            # less horizontal space
+            fontsize=6.5
+            x=-0.05
+        ax.text(x,0.95,tbl,va='top',transform=ax.transAxes,
+                family='monospace',fontsize=fontsize,zorder=3)
 
     # Lowpass:
     has_lp_data=False
