@@ -1156,14 +1156,24 @@ def murphy_skill(xmodel,xobs,xref=None,ignore_nan=True):
 def find_lag_xr(data,ref):
     """ Report lag in time of data (xr.DataArray) with respect
     to reference (xr.DataArray).  Requires that data and ref
-    are xr.DataArray, with coordinate values.
+    are xr.DataArray, with coordinate values. A coordinate named
+    'time' is given preference, otherwise the first coordinate.
     """
     for arg in [data,ref]:
         if not isinstance(arg,xr.DataArray):
             raise Exception("Arguments to find_lag_xr must be DataArrays")
 
-    return find_lag( data[data.dims[0]].values, data.values,
-                     ref[ref.dims[0]].values, ref.values )
+    try:
+        t_data=data['time'].values
+    except KeyError:
+        t_data=data[data.dims[0]].values
+    try:
+        t_ref=ref['time'].values
+    except KeyError:
+        t_ref=ref[ref.dims[0]].values
+        
+    return find_lag( t_data, data.values,
+                     t_ref, ref.values )
 
 def find_lag(t,x,t_ref,x_ref):
     """
