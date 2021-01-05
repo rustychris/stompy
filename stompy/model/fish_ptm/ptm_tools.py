@@ -52,6 +52,9 @@ class PtmBin(object):
             # Get the time information
             self.getTime()
 
+    def __del__(self):
+        self.fp.close()
+
     def read_index(self):
         # 20x faster
         df=pd.read_csv(self.idx_fn,sep='\s+',
@@ -273,9 +276,12 @@ def release_log_dataframe(fn):
     """
     Parse release_log into pandas DataFrame
     """
+    # for short releases, infer_datetime_format slows it down.
+    # Might be faster if there are many releases.
     return pd.read_csv(fn,sep='\s+',
                        names=['id','gid','x','y','z','k','cell','date','time'],
-                       parse_dates=[ ['date','time'] ])
+                       parse_dates=[ ['date','time'] ],
+                       infer_datetime_format=False)
     
 class ReleaseLog(object):
     def __init__(self,fn):
@@ -284,13 +290,12 @@ class ReleaseLog(object):
     def to_intervals(self,data):
         # group by interval
         grped=data.groupby('date_time')
-        intervals=pd.DataFrame()
-        intervals['time']=grped['date_time'].first()
-        intervals['id_min']=grped['id'].min()
-        intervals['id_max']=grped['id'].max()
-        intervals['gid_min']=grped['gid'].min()
-        intervals['gid_max']=grped['gid'].max()
-        intervals['count']=grped['id'].size()
+        intervals=pd.DataFrame(dict(time=grped['date_time'].first(),
+                                    id_min=grped['id'].min(),
+                                    id_max=grped['id'].max(),
+                                    gid_min=grped['gid'].min(),
+                                    gid_max=grped['gid'].max(),
+                                    count=grped['id'].size()))
         return intervals
     
 class PtmState(object):
