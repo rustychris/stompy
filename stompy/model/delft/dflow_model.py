@@ -10,7 +10,6 @@ import logging
 log=logging.getLogger('DFlowModel')
 
 import copy
-
 import numpy as np
 import xarray as xr
 import pandas as pd
@@ -215,6 +214,83 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                                  sep=' ',names=['x','y','name'],quotechar="'")
             stations['geom']=[geometry.Point(x,y) for x,y in stations.loc[ :, ['x','y']].values ]
             self.gazetteers.append(stations.to_records())
+
+    def parse_old_bc(self,fn):
+        """
+        Parse syntax of old-style BC files into a list of dictionaries.
+        Keys are forced upper case.
+        """
+        def key_value(s):
+            k,v=s.strip().split('=',1)
+            k,v=k.strip().upper(),v.strip()
+            return k,v
+
+        rec=None
+        recs=[]
+
+        with open(fn,'rt') as fp:
+            while 1:
+                line=fp.readline()
+                if line=="": break
+                line=line.split('#')[0].strip()
+                if not line: continue # blank line or comment
+                k,v=key_value(line)
+
+                if k=='QUANTITY':
+                    rec={k:v}
+                    recs.append(rec)
+                else:
+                    rec[k]=v
+        return recs
+
+    def load_bcs(self):
+        """
+        Woefully inadequate parsing of boundary condition data.
+        For now, returns a list of dictionaries.  
+        TODO: populate self.bcs, optionally.
+        Handle other BCs like at least flow.
+        """
+        ext_fn=self.mdu.filepath(['external forcing','ExtForceFile'])
+        ext_new_fn=self.mdu.filepath(['external forcing','ExtForceFileNew'])
+
+        recs=self.parse_old_bc(ext_fn)
+
+        for rec in recs:
+            if rec['QUANTITY'].upper()=='WATERLEVELBND':
+                # The ext file doesn't have a notion of name.
+                # punt via the filename
+                name=rec['FILENAME'].replace('.pli','')
+                rec['name']=name
+                
+                pli_fn=os.path.join(os.path.dirname(ext_fn),
+                                    rec['FILENAME'])
+                pli=dio.read_pli(pli_fn)
+                rec['pli']=pli
+
+                rec['coordinates']=recs[0]['pli'][0][1]
+                geom=geometry.LineString(rec['coordinates'])
+                
+                rec['geom']=geom
+                bc=hm.StageBC(name=name,geom=pli)
+                rec['bc']=bc
+
+                # timeseries at one or more points along boundary:
+                tims=[]
+                for node_i,node_xy in enumerate(rec['coordinates']):
+                    tim_fn=pli_fn.replace('.pli','_%04d.tim'%(node_i+1))
+                    if os.path.exists(tim_fn):
+                        t_ref,t_start,t_stop=self.mdu.time_range()
+                        tim_ds=dio.read_dfm_tim(tim_fn,t_ref,columns=['stage'])
+                        tim_ds['x']=(),node_xy[0]
+                        tim_ds['y']=(),node_xy[1]
+
+                        tims.append(tim_ds)
+                data=xr.concat(tims,dim='node')
+                rec['data']=data
+
+            else:
+                print("Not implemented: reading BC quantity=%s"%rec['QUANTITY'])
+        return recs
 
     @classmethod
     def to_mdu_fn(cls,path):
