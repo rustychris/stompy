@@ -7976,27 +7976,27 @@ class PtmGrid(UnstructuredGrid):
 
         while True:
             line = self.fp.readline()
-            if line == '':
+            if line == b'':
                 break
             line = line.strip()
 
-            if line.find('Number of Vertices')>= 0:
+            if line.find(b'Number of Vertices')>= 0:
                 Nvertices = int(self.fp.readline().strip())
-            elif line.find('Number of Polygons')>=0:
+            elif line.find(b'Number of Polygons')>=0:
                 Npolys = int(self.fp.readline().strip())
-            elif line.find('Number of Sides')>=0:
+            elif line.find(b'Number of Sides')>=0:
                 Nsides = int(self.fp.readline().strip())
-            elif line.find('NODATA (land) value')>=0:
+            elif line.find(b'NODATA (land) value')>=0:
                 nodata_value = float(self.fp.readline().strip())
-            elif line.find('Vertex Data:') >= 0:
+            elif line.find(b'Vertex Data:') >= 0:
                 vertex_data_offset = self.fp.tell()
                 for i in range(Nvertices):
                     self.fp.readline()
-            elif line.find('Polygon Data:') >= 0:
+            elif line.find(b'Polygon Data:') >= 0:
                 polygon_data_offset = self.fp.tell()
                 for i in range(Npolys):
                     self.fp.readline()
-            elif line.find('Side Data:') >= 0:
+            elif line.find(b'Side Data:') >= 0:
                 side_data_offset = self.fp.tell()
                 for i in range(Nsides):
                     self.fp.readline()
