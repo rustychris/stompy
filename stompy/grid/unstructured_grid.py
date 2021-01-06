@@ -577,7 +577,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         with open(fn,'rt') as fp:
             head_start=fp.readline()
             assert head_start.strip()=='$MeshFormat'
-            ver,asc_bin,data_size,*one = fp.readline().strip().split()
+            ver,asc_bin,data_size = fp.readline().strip().split()[:3]
             assert asc_bin=='0',"Not ready for binary"
             head_end=fp.readline()
             assert head_end.strip()=='$EndMeshFormat'
@@ -7967,7 +7967,12 @@ class PtmGrid(UnstructuredGrid):
 
     def read_from_file(self,grd_fn):
         self.grd_fn = grd_fn
-        self.fp = open(self.grd_fn,'rt')
+        # 2021-01-06: Had trouble on windows in python 2 using
+        # text mode. Seems that fp.tell() and fp.seek() are not
+        # consistent. In binary mode, we'll get /r/n line endings
+        # if the file turns out to have been written on windows,
+        # but readline() and strip() will handle this okay.
+        self.fp = open(self.grd_fn,'rb')
 
         while True:
             line = self.fp.readline()
