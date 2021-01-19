@@ -39,7 +39,11 @@ class RtreeQgis(object):
             self.insert(feat_id,rect=rect_xxyy)
             
     def nearest(self, rect, count):
-        results = self.qsi.nearestNeighbor(qc.QgsPointXY(rect[0],rect[2]), count)
+        try:
+            pntxy=qc.QgsPointXY(float(rect[0]),float(rect[2]))
+        except TypeError:
+            raise Exception("nearest(rect=%s,count=%s"%(rect,count))
+        results = self.qsi.nearestNeighbor(pntxy, count)
         return results
 
     def intersects(self,xxyy):
@@ -54,7 +58,7 @@ class RtreeQgis(object):
         # feat.setFeatureId(feat_id)
         if rect[0] != rect[1] or rect[2]!=rect[3]:
             print( "WARNING: can only deal with point geometries right now" )
-        gPnt = qc.QgsGeometry.fromPointXY(qc.QgsPointXY(rect[0],rect[2]))
+        gPnt = qc.QgsGeometry.fromPointXY(qc.QgsPointXY(float(rect[0]),float(rect[2])))
         feat.setGeometry(gPnt)
         return feat
 

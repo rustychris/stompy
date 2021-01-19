@@ -10,7 +10,6 @@ import logging
 log=logging.getLogger('DFlowModel')
 
 import copy
-
 import numpy as np
 import xarray as xr
 import pandas as pd
@@ -210,11 +209,88 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         or query output history files.
         """
         fn=self.mdu.filepath(['output','ObsFile'])
-        if os.path.exists(fn):
+        if fn and os.path.exists(fn):
             stations=pd.read_csv(self.mdu.filepath(['output','ObsFile']),
                                  sep=' ',names=['x','y','name'],quotechar="'")
             stations['geom']=[geometry.Point(x,y) for x,y in stations.loc[ :, ['x','y']].values ]
             self.gazetteers.append(stations.to_records())
+
+    def parse_old_bc(self,fn):
+        """
+        Parse syntax of old-style BC files into a list of dictionaries.
+        Keys are forced upper case.
+        """
+        def key_value(s):
+            k,v=s.strip().split('=',1)
+            k,v=k.strip().upper(),v.strip()
+            return k,v
+
+        rec=None
+        recs=[]
+
+        with open(fn,'rt') as fp:
+            while 1:
+                line=fp.readline()
+                if line=="": break
+                line=line.split('#')[0].strip()
+                if not line: continue # blank line or comment
+                k,v=key_value(line)
+
+                if k=='QUANTITY':
+                    rec={k:v}
+                    recs.append(rec)
+                else:
+                    rec[k]=v
+        return recs
+
+    def load_bcs(self):
+        """
+        Woefully inadequate parsing of boundary condition data.
+        For now, returns a list of dictionaries.  
+        TODO: populate self.bcs, optionally.
+        Handle other BCs like at least flow.
+        """
+        ext_fn=self.mdu.filepath(['external forcing','ExtForceFile'])
+        ext_new_fn=self.mdu.filepath(['external forcing','ExtForceFileNew'])
+
+        recs=self.parse_old_bc(ext_fn)
+
+        for rec in recs:
+            if rec['QUANTITY'].upper()=='WATERLEVELBND':
+                # The ext file doesn't have a notion of name.
+                # punt via the filename
+                name=rec['FILENAME'].replace('.pli','')
+                rec['name']=name
+                
+                pli_fn=os.path.join(os.path.dirname(ext_fn),
+                                    rec['FILENAME'])
+                pli=dio.read_pli(pli_fn)
+                rec['pli']=pli
+
+                rec['coordinates']=recs[0]['pli'][0][1]
+                geom=geometry.LineString(rec['coordinates'])
+                
+                rec['geom']=geom
+                bc=hm.StageBC(name=name,geom=pli)
+                rec['bc']=bc
+
+                # timeseries at one or more points along boundary:
+                tims=[]
+                for node_i,node_xy in enumerate(rec['coordinates']):
+                    tim_fn=pli_fn.replace('.pli','_%04d.tim'%(node_i+1))
+                    if os.path.exists(tim_fn):
+                        t_ref,t_start,t_stop=self.mdu.time_range()
+                        tim_ds=dio.read_dfm_tim(tim_fn,t_ref,columns=['stage'])
+                        tim_ds['x']=(),node_xy[0]
+                        tim_ds['y']=(),node_xy[1]
+
+                        tims.append(tim_ds)
+                data=xr.concat(tims,dim='node')
+                rec['data']=data
+
+            else:
+                print("Not implemented: reading BC quantity=%s"%rec['QUANTITY'])
+        return recs
 
     @classmethod
     def to_mdu_fn(cls,path):
@@ -317,10 +393,9 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             return utils.call_with_path(real_cmd,self.run_dir)
     
     def run_simulation(self,extra_args=[]):
-        self.run_dflowfm(cmd=["-t","1","--autostartstop",
-                              os.path.basename(self.mdu.filename)]
-                         + extra_args)
-
+        return self.run_dflowfm(cmd=["-t","1","--autostartstop",
+                                     os.path.basename(self.mdu.filename)]
+                                + extra_args)
     
     @classmethod
     def run_completed(cls,fn):
@@ -376,7 +451,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         # Read the last 1000 bytes
         with open(dia_fn,'rb') as fp:
             fp.seek(0,os.SEEK_END)
-            tail_size=min(fp.tell(),1000)
+            tail_size=min(fp.tell(),10000)
             fp.seek(-tail_size,os.SEEK_CUR)
             # This may not be py2 compatible!
             tail=fp.read().decode(errors='ignore')
@@ -403,6 +478,8 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             self.mdu['output','ObsFile']="obs_points.xyn"
         if len(self.mon_sections)>0 and not self.mdu['output','CrsFile']:
             self.mdu['output','CrsFile']="obs_sections.pli"
+
+        self.update_initial_water_level()
 
     def write_config(self):
         # Assumes update_config() already called
@@ -454,14 +531,19 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                     "[structure]",
                     "type         = %s"%s['type'],
                     "id           = %s"%s['name'],
-                    "polylinefile = %s.pli"%s['name'],
-                    "door_height  = %.3f"%s['door_height'],
-                    "lower_edge_level = %.3f"%s['lower_edge_level'],
-                    "opening_width = %.3f"%s['opening_width'],
-                    "sill_level     = %.3f"%s['sill_level'],
-                    "horizontal_opening_direction = %s"%s['horizontal_opening_direction'],
-                    "\n"
-                ]
+                    "polylinefile = %s.pli"%s['name']
+                    ]
+                for k in s:
+                    if k in ['type','name','geom']: continue
+                    lines.append( "%s = %s"%(k,s[k]) )
+                lines.append("\n")
+                # "door_height  = %.3f"%s['door_height'],
+                # "lower_edge_level = %.3f"%s['lower_edge_level'],
+                # "opening_width = %.3f"%s['opening_width'],
+                # "sill_level     = %.3f"%s['sill_level'],
+                # "horizontal_opening_direction = %s"%s['horizontal_opening_direction'],
+                # "\n"
+
                 fp.write("\n".join(lines))
                 pli_fn=os.path.join(self.run_dir,s['name']+'.pli')
                 if 'geom' in s:
@@ -474,6 +556,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                 assert geom.type=='LineString'
                 pli_data=[ (s['name'], np.array(geom.coords)) ]
                 dio.write_pli(pli_fn,pli_data)
+                
                 
     # some read/write methods which may have to refer to model state to properly
     # parse inputs.
@@ -509,35 +592,52 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
     def write_bc(self,bc):
         if isinstance(bc,hm.StageBC):
             self.write_stage_bc(bc)
-        elif isinstance(bc,hm.FlowBC):
-            self.write_flow_bc(bc)
         elif isinstance(bc,hm.SourceSinkBC):
             self.write_source_bc(bc)
+        elif isinstance(bc,hm.FlowBC):
+            self.write_flow_bc(bc)
         elif isinstance(bc,hm.WindBC):
             self.write_wind_bc(bc)
         elif isinstance(bc,hm.RoughnessBC):
             self.write_roughness_bc(bc)
+        elif isinstance(bc,hm.ScalarBC):
+            self.write_scalar_bc(bc)
         else:
             super(DFlowModel,self).write_bc(bc)
 
-    def write_tim(self,da,file_path):
+    # If True, timesteps in the forcing data beyond the run
+    # will be trimmed out.
+    bc_trim_time=True
+    
+    def write_tim(self,da,file_path,trim_time=None):
         """
         Write a DFM tim file based on the timeseries in the DataArray.
         da must have a time dimension.  No support yet for vector-values here.
         file_path is relative to the working directory of the script, not
         the run_dir.
         """
+        if trim_time is None:
+            trim_time=self.bc_trim_time
+            
         ref_date,start,stop = self.mdu.time_range()
         dt=np.timedelta64(60,'s') # always minutes
 
-        if len(da.dims)==0:
-            # raise Exception("Not implemented for constant waterlevel...")
+        if 'time' not in da.dims:
             pad=np.timedelta64(86400,'s')
             times=np.array([start-pad,stop+pad])
-            values=np.array([da.values.item(),da.values.item()])
+            values=np.array([da.values,da.values])
         else:
             times=da.time.values
             values=da.values
+
+            if trim_time:
+                sel=(times>=start)&(times<=stop)
+                # Expand by one
+                sel[:-1] = sel[1:] | sel[:-1]
+                sel[1:] = sel[1:] | sel[:-1]
+                times=times[sel]
+                values=values[sel]
+            
         elapsed_time=(times - ref_date)/dt
         data=np.c_[elapsed_time,values]
 
@@ -558,7 +658,42 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             log.info("dredging disabled")
 
     def write_source_bc(self,bc):
-        self.write_gen_bc(bc,quantity='source')
+        # DFM source/sinks have salinity and temperature attached
+        # the same data file.
+        # the pli file can have a single entry, and include a z coordinate,
+        # based on lsb setup
+        salt_bc=None
+        temp_bc=None
+        for scalar_bc in self.bcs:
+            if isinstance(scalar_bc, hm.ScalarBC) and scalar_bc.parent==bc:
+                if scalar_bc.scalar=='salinity':
+                    salt_bc=scalar_bc
+                elif scalar_bc.scalar=='temperature':
+                    temp_bc=scalar_bc
+                else:
+                    self.log.warning("Not sure how to process scalar %s on source/sink BC"%scalar_bc.scalar)
+
+        # Source/sink bcs in DFM also include salinity and temperature.
+        das=[bc.data()]
+        if int(self.mdu['physics','Salinity']):
+            if salt_bc is None:
+                salt_da=xr.DataArray(0,name='salinity')
+            else:
+                salt_da=salt_bc.data()
+            das.append(salt_da)
+        if int(self.mdu['physics','Temperature']):
+            if temp_bc is None:
+                temp_da=xr.DataArray(0.0,name='temp')
+            else:
+                temp_da=temp_bc.data()
+            das.append(temp_da)
+
+        # merge data arrays including time
+        # This probably won't do the right thing when
+        # there are time values...
+        da_combined=xr.concat(das,dim='component')
+
+        self.write_gen_bc(bc,quantity='source',da=da_combined)
 
         if (bc.dredge_depth is not None) and (self.restart_from is None):
             # Additionally modify the grid to make sure there is a place for inflow to
@@ -570,33 +705,65 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         else:
             log.info("dredging disabled")
 
-    def write_gen_bc(self,bc,quantity):
+    def write_gen_bc(self,bc,quantity,da=None):
         """
         handle the actual work of writing flow and stage BCs.
         quantity: 'stage','flow','source'
+        da: override value for bc.data()
         """
         # 2019-09-09 RH: the automatic suffix is a bit annoying. it is necessary
         # when adding scalars, but for any one BC, only one of stage, flow or source
         # would be present.  Try dropping the suffix here.
         bc_id=bc.name # +"_" + quantity
 
-        #self.write_pli()
-        assert bc.geom.type=='LineString'
-        pli_data=[ (bc_id, np.array(bc.geom.coords)) ]
-        pli_fn=bc_id+'.pli'
+        assert isinstance(bc.geom_type,list),"Didn't fully refactor, looks like"
+        assert bc.geom.type in bc.geom_type
+
+        coords=np.array(bc.geom.coords)
+        ndim=coords.shape[1] # 2D or 3D geometry
+
+        # Special handling when it's a source/sink, with z/z_src specified
+        if quantity=='source':
+            if ndim==2 and bc.z is not None:
+                # construct z
+                missing=-9999.
+                z_coords=missing*np.ones(coords.shape[0],np.float64)
+                for z_val,idx in [ (bc.z,-1),
+                                   (bc.z_src,0) ]:
+                    if z_val is None: continue
+                    if z_val=='bed':
+                        z_val=-10000
+                    elif z_val=='surface':
+                        z_val=10000
+                    z_coords[idx]=z_val
+                if z_coords[0]==missing:
+                    z_coords[0]=z_coords[-1]
+                # middle coordinates, if any, don't matter
+                coords=np.c_[ coords, z_coords ]
+                ndim=3
+                
+        pli_data=[ (bc_id, coords) ]
+        
+        if ndim==2:
+            pli_fn=bc_id+'.pli'
+        else:
+            pli_fn=bc_id+'.pliz'
+            
         dio.write_pli(os.path.join(self.run_dir,pli_fn),pli_data)
 
-        #self.write_config()
         with open(self.ext_force_file(),'at') as fp:
             lines=[]
             method=3 # default
             if quantity=='stage':
                 lines.append("QUANTITY=waterlevelbnd")
+                tim_path=os.path.join(self.run_dir,bc_id+"_0001.tim")
             elif quantity=='flow':
                 lines.append("QUANTITY=dischargebnd")
+                tim_path=os.path.join(self.run_dir,bc_id+"_0001.tim")
             elif quantity=='source':
                 lines.append("QUANTITY=discharge_salinity_temperature_sorsin")
                 method=1 # not sure how this is different
+                tim_path=os.path.join(self.run_dir,bc_id+".tim")
             else:
                 assert False
             lines+=["FILENAME=%s"%pli_fn,
@@ -606,10 +773,9 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                     ""]
             fp.write("\n".join(lines))
 
-        #self.write_data()
-        da=bc.data()
-        assert len(da.dims)<=1,"Only ready for dimensions of time or none"
-        tim_path=os.path.join(self.run_dir,bc_id+"_0001.tim")
+        if da is None:
+            da=bc.data()
+        # assert len(da.dims)<=1,"Only ready for dimensions of time or none"
         self.write_tim(da,tim_path)
 
     def write_wind_bc(self,bc):
@@ -630,6 +796,45 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
 
         self.write_tim(bc.data(),tim_path)
 
+    def write_scalar_bc(self,bc):
+        bc_id=bc.name+"_"+bc.scalar
+
+        parent_bc=bc.parent
+        if isinstance(parent_bc,hm.SourceSinkBC):
+            log.debug("BC %s should be handled by SourceSink"%bc_id)
+            return
+        
+        assert isinstance(parent_bc, (hm.StageBC,hm.FlowBC)),"Haven't implemented point-source scalar yet"
+        assert parent_bc.geom.type=='LineString'
+        
+        pli_data=[ (bc_id, np.array(parent_bc.geom.coords)) ]
+        pli_fn=bc_id+'.pli'
+        dio.write_pli(os.path.join(self.run_dir,pli_fn),pli_data)
+        
+        if bc.scalar=='salinity':
+            quant='salinitybnd'
+        elif bc.scalar=='temperature':
+            quant='temperaturebnd'
+        else:
+            self.log.info("scalar '%s' will be passed to DFM verbatim"%bc.scalar)
+            quant=bc.scalar
+
+        with open(self.ext_force_file(),'at') as fp:
+            lines=["QUANTITY=%s"%quant,
+                   "FILENAME=%s"%pli_fn,
+                   "FILETYPE=9",
+                   "METHOD=3",
+                   "OPERAND=O",
+                   "\n"
+                   ]
+            fp.write("\n".join(lines))
+
+        da=bc.data()
+        # Write tim
+        assert len(da.dims)<=1,"Only ready for dimensions of time or none"
+        tim_path=os.path.join(self.run_dir,bc_id+"_0001.tim")
+        self.write_tim(da,tim_path)
+        
     def write_roughness_bc(self,bc):
         # write_config()
         xyz_fn=bc.name+".xyz"
@@ -659,6 +864,20 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         """
         return float(self.mdu['geometry','WaterLevIni'])
 
+    def update_initial_water_level(self):
+        """
+        Automatically set an initial water level based on the first
+        StageBC. If no stage BC is found, makes no changes, otherwise
+        updates self.mdu.  Currently not smart about MultiBCs.
+        """
+        for bc in self.bcs:
+            if isinstance(bc,hm.StageBC):
+                wl=bc.evaluate(t=self.run_start)
+                self.mdu['geometry','WaterLevIni']=float(wl)
+                self.log.info("Pulling initial water level from BC: %.3f"%wl)
+                return
+        self.log.info("Could not find BC to get initial water level")
+    
     def map_outputs(self):
         """
         return a list of map output files

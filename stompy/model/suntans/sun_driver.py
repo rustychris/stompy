@@ -1400,6 +1400,8 @@ class SuntansModel(hm.HydroModel):
     def write_source_sink_bc(self,bc):
         da=bc.data()
 
+        assert bc.geom.type=='Point',"Suntans driver does not support src/sink pair"
+        
         if (bc.dredge_depth is not None) and (self.restart is None):
             # Additionally modify the grid to make sure there is a place for inflow to
             # come in.
@@ -1428,6 +1430,8 @@ class SuntansModel(hm.HydroModel):
         """
         Determine the cell and layer for a source/sink BC.
         """
+        # TODO: use bc.z, which is either an elevation or a 'bed'
+        # to choose the layer
         c=self.bc_geom_to_interior_cell(bc.geom)
         self.log.warning("Assuming source/sink is at bed")
         k=int(self.config['Nkmax'])-1

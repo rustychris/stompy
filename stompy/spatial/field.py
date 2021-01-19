@@ -257,6 +257,9 @@ class Field(object):
           dx,dy: specify resolution in each dimension
 
         interp used to default to nn, but that is no longer available in mpl, so now use linear.
+
+        bounds is interpreted as the range of center locations of pixels.  This gets a bit
+        gross, but that is how some of the tile functions below work.
         """
         if bounds is None:
             xmin,xmax,ymin,ymax = self.bounds()
@@ -394,6 +397,15 @@ class XYZField(Field):
     # the convex hull
     outside_hull_fallback=True
     def interpolate(self,X,interpolation=None):
+        """
+        X: [...,2] coordinates at which to interpolate.
+        interpolation: should have been called 'method'.
+           The type of interpolation.
+           'nearest': select nearest source point
+           'naturalneighbor': Deprecated (only works with very old MPL)
+             Delaunay triangulation-based natural neighbor interpolation.
+           'linear': Delaunay-based linear interpolation.
+        """
         if interpolation is None:
             interpolation=self.default_interpolation
         # X should be a (N,2) vectors - make it so
@@ -425,6 +437,7 @@ class XYZField(Field):
                 newF=np.ma.filled(newF,np.nan)
                 bad=np.isnan(newF)
                 if np.any(bad):
+                    # Old approach, use nearest:
                     newF[bad]=self.interpolate(X[bad],'nearest')
         else:
             raise Exception("Bad value for interpolation method %s"%interpolation)
@@ -626,16 +639,19 @@ class XYZField(Field):
                 xmax,ymax = bounds[1]
 
         if dx is not None: # Takes precedence of nx/ny
+            # This seems a bit heavy handed
             # round xmin/ymin to be an even multiple of dx/dy
-            xmin = xmin - (xmin%dx)
-            ymin = ymin - (ymin%dy)
+            # xmin = xmin - (xmin%dx)
+            # ymin = ymin - (ymin%dy)
 
-            nx = int( (xmax-xmin)/dx )
-            ny = int( (ymax-ymin)/dy )
-            xmax = xmin + nx*dx
-            ymax = ymin + ny*dy
+            # The 1+, -1, stuff feels a bit sketch.  But this is how
+            # CompositeField calculates sizes
+            nx = 1 + int( (xmax-xmin)/dx )
+            ny = 1 + int( (ymax-ymin)/dy )
+            xmax = xmin + (nx-1)*dx
+            ymax = ymin + (ny-1)*dy
 
-        # hopefully this is more compatibale between versions, also exposes more of what's
+        # hopefully this is more compatible between versions, also exposes more of what's
         # going on
         if interp == 'nn':
             interper = self.nn_interper(aspect=aspect)
@@ -1030,15 +1046,20 @@ class PyApolloniusField(XYZField):
         """
         if X is None:
             assert F is None
-            X=np.zeros( (0,2), np.float64)
-            F=np.zeros( 0, np.float64)
-            
-        super(PyApolloniusField,self).__init__(X,F)
+
         self.r = r
         self.redundant_factor = redundant_factor
         self.offset=np.array([0,0]) # not using an offset for now.
-        
-        # self.W = -(self.F / (self.r-1.0) ) # weights
+            
+        if (X is None) or (redundant_factor is not None):
+            super(PyApolloniusField,self).__init__(X=np.zeros( (0,2), np.float64),
+                                                   F=np.zeros( 0, np.float64))
+        else:
+            super(PyApolloniusField,self).__init__(X=X,F=F)
+            
+        if self.redundant_factor is not None:
+            for i in range(F.shape[0]):
+                self.insert(X[i],F[i])
 
     def insert(self,xy,f):
         """ directly insert a point into the Apollonius graph structure
@@ -1048,13 +1069,18 @@ class PyApolloniusField(XYZField):
         returns False if redundant checks are enabled and the point was
         deemed redundant.
         """
-        # w = -(f / (self.r-1.0) ) # the weight
-
-        self.X=array_append(self.X,xy)
-        self.F=array_append(self.F,f)
-        # self.W=array_append(self.W, -(f / (self.r-1.0) ))
         
-        return True
+        if (self.X.shape[0]==0) or (self.redundant_factor is None):
+            redundant=False
+        else:
+            existing=self.interpolate(xy)
+            redundant=existing*self.redundant_factor < f
+        if not redundant:
+            self.X=array_append(self.X,xy)
+            self.F=array_append(self.F,f)
+            return True
+        else:
+            return False
 
     def value(self,X):
         return self.interpolate(X)
@@ -1104,9 +1130,10 @@ class PyApolloniusField(XYZField):
             
             for i in range(len(layer)):
                 geo = layer['geom'][i]
-
-                lines.append(np.array(geo.coords))
-                values.append(layer[value_field][i])
+                scale=layer[value_field][i]
+                if np.isfinite(scale) and scale>0.0:
+                    lines.append(np.array(geo.coords))
+                    values.append(scale)
         return PyApolloniusField.from_polylines(lines,values,
                                                 r=r,redundant_factor=redundant_factor)
 
@@ -1126,6 +1153,7 @@ class PyApolloniusField(XYZField):
 
             # remove duplicates:
             mask = np.all(coords[0:-1,:] == coords[1:,:],axis=1)
+            mask=np.r_[False,mask]
             if np.sum(mask)>0:
                 print("WARNING: removing duplicate points in shapefile")
                 print(coords[mask])
@@ -2011,9 +2039,13 @@ class SimpleGrid(QuadrilateralGrid):
         return ax.contour(X,Y,self.F,*args,**kwargs)
     @with_plt
     def plot(self,**kwargs):
+        F=kwargs.pop('F',self.F)
+        func=kwargs.pop('func',lambda x:x)
+        F=func(F)
+        
         dx,dy = self.delta()
 
-        maskedF = ma.array(self.F,mask=np.isnan(self.F))
+        maskedF = ma.array(self.F,mask=np.isnan(F))
 
         if 'ax' in kwargs:
             kwargs = dict(kwargs)
@@ -2091,6 +2123,12 @@ class SimpleGrid(QuadrilateralGrid):
 
         return cgrid.apply_xform(xform)
 
+    def xy_to_indexes(self,xy):
+        dx,dy = self.delta()
+        row = int( np.round( (xy[1] - self.extents[2]) / dy ) )
+        col = int( np.round( (xy[0] - self.extents[0]) / dx ) )
+        return row,col
+        
     def rect_to_indexes(self,xxyy):
         if len(xxyy)==2:
             xxyy=[xxyy[0][0],xxyy[1][0],xxyy[0][1],xxyy[1][1]]
@@ -2572,7 +2610,7 @@ class SimpleGrid(QuadrilateralGrid):
             os.unlink(tmp_dest_fn)
         return result
 
-    def write_gdal(self,output_file,nodata=None,overwrite=False):
+    def write_gdal(self,output_file,nodata=None,overwrite=False,options=None):
         """ Write a Geotiff of the field.
 
         if nodata is specified, nan's are replaced by this value, and try to tell
@@ -2585,10 +2623,12 @@ class SimpleGrid(QuadrilateralGrid):
         if not in_memory:
             # Create gtif
             driver = gdal.GetDriverByName("GTiff")
-            options=["COMPRESS=LZW"]
+            if options is None:
+                options=["COMPRESS=LZW"]
         else:
             driver = gdal.GetDriverByName("MEM")
-            options=[]
+            if options is None:
+                options=[]
 
             if os.path.exists(output_file):
                 if overwrite:
@@ -3474,6 +3514,11 @@ class CompositeField(Field):
             mask=src_alpha.polygon_mask(src_geom)
             src_alpha.F[~mask] = 0.0
 
+            # Use nan's to mask data, rather than masked arrays.
+            # Convert as necessary here:
+            if isinstance(src_data.F,np.ma.masked_array):
+                src_data.F=src_data.F.filled(np.nan)
+
             # create an alpha tile. depending on alpha_mode, this may draw on the lower data,
             # the polygon and/or the data tile.
             # modify the data tile according to the data mode - so if the data mode is 
@@ -3500,10 +3545,26 @@ class CompositeField(Field):
                 if pixels>0:
                     niters=np.maximum( pixels//3, 2 )
                     src_data.fill_by_convolution(iterations=niters)
-            #def blur(dist):
-            #    "smooth data channel with gaussian filter - this allows spreading beyond original poly!"
-            #    pixels=int(round(float(dist)/dx))
-            #    src_data.F=ndimage.gaussian_filter(src_data.F,pixels)
+            def blur(dist):
+                "smooth data channel with gaussian filter - this allows spreading beyond original poly!"
+                pixels=int(round(float(dist)/dx))
+                #import pdb
+                #pdb.set_trace()
+                Fzed=src_data.F.copy()
+                valid=np.isfinite(Fzed)
+                Fzed[~valid]=0.0
+                weights=ndimage.gaussian_filter(1.0*valid,pixels)
+                blurred=ndimage.gaussian_filter(Fzed,pixels)
+                blurred[weights<0.5]=np.nan
+                blurred[weights>=0.5] /= weights[weights>=0.5]
+                src_data.F=blurred
+
+            def diffuser():
+                self.diffuser(source,src_data,src_geom,result_data)
+
+            def ortho_diffuser(res,aniso=1e-5):
+                self.ortho_diffuser(res=res,aniso=aniso,source=source,
+                                    src_data=src_data,src_geom=src_geom,result_data=result_data)
 
             def overlay():
                 pass
@@ -3546,11 +3607,12 @@ class CompositeField(Field):
                 if pixels>0:
                     Fsoft=dist_xform(1-src_alpha.F)
                     src_alpha.F = (1-Fsoft/pixels).clip(0,1)
-
+                
             # dangerous! executing code from a shapefile!
             for mode in [self.data_mode[src_i],self.alpha_mode[src_i]]:
                 if mode is None or mode.strip() in ['',b'']: continue
-                eval(mode)
+                # This is getting a SyntaxError when using python 2.
+                exec(mode) # used to be eval.
 
             data_missing=np.isnan(src_data.F)
             src_alpha.F[data_missing]=0.0
@@ -3590,6 +3652,62 @@ class CompositeField(Field):
         
         return result_data
 
+    def ortho_diffuser(self,res,aniso,source,src_data,src_geom,result_data):
+        """
+        Strong curvilinear anisotropic interpolatio
+        """
+        from . import interp_orthogonal
+        oink=interp_orthogonal.OrthoInterpolator(region=src_geom,
+                                                 background_field=result_data,
+                                                 anisotropy=aniso,
+                                                 nom_res=res)
+        fld=oink.field()
+        
+        rast=fld.to_grid(bounds=result_data.bounds(),
+                         dx=result_data.dx,dy=result_data.dy)
+        src_data.F[:,:]=rast.F
+    
+    def diffuser(self,src,src_data,src_geom,result_data):
+        """
+        src: the source for the layer. Ignored unless it's an XYZField
+        in which case the point samples are included.
+        src_data: where the diffused field will be saved
+        src_geom: polygon to work in
+        result_data: the stackup result from previous layers
+        """
+        from scipy import sparse
+        from ..grid import triangulate_hole,quad_laplacian, unstructured_grid
+        from . import linestring_utils
+
+        dx=3*src_data.dx # rough guess
+        curve=linestring_utils.resample_linearring(np.array(src_geom.exterior),
+                                                   dx,closed_ring=1)
+        g=unstructured_grid.UnstructuredGrid()
+        nodes,edges=g.add_linestring(curve,closed=True)
+        g=triangulate_hole.triangulate_hole(g,nodes=nodes,hole_rigidity='all',method='rebay')
+        bnodes=g.boundary_cycle()
+        bvals=result_data(g.nodes['x'][bnodes])
+
+        nd=quad_laplacian.NodeDiscretization(g)
+        dirich={ n:val
+                 for n,val in zip(bnodes,bvals) }
+        if isinstance(src,XYZField):
+            for xy,z in zip(src.X,src.F):
+                c=g.select_cells_nearest([x,y],inside=True)
+                if c is None: continue
+                n=g.select_nodes_nearest([x,y])
+                dirich[n]=z
+
+        M,b=nd.construct_matrix(op='laplacian',dirichlet_nodes=dirich)
+        diffed=sparse.linalg.spsolve(M.tocsr(),b)
+
+        fld=XYZField(X=g.nodes['x'],F=diffed)
+        fld._tri=g.mpl_triangulation()
+        rast=fld.to_grid(bounds=result_data.bounds(),
+                         dx=result_data.dx,dy=result_data.dy)
+        src_data.F[:,:]=rast.F
+        return rast
+
     def plot_stackup(self,result_data,stack,num=None,z_factor=5.,cmap='jet'):
         plt.figure(num=num).clf()
         nrows=ncols=np.sqrt(len(stack))
@@ -3597,7 +3715,7 @@ class CompositeField(Field):
         ncols=int(np.floor(ncols))
         if nrows*ncols<len(stack): ncols+=1
         
-        fig,axs=plt.subplots(nrows,ncols,num=num)
+        fig,axs=plt.subplots(nrows,ncols,num=num,squeeze=False)
 
         for ax,(name,data,alpha) in zip( axs.ravel(), stack ):
             data.plot(ax=ax,vmin=0,vmax=3.5,cmap=cmap)
@@ -3630,6 +3748,7 @@ class MultiRasterField(Field):
     Cell/region queries will have to wait for another day
 
     Some effort is made to keep only the most-recently used rasters in memory, since it is not feasible
+
     to load all rasters at one time. to this end, it is most efficient for successive queries to have some
     spatial locality.
     """

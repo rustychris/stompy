@@ -12,7 +12,8 @@ import matplotlib.pyplot as plt
 # do these work in py2?
 from ..spatial import robust_predicates
 from . import unstructured_grid
-from ..utils import circular_pairs, dist, point_segment_distance
+from ..utils import (circular_pairs, dist, point_segment_distance, set_keywords,
+                     segment_segment_intersection)
 
 if six.PY3:
     def cmp(a,b):
@@ -28,16 +29,22 @@ class DuplicateNode(Exception):
     pass
 
 class BadConstraint(Exception):
-    pass
+    def __init__(self,*a,**k):
+        super(BadConstraint,self).__init__(*a)
+        set_keywords(self,k)
 
 class IntersectingConstraints(BadConstraint):
-    pass
+    edge=None
+
+class DuplicateConstraint(BadConstraint):
+    nodes=None
+
 class ConstraintCollinearNode(IntersectingConstraints):
     """
     Special case of intersections, when a constraint attempts to 
     run *through* an existing node
     """
-    pass
+    node=None
 
 def ordered(x1,x2,x3):
     """
@@ -1739,9 +1746,10 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
         jAB=self.nodes_to_edge([nA,nB])
         if jAB is not None:
             # no work to do - topology already good.
-            assert not self.edges['constrained'][jAB]
+            if self.edges['constrained'][jAB]:
+                raise DuplicateConstraint(nodes=[nA,nB])
             self.edges['constrained'][jAB]=True
-            return
+            return jAB
 
         # inserting an edge from 0-5.
         int_elts=self.find_intersected_elements(nA,nB)
@@ -1757,12 +1765,14 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
         dead_edges=[]
         for elt in int_elts[1:-1]:
             if elt[0]=='node':
-                raise self.ConstraintCollinearNode("Constraint intersects a node")
+                raise self.ConstraintCollinearNode("Constraint intersects a node",
+                                                   node=elt[1])
             if elt[0]=='cell':
                 dead_cells.append(elt[1])
             if elt[0]=='edge':
                 if self.edges['constrained'][ elt[1].j ]:
-                    raise IntersectingConstraints("Constraint intersects a constraint")
+                    raise IntersectingConstraints("Constraint intersects a constraint",
+                                                  edge=elt[1].j )
                 next_left=elt[1].node_fwd()
                 if left_nodes[-1]!=next_left:
                     left_nodes.append(next_left)
@@ -1782,11 +1792,12 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
         for j in dead_edges:
             self.delete_edge(j)
 
-        self.add_edge(nodes=[nA,nB],constrained=True)
+        j=self.add_edge(nodes=[nA,nB],constrained=True)
             
         # and then sew up the holes!
         self.fill_hole( left_nodes )
         self.fill_hole( right_nodes )
+        return j
 
     def remove_constraint(self,nA=None,nB=None,j=None):
         """ Assumes that there exists a constraint between nodes
@@ -1816,7 +1827,7 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
                 if self.edges['constrained'][j]]
 
     def init_from_grid(self,g,node_coordinate='x',set_valid=False,
-                       valid_min_area=1e-2):
+                       valid_min_area=1e-2,on_intersection='exception'):
         """
         Initialize from the nodes and edges of an existing grid, making
         existing edges constrained
@@ -1826,15 +1837,30 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
         set_valid: if True, add a 'valid' field for cells, and set to Tru
           for cells of the triangulation that have finite area and fall 
           within the src grid g.
+
+        on_intersection: 
+        'exception': intersecting edges in the input grid raise an error.
+        'insert': at intersecting edges construct and insert a new node.
         """
         if set_valid:
             self.add_cell_field('valid',np.zeros(self.Ncells(),np.bool8),
                                 on_exists='pass')
-            
-        self.bulk_init(g.nodes[node_coordinate][~g.nodes['deleted']])
-        for j in g.valid_edge_iter():
-            self.add_constraint( *g.edges['nodes'][j] )
 
+        # Seems that the indices will get misaligned if there are
+        # deleted nodes.
+        # TODO: add node index mapping code here.
+        assert np.all( ~g.nodes['deleted'] )
+        
+        self.bulk_init(g.nodes[node_coordinate][~g.nodes['deleted']])
+        all_segs=[ g.edges['nodes'][j]
+                   for j in g.valid_edge_iter() ]
+        while all_segs:
+            nodes=all_segs.pop(0)
+            if on_intersection=='exception':
+                self.add_constraint( *nodes )
+            else:
+                self.add_constraint_and_intersections( *nodes )
+                
         if set_valid:
             from shapely import geometry
             self.cells['valid']=~self.cells['deleted']
@@ -1849,7 +1875,131 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
             for c in np.nonzero(self.cells['valid'])[0]:
                 if not poly.contains( geometry.Point(centroids[c]) ):
                     self.cells['valid'][c]=False
+                    
+    def add_constraint_and_intersections(self,nA,nB,on_exists='exception'):
+        """
+        Like add_constraint, but in the case of intersections with existing constraints 
+        insert new nodes as needed and update existing and new constrained edges.
+        """
+        all_segs=[ [nA,nB] ]
+        result_nodes=[nA]
+        result_edges=[]
         
+        while all_segs:
+            nA,nB=all_segs.pop(0)
+            
+            try:
+                j=self.add_constraint(nA,nB)
+            except IntersectingConstraints as exc:
+                if isinstance(exc,ConstraintCollinearNode):
+                    all_segs.insert(0, [nA,exc.node] )
+                    all_segs.insert(1, [exc.node,nB] )
+                    continue
+                else:
+                    j_other=exc.edge
+                    assert j_other is not None
+                    
+                    segA=self.nodes['x'][self.edges['nodes'][j_other]]
+                    segB=self.nodes['x'][[nA,nB]]
+                    x_int,alphas=segment_segment_intersection(segA,segB)
+                    # Getting an error where x_int is one of the endpoints of
+                    # segA.  This is while inserting a contour that ends on
+                    # the boundary.
+                    n_new=self.split_constraint(j=j_other,x=x_int)
+                    
+                    if nB!=n_new:
+                        all_segs.insert(0,[n_new,nB])
+                    if nA!=n_new:
+                        all_segs.insert(0,[nA,n_new])
+                    continue
+            except DuplicateConstraint as exc:
+                if on_exists=='exception':
+                    raise
+                elif on_exists=='ignore':
+                    j=self.nodes_to_edge(nA,nB)
+                elif on_exists=='stop':
+                    break
+                else:
+                    assert False,"Bad value %s for on_exists"%on_exists
+            result_nodes.append(nB)
+            assert j is not None
+            result_edges.append(j)
+                
+        return result_nodes,result_edges
+    
+    def split_constraint(self,x,j):
+        nodes_other=self.edges['nodes'][j].copy()
+
+        j_data=unstructured_grid.rec_to_dict(self.edges[j].copy())
+        
+        self.remove_constraint(j=j)
+
+        n_new=self.add_or_find_node(x=x)
+
+        js=[]
+        if nodes_other[0]!=n_new:
+            js.append( self.add_constraint(nodes_other[0],n_new) )
+        if n_new!=nodes_other[1]:
+            js.append( self.add_constraint(n_new,nodes_other[1]) )
+
+        for f in j_data:
+            if f in ['nodes','cells','deleted']: continue
+            self.edges[f][js]=j_data[f]
+            
+        return n_new
+                    
+    def add_constrained_linestring(self,coords,
+                                   on_intersection='exception',
+                                   on_exists='exception',
+                                   closed=False):
+        """
+        Optionally insert new nodes as needed along
+        the way.
+        on_intersection: when a constraint intersects an existing constraint,
+          'exception' => re-raise the exception
+          'insert' => insert a constructed node, and divide the new and old constraints.
+        on_exists' => when a constraint to be inserted already exists,
+          'exception' => re-raise the exception
+          'ignore' => keep going
+          'stop' => return
+
+        closed: Whether the first and last nodes are also connected
+
+        returns [list of nodes],[list of edges]
+        """
+        nodes=[self.add_or_find_node(x=x)
+               for x in coords]
+        result_nodes=[nodes[0]]
+        result_edges=[]
+
+        if not closed:
+            ab_list=zip(nodes[:-1],nodes[1:])
+        else:
+            ab_list=zip(nodes,np.roll(nodes,-1))
+        for a,b in ab_list:
+            if on_intersection=='insert':
+                sub_nodes,sub_edges=self.add_constraint_and_intersections(a,b,
+                                                                          on_exists=on_exists)
+                result_nodes+=sub_nodes[1:]
+                result_edges+=sub_edges
+                
+                if (on_exists=='stop') and (sub_nodes[-1]!=b):
+                    print("Stopping early")
+                    break
+            else:
+                try:
+                    j=self.add_constraint(a,b)
+                except DuplicateConstraint as exc:
+                    if on_exists=='exception':
+                        raise
+                    elif on_exists=='stop':
+                        break
+                    elif on_exists=='ignore':
+                        j=self.nodes_to_edge(a,b)
+                result_nodes.append(b)
+                result_edges.append(j)
+        return result_nodes,result_edges
+                    
     def bulk_init_slow(self,points):
         raise Exception("No - it's really slow.  Don't do this.")
     

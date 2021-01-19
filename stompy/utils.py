@@ -731,6 +731,62 @@ def point_segments_distance(point,segs,return_alpha=False):
     else:
         return D
 
+# superceded, for the time being, by direct implementation below
+# def segment_segment_intersection(segA,segB):
+#     """
+#     segA: [2,{x,y}] segment
+#     segB: [2,{x,y}] segment
+#     returns [2] point intersection
+#     """
+#     lA=geometry.LineString(segA)
+#     lB=geometry.LineString(segB)
+#     AB=lA.intersection(lB)
+#     assert AB.type=='Point',"Need to handle non-intersecting case"
+#     return np.array([AB.x,AB.y])
+
+def segment_segment_alphas(segA,segB):
+    """
+    Solve for the two alpha values for an intersection
+
+    (1-a) * segAB[0,0] + a*segAB[1,0] =  (1-b) * seg[0,0] + b*seg[1,0]
+    
+    Return [a,b], unless lines are parallel, then [nan,nan]
+    """
+    # a * segAB[0,1] + (1-a)*segAB[1,1] - b * seg[0,1] - (1-b)*seg[1,1] = 0
+    # a * segAB[0,0] + segAB[1,0] - a*segAB[1,0],  -b * seg[0,0] - seg[1,0] + b*seg[1,0] = 0
+    # a * segAB[0,0] - a*segAB[1,0],  -b * seg[0,0] + b*seg[1,0] = -segAB[1,0] + seg[1,0]
+
+    mat=np.array( [ [segA[1,0]-segA[0,0], -segB[1,0]+segB[0,0]],
+                    [segA[1,1]-segA[0,1], -segB[1,1]+segB[0,1]]],
+                  np.float64)
+    b=np.array( [ -segA[0,0] + segB[0,0],
+                  -segA[0,1] + segB[0,1] ],
+                np.float64 )
+    try:
+        x=np.linalg.solve(mat,b)
+    except np.linalg.LinAlgError:
+        # Don't get into the details, just bail
+        # collinear or parallel
+        return np.array( [np.nan,np.nan] )
+    return x
+
+def segment_segment_intersection(segA,segB):
+    """
+    If segA and segB intersect, return a 
+    """
+    segA=np.asarray(segA)
+    segB=np.asarray(segB)
+    alphas=segment_segment_alphas(segA,segB)
+    if np.isnan(alphas[0]):
+        # collinear or parallel. may not overlap at all
+        return None,alphas
+    if ((alphas[0]>=0) and (alphas[1]>=0) and
+        (alphas[0]<=1) and (alphas[1]<=1) ):
+        a=alphas[0]
+        return (1-a)*segA[0]+a*segA[1], alphas
+    return None,alphas
+
+
 # rotate the given vectors/points through the CCW angle in radians
 def rot_fn(angle):
     R = np.array( [[np.cos(angle),-np.sin(angle)],
@@ -1100,14 +1156,24 @@ def murphy_skill(xmodel,xobs,xref=None,ignore_nan=True):
 def find_lag_xr(data,ref):
     """ Report lag in time of data (xr.DataArray) with respect
     to reference (xr.DataArray).  Requires that data and ref
-    are xr.DataArray, with coordinate values.
+    are xr.DataArray, with coordinate values. A coordinate named
+    'time' is given preference, otherwise the first coordinate.
     """
     for arg in [data,ref]:
         if not isinstance(arg,xr.DataArray):
             raise Exception("Arguments to find_lag_xr must be DataArrays")
 
-    return find_lag( data[data.dims[0]].values, data.values,
-                     ref[ref.dims[0]].values, ref.values )
+    try:
+        t_data=data['time'].values
+    except KeyError:
+        t_data=data[data.dims[0]].values
+    try:
+        t_ref=ref['time'].values
+    except KeyError:
+        t_ref=ref[ref.dims[0]].values
+        
+    return find_lag( t_data, data.values,
+                     t_ref, ref.values )
 
 def find_lag(t,x,t_ref,x_ref):
     """
@@ -1358,20 +1424,34 @@ def to_jdate(t):
     doy=dt.toordinal() - dt0.toordinal()
     return dt0.year * 1000 + doy
 
+def clamp_dt64_helper(func,t,dt,t0=np.datetime64("1970-01-01 00:00:00")):
+    """
+    Common code for ceil/floor/round datetime64
+    """
+    decimal=np.asarray( (t-t0) / dt )
+    clamped=func(decimal).astype(np.int64)
+    return t0+dt*clamped
+    
 def floor_dt64(t,dt,t0=np.datetime64("1970-01-01 00:00:00")):    
     """
     Round the given t down to an integer number of dt from
     a reference time (defaults to unix epoch)
     """
-    return t0+dt*(np.floor( (t-t0) / dt )).astype(np.int64)
+    return clamp_dt64_helper(np.floor,t,dt,t0)
 
 def ceil_dt64(t,dt,t0=np.datetime64("1970-01-01 00:00:00")):
     """
     Round the given t up to an integer number of dt from
     a reference time (defaults to unix epoch)
     """
-    return t0+dt*int(np.ceil( (t-t0) / dt ))
+    return clamp_dt64_helper(np.ceil,t,dt,t0)
 
+def round_dt64(t,dt,t0=np.datetime64("1970-01-01 00:00:00")):
+    """
+    Round the given t to the nearest integer number of dt
+    from a reference time (defaults to unix epoch)
+    """
+    return clamp_dt64_helper(np.round,t,dt,t0)
 
 def unix_to_dt64(t):
     """
@@ -1477,6 +1557,12 @@ def strftime(d,fmt="%Y-%m-%d %H:%M"):
 # pandas includes some of this functionality, but trying to
 # keep utils.py pandas-free (no offense, pandas)
 
+def dnum_mat_to_py(x):
+    return np.asarray(x)-366
+def dnum_py_to_mat(x):
+    return np.asarray(x)+366
+
+    
 def dt64_to_dnum(dt64):
     # get some reference points:
 

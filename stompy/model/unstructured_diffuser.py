@@ -102,13 +102,15 @@ class Diffuser(object):
 
         self.K_j = 100*np.ones(self.grid.Nedges())
 
+        j_valid=~self.grid.edges['deleted']
+
         print("Checking finite geometry")
-        assert np.all( np.isfinite(self.d_j))
-        assert np.all( np.isfinite(self.l_j))
+        assert np.all( np.isfinite(self.d_j[j_valid]))
+        assert np.all( np.isfinite(self.l_j[j_valid]))
         assert np.all( np.isfinite(self.area_c))
-        assert np.all( np.isfinite(self.normal_j))
-        assert np.all( self.d_j > 0 )
-        assert np.all( self.l_j > 0 )
+        assert np.all( np.isfinite(self.normal_j[j_valid]))
+        assert np.all( self.d_j[j_valid] > 0 )
+        assert np.all( self.l_j[j_valid] > 0 )
         assert np.all( self.area_c > 0 )
 
 
@@ -186,8 +188,8 @@ class Diffuser(object):
             e = self.grid.edges[j]
             ic1,ic2 = e['cells']
             
-            if ic1<0 or ic2<0:
-                continue # boundary edge
+            if ic1<0 or ic2<0 or e['deleted']:
+                continue # boundary edge, or deleted edge
                 
             flux_per_gradient=flux_per_gradient_j[j]
             

@@ -92,7 +92,11 @@ def resample_linearring(points,density,closed_ring=1,return_sources=False):
     the original points, and can handle a density that changes
     even within one segment of the input
     """
-    density = as_density(density)
+    if isinstance(density,np.ndarray):
+        density_mode='precalc'
+    else:
+        density_mode='dynamic'
+        density = as_density(density)
 
     if closed_ring:
         points = concatenate( (points, [points[0]]) )
@@ -116,16 +120,20 @@ def resample_linearring(points,density,closed_ring=1,return_sources=False):
 
     # print "points.shape ",points.shape
     while 1:
-        # print "Top of loop, i=",i
         last_point = new_points[-1]
         last_source = sources[-1]
 
-        if i < len(distance_left):
-            total_distance_left = norm(points[i] - last_point) + distance_left[i]
+        if i < len(distance_left): 
+            total_distance_left = norm(points[i] - last_point) + distance_left[i] 
         else:
             total_distance_left = norm(points[i] - last_point)
 
-        scale = density( last_point )
+        if density_mode=='dynamic':
+            scale=density(last_point)
+        elif density_mode=='precalc':
+            # density is precalculated at the input points
+            alpha=last_source%1.0
+            scale=(1-alpha)*density[i-1] + alpha*density[i]
         npoints_at_scale = round( total_distance_left/scale )
 
         if (npoints_at_scale <= 1):
@@ -135,7 +143,7 @@ def resample_linearring(points,density,closed_ring=1,return_sources=False):
             break
 
         this_step_length = total_distance_left / npoints_at_scale
-        # print "scale = %g   this_step_length = %g "%(scale,this_step_length)
+        #print("scale = %g   this_step_length = %g "%(scale,this_step_length))
 
         # at this point this_step_length refers to how far we must go
         # from new_points[i], along the boundary.

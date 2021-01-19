@@ -74,10 +74,14 @@ class ConstrainedXYZField(field.XYZField):
             
             for row in layer:
                 value = row[value_field]
+                if not (np.isfinite(value) and value>0):
+                    continue
+                
                 geo = row['geom']
 
                 coords = np.array(geo.coords)
                 mask = np.all(coords[0:-1,:] == coords[1:,:],axis=1)
+                mask=np.r_[False,mask]
                 if sum(mask)>0:
                     print("WARNING: found duplicate points in shapefile")
                     print(coords[mask])

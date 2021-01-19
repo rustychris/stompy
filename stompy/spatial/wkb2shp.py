@@ -114,10 +114,16 @@ def wkb2shp(shp_name,
     elif fields is not None and isinstance(fields,np.ndarray):
         dt = fields.dtype
 
+        # Special case to round-trip shp2geom->wkb2shp
+        # Not working yet
+        if input_wkbs is None:
+            input_wkbs=fields['geom']
+
         # Note that each field may itself have some shape - so we need to enumerate those
         # dimensions, too.
         field_names = []
         for name in dt.names:
+            if name=='geom': continue
             # ndindex iterates over tuples which index successive elements of the field
             for index in np.ndindex( dt[name].shape ):
                 name_idx = name + "_".join([str(i) for i in index])
@@ -127,6 +133,7 @@ def wkb2shp(shp_name,
         for i in range(len(fields)):
             fields_onerow = []
             for name in dt.names:
+                if name=='geom': continue
                 for index in np.ndindex( dt[name].shape ):
                     if index != ():
                         fields_onerow.append( fields[i][name][index] )
@@ -224,7 +231,7 @@ def wkb2shp(shp_name,
 # kind of the reverse of the above
 def shp2geom(shp_fn,use_wkt=False,target_srs=None,
              source_srs=None,return_srs=False,
-             query=None,
+             query=None,layer_patt=None,
              fold_to_lower=False):
     """
     Read a shapefile into memory as a numpy array.
@@ -246,7 +253,21 @@ def shp2geom(shp_fn,use_wkt=False,target_srs=None,
     ods = ogr.Open(shp_fn)
     if ods is None:
         raise ValueError("File '%s' corrupt or not found"%shp_fn)
-    layer = ods.GetLayer(0)
+    if layer_patt is not None:
+        import re
+        names=[]
+        for layer_idx in range(ods.GetLayerCount()):
+            layer=ods.GetLayerByIndex(layer_idx)
+            names.append(layer.GetName())
+            if re.match(layer_patt,names[-1]):
+                break
+        else:
+            print("Layers were: ")
+            for l in names:
+                print("  "+l)
+            raise Exception("Pattern %s matched no layers"%layer_patt)
+    else:
+        layer = ods.GetLayer(0)
 
     if query is not None:
         layer.SetAttributeFilter(query)
@@ -338,8 +359,10 @@ def shp2geom(shp_fn,use_wkt=False,target_srs=None,
             break
         try:
             field_vals = [getter(feat) for i,name,np_type,getter in fields]
-        except shapely.geos.ReadingError:
+        except shapely.geos.WKBReadingError as exc:
+            # Used to just be shapely.geos.ReadingError
             print("Failed to load geometry for feature")
+            print(exc)
             continue
         field_array = tuple(field_vals)
         recs.append(field_array)
