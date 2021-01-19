@@ -879,6 +879,8 @@ class MpiModel(object):
     mpi_args=() # tuple to avoid mutation
     num_procs=1 # might be useful outside of MPI, but keep it here for now.
 
+    mpi_flavor='mpiexec' # 'mpiexec' or 'slurm'
+    
     _mpiexec=None 
     @property
     def mpiexec(self):
@@ -889,6 +891,96 @@ class MpiModel(object):
     @mpiexec.setter
     def set_mpiexec(self,m):
         self._mpiexec=m
+
+    def mpirun(self,cmd,num_procs=None,working_dir=".",wait=True):
+        """
+        Run a command via MPI.
+        cmd: list of command components (e.g. ['ls','-l','/home/stuff'])
+        working_dir: if specified, arrange to start the process in the given
+          directory.
+        
+        wait: True: if possible, wait for the command to complete.
+          False: if possible, return immediately.
+        This is very limited! When directly using mpi or using 
+        srun while already in the allocation, only wait=True
+        is supported, and wait=False will register a log.Warning.
+        When running with slurm but outside of a job, only wait=False is
+        supported. wait=True will start the job, but then raise an Exception
+        saying that it cannot wait.
+        """
+        if num_procs is None:
+            num_procs=self.num_procs
+
+        if self.mpi_flavor=='mpiexec':
+            self.mpirun_mpiexec(cmd,num_procs,working_dir,wait=wait)
+        elif self.mpi_flavor=='slurm':
+            self.mpirun_slurm(cmd,num_procs,working_dir,wait=wait)
+        else:
+            raise Exception('Unknown MPI flavor %s'%self.mpi_flavor)
+    def mpirun_mpiexec(self,cmd,num_procs,working_dir,wait):
+        """
+        Direct invocation of mpiexec. 
+        """
+        real_cmd=( [self.mpiexec,"-n","%d"%num_procs]
+                    +list(self.mpi_args)
+                    +cmd )
+        if not wait:
+            raise Exception( ("Request to start MPI process "
+                              "(flavor=%s) without waiting not supported")%self.mpi_flavor)
+        self.log.info("Running command: %s"%(" ".join(real_cmd)))
+        return utils.call_with_path(real_cmd,working_dir)
+
+    # slurm helpers:
+    def slurm_jobid(self):
+        """
+        slurm job id as a string, or None if not in a slurm job
+        """
+        return os.environ.get('SLURM_JOBID',None)
+
+    def slurm_ntasks(self):
+        return int(os.environ.get('SLURM_NTASKS',0))
+
+    def slurm_check_mpi_ntasks(self,n):
+        """
+        Check to make sure it's possible to run n tasks under the
+        current slurm environment.
+        """
+        n_global=self.slurm_ntasks()
+        if n>n_global:
+            print("In SLURM task, but ntasks(%d) != local_config num_procs(%d)"%( n_global,n),
+                  flush=True)
+            raise Exception("Mismatch in number of processes")
+
+    def slurm_srun_options(self,n):
+        """
+        Return options to pass to srun to invoke an mpi task
+        with n cpus.
+        """
+        n_tasks=self.slurm_ntasks()
+        if n_tasks==n:
+            print(f"Homogeneous job, and n==NTASKS")
+            return []
+        elif n_tasks<n:
+            raise Exception(f"MPI job size {n} > SLURM ntasks {n_tasks}")
+        else:
+            options=['-n',str(n)]
+            print(f"Homogeneous oversized job.  Add {' '.join(options)}",
+                  flush=True)
+            return options
+    def mpirun_slurm(self,cmd,num_procs,working_dir,wait):
+        """
+        Start an MPI process via slurm's srun. Assumes that 
+        script is already in an allocated job.
+        """
+        real_cmd=( [self.slurm_srun]
+                   +self.slurm_srun_options(num_procs)
+                   +list(self.srun_args)
+                   +cmd )
+        if not wait:
+            raise Exception( ("Request to start MPI process "
+                              "(flavor=%s) without waiting not supported")%self.mpi_flavor)
+        self.log.info("Running command: %s"%(" ".join(real_cmd)))
+        return utils.call_with_path(real_cmd,working_dir)
     
     
 class HydroModel(object):
@@ -2767,31 +2859,6 @@ class DFlowModel(HydroModel):
         last_rst.close()
         return rst_time
     
-    def create_restart(self,name):
-        new_model=DFlowModel()
-        new_model.mdu=self.mdu.copy()
-        new_model.mdu.set_filename( os.path.join( os.path.dirname(self.mdu.filename),
-                                                  name) )
-        new_model.mdu_basename=name
-        new_model.restart=True # ?
-        new_model.restart_model=self
-        new_model.ref_date=self.ref_date
-        new_model.run_start=self.restartable_time()
-        new_model.num_procs=self.num_procs
-        new_model.grid=self.grid
-        # DFM will create a new output directory under the run directory,
-        # so we reuse the run directory.
-        # if there were some reason to modify files from the old run that are not
-        # in the output folder, will have to extend this method.
-        new_model.run_dir=self.run_dir
-        
-        rst_base=os.path.join(self.mdu.output_dir(),
-                              (self.mdu.name
-                               +'_'+utils.to_datetime(new_model.run_start).strftime('%Y%m%d_%H%M%S')
-                               +'_rst.nc'))
-        new_model.mdu['restart','RestartFile']=rst_base
-        return new_model
-
     def restart_inputs(self):
         """
         Return a list of paths to restart data that will be used as the 

@@ -288,7 +288,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
     def dflowfm_exe(self,v):
         self._dflowfm_exe=v
 
-    def run_dflowfm(self,cmd,mpi='auto'):
+    def run_dflowfm(self,cmd,mpi='auto',wait=True):
         """
         Invoke the dflowfm executable with the list of
         arguments given in cmd=[arg1,arg2, ...]
@@ -296,6 +296,11 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
           can be set to False or 0, in which case mpi will not be used
           even when num_procs is >1. This is useful for partition which
           runs single-core.
+
+        wait: True: do not return until the command finishes.
+          False: return immediately.
+          For now, the backend can only support one or the other, depending
+          on platform. See hydro_model.py:MpiModel for details.
         """
         if mpi=='auto':
             num_procs=self.num_procs
@@ -303,17 +308,13 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             num_procs=1
 
         if num_procs>1:
-            mpi_bin_dir=self.mpi_bin_dir or self.dfm_bin_dir
-            real_cmd=( [self.mpiexec,"-n","%d"%self.num_procs]
-                        +list(self.mpi_args)
-                        +[self.dflowfm_exe]
-                        +cmd )
-            # "%s -n %d %s %s"%(mpiexec,self.num_procs,dflowfm,cmd)
+            real_cmd=( [self.dflowfm_exe] + cmd )
+            return self.mpirun(real_cmd,working_dir=self.run_dir,wait=wait)
         else:
             real_cmd=[self.dflowfm_exe]+cmd
 
-        self.log.info("Running command: %s"%(" ".join(real_cmd)))
-        return utils.call_with_path(real_cmd,self.run_dir)
+            self.log.info("Running command: %s"%(" ".join(real_cmd)))
+            return utils.call_with_path(real_cmd,self.run_dir)
     
     def run_simulation(self,extra_args=[]):
         self.run_dflowfm(cmd=["-t","1","--autostartstop",
@@ -699,10 +700,10 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         return rst_time
     
     def create_restart(self):
-        new_model=DFlowModel()
+        new_model=self.__class__() # in case of subclassing, rather than DFlowModel()
         new_model.set_restart_from(self)
         return new_model
-    
+
     def set_restart_from(self,model):
         """
         Pull the restart-related settings from model into the current instance.
