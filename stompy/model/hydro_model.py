@@ -1358,8 +1358,12 @@ class HydroModel(object):
                 feat_val=feat['geom'].geom_type
                 if isinstance(kws[k],list):
                     if feat_val in kws[k]: continue
+                    else:
+                        return False
                 else:
                     if feat_val==kws[k]: continue
+                    else:
+                        return False
             else:
                 try:
                     feat_val=feat[k]
