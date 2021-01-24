@@ -1030,7 +1030,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         ds=his.isel(cross_section=idx)
         return self.translate_vars(ds,requested_vars=data_vars)
 
-    def translate_vars(self,ds,requested_vars=[]):
+    def translate_vars(self,ds,requested_vars=None):
         """
         Not sure if this is the right place to handle this sort of thing.
         Trying to deal with the fact that we'd like to request 'water_level'
@@ -1042,12 +1042,15 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         For now:
         ds: xr.Dataset, presumably from model output.
         requested_vars: if present, a list of variable names that the caller 
-        wants.
+        wants. Otherwise all data variables.
 
         Updates ds, try to find candidates for the requested variables.
         """
         lookup={'flow':'cross_section_discharge',
                 'water_level':'waterlevel'}
+        if requested_vars is None:
+            requested_vars=ds.data_vars
+            
         for v in requested_vars:
             if v in ds: continue
             if (v in lookup) and (lookup[v] in ds):

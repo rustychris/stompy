@@ -900,6 +900,10 @@ class MpiModel(object):
     num_procs=1 # might be useful outside of MPI, but keep it here for now.
 
     mpi_flavor='mpiexec' # 'mpiexec' or 'slurm'
+
+    # For mpi_flavor=='slurm':
+    #   path to slurm's srun command.
+    slurm_srun="srun"
     
     _mpiexec=None 
     @property
