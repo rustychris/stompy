@@ -2,6 +2,9 @@ import os
 import re
 import datetime
 import glob
+import logging
+log=logging.getLogger("ptm_config")
+
 from ... import utils
 
 class PtmConfig(object):
@@ -62,14 +65,21 @@ class PtmConfig(object):
             eat('GLOBAL INFORMATION')
             self.end_time=keydate('END_TIME')
             self.restart_dir=keystring('RESTART_DIR')
-    def is_complete(self):
+    def is_complete(self,groups='all'):
         """
         Return true if it appears that this PTM run has completed.
         NOT VERY ROBUST.
         Assumes that all groups have output (or at least bin index entries) through
         the end of the run.  if the output interval is not even with end_time,
-        this will give a false negative
+        this will give a false negative.
+        sets self.last_output to the time of the last output, to allow a rough
+        estimate of percent complete.
+
+        groups: 'all' check on all groups. 'first' just check first valid bin.idx file 
+          we find.
         """
+        self.first_output=None
+        self.last_output=None
         n_short=0
         idxs=glob.glob(os.path.join(self.run_dir,'*_bin.idx'))
         if len(idxs)==0:
@@ -78,18 +88,34 @@ class PtmConfig(object):
         for idx in idxs:
             with open(idx,'rt') as fp:
                 lines=fp.readlines()
-                last=lines[-1].strip()
-                try:
-                    year,month,day,hour,minute,offset,count = [int(s) for s in last.split()]
-                except ValueError:
+                dts=[]
+                for line in [ lines[0],lines[-1]]:
+                    try:
+                        year,month,day,hour,minute,offset,count = [int(s) for s in line.split()]
+                        dt=datetime.datetime(year=year,month=month,day=day,
+                                             hour=hour,minute=minute)
+                        dt=utils.to_dt64(dt)
+                        dts.append(dt)
+                    except ValueError:
+                        dts.append(None)
+                dt_first,dt_last=dts
+                
+                if dt_last is None:
                     n_short+=1 # invalid index file
                     continue
-                dt=datetime.datetime(year=year,month=month,day=day,
-                                     hour=hour,minute=minute)
-                dt=utils.to_dt64(dt)
+                elif (self.last_output is None) or (self.last_output<dt_last):
+                    self.last_output=dt_last
+                
+                if dt_first is None:
+                    log.error("Couldn't parse the first output line")
+                elif (self.first_output is None) or (self.first_output>dt_first):
+                    self.first_output=dt_first
+                    
                 if dt<self.end_time:
-                    print("IDX %s appears short: %s vs %s"%(idx,dt,self.end_time))
+                    log.debug("IDX %s appears short: %s vs %s"%(idx,dt,self.end_time))
                     n_short+=1
+            if groups=='first':
+                break
         return n_short==0
             
     def bin_files(self):
