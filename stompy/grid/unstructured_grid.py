@@ -700,6 +700,11 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         dialect: ad-hoc support for slight variants on the format.
           'fishptm' for reading ptm hydro files in nc format where the names
           are standardized but a mesh variable is not set.
+
+        Also sets grid.nc_meta to be a dictionary with the relevant attributes
+        from the mesh variable (i.e. node_dimension, edge_dimension, face_dimension,
+         face_node_connectivity, edge_node_connectivity, and optionally face_edge
+         connectivity, edge_face_connectivity, etc.)
         """
         if isinstance(nc,six.string_types):
             filename=nc
@@ -877,7 +882,14 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         if dialect=='fishptm':
             ug.add_cell_field('z_bed',-ug.cells['Mesh2_face_depth'])
-            
+
+        # Set the ugrid metadata on the grid itself to help downstream processing
+        ug.nc_meta={k: mesh.attrs.get(k,None)
+                    for k in ['node_dimension','edge_dimension','face_dimension',
+                              'face_node_connectivity','edge_node_connectivity',
+                              'face_edge_connectivity','edge_face_connectivity',
+                              'node_coordinates','face_coordinates','edge_coordinates']}
+        
         ug.filename=filename
         return ug
 
@@ -996,6 +1008,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         cleanup: for grids created from multiple subdomains, there are sometime duplicate edges and nodes.
           this will remove those duplicates, though there are no guarantees that indices are
           preserved.
+
+        todo: populate nc_meta similar to how from_ugrid() does.
         """
         filename=None
 
