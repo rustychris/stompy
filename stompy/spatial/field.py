@@ -3774,10 +3774,14 @@ class MultiRasterField(Field):
         Field.__init__(self)
         raster_files = []
         for patt in raster_file_patterns:
+            if isinstance(patt,tuple):
+                patt,pri=patt
+            else:
+                pri=0 # default priority 
             matches=glob.glob(patt)
             if len(matches)==0 and self.error_on_null_input=='any':
                 raise Exception("Pattern '%s' got no matches"%patt)
-            raster_files += matches
+            raster_files += [ (m,pri) for m in matches]
         if len(raster_files)==0 and self.error_on_null_input=='all':
             raise Exception("No patterns got matches")
 
@@ -3808,13 +3812,14 @@ class MultiRasterField(Field):
                                   ('order','f8'),
                                   ('last_used','i4') ] )
 
-        for fi,f in enumerate(self.raster_files):
+        for fi,(f,pri) in enumerate(self.raster_files):
             extent,resolution = GdalGrid.metadata(f)
             sources['extent'][fi] = extent
             sources['resolution'][fi] = max(resolution[0],resolution[1])
             sources['resx'][fi] = resolution[0]
             sources['resy'][fi] = resolution[1]
-            sources['order'][fi] = 0.0
+            # negate so that higher priority sorts to the beginning
+            sources['order'][fi] = -pri
             sources['field'][fi]=None
             sources['filename'][fi]=f
             sources['last_used'][fi]=-1

@@ -577,7 +577,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         with open(fn,'rt') as fp:
             head_start=fp.readline()
             assert head_start.strip()=='$MeshFormat'
-            ver,asc_bin,data_size,*one = fp.readline().strip().split()
+            ver,asc_bin,data_size = fp.readline().strip().split()[:3]
             assert asc_bin=='0',"Not ready for binary"
             head_end=fp.readline()
             assert head_end.strip()=='$EndMeshFormat'
@@ -700,6 +700,11 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         dialect: ad-hoc support for slight variants on the format.
           'fishptm' for reading ptm hydro files in nc format where the names
           are standardized but a mesh variable is not set.
+
+        Also sets grid.nc_meta to be a dictionary with the relevant attributes
+        from the mesh variable (i.e. node_dimension, edge_dimension, face_dimension,
+         face_node_connectivity, edge_node_connectivity, and optionally face_edge
+         connectivity, edge_face_connectivity, etc.)
         """
         if isinstance(nc,six.string_types):
             filename=nc
@@ -877,7 +882,14 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         if dialect=='fishptm':
             ug.add_cell_field('z_bed',-ug.cells['Mesh2_face_depth'])
-            
+
+        # Set the ugrid metadata on the grid itself to help downstream processing
+        ug.nc_meta={k: mesh.attrs.get(k,None)
+                    for k in ['node_dimension','edge_dimension','face_dimension',
+                              'face_node_connectivity','edge_node_connectivity',
+                              'face_edge_connectivity','edge_face_connectivity',
+                              'node_coordinates','face_coordinates','edge_coordinates']}
+        
         ug.filename=filename
         return ug
 
@@ -996,6 +1008,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         cleanup: for grids created from multiple subdomains, there are sometime duplicate edges and nodes.
           this will remove those duplicates, though there are no guarantees that indices are
           preserved.
+
+        todo: populate nc_meta similar to how from_ugrid() does.
         """
         filename=None
 
@@ -7967,31 +7981,36 @@ class PtmGrid(UnstructuredGrid):
 
     def read_from_file(self,grd_fn):
         self.grd_fn = grd_fn
-        self.fp = open(self.grd_fn,'rt')
+        # 2021-01-06: Had trouble on windows in python 2 using
+        # text mode. Seems that fp.tell() and fp.seek() are not
+        # consistent. In binary mode, we'll get /r/n line endings
+        # if the file turns out to have been written on windows,
+        # but readline() and strip() will handle this okay.
+        self.fp = open(self.grd_fn,'rb')
 
         while True:
             line = self.fp.readline()
-            if line == '':
+            if line == b'':
                 break
             line = line.strip()
 
-            if line.find('Number of Vertices')>= 0:
+            if line.find(b'Number of Vertices')>= 0:
                 Nvertices = int(self.fp.readline().strip())
-            elif line.find('Number of Polygons')>=0:
+            elif line.find(b'Number of Polygons')>=0:
                 Npolys = int(self.fp.readline().strip())
-            elif line.find('Number of Sides')>=0:
+            elif line.find(b'Number of Sides')>=0:
                 Nsides = int(self.fp.readline().strip())
-            elif line.find('NODATA (land) value')>=0:
+            elif line.find(b'NODATA (land) value')>=0:
                 nodata_value = float(self.fp.readline().strip())
-            elif line.find('Vertex Data:') >= 0:
+            elif line.find(b'Vertex Data:') >= 0:
                 vertex_data_offset = self.fp.tell()
                 for i in range(Nvertices):
                     self.fp.readline()
-            elif line.find('Polygon Data:') >= 0:
+            elif line.find(b'Polygon Data:') >= 0:
                 polygon_data_offset = self.fp.tell()
                 for i in range(Npolys):
                     self.fp.readline()
-            elif line.find('Side Data:') >= 0:
+            elif line.find(b'Side Data:') >= 0:
                 side_data_offset = self.fp.tell()
                 for i in range(Nsides):
                     self.fp.readline()

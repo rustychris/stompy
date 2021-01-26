@@ -717,7 +717,7 @@ class SuntansModel(hm.HydroModel):
                 if not os.path.exists(fn):
                     break
             self.num_procs=proc
-            log.info("Restart appears to have %d subdomains"%self.num_procs)
+            log.debug("Restart appears to have %d subdomains"%self.num_procs)
 
             if os.path.islink(start_path):
                 start_path=os.path.realpath(start_path)
