@@ -776,8 +776,9 @@ def annotate_line(l,s,norm_position=0.5,offset_points=10,ax=None,
     perp = offset_points * perp / utils.mag(perp)
     
     settings=dict(xytext=perp, textcoords='offset points',
-                  rotation=angle,
+                  rotation=angle,xycoords=l.get_transform(),
                   ha='center',va='center')
+    
     settings.update(kwargs)
 
     if buff is not None:
