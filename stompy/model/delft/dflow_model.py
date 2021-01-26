@@ -255,24 +255,22 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
 
         recs=self.parse_old_bc(ext_fn)
 
+            
         for rec in recs:
-            if rec['QUANTITY'].upper()=='WATERLEVELBND':
-                # The ext file doesn't have a notion of name.
-                # punt via the filename
+            if 'FILENAME' in rec and '.pli' in rec['FILENAME']:
                 name=rec['FILENAME'].replace('.pli','')
                 rec['name']=name
+                # The ext file doesn't have a notion of name.
+                # punt via the filename
                 
                 pli_fn=os.path.join(os.path.dirname(ext_fn),
                                     rec['FILENAME'])
                 pli=dio.read_pli(pli_fn)
                 rec['pli']=pli
 
-                rec['coordinates']=recs[0]['pli'][0][1]
+                rec['coordinates']=rec['pli'][0][1]
                 geom=geometry.LineString(rec['coordinates'])
-                
                 rec['geom']=geom
-                bc=hm.StageBC(name=name,geom=pli)
-                rec['bc']=bc
 
                 # timeseries at one or more points along boundary:
                 tims=[]
@@ -287,7 +285,22 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                         tims.append(tim_ds)
                 data=xr.concat(tims,dim='node')
                 rec['data']=data
+            else:
+                name=pli=geom=pli_fn=None # avoid pollution
+                
+            if rec['QUANTITY'].upper()=='WATERLEVELBND':
+                bc=hm.StageBC(name=name,geom=rec['geom'])
+                rec['bc']=bc
 
+            elif rec['QUANTITY'].upper()=='DISCHARGEBND':
+                bc=hm.FlowBC(name=name,geom=geom)
+                rec['bc']=bc
+
+                if 'data' in rec:
+                    # Single flow value, no sense of multiple time series
+                    rec['data']=rec['data'].isel(node=0).rename({'stage':'flow'})
+                else:
+                    print("Reading discharge boundary, did not find data (%s)"%tim_fn)
             else:
                 print("Not implemented: reading BC quantity=%s"%rec['QUANTITY'])
         return recs

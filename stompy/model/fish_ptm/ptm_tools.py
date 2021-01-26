@@ -19,6 +19,7 @@ import pandas as pd
 class PtmBin(object):
     # when True, load particle data as memory map rather than np.fromstring.
     use_memmap=True
+    fp=None
     def __init__(self,fn,release_name=None,idx_fn='auto'):
         self.fn = fn
 
@@ -53,7 +54,9 @@ class PtmBin(object):
             self.getTime()
 
     def __del__(self):
-        self.fp.close()
+        if self.fp is not None:
+            self.fp.close()
+            self.fp=None
 
     def read_index(self):
         # 20x faster
