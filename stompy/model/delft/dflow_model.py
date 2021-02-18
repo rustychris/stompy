@@ -645,11 +645,17 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
 
             if trim_time:
                 sel=(times>=start)&(times<=stop)
-                # Expand by one
-                sel[:-1] = sel[1:] | sel[:-1]
-                sel[1:] = sel[1:] | sel[:-1]
-                times=times[sel]
-                values=values[sel]
+                if sum(sel) > 1:
+                    # Expand by one
+                    sel[:-1] = sel[1:] | sel[:-1]
+                    sel[1:] = sel[1:] | sel[:-1]
+                    times=times[sel]
+                    values=values[sel]
+                else:
+                    times = [start, stop]
+                    closest_val = values[times.index(min(times, key=lambda t: abs(t - start)))]
+                    log.warning(f'No data for simulation period: {start} - {stop}. Setting value to: {closest_val}')
+                    values = [closest_val, closest_val]
             
         elapsed_time=(times - ref_date)/dt
         data=np.c_[elapsed_time,values]
