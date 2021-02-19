@@ -2347,7 +2347,6 @@ class NwisStageBC(NwisBC,StageBC):
         return ds
 
 class NwisScalarBC(NwisBC,ScalarBC):
-    product_id=63680 # 63680: turbidity, FNU
     
     def src_data(self):
         ds=self.fetch_for_period(self.data_start,self.data_stop)
@@ -2363,6 +2362,10 @@ class NwisScalarBC(NwisBC,ScalarBC):
         Download or load from cache, take care of any filtering, unit conversion, etc.
         Returns a dataset with a 'z' variable, and with time as UTC
         """
+        if self.scalar == 'turbidity':
+            self.product_id=63680 # 63680: turbidity, FNU
+        elif self.scalar == 'salinity':
+            self.product_id=480 # 00480: salinity, ppt
         from ..io.local import usgs_nwis
         ds=usgs_nwis.nwis_dataset(station=self.station,start_date=period_start,
                                   end_date=period_stop,
