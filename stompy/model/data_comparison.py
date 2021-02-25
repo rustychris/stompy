@@ -11,9 +11,9 @@ from stompy import filters
 from matplotlib import dates
 from scipy.stats import spearmanr
 
-from . import hydro_model as hm
+from stompy.model import hydro_model as hm
 
-from .. import (xr_utils, utils)
+from stompy import (xr_utils, utils)
 
 def period_union(sources):
     t_min=t_max=None
@@ -202,6 +202,8 @@ def assemble_comparison_data(models,observations,model_labels=None,
     elif base_var=='flow':
         loc_extract_opts['data_vars']=['cross_section_discharge']
         # Not that many people use this...  but it's the correct one.
+    elif base_var=='salinity':
+        loc_extract_opts['data_vars']=['salinity']
     else:
         raise Exception("Not ready to extract variable %s"%base_var)
     
@@ -343,6 +345,7 @@ def calibration_figure_3panel(all_sources,combined=None,
 
     gs = gridspec.GridSpec(5, 3)
     fig=plt.figure(figsize=(9,7),num=num)
+    plt.tight_layout()
     ts_ax = fig.add_subplot(gs[:-3, :])
     lp_ax = fig.add_subplot(gs[-3:-1, :-1])
     scat_ax=fig.add_subplot(gs[-3:-1, 2])
@@ -431,6 +434,7 @@ def calibration_figure_3panel(all_sources,combined=None,
         def lp(x): 
             x=utils.fill_invalid(x)
             dn=utils.to_dnum(t)
+            # cutoff for low pass filtering, must be 2 * cutoff days after start or before end of datenums
             cutoff=36/24.
             x_lp=filters.lowpass(x,dn,cutoff=cutoff)
             mask= (dn<dn[0]+2*cutoff) | (dn>dn[-1]-2*cutoff)
