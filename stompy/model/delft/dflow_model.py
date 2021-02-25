@@ -829,8 +829,10 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         pli_data=[ (bc_id, np.array(parent_bc.geom.coords)) ]
         pli_fn=bc_id+'.pli'
         dio.write_pli(os.path.join(self.run_dir,pli_fn),pli_data)
-        
-        if bc.scalar=='salinity':
+
+        if isinstance(bc, DelwaqScalarBC):
+            quant=f'tracerbnd{bc.scalar}'
+        elif bc.scalar=='salinity':
             quant='salinitybnd'
         elif bc.scalar=='temperature':
             quant='temperaturebnd'
@@ -1041,7 +1043,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         if name not in names:
             print("section %s not found.  Options are:"%name)
             print(", ".join(names))
-            return None
+            return
 
         idx=names.index(name)
         # this has a bunch of extra cruft -- some other time remove
@@ -1112,6 +1114,136 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             ds=ds.isel(time=slice(None,stop+1))
 
         return self.translate_vars(ds,requested_vars=data_vars)
+
+
+class WaqModel:
+    def __init__(self, model):
+        """
+        Handles Delwaq model setup
+        :param model: dflow model instance, with .mdu attribute for model MDU file
+
+        substances: name=str, active=bool, description=str, conc_unit=mass/vol. or mass/area, waste_unit=mass
+        params: name=str, description=str, unit=str, value=float
+        processes: name=str, description=str
+        # bcs: DelwaqScalarBC objects, handled by DFlowModel
+        """
+        self.model = model
+        self.sub_file = 'sources.sub'
+
+        self.substances = []
+        self.params = []
+        self.processes = []
+        # self.bcs = []
+
+    def add_substance(self, name, active, **kwargs):
+        if name == 'NH3':
+            description = 'Nitrate'
+            conc_unit = '(gDM/m3)'
+            waste_unit = '-'
+        elif name == 'ZNit':
+            description = 'Nitrate production rate'
+            conc_unit = '(gDM/m3/d)'
+            waste_unit = '-'
+        else:
+            log.info(f'{name} not implemented yet.')
+            return -1
+
+        d = {'name': name,
+             'active': active,
+             'description': description,
+             'conc_unit': conc_unit,
+             'waste_unit': waste_unit
+             }
+
+        self.substances.append(d)
+        return 0
+
+    def add_param(self, name, value, **kwargs):
+        if name == 'SWVnNit':
+            description = 'Nitrification rate formulation'
+            unit = '-'
+        elif name == 'RcNit':
+            description = 'Nitrification temp. coefficient'
+            unit = '(1/d)'
+        else:
+            description = ''
+            unit = '-'
+
+        d = {'name': name,
+             'description': description,
+             'unit': unit,
+             'value': value}
+
+        self.params.append(d)
+        return 0
+
+    def add_process(self, name, **kwargs):
+        d = {'name': name,
+             'description': ''}
+
+        self.processes.append(d)
+        return 0
+
+    def write_sub(self):
+        """
+        Writes .sub file for Delwaq model
+        """
+        with open(self.sub_file, 'wt') as f:
+            for substance in self.substances:
+                self.write_substance(f, substance)
+
+            for param in self.params:
+                self.write_param(f, param)
+
+            self.write_processes(f)
+
+        # add reference to sub-file in .mdu
+        with open(self.model.mdu, 'at') as f:
+            s = f"\n[processes]" \
+                f"\nSubstanceFile = {self.sub_file}" \
+                f"\nDtProcesses = 300"  # hard-coded to match DtUser in template .mdu
+
+    def write_substance(self, f, substance):
+        """Writes to opened .sub file f for a particular substance"""
+        s = f"substance '{substance['name']}' {'in' * (not substance['active'])}active\n" \
+            f"\tdescription        '{substance['description']}'\n" \
+            f"\tconcentration-unit '{substance['conc_unit']}'\n" \
+            f"\twaste-load-unit    '{substance['waste_unit']}'\n" \
+            f"end-substance\n"
+        f.writelines(s)
+        return 0
+
+    def write_param(self, f, param):
+        """Writes to opened .sub file f for a particular parameter"""
+        s = f"parameter '{param['name']}'\n" \
+            f"\tdescription '{param['description']}'\n" \
+            f"\tunit '{param['unit']}'\n" \
+            f"\tvalue '{param['value']}'\n" \
+            f"end-parameter\n"
+        f.writelines(s)
+        return 0
+
+    def write_processes(self, f):
+        """Writes all active processes to .sub file"""
+        s = "active-processes" \
+            + "".join([f"\tname '{process['name']}'  '{process['description']}'\n" for process in self.processes]) \
+            + "end-active-processes"
+        f.writelines(s)
+        return 0
+
+    def add_bcs(self, bc):
+        """Add bcs to DelwaqModel object (currently not used, can just add to DFlowModel)"""
+        if isinstance(bc, list):
+            [self.add_bcs(b) for b in bc]
+        else:
+            assert isinstance(bc, DelwaqScalarBC), f"BC type {type(bc)} cannot be handled by Delwaq model."
+            self.bcs.append(bc)
+
+
+class DelwaqScalarBC(hm.ScalarBC):
+    # for now just checking if isinstance in write_scalar_bc(), but may want to handle differently than hm.ScalarBC
+    log.info('DelwaqScalarBC instantiated.')
+
 
 import sys
 if sys.platform=='win32':
