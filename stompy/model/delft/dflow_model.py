@@ -1198,10 +1198,8 @@ class WaqModel:
             self.write_processes(f)
 
         # add reference to sub-file in .mdu
-        with open(self.model.mdu, 'at') as f:
-            s = f"\n[processes]" \
-                f"\nSubstanceFile = {self.sub_file}" \
-                f"\nDtProcesses = 300"  # hard-coded to match DtUser in template .mdu
+        self.model.mdu['processes', 'SubstanceFile'] = self.sub_file
+        self.model.mdu['processes', 'DtProcesses'] = 300  # hard-coded to match DtUser in template .mdu
 
     def write_substance(self, f, substance):
         """Writes to opened .sub file f for a particular substance"""
