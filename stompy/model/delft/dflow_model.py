@@ -30,6 +30,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
     # If these are the empty string, then assumes that the executables are
     # found in existing $PATH
     dfm_bin_dir="" # .../bin  giving directory containing dflowfm
+    waq_proc_def="" # proc_def.def file for delwaq process library
     dfm_bin_exe='dflowfm'
     
     mdu_basename='flowfm.mdu'
@@ -1129,14 +1130,18 @@ class WaqModel:
         """
         self.model = model
         self.sub_file = 'sources.sub'
-
+        self.sub_path = os.path.join(self.model.run_dir, self.sub_file)
         self.substances = []
         self.params = []
         self.processes = []
         # self.bcs = []
 
     def add_substance(self, name, active, **kwargs):
-        if name == 'NH3':
+        if name == 'NH4':
+            description = 'Ammonium'
+            conc_unit = '(gDM/m3)'
+            waste_unit = '-'
+        elif name == 'NH3':
             description = 'Nitrate'
             conc_unit = '(gDM/m3)'
             waste_unit = '-'
@@ -1145,7 +1150,7 @@ class WaqModel:
             conc_unit = '(gDM/m3/d)'
             waste_unit = '-'
         else:
-            log.info(f'{name} not implemented yet.')
+            log.warning(f'{name} not implemented yet.')
             return -1
 
         d = {'name': name,
@@ -1188,7 +1193,7 @@ class WaqModel:
         """
         Writes .sub file for Delwaq model
         """
-        with open(self.sub_file, 'wt') as f:
+        with open(self.sub_path, 'wt') as f:
             for substance in self.substances:
                 self.write_substance(f, substance)
 
@@ -1216,7 +1221,7 @@ class WaqModel:
         s = f"parameter '{param['name']}'\n" \
             f"\tdescription '{param['description']}'\n" \
             f"\tunit '{param['unit']}'\n" \
-            f"\tvalue '{param['value']}'\n" \
+            f"\tvalue {param['value']}\n" \
             f"end-parameter\n"
         f.writelines(s)
         return 0
