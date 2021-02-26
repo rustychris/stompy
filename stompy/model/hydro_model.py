@@ -1296,10 +1296,10 @@ class HydroModel(object):
         """
         pass
     
-    def run_model(self):
+    def run_model(self, *args, **kwargs):
         """ Alias for run_simulation
         """
-        return self.run_simulation()
+        return self.run_simulation(*args, **kwargs)
 
     def run_simulation(self,extra_args=[]):
         """
