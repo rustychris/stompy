@@ -41,6 +41,15 @@ def load_nef_lib():
 
     return None if the DLL cannot be found
     """
+    if 'NEFIS_LIB' in os.environ:
+        try:
+            nefis_lib=os.environ['NEFIS_LIB']
+            return cdll.LoadLibrary(nefis_lib)
+        except OSError:
+            log.warning("Failed to load nefis DLL - read/write not enabled")
+            log.warning("Used env. var NEFIS_LIB='%s'"%nefis_lib)
+            return None
+    
     if sys.platform.startswith('linux'):
         basename='libNefisSO.so'
     elif sys.platform=='darwin':
