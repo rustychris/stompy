@@ -708,7 +708,14 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         """
         if isinstance(nc,six.string_types):
             filename=nc
-            nc=xr.open_dataset(nc)
+            if dialect=='fvcom':
+                # with SFBOFS output, ran into dimension/variable naming
+                # clashes, which are skirted by these options:
+                nc=xr.open_dataset(nc,
+                                   decode_times=False,decode_coords=False,
+                                   drop_variables=['siglay','siglev'])
+            else:
+                nc=xr.open_dataset(nc)
         else:
             filename=None
 
@@ -732,6 +739,23 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                                             edge_coordinates='Mesh2_edge_x Mesh2_edge_y'))
             # This is straight from the output, so no need to add bathy offset
             #grid.add_cell_field('z_bed',-grid.cells['Mesh2_face_depth'])
+
+        if dialect=='fvcom': # specifically the SFBOFS field output
+            ds['mesh']=1
+            ds['faces']=ds['nv'].transpose()
+            ds['faces'].attrs['start_index']=1
+            ds['mesh'].attrs.update( dict(cf_role='mesh_topology',
+                                          node_coordinates='x y',
+                                          face_node_connectivity='faces', 
+                                          #edge_node_connectivity='Mesh2_edge_nodes',
+                                          #face_edge_connectivity='Mesh2_face_edges',
+                                          #edge_face_connectivity='Mesh2_edge_faces',
+                                          node_dimension='node',
+                                          #edge_dimension='nMesh2_edge',
+                                          face_dimension='nele',
+                                          face_coordinates='xc yc',
+                                          #edge_coordinates='Mesh2_edge_x Mesh2_edge_y'
+            ))
             
         if mesh_name is None:
             meshes=[]
@@ -806,9 +830,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         faces = process_as_index(mesh.face_node_connectivity)
         # suntans has a nonstandard, but not always specified, fill value.
         faces[faces>=len(node_x)]=UnstructuredGrid.UNDEFINED
-        edges = process_as_index(mesh.edge_node_connectivity) # [N,2]
-
-        ug = UnstructuredGrid(points=node_xy,cells=faces,edges=edges)
+        if 'edge_node_connectivity' in mesh.attrs:
+            edges = process_as_index(mesh.edge_node_connectivity) # [N,2]
+            ug=UnstructuredGrid(points=node_xy,cells=faces,edges=edges)
+        else:
+            ug=UnstructuredGrid(points=node_xy,cells=faces)
+            ug.make_edges_from_cells()
 
         # When the incoming netcdf supplies additional topology, use it
         if 'face_edge_connectivity' in mesh.attrs:
