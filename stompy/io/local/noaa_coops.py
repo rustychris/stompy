@@ -155,7 +155,8 @@ def coops_dataset_product(station,product,
     base_url="https://tidesandcurrents.noaa.gov/api/datagetter"
 
     # not supported by this script: bin
-    datums=['NAVD','MSL']
+    # some predictions only have MLLW
+    datums=['NAVD','MSL','MLLW']
 
     datasets=[]
 
