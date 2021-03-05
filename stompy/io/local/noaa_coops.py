@@ -120,6 +120,7 @@ def coops_dataset(station,start_date,end_date,products,
 def coops_dataset_product(station,product,
                           start_date,end_date,days_per_request='M',
                           cache_dir=None,refetch_incomplete=True,
+                          interval=None,datum=None,
                           clip=True):
     """
     Retrieve a single data product from a single station.
@@ -154,9 +155,12 @@ def coops_dataset_product(station,product,
     fmt_date=lambda d: utils.to_datetime(d).strftime("%Y%m%d %H:%M")
     base_url="https://tidesandcurrents.noaa.gov/api/datagetter"
 
-    # not supported by this script: bin
-    # some predictions only have MLLW
-    datums=['NAVD','MSL','MLLW']
+    if datum is not None:
+        datums=[datum]
+    else:
+        # not supported by this script: bin
+        # Some predictions are only in MLLW
+        datums=['NAVD','MSL','MLLW']
 
     datasets=[]
 
@@ -197,6 +201,9 @@ def coops_dataset_product(station,product,
                         units='metric',
                         format='json',
                         product=product)
+            if interval is not None:
+                # Some predictions require interval='hilo'
+                params['interval']=interval
             if product in ['water_level','hourly_height',"one_minute_water_level","predictions"]:
                 while 1:
                     # not all stations have NAVD, so fall back to MSL
@@ -214,7 +221,7 @@ def coops_dataset_product(station,product,
                         # Actual message like 'The supported Datum values are: MHHW, MHW, MTL, MSL, MLW, MLLW, LWI, HWI'
                         # Predictions sometimes silently fail, as if there is no data, but really just need
                         # to try MSL.
-                        log.debug(data['error']['message'])
+                        log.warning(data['error']['message'])
                         datums.pop(0) # move on to next datum
                         continue # assume it's because the datum is missing
                     break

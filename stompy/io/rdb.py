@@ -349,9 +349,8 @@ def rdb_to_dataset(filename=None,text=None,to_utc=True):
             ds.attrs['tz_cd_original']=ds.tz_cd
 
         tz_src=usgs_data['tz_cd']
-        # This .values -= no longer works.
-        ds['time'].values[:] -= offset_hours * np.timedelta64(1,'h')
-        ds['datenum'].values[:] -= offset_hours/24.
+        ds.assign(time=lambda x: x.time - offset_hours * np.timedelta64(1,'h'))
+        ds.assign(datenum=lambda x: x.datenum - offset_hours/24.)
         ds.attrs['tz_cd']='UTC'
 
     return ds

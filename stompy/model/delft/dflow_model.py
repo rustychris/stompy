@@ -30,6 +30,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
     # If these are the empty string, then assumes that the executables are
     # found in existing $PATH
     dfm_bin_dir="" # .../bin  giving directory containing dflowfm
+    waq_proc_def="" # proc_def.def file for delwaq process library
     dfm_bin_exe='dflowfm'
     
     mdu_basename='flowfm.mdu'
@@ -255,24 +256,22 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
 
         recs=self.parse_old_bc(ext_fn)
 
+            
         for rec in recs:
-            if rec['QUANTITY'].upper()=='WATERLEVELBND':
-                # The ext file doesn't have a notion of name.
-                # punt via the filename
+            if 'FILENAME' in rec and '.pli' in rec['FILENAME']:
                 name=rec['FILENAME'].replace('.pli','')
                 rec['name']=name
+                # The ext file doesn't have a notion of name.
+                # punt via the filename
                 
                 pli_fn=os.path.join(os.path.dirname(ext_fn),
                                     rec['FILENAME'])
                 pli=dio.read_pli(pli_fn)
                 rec['pli']=pli
 
-                rec['coordinates']=recs[0]['pli'][0][1]
+                rec['coordinates']=rec['pli'][0][1]
                 geom=geometry.LineString(rec['coordinates'])
-                
                 rec['geom']=geom
-                bc=hm.StageBC(name=name,geom=pli)
-                rec['bc']=bc
 
                 # timeseries at one or more points along boundary:
                 tims=[]
@@ -287,7 +286,22 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                         tims.append(tim_ds)
                 data=xr.concat(tims,dim='node')
                 rec['data']=data
+            else:
+                name=pli=geom=pli_fn=None # avoid pollution
+                
+            if rec['QUANTITY'].upper()=='WATERLEVELBND':
+                bc=hm.StageBC(name=name,geom=rec['geom'])
+                rec['bc']=bc
 
+            elif rec['QUANTITY'].upper()=='DISCHARGEBND':
+                bc=hm.FlowBC(name=name,geom=geom)
+                rec['bc']=bc
+
+                if 'data' in rec:
+                    # Single flow value, no sense of multiple time series
+                    rec['data']=rec['data'].isel(node=0).rename({'stage':'flow'})
+                else:
+                    print("Reading discharge boundary, did not find data (%s)"%tim_fn)
             else:
                 print("Not implemented: reading BC quantity=%s"%rec['QUANTITY'])
         return recs
@@ -632,11 +646,17 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
 
             if trim_time:
                 sel=(times>=start)&(times<=stop)
-                # Expand by one
-                sel[:-1] = sel[1:] | sel[:-1]
-                sel[1:] = sel[1:] | sel[:-1]
-                times=times[sel]
-                values=values[sel]
+                if sum(sel) > 1:
+                    # Expand by one
+                    sel[:-1] = sel[1:] | sel[:-1]
+                    sel[1:] = sel[1:] | sel[:-1]
+                    times=times[sel]
+                    values=values[sel]
+                else:
+                    times = [start, stop]
+                    closest_val = values[times.index(min(times, key=lambda t: abs(t - start)))]
+                    log.warning(f'No data for simulation period: {start} - {stop}. Setting value to: {closest_val}')
+                    values = [closest_val, closest_val]
             
         elapsed_time=(times - ref_date)/dt
         data=np.c_[elapsed_time,values]
@@ -810,8 +830,10 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         pli_data=[ (bc_id, np.array(parent_bc.geom.coords)) ]
         pli_fn=bc_id+'.pli'
         dio.write_pli(os.path.join(self.run_dir,pli_fn),pli_data)
-        
-        if bc.scalar=='salinity':
+
+        if isinstance(bc, DelwaqScalarBC):
+            quant=f'tracerbnd{bc.scalar}'
+        elif bc.scalar=='salinity':
             quant='salinitybnd'
         elif bc.scalar=='temperature':
             quant='temperaturebnd'
@@ -1022,7 +1044,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         if name not in names:
             print("section %s not found.  Options are:"%name)
             print(", ".join(names))
-            return None
+            return
 
         idx=names.index(name)
         # this has a bunch of extra cruft -- some other time remove
@@ -1093,6 +1115,138 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             ds=ds.isel(time=slice(None,stop+1))
 
         return self.translate_vars(ds,requested_vars=data_vars)
+
+
+class WaqModel:
+    def __init__(self, model):
+        """
+        Handles Delwaq model setup
+        :param model: dflow model instance, with .mdu attribute for model MDU file
+
+        substances: name=str, active=bool, description=str, conc_unit=mass/vol. or mass/area, waste_unit=mass
+        params: name=str, description=str, unit=str, value=float
+        processes: name=str, description=str
+        # bcs: DelwaqScalarBC objects, handled by DFlowModel
+        """
+        self.model = model
+        self.sub_file = 'sources.sub'
+        self.sub_path = os.path.join(self.model.run_dir, self.sub_file)
+        self.substances = []
+        self.params = []
+        self.processes = []
+        # self.bcs = []
+
+    def add_substance(self, name, active, **kwargs):
+        if name == 'NH4':
+            description = 'Ammonium'
+            conc_unit = '(gDM/m3)'
+            waste_unit = '-'
+        elif name == 'NH3':
+            description = 'Nitrate'
+            conc_unit = '(gDM/m3)'
+            waste_unit = '-'
+        elif name == 'ZNit':
+            description = 'Nitrate production rate'
+            conc_unit = '(gDM/m3/d)'
+            waste_unit = '-'
+        else:
+            log.warning(f'{name} not implemented yet.')
+            return -1
+
+        d = {'name': name,
+             'active': active,
+             'description': description,
+             'conc_unit': conc_unit,
+             'waste_unit': waste_unit
+             }
+
+        self.substances.append(d)
+        return 0
+
+    def add_param(self, name, value, **kwargs):
+        if name == 'SWVnNit':
+            description = 'Nitrification rate formulation'
+            unit = '-'
+        elif name == 'RcNit':
+            description = 'Nitrification temp. coefficient'
+            unit = '(1/d)'
+        else:
+            description = ''
+            unit = '-'
+
+        d = {'name': name,
+             'description': description,
+             'unit': unit,
+             'value': value}
+
+        self.params.append(d)
+        return 0
+
+    def add_process(self, name, **kwargs):
+        d = {'name': name,
+             'description': ''}
+
+        self.processes.append(d)
+        return 0
+
+    def write_sub(self):
+        """
+        Writes .sub file for Delwaq model
+        """
+        with open(self.sub_path, 'wt') as f:
+            for substance in self.substances:
+                self.write_substance(f, substance)
+
+            for param in self.params:
+                self.write_param(f, param)
+
+            self.write_processes(f)
+
+        # add reference to sub-file in .mdu
+        self.model.mdu['processes', 'SubstanceFile'] = self.sub_file
+        self.model.mdu['processes', 'DtProcesses'] = 300  # hard-coded to match DtUser in template .mdu
+
+    def write_substance(self, f, substance):
+        """Writes to opened .sub file f for a particular substance"""
+        s = f"substance '{substance['name']}' {'in' * (not substance['active'])}active\n" \
+            f"\tdescription        '{substance['description']}'\n" \
+            f"\tconcentration-unit '{substance['conc_unit']}'\n" \
+            f"\twaste-load-unit    '{substance['waste_unit']}'\n" \
+            f"end-substance\n"
+        f.writelines(s)
+        return 0
+
+    def write_param(self, f, param):
+        """Writes to opened .sub file f for a particular parameter"""
+        s = f"parameter '{param['name']}'\n" \
+            f"\tdescription '{param['description']}'\n" \
+            f"\tunit '{param['unit']}'\n" \
+            f"\tvalue {param['value']}\n" \
+            f"end-parameter\n"
+        f.writelines(s)
+        return 0
+
+    def write_processes(self, f):
+        """Writes all active processes to .sub file"""
+        s = "active-processes" \
+            + "".join([f"\tname '{process['name']}'  '{process['description']}'\n" for process in self.processes]) \
+            + "end-active-processes"
+        f.writelines(s)
+        return 0
+
+    def add_bcs(self, bc):
+        """Add bcs to DelwaqModel object (currently not used, can just add to DFlowModel)"""
+        if isinstance(bc, list):
+            [self.add_bcs(b) for b in bc]
+        else:
+            assert isinstance(bc, DelwaqScalarBC), f"BC type {type(bc)} cannot be handled by Delwaq model."
+            self.bcs.append(bc)
+
+
+class DelwaqScalarBC(hm.ScalarBC):
+    # for now just checking if isinstance in write_scalar_bc(), but may want to handle differently than hm.ScalarBC
+    log.info('DelwaqScalarBC instantiated.')
+
 
 import sys
 if sys.platform=='win32':
