@@ -313,8 +313,7 @@ def scalebar(xy,L=None,aspect=0.05,unit_factor=1,fmt="%.0f",label_txt=None,fract
         txts.append( ax.text(xmin+div,baseline,
                              div_txt,
                              ha='center',
-                             transform=txt_trans)
-                 )
+                             transform=txt_trans) )
 
     # Really would like for the label to be on the same baseline
     # as the fraction texts, and typeset along with the last
