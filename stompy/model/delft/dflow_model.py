@@ -1139,15 +1139,19 @@ class WaqModel:
     def add_substance(self, name, active, **kwargs):
         if name == 'NH4':
             description = 'Ammonium'
-            conc_unit = '(gDM/m3)'
+            conc_unit = '(g/m3)'
             waste_unit = '-'
-        elif name == 'NH3':
+        elif name == 'NO3':
             description = 'Nitrate'
-            conc_unit = '(gDM/m3)'
+            conc_unit = '(g/m3)'
             waste_unit = '-'
         elif name == 'ZNit':
             description = 'Nitrate production rate'
-            conc_unit = '(gDM/m3/d)'
+            conc_unit = '(g/m3/d)'
+            waste_unit = '-'
+        elif name == 'RcNit':
+            description = 'First order nitrification coefficient'
+            conc_unit = '(1/d)'
             waste_unit = '-'
         else:
             log.warning(f'{name} not implemented yet.')
@@ -1168,8 +1172,14 @@ class WaqModel:
             description = 'Nitrification rate formulation'
             unit = '-'
         elif name == 'RcNit':
-            description = 'Nitrification temp. coefficient'
+            description = 'First order nitrification coefficient'
             unit = '(1/d)'
+        elif name == 'TcNit':
+            description = 'Nitrification temp. coefficient'
+            unit = '-'
+        elif name == 'NH4':
+            description = 'Ammonium'
+            unit = '(g/m3)'
         else:
             description = ''
             unit = '-'
@@ -1189,10 +1199,12 @@ class WaqModel:
         self.processes.append(d)
         return 0
 
-    def write_sub(self):
+    def write_waq(self):
         """
-        Writes .sub file for Delwaq model
+        Writes .sub file for Delwaq model, and adds Delwaq params to Dflow .mdu file
         """
+        log.info('Writing Delwaq model files...')
+        self.model.set_run_dir(self.model.run_dir, mode='create')
         with open(self.sub_path, 'wt') as f:
             for substance in self.substances:
                 self.write_substance(f, substance)
@@ -1205,6 +1217,7 @@ class WaqModel:
         # add reference to sub-file in .mdu
         self.model.mdu['processes', 'SubstanceFile'] = self.sub_file
         self.model.mdu['processes', 'DtProcesses'] = 300  # hard-coded to match DtUser in template .mdu
+        self.model.mdu['processes', 'ProcessFluxIntegration'] = 1  # 1 = Delwaq, 2 = Dflow
 
     def write_substance(self, f, substance):
         """Writes to opened .sub file f for a particular substance"""
