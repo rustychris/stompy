@@ -152,7 +152,9 @@ def nwis_dataset(station,start_date,end_date,products,
             continue
         else:
             log.info("Fetching %s"%(base_fn))
-            req=requests.get(base_url,params=params)
+            sesh = requests.Session()
+            sesh.mount('https://', requests.adapters.HTTPAdapter(max_retries=3))
+            req=sesh.get(base_url,params=params)
             data=req.text
             ds=rdb.rdb_to_dataset(text=data)
             if ds is None: # There was no data there HERE - would like to have an option to record no data
