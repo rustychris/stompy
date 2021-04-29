@@ -1156,6 +1156,9 @@ class HydroModel(object):
                 grid=ugrid.UnstructuredGrid.read_ugrid(grid)
                 
         self.grid=grid
+        # To be safe, make sure grid has edges['cells'] calculated, as
+        # later parts of the model setup avoid rechecking this.
+        self.grid.edge_to_cells() 
 
     default_grid_target_filename='grid_net.nc'
     def grid_target_filename(self):
@@ -1204,14 +1207,18 @@ class HydroModel(object):
 
         if edge_field:
             if edge_field in g.edges.dtype.names:
+                assert np.all(feat_edges>=0)
                 g.edges[edge_field][feat_edges] = np.minimum(g.edges[edge_field][feat_edges],
                                                              dredge_depth)
             else:
                 log.warning('No edge bathymetry (%s) to dredge.  Ignoring'%edge_field)
         if node_field:
+            assert np.all(cells_to_dredge>=0)
+            assert np.all(nodes_to_dredge>=0)
             g.nodes[node_field][nodes_to_dredge] = np.minimum(g.nodes[node_field][nodes_to_dredge],
                                                               dredge_depth)
         if cell_field:
+            assert np.all(cells_to_dredge>=0)
             g.cells[cell_field][cells_to_dredge] = np.minimum(g.cells[cell_field][cells_to_dredge],
                                                               dredge_depth)
 
