@@ -554,7 +554,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                         tim_base=f"{s['name']}_{k}.tim"
                         tim_fn=os.path.join(self.run_dir,tim_base)
                         self.write_tim(s[k],tim_fn)
-                        lines.append( "%s = %s"%(k,tim_fn) )
+                        lines.append( "%s = %s"%(k,tim_base) )
                     else:
                         lines.append( "%s = %s"%(k,s[k]) )
                 lines.append("\n")
@@ -679,7 +679,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         if (bc.dredge_depth is not None) and (self.restart_from is None):
             # Additionally modify the grid to make sure there is a place for inflow to
             # come in.
-            log.info("Dredging grid for source/sink BC %s"%bc.name)
+            log.info("Dredging grid for flow BC %s"%bc.name)
             self.dredge_boundary(np.array(bc.geom.coords),bc.dredge_depth)
         else:
             log.info("dredging disabled")
