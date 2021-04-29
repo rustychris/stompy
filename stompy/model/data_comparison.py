@@ -367,7 +367,11 @@ def calibration_figure_3panel(all_sources,combined=None,
     if 1: # Tidal time scale plot:
         ax=ts_ax
         for src_i,src in enumerate(all_sources):
-            ax.plot(src.time,src.values-offsets[src_i],
+            # When reading live output, it's possible for the length of
+            # the time dimension and the data to get out of sync.  slc
+            # clips to the shorter of the two.
+            slc=slice(None,min(src.time.shape[0],src.values.shape[0]))
+            ax.plot(src.time.values[slc],src.values[slc]-offsets[src_i],
                     label=labels[src_i],
                     **styles[src_i])
         ax.legend(fontsize=8,loc='upper left')
