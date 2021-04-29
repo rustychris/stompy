@@ -406,10 +406,19 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             self.log.info("Running command: %s"%(" ".join(real_cmd)))
             return utils.call_with_path(real_cmd,self.run_dir)
     
-    def run_simulation(self,extra_args=[]):
-        return self.run_dflowfm(cmd=["-t","1","--autostartstop",
-                                     os.path.basename(self.mdu.filename)]
-                                + extra_args)
+    def run_simulation(self,threads=1,extra_args=[]):
+        """
+        Start simulation. 
+          threads: if specified, pass on desired number of openmp threads to dfm.
+          extra_args: additional list of other commandline arguments. Note that
+          arguments must be split up into a list (e.g. ["--option","value"] as
+          opposed to "--option value").
+        """
+        cmd=[]
+        if threads is not None:
+            cmd += ["-t","%d"%threads]
+        cmd += ["--autostartstop",os.path.basename(self.mdu.filename)] + extra_args
+        return self.run_dflowfm(cmd=cmd)
     
     @classmethod
     def run_completed(cls,fn):
