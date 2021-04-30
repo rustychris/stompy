@@ -2358,10 +2358,9 @@ class NwisStageBC(NwisBC,StageBC):
         return ds
 
 class NwisTidalBC(NwisStageBC):
-    def fetch_for_period(self,period_start,period_stop):
-        ds = super(NwisStageBC, self).fetch_for_period(period_start, period_stop)
-        ds = utils.fill_tidal_data(ds)
-        return ds
+    def src_data(self):
+        ds=self.fetch_for_period(self.data_start,self.data_stop)
+        return utils.fill_tidal_data(ds['water_level'])
 
 class NwisScalarBC(NwisBC,ScalarBC):
     
