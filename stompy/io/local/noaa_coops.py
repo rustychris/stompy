@@ -274,5 +274,7 @@ def coops_dataset_product(station,product,
     if clip:
         time_sel=(dataset.time.values>=start_date) & (dataset.time.values<end_date)
         dataset=dataset.isel(time=time_sel)
+
+    dataset['time'].attrs['timezone']='UTC'
         
     return dataset
