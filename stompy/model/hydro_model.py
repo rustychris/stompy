@@ -2387,6 +2387,10 @@ class NwisScalarBC(NwisBC,ScalarBC):
             self.product_id=99133  # 99311: nitrate + nitrite, mg/l as nitrogen
         elif self.scalar == 'temperature':
             self.product_id=10  # 00010: temperature, degrees C
+        elif self.scalar == 'pH':
+            self.product_id=400  # 00400: pH
+        elif self.scalar == 'fDOM':
+            self.product_id=32295  # 32295: fDOM, ug/l QSE
         from ..io.local import usgs_nwis
         ds=usgs_nwis.nwis_dataset(station=self.station,start_date=period_start,
                                   end_date=period_stop,

@@ -205,7 +205,10 @@ def assemble_comparison_data(models,observations,model_labels=None,
     elif base_var=='salinity':
         loc_extract_opts['data_vars']=['salinity']
     else:
-        raise Exception("Not ready to extract variable %s"%base_var)
+        try:
+            loc_extract_opts['data_vars']=[base_var]
+        except:
+            raise Exception("Not ready to extract variable %s"%base_var)
     
     loc_extract_opts.update(extract_options)
     
