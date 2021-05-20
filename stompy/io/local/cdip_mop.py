@@ -35,7 +35,7 @@ def hindcast_dataset(station,start_date,end_date,cache_dir=None,
     for interval_start,interval_end in periods(start_date,end_date,days_per_request):
         base_fn="%s_%s_%s_%s.nc"%(station,
                                   "-".join(["%s"%p for p in variables]),
-                                  interval_start,interval_end)
+                                  interval_start.strftime('%Y%m%d'),interval_end.strftime('%Y%m%d'))
 
         if cache_dir is not None:
             cache_fn=os.path.join(cache_dir,base_fn)
