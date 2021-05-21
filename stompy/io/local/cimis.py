@@ -219,14 +219,16 @@ def cimis_fetch_to_xr(stations,
             ds=xr.open_dataset(cache_fn)
         else:
             log.warning("Requesting %s to %s"%(interval_start,interval_end))
-            req=requests.get(url,params=dict(appKey=cimis_key,
-                                             targets=",".join(stations), 
-                                             startDate=begin_str,
-                                             endDate=end_str,
-                                             unitOfMeasure='M', # metric please
-                                             # is this causing problems?
-                                             dataItems=",".join( fields )
-            ))
+            log.warning("CIMIS: %s"%url)
+            params=dict(appKey=cimis_key,
+                        targets=",".join(stations), 
+                        startDate=begin_str,
+                        endDate=end_str,
+                        unitOfMeasure='M', # metric please
+                        # is this causing problems?
+                        dataItems=",".join( fields ))
+            log.warning(str(params))
+            req=requests.get(url,params=params)
             try:
                 ds=cimis_json_to_xr(req.json())
             except Exception:
