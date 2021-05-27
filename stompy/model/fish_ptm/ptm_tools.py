@@ -506,6 +506,29 @@ def calc_agebin(binfile,ncfile,polyfile,ntout):
 
     print('Done.')
 
+def parse_line_out(fn):
+    nvariables=np.fromfile(fn,np.int32,1)[0]
+    if nvariables>0:
+        raise Exception("Haven't added code to parse variable names")
+    crossings=np.fromfile(fn, [ ('year',np.int32),
+                      ('month',np.int32),
+                      ('day',np.int32),
+                      ('hour',np.int32),
+                      ('minute',np.int32),
+                      ('second',np.int32),
+                      ('nline',np.int16),
+                      ('np',np.int16),
+                      ('xi',np.float64),
+                      ('yi',np.float64),
+                      ('z', np.float64),
+                      ('status',np.int32),
+                      ('variables',np.float64,nvariables)
+                      ], offset=4)
+    return crossings
+
+
+
+    
 #hydrofile = '../InputFiles/untrim_hydro.nc'
 #ptmfile = '../InputFiles/line_specify_bin.out'
 #outfile = '../InputFiles/FISH_PTM.mov'

@@ -204,6 +204,8 @@ def assemble_comparison_data(models,observations,model_labels=None,
         # Not that many people use this...  but it's the correct one.
     elif base_var=='salinity':
         loc_extract_opts['data_vars']=['salinity']
+    elif base_var=='inorganic_nitrogen_(nitrate_and_nitrite)':
+        loc_extract_opts['data_vars']=['ZNit','NO3']  # want to extract both to calculate age and compare with nitrogen
     else:
         raise Exception("Not ready to extract variable %s"%base_var)
     
@@ -220,23 +222,24 @@ def assemble_comparison_data(models,observations,model_labels=None,
             print("No data extracted from model.  omitting")
             continue
             
-        assert len(loc_extract_opts['data_vars'])==1,"otherwise missing some data"
-        tgt_var=loc_extract_opts['data_vars'][0]
-        try:
-            da=ds[tgt_var]
-        except KeyError:
-            # see if the variable can be found based on standard-name
-            for dv in ds.data_vars:
-                if ds[dv].attrs.get('standard_name','')==tgt_var:
-                    da=ds[dv]
-                    da.name=tgt_var
-                    break
-            else:
-                raise Exception("Could not find %s by name or standard_name"%(tgt_var))
+        assert len(loc_extract_opts['data_vars'])>=1,"otherwise missing some data"
+        tgt_vars=loc_extract_opts['data_vars']
+        for tgt_var in tgt_vars:
+            try:
+                da=ds[tgt_var]
+            except KeyError:
+                # see if the variable can be found based on standard-name
+                for dv in ds.data_vars:
+                    if ds[dv].attrs.get('standard_name','')==tgt_var:
+                        da=ds[dv]
+                        da.name=tgt_var
+                        break
+                else:
+                    raise Exception("Could not find %s by name or standard_name"%(tgt_var))
 
-        da.name=base_var # having the same name helps later
-        da=da.assign_coords(label=label)
-        model_data.append(da)
+            da.name=base_var # having the same name helps later
+            da=da.assign_coords(label=label)
+            model_data.append(da)
         
     # Annotate the sources with labels
     for i,da in enumerate(observations):
@@ -367,7 +370,11 @@ def calibration_figure_3panel(all_sources,combined=None,
     if 1: # Tidal time scale plot:
         ax=ts_ax
         for src_i,src in enumerate(all_sources):
-            ax.plot(src.time,src.values-offsets[src_i],
+            # When reading live output, it's possible for the length of
+            # the time dimension and the data to get out of sync.  slc
+            # clips to the shorter of the two.
+            slc=slice(None,min(src.time.shape[0],src.values.shape[0]))
+            ax.plot(src.time.values[slc],src.values[slc]-offsets[src_i],
                     label=labels[src_i],
                     **styles[src_i])
         ax.legend(fontsize=8,loc='upper left')

@@ -386,7 +386,9 @@ class BC(object):
                     data_start,data_stop)
                 
                 if self.on_insufficient_data=='exception':
-                    raise Exception(msg)
+                    # raise Exception(msg)
+                    log.warning(msg)
+                    pass
                 elif self.on_insufficient_data=='log':
                     log.warning(msg)
                 elif self.on_insufficient_data=='ignore':
@@ -1000,6 +1002,8 @@ class MpiModel(object):
                    +self.slurm_srun_options(num_procs)
                    +list(self.srun_args)
                    +cmd )
+
+
         if not wait:
             raise Exception( ("Request to start MPI process "
                               "(flavor=%s) without waiting not supported")%self.mpi_flavor)
@@ -1156,6 +1160,9 @@ class HydroModel(object):
                 grid=ugrid.UnstructuredGrid.read_ugrid(grid)
                 
         self.grid=grid
+        # To be safe, make sure grid has edges['cells'] calculated, as
+        # later parts of the model setup avoid rechecking this.
+        self.grid.edge_to_cells() 
 
     default_grid_target_filename='grid_net.nc'
     def grid_target_filename(self):
@@ -1204,14 +1211,18 @@ class HydroModel(object):
 
         if edge_field:
             if edge_field in g.edges.dtype.names:
+                assert np.all(feat_edges>=0)
                 g.edges[edge_field][feat_edges] = np.minimum(g.edges[edge_field][feat_edges],
                                                              dredge_depth)
             else:
                 log.warning('No edge bathymetry (%s) to dredge.  Ignoring'%edge_field)
         if node_field:
+            assert np.all(cells_to_dredge>=0)
+            assert np.all(nodes_to_dredge>=0)
             g.nodes[node_field][nodes_to_dredge] = np.minimum(g.nodes[node_field][nodes_to_dredge],
                                                               dredge_depth)
         if cell_field:
+            assert np.all(cells_to_dredge>=0)
             g.cells[cell_field][cells_to_dredge] = np.minimum(g.cells[cell_field][cells_to_dredge],
                                                               dredge_depth)
 
@@ -2346,6 +2357,12 @@ class NwisStageBC(NwisBC,StageBC):
             ds['water_level'].attrs['standard_name']=self.standard_name
         return ds
 
+class NwisTidalBC(NwisStageBC):
+    def fetch_for_period(self,period_start,period_stop):
+        ds = super(NwisStageBC, self).fetch_for_period(period_start, period_stop)
+        ds = utils.fill_tidal_data(ds)
+        return ds
+
 class NwisScalarBC(NwisBC,ScalarBC):
     
     def src_data(self):
@@ -2366,6 +2383,14 @@ class NwisScalarBC(NwisBC,ScalarBC):
             self.product_id=63680 # 63680: turbidity, FNU
         elif self.scalar == 'salinity':
             self.product_id=480 # 00480: salinity, ppt
+        elif self.scalar == 'NO3+NO2':
+            self.product_id=99133  # 99311: nitrate + nitrite, mg/l as nitrogen
+        elif self.scalar == 'temperature':
+            self.product_id=10  # 00010: temperature, degrees C
+        elif self.scalar == 'pH':
+            self.product_id=400  # 00400: pH
+        elif self.scalar == 'fDOM':
+            self.product_id=32295  # 32295: fDOM, ug/l QSE
         from ..io.local import usgs_nwis
         ds=usgs_nwis.nwis_dataset(station=self.station,start_date=period_start,
                                   end_date=period_stop,

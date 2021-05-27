@@ -25,7 +25,7 @@ def adcp_to_dataset(adcp):
         if adcp.ensemble_data[field].ndim==2:
             dims=dims+('beam',)
         ds[field]=dims,adcp.ensemble_data[field]
-        
+
     ds['config']=(),adcp.config
     ds['name']=(),adcp.name
 
@@ -33,9 +33,19 @@ def adcp_to_dataset(adcp):
     ds['range']=('bin',),adcp.config.ranges
 
     ds['time']=('time',), utils.to_dt64(ds.mtime.values)
+
+    # Copy config to a dummy variable in addition to adcp.config
+    ds['config']=(),0
+    cfg=ds.attrs['adcp'].config
+    for k in cfg.__dict__:
+        ds.config.attrs[k]=getattr(cfg,k)
+    
     return ds
 
 def rdradcp_xr(*a,**kw):
+    """
+    Read raw T-RDI ADCP data, return as an xarray Dataset
+    """
     adcp=rdradcp.rdradcp(*a,**kw)
     ds=adcp_to_dataset(adcp)
     ds.attrs['src']=kw.get('name',None) or a[0]

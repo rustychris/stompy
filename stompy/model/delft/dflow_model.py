@@ -406,10 +406,19 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             self.log.info("Running command: %s"%(" ".join(real_cmd)))
             return utils.call_with_path(real_cmd,self.run_dir)
     
-    def run_simulation(self,extra_args=[]):
-        return self.run_dflowfm(cmd=["-t","1","--autostartstop",
-                                     os.path.basename(self.mdu.filename)]
-                                + extra_args)
+    def run_simulation(self,threads=1,extra_args=[]):
+        """
+        Start simulation. 
+          threads: if specified, pass on desired number of openmp threads to dfm.
+          extra_args: additional list of other commandline arguments. Note that
+          arguments must be split up into a list (e.g. ["--option","value"] as
+          opposed to "--option value").
+        """
+        cmd=[]
+        if threads is not None:
+            cmd += ["-t","%d"%threads]
+        cmd += ["--autostartstop",os.path.basename(self.mdu.filename)] + extra_args
+        return self.run_dflowfm(cmd=cmd)
     
     @classmethod
     def run_completed(cls,fn):
@@ -549,7 +558,14 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                     ]
                 for k in s:
                     if k in ['type','name','geom']: continue
-                    lines.append( "%s = %s"%(k,s[k]) )
+                    if isinstance(s[k],xr.DataArray):
+                        log.warning(f"{k} appears to be data")
+                        tim_base=f"{s['name']}_{k}.tim"
+                        tim_fn=os.path.join(self.run_dir,tim_base)
+                        self.write_tim(s[k],tim_fn)
+                        lines.append( "%s = %s"%(k,tim_base) )
+                    else:
+                        lines.append( "%s = %s"%(k,s[k]) )
                 lines.append("\n")
                 # "door_height  = %.3f"%s['door_height'],
                 # "lower_edge_level = %.3f"%s['lower_edge_level'],
@@ -672,7 +688,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         if (bc.dredge_depth is not None) and (self.restart_from is None):
             # Additionally modify the grid to make sure there is a place for inflow to
             # come in.
-            log.info("Dredging grid for source/sink BC %s"%bc.name)
+            log.info("Dredging grid for flow BC %s"%bc.name)
             self.dredge_boundary(np.array(bc.geom.coords),bc.dredge_depth)
         else:
             log.info("dredging disabled")
