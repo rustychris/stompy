@@ -1,6 +1,7 @@
 import os
 import re
 import datetime
+import numpy as np
 import glob
 import logging
 log=logging.getLogger("ptm_config")
@@ -65,13 +66,17 @@ class PtmConfig(object):
             eat('GLOBAL INFORMATION')
             self.end_time=keydate('END_TIME')
             self.restart_dir=keystring('RESTART_DIR')
-    def is_complete(self,groups='all'):
+    def is_complete(self,groups='all',tol=np.timedelta64(0,'h')):
         """
         Return true if it appears that this PTM run has completed.
         NOT VERY ROBUST.
         Assumes that all groups have output (or at least bin index entries) through
         the end of the run.  if the output interval is not even with end_time,
         this will give a false negative.
+        Supply a positive timedelta64 for tol to accept output within tolerance of the
+        end of the run as complete. Some runs appear to miss the last time step of
+        output.
+
         sets self.last_output to the time of the last output, to allow a rough
         estimate of percent complete.
 
@@ -111,7 +116,7 @@ class PtmConfig(object):
                 elif (self.first_output is None) or (self.first_output>dt_first):
                     self.first_output=dt_first
                     
-                if dt<self.end_time:
+                if dt+tol<self.end_time:
                     log.debug("IDX %s appears short: %s vs %s"%(idx,dt,self.end_time))
                     n_short+=1
             if groups=='first':
