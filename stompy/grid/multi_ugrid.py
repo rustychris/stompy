@@ -11,6 +11,7 @@ TODO: handling isel for partitioned dimensions
 """
 
 import glob
+import copy
 import xarray as xr
 import numpy as np
 from . import unstructured_grid
@@ -46,31 +47,59 @@ class MultiVar(object):
         return "MultiVar wrapper around %s"%repr(self.sub_vars[0])
     def __str__(self):
         return "MultiVar wrapper around %s"%str(self.sub_vars[0])
+
     def isel(self,**kwargs):
-        # This part only works for kwargs not indexing the partitioned
-        # dimensions.
-        # So how *should* this work when isel is called with something
-        # like cell=100 ?
-        # Options:
-        # - Shed the Multivar layer and create a new xr.DataArray, processing
-        #   the isel. Might create performance issues.
-        # - Extend Multivar to save indexing information that cannot be
-        #   be applied per subvar.
-        #      probably on creation of the MultiVar, would populate a list of
-        #      partitioned dimensions, with a starting indexing of slice(None)
-        #   An isel() call then would apply non-partitioned dimensions to the
-        #    subvars, and partitioned dimensions to the local self.part_dims.
-        #    How would those be stored? in the general case, would want an index
-        #    array, right?
-        #   self.part_dims['nFlowElem']=slice(None)
-        #    Work back from how this would be used:
-        #     on a call to values, the result of shape_and_indexes would be
-        #     further processed to apply the part_dims.
-        #    
-        # - Add another wrapper class that handles indexing along partitioned
-        #   dimensions.
-        return MultiVar(self.mu,
-                        [da.isel(**kwargs) for da in self.sub_vars])
+        # Apply indexing, returning either a more restricted MultiVar,
+        # or if the selection includes the partitioned dimension, then
+        # return a vanilla Dataset.
+        
+        # Break up the requested indices into partitioned and non-partitioned
+        # dimensions:
+        part_kwargs={}
+        nonpart_kwargs={}
+
+        for key in kwargs:
+            val=kwargs[key]
+            if key not in self.part_dims:
+                nonpart_kwargs[key]=val
+            else:
+                part_kwargs[key]=val
+
+        # Apply the nonpartitioned selections:
+        mv=multi_ugrid.MultiVar(self.mu,                                                                                                                      
+                                [da.isel(**nonpart_kwargs) for da in self.sub_vars])
+
+        if len(part_kwargs)==0:
+            return mv
+        assert len(part_kwargs)<=1,"Not ready for multiple partitioned dimensions on one var"
+
+        # Come back and apply the partitioned selections
+        for key in part_kwargs:
+            val=part_kwargs[key]
+            if self.mu.rev_meta[key]=='face_dimension':
+                g2l=self.mu.cell_g2l
+            else:
+                raise Exception("Only cell mapping global-to-local has been implemented")
+
+            # val could be an int, a sequence of ints, or a slice.
+            # while numpy allows a multidimension index array, xarray does
+            # not, and we'll follow that same constraint.
+            if isinstance(val,slice):
+                # Slices can be no-copy on a regular dataset, but here we 
+                # have to revert to copying, and convert the slice to a
+                # sequence. 
+                val=range(len(g2l))[val]
+
+            val=np.asanyarray(val)
+            if val.shape==(): # scalar
+                proc,loc=g2l[val]
+                sv=mv.sub_vars[proc].isel(**{key:loc})
+                return sv
+            else:
+                svs=[mv.sub_vars[proc].isel(**{key:loc})
+                     for proc,loc in g2l[val]]
+                return xr.concat(svs,dim=key)
+    
     def sel(self,**kwargs):
         return MultiVar(self.mu,
                         [da.sel(**kwargs) for da in self.sub_vars])
@@ -190,12 +219,15 @@ class MultiUgrid(object):
     # a nonzero tolerance
     merge_tol=0.0
     
-    def __init__(self,paths,cleanup_dfm=False,
+    def __init__(self,paths,cleanup_dfm=False,xr_kwargs={},
                  **grid_kwargs):
         """
         paths: 
             list of paths to netcdf files
             single glob pattern
+
+        ** (grid_kwargs): keyword arguments passed to read_ugrid.
+        xr_kwargs: dict of arguments passed to xr.open_dataset.
         """
         if isinstance(paths,str):
             paths=glob.glob(paths)
@@ -203,7 +235,7 @@ class MultiUgrid(object):
             # with a sort.
             paths.sort()
         self.paths=paths
-        self.dss=self.load()
+        self.dss=self.load(**xr_kwargs)
         self.grids=[unstructured_grid.UnstructuredGrid.read_ugrid(ds,**grid_kwargs) for ds in self.dss]
 
         # Build a mapping from dimension to ugrid role -- used by MultiVar to
@@ -229,8 +261,8 @@ class MultiUgrid(object):
 
         self.create_global_grid_and_mapping()
         
-    def load(self):
-        return [xr.open_dataset(p) for p in self.paths]
+    def load(self,**xr_kwargs):
+        return [xr.open_dataset(p,**xr_kwargs) for p in self.paths]
     
     def reload(self):
         """
@@ -282,14 +314,18 @@ class MultiUgrid(object):
             self.node_l2g.append(n_map)
             self.edge_l2g.append(j_map)
             self.cell_l2g.append(c_map)
-            
-    def build_cell_g2l(self):
-        cell_g2l=np.zeros((self.grid.Ncells(),2),np.int32)
-        for proc,l2g in enumerate(self.cell_l2g):
-            valid=l2g>=0
-            cell_g2l[l2g[valid],0]=proc
-            cell_g2l[l2g[valid],1]=np.arange(len(l2g))[valid]
-        self.cell_g2l=cell_g2l
+
+    _cell_g2l=None
+    @property
+    def cell_g2l(self):
+        if self._cell_g2l is None:
+            cell_g2l=np.zeros((self.grid.Ncells(),2),np.int32)
+            for proc,l2g in enumerate(self.cell_l2g):
+                valid=l2g>=0
+                cell_g2l[l2g[valid],0]=proc
+                cell_g2l[l2g[valid],1]=np.arange(len(l2g))[valid]
+            self._cell_g2l=cell_g2l
+        return self._cell_g2l
     
     def __getitem__(self,k):
         # return a proxy object - can't do the translation until .values is called.
