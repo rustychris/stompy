@@ -59,8 +59,9 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         """
         Load a default set of config values from data/defaults-r53925.mdu
         """
-        # This is copied straight from the source distribution
-        fn=os.path.join(os.path.dirname(__file__),"data","defaults-r53925.mdu")
+        # Updated defaults-r53925.mdu by removing settings that 2021.03
+        # complains about.
+        fn=os.path.join(os.path.dirname(__file__),"data","defaults-2021.03.mdu")
         self.load_mdu(fn)
         
         # And some extra settings to make it compatible with this script
