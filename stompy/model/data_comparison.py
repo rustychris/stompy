@@ -307,7 +307,8 @@ def calibration_figure_3panel(all_sources,combined=None,
                               offset_source=0,scatter_x_source=0,
                               num=None,trim_time=False,
                               lowpass=True,
-                              styles=None):
+                              styles=None,
+                              offset_method='mean'):
     """
     all_sources: list of DataArrays to compare.
     combined: those same dataarrays interpolated to common time, or none to automatically
@@ -323,6 +324,10 @@ def calibration_figure_3panel(all_sources,combined=None,
     primary model output second.
 
     trim_time: truncate all sources to the shortest common time period
+
+    offset_method: 'mean' calculates offsets between stations by mean.  'median'
+     by median, which can be better when a source has noise or model crashes and
+     corrupts values at the end.
     """
     N=np.arange(len(all_sources))
     if metric_ref<0:
@@ -357,7 +362,13 @@ def calibration_figure_3panel(all_sources,combined=None,
     else:
         txt_ax=lp_ax
 
-    offsets=combined.mean(dim='time').values
+    if offset_method=='mean':
+        offsets=combined.mean(dim='time').values
+    elif offset_method=='median':
+        offsets=combined.median(dim='time').values
+    else:
+        raise Exception("offset_method=%s is not understood"%offset_method)
+    
     if offset_source is not None:
         offsets-=offsets[offset_source]
     else:
@@ -373,9 +384,12 @@ def calibration_figure_3panel(all_sources,combined=None,
             # When reading live output, it's possible for the length of
             # the time dimension and the data to get out of sync.  slc
             # clips to the shorter of the two.
+            label=labels[src_i]
+            if offsets[src_i]!=0.0:
+                label="%s %+.2f"%(label,-offsets[src_i])
             slc=slice(None,min(src.time.shape[0],src.values.shape[0]))
             ax.plot(src.time.values[slc],src.values[slc]-offsets[src_i],
-                    label=labels[src_i],
+                    label=label,
                     **styles[src_i])
         ax.legend(fontsize=8,loc='upper left')
 
