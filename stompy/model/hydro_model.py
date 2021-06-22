@@ -764,6 +764,54 @@ class StageBC(BC):
             water_level=np.interp( utils.to_dnum(t),
                                    utils.to_dnum(water_level.time), water_level.values )
         return water_level
+
+class HarmonicStageBC(StageBC):
+    msl=0.0
+    # constituents are
+    constituents=None
+    dt=np.timedelta64(360,'s')
+
+    def __init__(self,**kw):
+        """
+        water_level: scalar value or xr.DataArray specifying water level BC.
+        used to be 'z' but that should be reserved for vertical coordinates
+        """
+        # Pull out any constituent names from keywords before super()
+        from .. import tide_consts
+        self.constituents={}
+
+        consts=[ k
+                 for k in kw
+                 if k in tide_consts.const_names]
+        for k in consts:
+            self.set_constituent(k,kw.pop(k))
+
+        super(StageBC,self).__init__(**kw)
+
+    def set_constituent(self,name,amp_phase):
+        self.constituents[name]=amp_phase
+        
+    def src_data(self):
+        t=np.arange(self.data_start,self.data_stop,self.dt)
+        t_dnum=utils.to_dnum(t) # decimal days
+        
+        eta=self.msl*np.ones(len(t),np.float64)
+        from .. import tide_consts
+
+        for k in self.constituents:
+            const_idx=tide_consts.const_names.index(k)
+            amp,phase = self.constituents[k]
+            # degrees per hour, converted to rads/day
+            speed=np.pi/180 * 24 * tide_consts.speeds[const_idx]
+            
+            # This isn't a proper construction. Should invoke the
+            # real deal tidal code, with equilibrium arguments and
+            # all.
+            eta += amp*np.cos(speed*t_dnum+phase*np.pi/180)
+        ds=xr.Dataset()
+        ds['time']=('time',),t
+        ds['water_level']=('time',),eta
+        return ds['water_level']
     
 class CommonFlowBC(BC):
     flow=None

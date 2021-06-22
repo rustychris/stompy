@@ -24,13 +24,13 @@ from stompy.model.delft import dfm_grid
 import stompy.grid.unstructured_grid as ugrid
 
 from . import io as dio
+from . import waq_scenario
 from .. import hydro_model as hm
 
 class DFlowModel(hm.HydroModel,hm.MpiModel):
     # If these are the empty string, then assumes that the executables are
     # found in existing $PATH
     dfm_bin_dir="" # .../bin  giving directory containing dflowfm
-    waq_proc_def="" # proc_def.def file for delwaq process library
     dfm_bin_exe='dflowfm'
     
     mdu_basename='flowfm.mdu'
@@ -39,6 +39,11 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
     mdu=None
     # If set, a DFlowModel instance which will be continued
     restart_from=None
+
+    # If True, initialize to WaqOnlineModel instance.
+    dwaq=False
+    # Specify location of proc_def.def file:
+    waq_proc_def=None
     
     # flow and source/sink BCs will get the adjacent nodes dredged
     # down to this depth in order to ensure the impose flow doesn't
@@ -49,12 +54,16 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
 
     def __init__(self,*a,**kw):
         super(DFlowModel,self).__init__(*a,**kw)
+
         self.structures=[]
         self.load_default_mdu()
 
         if self.restart_from is not None:
             self.set_restart_from(self.restart_from)
-        
+
+        if self.dwaq is True:
+            self.dwaq=waq_scenario.WaqOnlineModel(model=self)
+            
     def load_default_mdu(self):
         """
         Load a default set of config values from data/defaults-r53925.mdu
@@ -436,7 +445,12 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         cmd=[]
         if threads is not None:
             cmd += ["-t","%d"%threads]
-        cmd += ["--autostartstop",os.path.basename(self.mdu.filename)] + extra_args
+        cmd += ["--autostartstop",os.path.basename(self.mdu.filename)]
+        
+        if self.dwaq:
+            cmd=self.dwaq.update_command(cmd)
+            
+        cmd += extra_args
         return self.run_dflowfm(cmd=cmd)
     
     @classmethod
@@ -523,6 +537,15 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
 
         self.update_initial_water_level()
 
+        if self.dwaq:
+            # This updates
+            # a few things in self.mdu
+            # Also actually writes some output, though that could be
+            # folded into a later part of the process if it turns out
+            # the dwaq config depends on reading some of the DFM
+            # details.
+            self.dwaq.write_waq()
+        
     def write_config(self):
         # Assumes update_config() already called
         self.write_structures() # updates mdu
@@ -1162,150 +1185,9 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
 
         return self.translate_vars(ds,requested_vars=data_vars)
 
-
-class WaqModel:
-    def __init__(self, model):
-        """
-        Handles Delwaq model setup
-        :param model: dflow model instance, with .mdu attribute for model MDU file
-
-        substances: name=str, active=bool, description=str, conc_unit=mass/vol. or mass/area, waste_unit=mass
-        params: name=str, description=str, unit=str, value=float
-        processes: name=str, description=str
-        # bcs: DelwaqScalarBC objects, handled by DFlowModel
-        """
-        self.model = model
-        self.sub_file = 'sources.sub'
-        self.sub_path = os.path.join(self.model.run_dir, self.sub_file)
-        self.substances = []
-        self.params = []
-        self.processes = []
-        # self.bcs = []
-
-    def add_substance(self, name, active, **kwargs):
-        if name == 'NH4':
-            description = 'Ammonium'
-            conc_unit = '(g/m3)'
-            waste_unit = '-'
-        elif name == 'NO3':
-            description = 'Nitrate'
-            conc_unit = '(g/m3)'
-            waste_unit = '-'
-        elif name == 'ZNit':
-            description = 'Nitrate production rate'
-            conc_unit = '(g/m3/d)'
-            waste_unit = '-'
-        elif name == 'RcNit':
-            description = 'First order nitrification coefficient'
-            conc_unit = '(1/d)'
-            waste_unit = '-'
-        else:
-            log.warning(f'{name} not implemented yet.')
-            return -1
-
-        d = {'name': name,
-             'active': active,
-             'description': description,
-             'conc_unit': conc_unit,
-             'waste_unit': waste_unit
-             }
-
-        self.substances.append(d)
-        return 0
-
-    def add_param(self, name, value, **kwargs):
-        if name == 'SWVnNit':
-            description = 'Nitrification rate formulation'
-            unit = '-'
-        elif name == 'RcNit':
-            description = 'First order nitrification coefficient'
-            unit = '(1/d)'
-        elif name == 'TcNit':
-            description = 'Nitrification temp. coefficient'
-            unit = '-'
-        elif name == 'NH4':
-            description = 'Ammonium'
-            unit = '(g/m3)'
-        else:
-            description = ''
-            unit = '-'
-
-        d = {'name': name,
-             'description': description,
-             'unit': unit,
-             'value': value}
-
-        self.params.append(d)
-        return 0
-
-    def add_process(self, name, **kwargs):
-        d = {'name': name,
-             'description': ''}
-
-        self.processes.append(d)
-        return 0
-
-    def write_waq(self):
-        """
-        Writes .sub file for Delwaq model, and adds Delwaq params to Dflow .mdu file
-        """
-        log.info('Writing Delwaq model files...')
-        self.model.set_run_dir(self.model.run_dir, mode='create')
-        with open(self.sub_path, 'wt') as f:
-            for substance in self.substances:
-                self.write_substance(f, substance)
-
-            for param in self.params:
-                self.write_param(f, param)
-
-            self.write_processes(f)
-
-        # add reference to sub-file in .mdu
-        self.model.mdu['processes', 'SubstanceFile'] = self.sub_file
-        self.model.mdu['processes', 'DtProcesses'] = 300  # hard-coded to match DtUser in template .mdu
-        self.model.mdu['processes', 'ProcessFluxIntegration'] = 1  # 1 = Delwaq, 2 = Dflow
-
-    def write_substance(self, f, substance):
-        """Writes to opened .sub file f for a particular substance"""
-        s = f"substance '{substance['name']}' {'in' * (not substance['active'])}active\n" \
-            f"\tdescription        '{substance['description']}'\n" \
-            f"\tconcentration-unit '{substance['conc_unit']}'\n" \
-            f"\twaste-load-unit    '{substance['waste_unit']}'\n" \
-            f"end-substance\n"
-        f.writelines(s)
-        return 0
-
-    def write_param(self, f, param):
-        """Writes to opened .sub file f for a particular parameter"""
-        s = f"parameter '{param['name']}'\n" \
-            f"\tdescription '{param['description']}'\n" \
-            f"\tunit '{param['unit']}'\n" \
-            f"\tvalue {param['value']}\n" \
-            f"end-parameter\n"
-        f.writelines(s)
-        return 0
-
-    def write_processes(self, f):
-        """Writes all active processes to .sub file"""
-        s = "active-processes" \
-            + "".join([f"\tname '{process['name']}'  '{process['description']}'\n" for process in self.processes]) \
-            + "end-active-processes"
-        f.writelines(s)
-        return 0
-
-    def add_bcs(self, bc):
-        """Add bcs to DelwaqModel object (currently not used, can just add to DFlowModel)"""
-        if isinstance(bc, list):
-            [self.add_bcs(b) for b in bc]
-        else:
-            assert isinstance(bc, DelwaqScalarBC), f"BC type {type(bc)} cannot be handled by Delwaq model."
-            self.bcs.append(bc)
-
-
 class DelwaqScalarBC(hm.ScalarBC):
     # for now just checking if isinstance in write_scalar_bc(), but may want to handle differently than hm.ScalarBC
-    log.info('DelwaqScalarBC instantiated.')
-
+    pass
 
 import sys
 if sys.platform=='win32':
