@@ -51,28 +51,34 @@ def load_nef_lib():
             return None
     
     if sys.platform.startswith('linux'):
-        basename='libNefisSO.so'
+        basenames=['libNefisSO.so','libnefis.so']
     elif sys.platform=='darwin':
         # this is for OSX
-        basename='libNefisSO.dylib'
+        basenames=['libNefisSO.dylib']
     else:
         log.warning("Need to add support in nefis.nef_lib() for platform=%s"%sys.platform)
         return None
 
     fail='_fail_' # to test for missing environment variables
-    for prefix in [ os.path.join(os.environ.get('HOME',fail),
-                                 "code/delft/d3d/master/src/lib/"), # goofy local
-                    os.path.join(sys.prefix,"lib"),
-                    os.path.join(os.environ.get('D3D_HOME',fail),'lib') ]:
-        if fail in prefix:
-            continue
+    locations=[]
+    if 'D3D_HOME' in os.environ:
+        locations.append( os.path.join(os.environ['D3D_HOME'],'lib') )
+    if 'DELFT_HOME' in os.environ:
+        locations.append( os.path.join(os.environ['DELFT_HOME'],'lib') )
 
-        nefis_lib=os.path.join(prefix,basename)
-        try:
-            return cdll.LoadLibrary(nefis_lib)
-        except OSError:
-            continue
+    if (sys.platform=='linux') and ('LD_LIBRARY_PATH' in os.environ):
+        locations.extend( os.environ['LD_LIBRARY_PATH'].split(':') )
+
+    for prefix in locations:
+        for basename in basenames:
+            nefis_lib=os.path.join(prefix,basename)
+            try:
+                return cdll.LoadLibrary(nefis_lib)
+            except OSError:
+                continue
     log.warning("Failed to load nefis DLL - read/write not enabled")
+    log.warning("Tried to load from %s"%(locations))
+    log.warning("Tried basenames %s"%(basenames))
     return None
 
 _nef_lib=False # False=> uninitialized, None=> not found
