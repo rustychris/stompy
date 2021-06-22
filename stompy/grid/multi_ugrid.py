@@ -66,8 +66,8 @@ class MultiVar(object):
                 part_kwargs[key]=val
 
         # Apply the nonpartitioned selections:
-        mv=multi_ugrid.MultiVar(self.mu,                                                                                                                      
-                                [da.isel(**nonpart_kwargs) for da in self.sub_vars])
+        mv=MultiVar(self.mu,                                                                                                                      
+                    [da.isel(**nonpart_kwargs) for da in self.sub_vars])
 
         if len(part_kwargs)==0:
             return mv
@@ -246,6 +246,15 @@ class MultiUgrid(object):
         if cleanup_dfm:
             for g in self.grids:
                 unstructured_grid.cleanup_dfm_multidomains(g)
+                # Also remove extra fields that depend on max_sides but that we
+                # don't use.
+                # Would be better to either support these, or detect them based on
+                # netcdf dimensions
+                for f in ['mesh2d_face_x_bnd','mesh2d_face_y_bnd']:
+                    if f in g.cells.dtype.names:
+                        log.warning("Dropping extra cell field %s to avoid max_sides issues"%f)
+                        g.delete_cell_field(f)
+                    
             # kludge DFM output (ver. 2021.03) has nNetElem and nFlowElem, which appear to
             # both be for the cell dimension
             for ds in self.dss:
@@ -343,7 +352,7 @@ class MultiUgrid(object):
         try: 
             return self.__getitem__(k)
         except KeyError:
-            raise Exception("%s is not an existing variable or known method"%k)
+            raise AttributeError("%s is not an existing variable or known method"%k)
 
     def __str__(self):
         return "MultiFile Layer on top of %s"%str(self.dss[0])
@@ -354,6 +363,14 @@ class MultiUgrid(object):
     def dims(self):
         return self.dss[0].dims
 
+    def __setstate__(self,state):
+        for k in state:
+            setattr(self,k,state[k])
+
+    @property
+    def data_vars(self):
+        return self.dss[0].data_vars
+    
     def isel(self,**kwargs):
         subset=copy.copy(self)
         subset.dss=[ds.isel(**kwargs) for ds in self.dss]
@@ -362,4 +379,9 @@ class MultiUgrid(object):
         subset=copy.copy(self)
         subset.dss=[ds.sel(**kwargs) for ds in self.dss]
         return subset
+    def drop(self,*args,**kwargs):
+        subset=copy.copy(self)
+        subset.dss=[ds.drop(*args,**kwargs) for ds in self.dss]
+        return subset
 
+    

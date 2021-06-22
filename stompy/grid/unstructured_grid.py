@@ -505,6 +505,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         In-place modification of maximum number of sides for cells.
         Can be larger or smaller than current max_sides, but if smaller
         all existing cells must fit in the new max_sides.
+
+        TODO: some grids (DFM) have additional fields that depend on 
+        max_sides, such as face_x_bnd. Would be nice to have a way of
+        detecting that and resizing those fields as well.
         """
         if max_sides<self.max_sides:
             if not np.all( self.cells['nodes'][:,max_sides:] == self.UNDEFINED ):
@@ -2204,13 +2208,21 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         """
         Add the nodes, edges, and cells from another grid to this grid.
         Copies fields with common names, any other fields are dropped from ugB.
-        Assumes (for the moment) that max_sides is compatible.
+        If self.max_sides is smaller than ugB.max_sides, it will be increased.
 
         merge_nodes: [ (self_node,ugB_node), ... ]
           Nodes which overlap and will be mapped instead of added.
         or 'auto' in which case duplicate nodes by coordinate will be chosen for merging,
          optionally with a non-zero tolerance.
         """
+        if self.max_sides<ugB.max_sides:
+            # This could be smarter and only increase if ugB is actually
+            # using the additional sides.
+            self.log.warning("Increasing max_sides from %d to %d"%(self.max_sides,ugB.max_sides))
+            self.modify_max_sides(ugB.max_sides)
+        else:
+            self.log.warning("max_sides is okay (%d)"%(self.max_sides))
+            
         node_map=np.zeros( ugB.Nnodes(), 'i4')-1
         edge_map=np.zeros( ugB.Nedges(), 'i4')-1
         cell_map=np.zeros( ugB.Ncells(), 'i4')-1
