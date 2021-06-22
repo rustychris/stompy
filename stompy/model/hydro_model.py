@@ -1487,7 +1487,11 @@ class HydroModel(object):
 # Functions for manipulating DFM input/output
 
 def extract_transect(ds,line,grid=None,dx=None,cell_dim='nFlowElem',
-                     include=None,rename=True,add_z=True,name=None):
+                     include=None,rename=True,add_z=True,name=None,
+                     to_keep_dims=set(['wdim','laydim','two','three','time','sample']),
+                     bundle_components=[['U',('ucx','ucy')],
+                                        ['Uavg',('ucxz','ucyz')]],
+):
     """
     Extract a transect from map output.
 
@@ -1526,6 +1530,9 @@ def extract_transect(ds,line,grid=None,dx=None,cell_dim='nFlowElem',
 
     new_ds=ds.isel(**{cell_dim:cell_map_safe})
 
+    #print("Post-ds:")
+    #print(new_ds)
+
     # Record the intended sampling location:
     new_ds['x_sample']=(cell_dim,),line_sampled[:,0]
     new_ds['y_sample']=(cell_dim,),line_sampled[:,1]
@@ -1539,11 +1546,12 @@ def extract_transect(ds,line,grid=None,dx=None,cell_dim='nFlowElem',
                                                         distance+dx_sample/2]).T
     new_ds=new_ds.rename({cell_dim:'sample'})
 
+    new_ds=new_ds.set_coords(['x_sample','y_sample','d_sample'])
+
     if add_z:
         new_ds.update( xr_utils.z_from_sigma(new_ds,'ucx',interfaces=True,dz=True) )
 
     # need to drop variables with dimensions like nFlowLink
-    to_keep_dims=set(['wdim','laydim','two','three','time','sample'])
     to_drop=[]
     for v in new_ds.variables:
         if (set(new_ds[v].dims) - to_keep_dims):
@@ -1551,8 +1559,8 @@ def extract_transect(ds,line,grid=None,dx=None,cell_dim='nFlowElem',
 
     new_ds=new_ds.drop(to_drop)
 
-    xr_utils.bundle_components(new_ds,'U',['ucx','ucy'],'xy',['N','E'])
-    xr_utils.bundle_components(new_ds,'U_avg',['ucxa','ucya'],'xy',['N','E'])
+    for vec,comps in bundle_components:
+        xr_utils.bundle_components(new_ds,vec,comps,'xy',['N','E'])
 
     if rename:
         new_ds=new_ds.rename( {'ucx':'Ve',
