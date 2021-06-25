@@ -970,10 +970,10 @@ def plot_scalar_polys(tran,v,ax=None,xform=None,**kw):
 plot_scalar=plot_scalar_polys
 
 def contour(tran,v,*args,**kwargs):
-    contour_like(tran,v,'contour',*args,**kwargs)
+    return contour_like(tran,v,'contour',*args,**kwargs)
 
 def contourf(tran,v,*args,**kwargs):
-    contour_like(tran,v,'contourf',*args,**kwargs)
+    return contour_like(tran,v,'contourf',*args,**kwargs)
     
 def contour_like(tran,v,meth,*args,**kwargs):
     if isinstance(v,six.string_types):

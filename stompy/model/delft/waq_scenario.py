@@ -147,7 +147,7 @@ class MonTail(object):
         self.thr.join()
 
     def msg(self, s):
-        if self.log is None:
+        if self.log == None:
             print(s)
         else:
             # can be annoying to get info to print, but less alarming than constantly
@@ -3362,7 +3362,7 @@ class DwaqAggregator(Hydro):
                     raise Exception("Failed assumption that boundary exchange is always first")
                 elif local_from<0:
                     # it's a true boundary in the original grid
-                    assert direc is 'x' # really hope that it's horizontal
+                    assert direc=='x' # really hope that it's horizontal
 
                     # is it a ghost?  Check based on locality of the internal segment:
                     internal_is_local=(elem_dom_id[to_2d-1]==p)
@@ -3383,7 +3383,7 @@ class DwaqAggregator(Hydro):
                     continue
                 else:
                     # it's a real exchange, but might be a ghost.
-                    if direc is 'x': # horizontal - could be a ghost
+                    if direc=='x': # horizontal - could be a ghost
                         assert from_2d!=to_2d
                         # quick check - if both elements are local, then the
                         # link is local (true for the files I have)
@@ -3426,7 +3426,7 @@ class DwaqAggregator(Hydro):
                                 else:
                                     # We lost - ghost link, move on
                                     continue
-                    elif direc is 'z':
+                    elif direc=='z':
                         # it's vertical - check if the elt is a ghost
                         if elem_dom_id[from_2d-1]!=p:
                             #print "ghost vertical - skip"
@@ -4354,7 +4354,7 @@ class DwaqAggregator(Hydro):
 
         min_planform_area=1.0
 
-        if mode is 'constant':
+        if mode=='constant':
             #switching to the code below coincided with this setup breaking
             # This is the old code - just maps maximum area from the grid
             map2d3d=self.infer_2d_elements() # agg_seg_to_agg_elt_2d()
@@ -4373,7 +4373,7 @@ class DwaqAggregator(Hydro):
             else:
                 constant_areas=None
 
-            if mode is 'lazy':
+            if mode=='lazy':
                 def planform_area_func(t_sec):
                     A=np.zeros(self.n_seg,'f4')
                     areas=self.areas(t_sec)
@@ -4438,7 +4438,7 @@ class DwaqAggregator(Hydro):
             # seems that this is necessary.  ran okay with 0.01m
             data[ data<min_depth ] = min_depth
 
-        if mode is 'lazy':
+        if mode=='lazy':
             def depth_func(t_sec):
                 # a little unsure on the .data part
                 D=self.volumes(t_sec) / plan_areas.evaluate(t=t_sec).data
@@ -4446,7 +4446,7 @@ class DwaqAggregator(Hydro):
                 return D.astype('f4')
             return ParameterSpatioTemporal(times=self.t_secs,func_t=depth_func,hydro=self)
                 
-        if mode is 'explicit':
+        if mode=='explicit':
             D=np.zeros( (len(self.t_secs),self.n_seg) )
             for ti,t_sec in enumerate(self.t_secs):
                 areas=self.areas(t_sec)
@@ -8047,9 +8047,9 @@ END_MULTIGRID"""%num_layers
             output_settings=self.default_ugrid_output_settings
 
         if nef is None:
-            if mode is 'map':
+            if mode=='map':
                 nef=self.nef_map()
-            elif mode is 'history':
+            elif mode=='history':
                 nef=self.nef_history()
             close_nef=True
         else:
@@ -8070,11 +8070,11 @@ END_MULTIGRID"""%num_layers
         self.hydro.infer_2d_elements()
 
         try:
-            if mode is 'map':
+            if mode=='map':
                 seg_k = self.hydro.seg_k
                 seg_elt = self.hydro.seg_to_2d_element
                 n_locations=len(seg_elt)
-            elif mode is 'history':
+            elif mode=='history':
                 # do we go through the location names, trying to pull out elt_k? no - as needed,
                 # use self.monitor_areas.
 
@@ -8370,7 +8370,7 @@ END_MULTIGRID"""%num_layers
         # options
 
         if 1:
-            if mode is 'map':
+            if mode=='map':
                 etavar=nc.createVariable('eta',np.float32,['time','nFlowElem'],
                                          zlib=True)
                 etavar.standard_name='sea_surface_height_above_geoid'
@@ -8391,7 +8391,7 @@ END_MULTIGRID"""%num_layers
 
                     z_surf=z_bed + depth
                     etavar[ti,:]=z_surf
-            elif mode is 'history':
+            elif mode=='history':
                 # tread carefully in case there is nothing useful in the history file.
                 if 'totaldepth' in nc.variables and 'nSegment' in nc.dimensions:
                     etavar=nc.createVariable('eta',np.float32,['time',"nSegment"],
@@ -8412,7 +8412,7 @@ END_MULTIGRID"""%num_layers
 
         if 1: # extra mapping info for history files
             pad=-1*np.ones( n_locations-len(seg_elt),'i4')
-            if mode is 'history':
+            if mode=='history':
                 nc['element']['nSegment']=np.concatenate( (seg_elt,pad) )
                 nc['layer']['nSegment']=np.concatenate( (seg_k,pad) )
                 if flowgeom:
@@ -8422,7 +8422,7 @@ END_MULTIGRID"""%num_layers
                     nc['element_y']['nSegment']=np.concatenate( (ycc[seg_elt],np.nan*pad) )
 
         # extra work to make quickplot happy
-        if mode is 'map' and 'quickplot_compat' in output_settings:
+        if (mode=='map') and ('quickplot_compat' in output_settings):
             # add in some attributes and fields which might make quickplot happier
             # Add in node depths
             
@@ -10284,9 +10284,9 @@ END_MULTIGRID"""%num_layers
             output_settings=self.default_ugrid_output_settings
 
         if nef is None:
-            if mode is 'map':
+            if mode=='map':
                 nef=self.nef_map()
-            elif mode is 'history':
+            elif mode=='history':
                 nef=self.nef_history()
             close_nef=True
         else:
@@ -10307,11 +10307,11 @@ END_MULTIGRID"""%num_layers
         self.hydro.infer_2d_elements()
 
         try:
-            if mode is 'map':
+            if mode=='map':
                 seg_k = self.hydro.seg_k
                 seg_elt = self.hydro.seg_to_2d_element
                 n_locations=len(seg_elt)
-            elif mode is 'history':
+            elif mode=='history':
                 # do we go through the location names, trying to pull out elt_k? no - as needed,
                 # use self.monitor_areas.
 
@@ -10607,7 +10607,7 @@ END_MULTIGRID"""%num_layers
         # options
 
         if 1:
-            if mode is 'map':
+            if mode=='map':
                 etavar=nc.createVariable('eta',np.float32,['time','nFlowElem'],
                                          zlib=True)
                 etavar.standard_name='sea_surface_height_above_geoid'
@@ -10628,9 +10628,9 @@ END_MULTIGRID"""%num_layers
 
                     z_surf=z_bed + depth
                     etavar[ti,:]=z_surf
-            elif mode is 'history':
+            elif mode=='history':
                 # tread carefully in case there is nothing useful in the history file.
-                if 'totaldepth' in nc.variables and 'nSegment' in nc.dimensions:
+                if ('totaldepth' in nc.variables) and ('nSegment' in nc.dimensions):
                     etavar=nc.createVariable('eta',np.float32,['time',"nSegment"],
                                              zlib=True)
                     etavar.standard_name='sea_surface_height_above_geoid'
@@ -10649,7 +10649,7 @@ END_MULTIGRID"""%num_layers
 
         if 1: # extra mapping info for history files
             pad=-1*np.ones( n_locations-len(seg_elt),'i4')
-            if mode is 'history':
+            if mode=='history':
                 nc['element']['nSegment']=np.concatenate( (seg_elt,pad) )
                 nc['layer']['nSegment']=np.concatenate( (seg_k,pad) )
                 if flowgeom:
@@ -10659,7 +10659,7 @@ END_MULTIGRID"""%num_layers
                     nc['element_y']['nSegment']=np.concatenate( (ycc[seg_elt],np.nan*pad) )
 
         # extra work to make quickplot happy
-        if mode is 'map' and 'quickplot_compat' in output_settings:
+        if (mode=='map') and ('quickplot_compat' in output_settings):
             # add in some attributes and fields which might make quickplot happier
             # Add in node depths
             

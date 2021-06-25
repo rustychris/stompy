@@ -175,6 +175,10 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         """ more generic name for load_mdu """
         return self.load_mdu(fn) 
     def load_mdu(self,fn):
+        """
+        Reads an mdu into self.mdu.  Does not update mdu_basename,
+        such that self.write() will still use self.mdu_basename.
+        """
         self.mdu=dio.MDUFile(fn)
 
     @classmethod
@@ -188,6 +192,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             return None
         model=DFlowModel()
         model.load_mdu(fn)
+        model.mdu_basename=os.path.basename(fn)
         try:
             model.grid = ugrid.UnstructuredGrid.read_dfm(model.mdu.filepath( ('geometry','NetFile') ))
         except FileNotFoundError:
@@ -266,14 +271,16 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
 
         recs=self.parse_old_bc(ext_fn)
 
-            
         for rec in recs:
-            if 'FILENAME' in rec and '.pli' in rec['FILENAME']:
-                name=rec['FILENAME'].replace('.pli','')
-                rec['name']=name
+            if 'FILENAME' in rec:
                 # The ext file doesn't have a notion of name.
                 # punt via the filename
+                rec['name'],ext=os.path.splitext(rec['FILENAME'])
+            else:
+                rec['name']=rec['QUANTITY'].upper()
+                ext=None
                 
+            if ext=='.pli':
                 pli_fn=os.path.join(os.path.dirname(ext_fn),
                                     rec['FILENAME'])
                 pli=dio.read_pli(pli_fn)
@@ -296,15 +303,24 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                         tims.append(tim_ds)
                 data=xr.concat(tims,dim='node')
                 rec['data']=data
+            elif ext=='.xyz':
+                xyz_fn=os.path.join(os.path.dirname(ext_fn),
+                                    rec['FILENAME'])
+                df=pd.read_csv(xyz_fn,sep='\s+',names=['x','y','z'])
+                ds=xr.Dataset()
+                ds['x']=('sample',),df['x']
+                ds['y']=('sample',),df['y']
+                ds['z']=('sample',),df['z']
+                ds=ds.set_coords(['x','y'])
+                rec['data']=ds.z
             else:
-                name=pli=geom=pli_fn=None # avoid pollution
+                pli=geom=pli_fn=None # avoid pollution
                 
             if rec['QUANTITY'].upper()=='WATERLEVELBND':
-                bc=hm.StageBC(name=name,geom=rec['geom'])
+                bc=hm.StageBC(name=rec['name'],geom=rec['geom'])
                 rec['bc']=bc
-
             elif rec['QUANTITY'].upper()=='DISCHARGEBND':
-                bc=hm.FlowBC(name=name,geom=geom)
+                bc=hm.FlowBC(name=rec['name'],geom=geom)
                 rec['bc']=bc
 
                 if 'data' in rec:
@@ -312,6 +328,8 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                     rec['data']=rec['data'].isel(node=0).rename({'stage':'flow'})
                 else:
                     print("Reading discharge boundary, did not find data (%s)"%tim_fn)
+            elif rec['QUANTITY'].upper()=='FRICTIONCOEFFICIENT':
+                rec['bc']=hm.RoughnessBC(name=rec['name'],data_array=rec['data'])
             else:
                 print("Not implemented: reading BC quantity=%s"%rec['QUANTITY'])
         return recs
@@ -955,7 +973,11 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         """
         output_dir=self.mdu.output_dir()
         fns=glob.glob(os.path.join(output_dir,'*_his.nc'))
-        assert len(fns)==1
+        # Turns out [sometimes] DFM writes a history file from each processor at the
+        # very end. The rank 0 file has all time steps, others just have a single
+        # time step.
+        # assert len(fns)==1
+        fns.sort()
         return fns[0]
 
     def hyd_output(self):
@@ -980,21 +1002,28 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         last_rst.close()
         return rst_time
     
-    def create_restart(self):
+    def create_restart(self,**restart_args):
         new_model=self.__class__() # in case of subclassing, rather than DFlowModel()
-        new_model.set_restart_from(self)
+        new_model.set_restart_from(self,**restart_args)
         return new_model
 
-    def set_restart_from(self,model):
+    def set_restart_from(self,model,deep=True,mdu_suffix=""):
         """
         Pull the restart-related settings from model into the current instance.
         This is going to need tweaking. Previously it would re-use the original
-        run directory, since outputs would go into a new sub-directory.  but
+        run directory, since outputs would go into a new sub-directory. But
         that's not flexible enough for general use of restarts.
+        The default is a 'deep' restart, with a separate run dir.
+        If deep is false, then mdu_suffix must be nonempty, a new mdu will be
+        written alongside the existing one.
         """
+        if not deep:
+            assert mdu_suffix,"Shallow restart must provide suffix for new mdu file"
+        else:
+            self.run_dir=model.run_dir
+            
         self.mdu=model.mdu.copy()
-        name=model.mdu.name
-        self.mdu_basename=os.path.basename( model.mdu_basename )
+        self.mdu_basename=os.path.basename( model.mdu_basename.replace('.mdu',mdu_suffix+".mdu") )
         self.mdu.set_filename( os.path.join(self.run_dir, self.mdu_basename) )
         self.restart=True
         self.restart_model=model
@@ -1005,8 +1034,8 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         self.num_procs=model.num_procs
         self.grid=model.grid
         
-        # Too soon to test this?
-        assert self.run_dir != model.run_dir
+        if deep:
+            assert self.run_dir != model.run_dir
         
         rst_base=os.path.join(model.mdu.output_dir(),
                               (model.mdu.name
@@ -1165,3 +1194,46 @@ if sys.platform=='win32':
     cls=DFlowModel
     cls.dfm_bin_exe="dflowfm-cli.exe"
     cls.mpi_bin_exe="mpiexec.exe"
+
+if __name__=='__main__':
+    import argparse, sys
+
+    parser=argparse.ArgumentParser(description="Command line manipulation of DFM runs")
+
+    parser.add_argument('--restart', action="store_true", help='restart a run')
+    parser.add_argument('--mdu', metavar="file.mdu", default=None, 
+                        help='existing MDU file')
+    #parser.add_argument('--output', metavar="path", default=None, nargs=1, 
+    #                    help='new output directory')
+    args=parser.parse_args()
+
+    if args.restart:
+        mdu_fn=args.mdu
+        if mdu_fn is None:
+            mdus=glob.glob("*.mdu")
+            mdus.sort()
+            mdu_fn=mdus[0]
+        print("Will use mdu_fn '%s' for input"%mdu_fn)
+        # Super simple approach for the moment
+        model=DFlowModel.load(mdu_fn)
+        
+        # Update MDU
+        t_restart=model.restartable_time()
+        if t_restart is None:
+            print("Didn't find a restartable time")
+            sys.exit(1)
+        print("Restartable time is ",t_restart)
+        # Should make this configurable.
+        # For now, default to a 'shallow' restart, same run dir, same inputs,
+        # same run_stop, only changing the start time, and specifying restart file.
+        # Also need to add MPI support. 
+        restart=model.create_restart(deep=False,mdu_suffix="r")
+        restart.run_stop=model.run_stop
+        restart.update_config()
+
+        assert restart.mdu.filename != mdu_fn
+        restart.mdu.write()
+        print("Shallow restart: %s to %s, mdu=%s"%(restart.run_start,
+                                                   restart.run_stop,
+                                                   restart.mdu.filename))
+

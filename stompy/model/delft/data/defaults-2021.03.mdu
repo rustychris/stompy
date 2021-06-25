@@ -92,7 +92,8 @@ Jbasqbnddownwindhs                = 0                   # Water depth scheme at 
 cstbnd                            = 0                   # Delft-3D type velocity treatment near boundaries for small coastal models (1: yes, 0: no)
 Maxitverticalforestersal          = 0                   # Forester iterations for salinity (0: no vertical filter for salinity, > 0: max nr of iterations)
 Maxitverticalforestertem          = 0                   # Forester iterations for temperature (0: no vertical filter for temperature, > 0: max nr of iterations)
-# OBSOLETE Jaorgsethu             = 1                   # Velocity reconstruction scheme (0 : setumod, sethu, setau sequence, 1 : sethu, setau, setumod sequence (standard))
+# OBSOLETE
+# Jaorgsethu             = 1                   # Velocity reconstruction scheme (0 : setumod, sethu, setau sequence, 1 : sethu, setau, setumod sequence (standard))
 Turbulencemodel                   = 3                   # Turbulence model (0: none, 1: constant, 2: algebraic, 3: k-epsilon, 4: k-tau)
 Turbulenceadvection               = 3                   # Turbulence advection (0: none, 3: horizontally explicit and vertically implicit)
 AntiCreep                         = 0                   # Include anti-creep calculation (0: no, 1: yes)
@@ -127,8 +128,10 @@ SelfAttractionLoading             = 0                   # Self attraction and lo
 Doodsonstart                      = 55.565              # TRIWAQ: 55.565, D3D: 57.555
 Doodsonstop                       = 375.575             # TRIWAQ: 375.575, D3D: 275.555
 Doodsoneps                        = 3.d-2               # TRIWAQ = 0.0  400 cmps , D3D = 0.03   60 cmps
-# OBSOLETE Villemonte CD 1        = 1.                  # Calibration coefficient for Villemonte. Default = 1.0.  NB. For Bloemberg data set 0.8 is recommended.
-# OBSOLETE Villemonte CD 2        = 10.                 # Calibration coefficient for Villemonte. Default = 10.0. NB. For Bloemberg data set 0.8 is recommended.
+# OBSOLETE
+# Villemonte CD 1        = 1.                  # Calibration coefficient for Villemonte. Default = 1.0.  NB. For Bloemberg data set 0.8 is recommended.
+# OBSOLETE
+# Villemonte CD 2        = 10.                 # Calibration coefficient for Villemonte. Default = 10.0. NB. For Bloemberg data set 0.8 is recommended.
 Salinity                          = 0                   # Include salinity, (0=no, 1=yes)
 InitialSalinity                   = 0.                  # Uniform initial salinity concentration (ppt)
 Sal0abovezlev                     = -999.               # Vertical level (m) above which salinity is set 0
@@ -144,7 +147,8 @@ Dalton                            = -1.                 # Coefficient for evapor
 Tempmax                           = -999.               # Limit the temperature
 Tempmin                           = 0.                  # Limit the temperature
 SecondaryFlow                     = 0                   # Secondary flow (0: no, 1: yes)
-# OBSOLETE EffectSpiral           = 0.                  # Weight factor of the spiral flow intensity on transport angle
+# OBSOLETE
+# EffectSpiral           = 0.                  # Weight factor of the spiral flow intensity on transport angle
 BetaSpiral                        = 0.                  # Weight factor of the spiral flow intensity on flow dispersion stresses
 
 [sediment]
@@ -219,7 +223,8 @@ HisInterval                       = 120. 				# History output times, given as "i
 XLSInterval                       = 0.                  # Interval (s) between XLS history
 MapInterval                       = 1200. 				# Map file output, given as "interval" "start period" "end period" (s)
 RstInterval                       = 86400. 				# Restart file output times, given as "interval" "start period" "end period" (s)
-# OBSOLETE S1incinterval          = 0.                  # Interval (m) in incremental file for water levels S1
+# OBSOLETE
+# S1incinterval          = 0.                  # Interval (m) in incremental file for water levels S1
 WaqInterval                       = 0. 					# DELWAQ output times, given as "interval" "start period" "end period" (s)
 StatsInterval                     = -600.               # Interval (in s) between simulation statistics output.
 WriteBalancefile                  = 0                   # Write balance file (1: yes, 0: no)
