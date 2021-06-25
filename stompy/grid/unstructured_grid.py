@@ -6961,6 +6961,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             self.make_edges_from_cells_fast()
             # May need to flip this:
             cell_ids=np.arange((nx-1)*(ny-1)).reshape( [nx-1,ny-1] )
+            self.cells['_center'][:]=np.nan
+            self.cells['_area'][:]=np.nan
             
         return {'cells':cell_ids,
                 'nodes':node_ids}
