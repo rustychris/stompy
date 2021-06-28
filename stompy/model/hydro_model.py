@@ -547,6 +547,10 @@ class Lowpass(BCFilter):
                                                  len(da.values) ))
         return da
 
+class FillTidal(BCFilter):
+    def transform_output(self,da):
+        return utils.fill_tidal_data(da)
+
 class Lag(BCFilter):
     def __init__(self,lag):
         self.lag=lag
@@ -2411,12 +2415,6 @@ class NwisStageBC(NwisBC,StageBC):
             ds['water_level']=('time',), 0.3048*ds['height_gage']
             ds['water_level'].attrs['units']='m'
             ds['water_level'].attrs['standard_name']=self.standard_name
-        return ds
-
-class NwisTidalBC(NwisStageBC):
-    def fetch_for_period(self,period_start,period_stop):
-        ds = super(NwisStageBC, self).fetch_for_period(period_start, period_stop)
-        ds = utils.fill_tidal_data(ds)
         return ds
 
 class NwisScalarBC(NwisBC,ScalarBC):
