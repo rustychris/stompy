@@ -219,12 +219,16 @@ class MultiUgrid(object):
     # a nonzero tolerance
     merge_tol=0.0
     
-    def __init__(self,paths,cleanup_dfm=False,xr_kwargs={},
+    def __init__(self,paths,cleanup_dfm='auto',xr_kwargs={},
                  **grid_kwargs):
         """
         paths: 
             list of paths to netcdf files
             single glob pattern
+
+        cleanup_dfm: True: remove extra bits common in DFM output that either
+         lead to duplicate edges, or cannot be handled by multi_ugrid. If 'auto'
+         then check for 'Deltares' in Conventions.
 
         ** (grid_kwargs): keyword arguments passed to read_ugrid.
         xr_kwargs: dict of arguments passed to xr.open_dataset.
@@ -243,6 +247,9 @@ class MultiUgrid(object):
         meta=self.grids[0].nc_meta
         self.rev_meta={meta[k]:k for k in meta} # Reverse that
 
+        if cleanup_dfm=='auto':
+            cleanup_dfm='Deltares' in self.dss[0].attrs['Conventions']
+            
         if cleanup_dfm:
             for g in self.grids:
                 unstructured_grid.cleanup_dfm_multidomains(g)
