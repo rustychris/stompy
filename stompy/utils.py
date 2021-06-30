@@ -2004,7 +2004,11 @@ def isnat(x):
     doesn't yet exist in numpy - other ways give warnings
     and are likely to change.
     """
-    return x.astype('i8') == np.datetime64('NaT').astype('i8')
+    if np.__version__ >= '1.13':
+        return np.isnat(x)
+    else:
+        # This will fail on more recent numpy, and
+        return x.astype('i8') == np.datetime64('NaT').astype('i8')
 
 def isnant(x):
     """
