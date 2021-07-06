@@ -777,8 +777,14 @@ class HarmonicStageBC(StageBC):
 
     def __init__(self,**kw):
         """
-        water_level: scalar value or xr.DataArray specifying water level BC.
-        used to be 'z' but that should be reserved for vertical coordinates
+        Set stage based on harmonic constituents.  This is not a full astronomical tides
+        BC -- it does not account for equilibrium phase, nodal variations, etc.
+        
+        Usage: 
+        HarmonicStageBC(name,..., msl=0.25, M2=(2.0,0.1), S2=(0.5,0.5))
+        msl: set mean sea level
+        constituents are named by upper case standard abbreviations (see 
+        ../tide_consts.txt), and values are amplitude and phase
         """
         # Pull out any constituent names from keywords before super()
         from .. import tide_consts

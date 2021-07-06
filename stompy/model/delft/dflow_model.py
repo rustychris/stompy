@@ -702,6 +702,10 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             times=da.time.values
             values=da.values
 
+            # Be sure time is the first dimension
+            dim_order=['time'] + [d for d in da.dims if d!='time']
+            da=da.transpose(*dim_order)
+
             if trim_time:
                 sel=(times>=start)&(times<=stop)
                 if sum(sel) > 1:
@@ -767,8 +771,8 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             das.append(temp_da)
 
         # merge data arrays including time
-        # This probably won't do the right thing when
-        # there are time values...
+        # write_tim has been updated to transpose time to be the first dimension
+        # as needed, so this should be okay
         da_combined=xr.concat(das,dim='component')
 
         self.write_gen_bc(bc,quantity='source',da=da_combined)
@@ -795,6 +799,8 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         bc_id=bc.name # +"_" + quantity
 
         assert isinstance(bc.geom_type,list),"Didn't fully refactor, looks like"
+        if (bc.geom is None) and (None not in bc.geom_type):
+            raise Exception("BC %s, name=%s has no geometry. Maybe missing from shapefiles?"%(bc,bc.name))
         assert bc.geom.type in bc.geom_type
 
         coords=np.array(bc.geom.coords)
