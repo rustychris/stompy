@@ -1237,3 +1237,44 @@ if __name__=='__main__':
                                                    restart.run_stop,
                                                    restart.mdu.filename))
 
+
+def extract_transect_his(his_ds,pattern):
+    """
+    Helper method to create a single xr.Dataset compatible with xr_transect
+    out of a group of history output locations. 
+    his_ds: xr.Dataset for history output of a run.
+    pattern: regular expression for the station names. For example, if the
+    stations are tranA_0000, tranA_0001, ..., tranA_0099
+    then pattern='tranA_00..' or just 'tranA.*'
+    Station names are assumed to be sorted along the transect. Sorting is by
+    python default ordering, so tranA_01 and tranA_1 are not the same.
+    
+    TODO: include projected velocities
+    """
+    import re
+    # Gather station indexes for matching names
+    names={}
+    for i,name in enumerate(his_ds.station_name.values):
+        if name in names: continue # on the off chance that names are repeated.
+        if re.match(pattern,name.decode()):
+            names[name]=i
+
+    # sort names
+    roster=list(names.keys())
+    order=np.argsort(roster)
+    idxs=[ names[roster[i]] for i in order]
+
+    extra_dims=['cross_section','gategens','general_structures','nFlowLink',
+                'nNetLink','nFlowElemWithBnd','station_geom_nNodes']
+    ds=his_ds.drop_dims(extra_dims).isel(stations=idxs)
+
+    # Make it look like an xr_transect
+    dsxr=ds.rename(stations='sample',station_x_coordinate='x_sample',station_y_coordinate='y_sample',
+                   laydim='layer',laydimw='interface',zcoordinate_c='z_ctr',zcoordinate_w='z_int')
+    # add distance?
+    xy=np.c_[ dsxr.x_sample.values,
+              dsxr.y_sample.values ]
+    dsxr['d_sample']=('sample',),utils.dist_along(xy)
+
+    return dsxr
+
