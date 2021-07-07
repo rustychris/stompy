@@ -538,8 +538,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         self.update_initial_water_level()
 
         if self.dwaq:
-            # This updates
-            # a few things in self.mdu
+            # This updates a few things in self.mdu
             # Also actually writes some output, though that could be
             # folded into a later part of the process if it turns out
             # the dwaq config depends on reading some of the DFM
