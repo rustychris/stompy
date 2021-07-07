@@ -10965,6 +10965,8 @@ class WaqOnlineModel(WaqModelBase):
         # this should be handled by the caller.
         # self.model.set_run_dir(self.model.run_dir, mode='create')
 
+        self.fix_substance_order()
+
         self.log.info('Writing Delwaq model files...')
         with open(self.sub_path, 'wt') as f:
             for s in self.substances:
@@ -10983,6 +10985,41 @@ class WaqOnlineModel(WaqModelBase):
 
             self.write_processes(f)
 
+    def fix_substance_order(self):
+        # A bit tricky: we need to know the order of WAQ substances before source/sink
+        # BCs can be written, and that order is some unknown function of the order
+        # of substances in the substance file, initial conditions, and other BCs.
+        # So here we force the order of all these things to be the same
+        # Note that this gets sub names in lower case
+        subs=[sub for sub in self.substances]
+        
+        # Modify model.bcs to put these last
+        # This is annoying... No guarantee that there *are* BCs for all scalars. So
+        # if there is only a BC for one sub, then that sub may get placed first even
+        # if canon_order has it later.
+        waq_bcs=   [bc for bc in self.model.bcs if getattr(bc,'scalar','_dummy_').lower() in subs]
+        nonwaq_bcs=[bc for bc in self.model.bcs if getattr(bc,'scalar','_dummy_').lower() not in subs]
+        bc_subs=[bc.scalar.lower() for bc in waq_bcs]
+
+        subs.sort()  # Sort the substances alphabetically
+        # sub order is then bc subs first, alphabetically, then non-bc subs, then inactive subs,
+        # each in alphabetic order.  only active subs will have bcs, so no conflict there.
+        sub_ordered=[s for s in subs if s in bc_subs]
+        sub_ordered+=[s for s in subs if (s not in bc_subs) and self.substances[s].active]
+        sub_ordered+=[s for s in subs if (s not in bc_subs) and not self.substances[s].active]
+
+        for s in sub_ordered:
+            self.substances.move_to_end(s)
+        
+        # Now reorder the bcs to follow:
+        # Reorder the waq_bcs to follow alphabetic order
+        waq_bc_order=np.argsort([sub_ordered.index(bc.scalar.lower()) for bc in waq_bcs])
+        waq_bcs=[waq_bcs[i] for i in waq_bc_order]
+        
+        new_bcs=nonwaq_bcs + waq_bcs
+        assert len(new_bcs)==len(self.model.bcs),"Sanity lost"
+        self.model.bcs=new_bcs
+            
     def write_substance(self, f, substance):
         """Writes to opened .sub file f for a particular substance"""
         item=self.process_db.substance_by_id(substance.name)
@@ -11009,11 +11046,17 @@ class WaqOnlineModel(WaqModelBase):
             self.log.info("Ignoring only_active for online WAQ configuration")
             return
         item=self.process_db.substance_by_id(param.name)
-        
+
+        if item is None:
+            item_nm=param.name
+            unit="n/a"
+        else:
+            item_nm=item.item_nm
+            unit=item.unit
         # Need to query database to find the description and unit
         s = f"parameter '{param.name}'\n" \
-            f"  description '{item.item_nm}'\n" \
-            f"  unit '{item.unit}'\n" \
+            f"  description '{item_nm}'\n" \
+            f"  unit '{unit}'\n" \
             f"  value {param.value}\n" \
             f"end-parameter\n"
         f.writelines(s)
@@ -11027,8 +11070,12 @@ class WaqOnlineModel(WaqModelBase):
                 self.log.info("Ignoring process %s for online WAQ configuration (right?)"%proc_name)
                 continue
             proc=self.process_db.process_by_id(proc_name)
-            # proc_name from the database is really more of a descriptive phrase
-            s.append( f"\tname '{proc_name}'  '{proc.proc_name}'" )
+            if proc is None:
+                desc=proc_name
+            else:
+                # proc_name from the database is really a descriptive phrase
+                desc=proc.proc_name
+            s.append( f"\tname '{proc_name}'  '{desc}'" )
         s.append("end-active-processes")
         f.writelines("\n".join(s))
         return 0

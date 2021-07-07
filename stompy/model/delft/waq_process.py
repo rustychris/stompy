@@ -2,6 +2,8 @@ import numpy as np
 from . import nefis
 from contextlib import contextmanager
 import six
+import logging
+log=logging.getLogger('nefis')
 
 # utilities to grab some data from the process database.
 # since the process database is specific to an installation/version,
@@ -46,8 +48,12 @@ class ProcessDB(object):
         return self.find_item(table='TABLE_P4',column='PROC_ID',value=proc)
 
     def find_item(self,table,column,value):
-        with self.nef() as db:
-            items=db[table].getelt(column,[0])
+        try:
+            with self.nef() as db:
+                items=db[table].getelt(column,[0])
+        except nefis.NefisException as e:
+            log.info("Item lookup failed (%s)"%e)
+            return None
 
         for i,item in enumerate(items):
             # py3 - have to be careful of bytes vs. str

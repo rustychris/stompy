@@ -368,10 +368,18 @@ class Nefis(object):
 
         # from nefis, oc.c, line 276 - looks like combined data/definition
         # files are loaded by specifying the same filename for both.
-        self.with_err(nef_lib().Crenef(byref(self.fd), 
-                                       self.dat_fn.encode(), 
-                                       (self.def_fn or self.dat_fn).encode(),
-                                       byref(endian), access))
+        nlib=nef_lib()
+        if nlib is None:
+            # This happens when either the library itself could not be found, or
+            # on Linux it can happen when the library is found, but LD_LIBRARY_PATH
+            # was not set *before python started*, and the linker fails to load
+            # library dependencies.
+            raise NefisException(code=-999,msg="NEFIS library could not be loaded.")
+        else:
+            self.with_err(nef_lib().Crenef(byref(self.fd), 
+                                           self.dat_fn.encode(), 
+                                           (self.def_fn or self.dat_fn).encode(),
+                                           byref(endian), access))
     def close(self):
         self.with_err( nef_lib().Clsnef(byref(self.fd)) )
         self.fd=None
