@@ -699,12 +699,12 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             times=np.array([start-pad,stop+pad])
             values=np.array([da.values,da.values])
         else:
-            times=da.time.values
-            values=da.values
-
             # Be sure time is the first dimension
             dim_order=['time'] + [d for d in da.dims if d!='time']
             da=da.transpose(*dim_order)
+
+            times=da.time.values
+            values=da.values
 
             if trim_time:
                 sel=(times>=start)&(times<=stop)
@@ -773,7 +773,12 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         # merge data arrays including time
         # write_tim has been updated to transpose time to be the first dimension
         # as needed, so this should be okay
-        da_combined=xr.concat(das,dim='component')
+        # But we do need to broadcast before they can be concatenated.
+        das=xr.broadcast(*das)
+        # 'minimal' here avoids a crash if one of the dataarrays has an
+        # extra coordinate that isn't actually used (like a singleton coordinate
+        # from an isel() )
+        da_combined=xr.concat(das,dim='component',coords='minimal')
 
         self.write_gen_bc(bc,quantity='source',da=da_combined)
 
