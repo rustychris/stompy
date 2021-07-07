@@ -744,31 +744,59 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         # the same data file.
         # the pli file can have a single entry, and include a z coordinate,
         # based on lsb setup
+
+        # Source Sink BCs in DFM have to include all of the scalars in one go.
+        # Build a list of scalar names and default BCs, then scan for any specified
+        # scalar BCs to use instead of defaults
+        scalar_names=[] # forced to lower case
+        scalar_das=[]
+
+        # In the case of a single-ended source/sink, these
+        # should pull default value from the model config, instead of
+        # assuming 0.0
+        single_ended=bc.geom.geom_type=='Point'
+        
+        if int(self.mdu['physics','Salinity']):
+            scalar_names.append('salinity')
+            if single_ended:
+                default=self.mdu['physics','InitialSalinity']
+                if default is None: default=0.0
+                else: default=float(default)
+            else:
+                default=0.0
+            scalar_das.append(xr.DataArray(default,name='salinity'))
+        if int(self.mdu['physics','Temperature']):
+            scalar_names.append('temperature')
+            if single_ended:
+                default=self.mdu['physics','InitialTemperature']
+                if default is None: default=0.0
+                else: default=float(default)
+            else:
+                default=0.0
+            scalar_das.append(xr.DataArray(default,name='temp'))
+        if self.dwaq:
+            for sub in self.dwaq.substances:
+                scalar_names.append(sub.lower())
+                if single_ended:
+                    default=self.dwaq.substances[sub].initial.default
+                else:
+                    default=0.0
+                scalar_das.append(xr.DataArray(default,name=sub))
+
         salt_bc=None
         temp_bc=None
         for scalar_bc in self.bcs:
             if isinstance(scalar_bc, hm.ScalarBC) and scalar_bc.parent==bc:
-                if scalar_bc.scalar=='salinity':
-                    salt_bc=scalar_bc
-                elif scalar_bc.scalar=='temperature':
-                    temp_bc=scalar_bc
-                else:
-                    self.log.warning("Not sure how to process scalar %s on source/sink BC"%scalar_bc.scalar)
+                scalar=scalar_bc.scalar.lower()
+                try:
+                    idx=scalar_names.index( scalar )
+                except ValueError:
+                    raise Exception("Scalar %s not in known list %s"%(scalar,scalar_names))
+                scalar_das[idx]=scalar_bc.data()
 
-        # Source/sink bcs in DFM also include salinity and temperature.
-        das=[bc.data()]
-        if int(self.mdu['physics','Salinity']):
-            if salt_bc is None:
-                salt_da=xr.DataArray(0,name='salinity')
-            else:
-                salt_da=salt_bc.data()
-            das.append(salt_da)
-        if int(self.mdu['physics','Temperature']):
-            if temp_bc is None:
-                temp_da=xr.DataArray(0.0,name='temp')
-            else:
-                temp_da=temp_bc.data()
-            das.append(temp_da)
+        # Source/sink bcs in DFM include salinity and temperature, as well as any tracers
+        # from dwaq
+        das=[bc.data()] + scalar_das
 
         # merge data arrays including time
         # write_tim has been updated to transpose time to be the first dimension
