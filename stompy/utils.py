@@ -357,7 +357,7 @@ def fill_invalid(A,axis=0,ends='constant'):
     Atrans=A.transpose(new_order)
     i=np.arange(Atrans.shape[0])
 
-    if ends is 'constant':
+    if ends=='constant':
         kwargs={}
     else:
         kwargs=dict(left=np.nan,right=np.nan)
@@ -368,7 +368,7 @@ def fill_invalid(A,axis=0,ends='constant'):
         valid=np.isfinite(Aslice)
         if any(valid):
             Aslice[~valid]=np.interp(i[~valid],i[valid],Aslice[valid],**kwargs)
-        if ends is 'linear':
+        if ends=='linear':
             if np.isnan(Aslice[0]) or np.isnan(Aslice[-1]):
                 mb = np.polyfit( i[valid][ [0,-1] ],
                                  Aslice[valid][ [0,-1] ], 1)
