@@ -4718,37 +4718,64 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         self.renumber()
 
-    def mpl_triangulation(self,cell_mask=None,offset=[0,0]):
+    _mpl_tri=None # (tri,srcs) or None
+    def mpl_triangulation(self,cell_mask=None,offset=[0,0],return_sources=False,
+                          refresh=True):
         """
         Return a matplotlib triangulation for the cells of the grid.
         Only guarantees that the nodes retain their order
-        """
-        tris=[] # [ (n1,n2,n3), ...]
 
+        offset: remove the given coordinates (for centering around 0)
+        refresh: force recalculation of any cached state
+        """
+        cacheable=(cell_mask is None) and (offset[0]==0) and (offset[1]==0)
+        if ( cacheable
+             and (not refresh)
+             and (self._mpl_tri is not None)
+        ):
+            if return_sources:
+                return self._mpl_tri
+            else:
+                return self._mpl_tri[0]
+            
+        tris=[] # [ (n1,n2,n3), ...]
+        srcs=[] # [ c1, c2, c3, c3, c4, ...]
+        
         if cell_mask is None:
-            cell_mask=np.nonzero( ~self.cells['deleted'] )
+            cell_mask=np.nonzero( ~self.cells['deleted'] )[0]
 
         if self.max_sides>3:
-            for c in self.valid_cell_iter():
+            for c in np.nonzero(cell_mask)[0]:
                 nodes=np.array(self.cell_to_nodes(c))
 
                 # this only works for convex cells
                 for i in range(1,len(nodes)-1):
                     tris.append( nodes[ [0,i,i+1] ] )
+                    srcs.append(c)
 
             tris=np.array(tris)
         else:
             tris=self.cells['nodes'][cell_mask]
+            srcs=np.nonzero(cell_mask)[0]
 
         x = self.nodes['x'][:,0]
         y = self.nodes['x'][:,1]
         
         if offset is not None:
             x=x-offset[0]
-            y=y-offset[0]
+            y=y-offset[1]
             
         tri=Triangulation(x, y, triangles=tris)
-        return tri
+
+        srcs=np.array(srcs)
+
+        if cacheable:
+            self._mpl_tri=(tri,srcs)
+            
+        if return_sources:
+            return tri,srcs
+        else:
+            return tri
 
     def contourf_node_values(self,values,*args,**kwargs):
         """
@@ -5538,6 +5565,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
            inside the cells
         'kdtree': build a kdtree of the points, query by circumcenter and
            circumradius of each cell, and refine via cell_path.
+        'mpl': build a matplotlib triangulation (which is cached on self)
+           and matplotlib's TriFinder. This is potentially very fast and
+           accurate, assuming matplotlib is available, but has also been
+           unstable in some cases, causing python to crash.
 
         For small inputs, 'cells_nearest' may be fastest, especially if
         a cell index is already built.
@@ -5613,6 +5644,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 hits=[cand for cand in candidates 
                       if p.contains_point(points[cand])]
                 cells[hits]=c
+        elif method=='mpl':
+            tri,tsrcs=self.mpl_triangulation(return_sources=True)
+            tf=tri.get_trifinder()
+            tcells=tf(points[:,0],points[:,1])
+            valid=tcells>=0
+            cells[valid]=tsrcs[tcells[valid]]
         else:
             raise Exception("bad method %s"%method)
             
