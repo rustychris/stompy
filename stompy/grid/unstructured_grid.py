@@ -688,6 +688,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     @staticmethod
     def read_ugrid(*a,**kw):
         return UnstructuredGrid.from_ugrid(*a,**kw)
+
+    @staticmethod
+    def read_untrim(*a,**kw):
+        return UnTRIM08Grid(*a,**kw)
     
     @staticmethod
     def from_ugrid(nc,mesh_name=None,skip_edges=False,fields='auto',
@@ -4929,6 +4933,18 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             (ymax > xxyy[2]) & (ymin<xxyy[3])
 
     def cell_clip_mask(self,xxyy,by_center=True):
+        """
+        Calculate boolean mask of cells falling within the bounds xxyy.
+        xxyy: [xmin,xmax,ymin,ymax]
+        by_center: by default cell centers (circumcenters) are tested against
+         the bounds. If False, test the cell envelope against xxyy. For a precise 
+         test of the exact cell geometry, use select_cells_intersecting.
+
+        Note that there is some precalculation below which can be slow and is
+        not currently cached. As such, if many repeated calls are expected it may
+        be *much* faster to deconstruct this method (or update the code here to
+        cache xmin,xmax,ymin,ymax).
+        """
         if by_center:
             centers=self.cells_center()
             return  (centers[:,0] > xxyy[0]) & (centers[:,0]<xxyy[1]) & \
