@@ -344,8 +344,28 @@ class MultiUgrid(object):
         return self._cell_g2l
     
     def __getitem__(self,k):
-        # return a proxy object - can't do the translation until .values is called.
-        if k in list(self.dss[0].variables.keys()):
+        """
+        Returns a proxy object (MultiVar) - delaying the partition translation until .values is called.
+        note that k may be either a single var name in which case the result
+        would be a DataArray, or a sequence of var names in which case the result
+        would be a Dataset. Test for validity pro-actively to avoid delayed error.
+
+        Currently this proxies all variables. There is some subtlety to what happens for 
+        non-partitioned variables. As it stands, they are proxied, and an eventual call
+        to .values will actually read the values from all subdomains and overwrite the
+        target data repeatedly. Effectively then a non-partitioned variable gets the values 
+        of the last subdomain. This could be slightly more performant by only reading
+        the first subdomain, or more conservative by checking for equivalence across
+        subdomains.
+        """
+        valid=False
+        varnames=list(self.dss[0].variables.keys())
+        if k in varnames:
+            valid=True
+        elif isinstance(k,list):
+            valid=np.all( [kk in varnames for kk in k] )
+            
+        if valid:
             return MultiVar(self,
                             [ds[k] for ds in self.dss])
         else:
@@ -377,11 +397,73 @@ class MultiUgrid(object):
     @property
     def data_vars(self):
         return self.dss[0].data_vars
-    
+
     def isel(self,**kwargs):
-        subset=copy.copy(self)
-        subset.dss=[ds.isel(**kwargs) for ds in self.dss]
-        return subset
+        """
+        Partial handling of subselection at the MultiUgrid level. Subsetting non-partitioned
+        dimensions is batched to each of the underlying Datasets. Subsetting on a single
+        partitioned dimension is handled by materializing the selection on each
+        data variable. This currently forces the creation of a vanilla Dataset, and
+        all partitioned variables that are not selected will be dropped.
+        """
+        
+        part_kwargs={}
+        nonpart_kwargs={}
+
+        for key in kwargs:
+            val=kwargs[key]
+            if key not in self.rev_meta:
+                nonpart_kwargs[key]=val
+            else:
+                part_kwargs[key]=val
+
+        # Apply the nonpartitioned selections:                                                                                                                   
+        sub=copy.copy(self)
+        sub.dss=[ds.isel(**nonpart_kwargs) for ds in self.dss]
+
+        if len(part_kwargs)==0:
+            return sub
+
+        # Not able to support a mix of aggregated dimensions and
+        # non-aggregated dimensions.
+        # So at this point if you isel on a partitioned dimension, the
+        # result is a simple Dataset, and any variables related to a partitioned
+        # dimension that wasn't isel'd is dropped.
+        result=xr.Dataset()
+
+        for dv in sub.data_vars:
+            # if this variable has no partitioned dimensions, grab a
+            # copy from the first subdomain.
+            part_dims=[d for d in sub[dv].dims if d in self.rev_meta]
+            if len(part_dims)==0:
+                result[dv]=sub.dss[0][dv]
+            else:
+                # if the variable has partitioned dimensions that are not part of
+                # the isel call, drop it.  We're not ready to have a mix of partitioned
+                # and unpartitioned values.
+                # The more complete way to do this is to:
+                #   1. check if any partitioned dimensions are not selected.
+                #   2. if all partitioned dimensions are selected, then the code below is
+                #      fine, and we get a vanilla Dataset
+                #   3. if partitioned dimensions remain, the newly non-partitioned dimension
+                #      are dropped from self.rev_meta, and the newly non-partitioned variables
+                #      assigned to the first sub-dataset.
+                #      For this to work, then MultiVar.values needs to only pull from the
+                #      first dataset when no dimensions are partitioned.
+                
+                free_part_dims=[d for d in part_dims if d not in part_kwargs]
+                if free_part_dims:
+                    log.info("Dropping %s because it has unselected partitioned dimensions"%dv)
+                    continue
+                # narrow the partitioned dimensions to those that actually
+                # exist for this variable.
+                v_part_kwargs={d:part_kwargs[d] for d in part_kwargs if d in sub[dv].dims}
+                result_var=sub[dv].isel(**v_part_kwargs)
+                # piece together new dimensions.
+                result[dv]=result_var.dims,result_var.values
+
+        return result
+
     def sel(self,**kwargs):
         subset=copy.copy(self)
         subset.dss=[ds.sel(**kwargs) for ds in self.dss]

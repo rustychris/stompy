@@ -2412,3 +2412,13 @@ def deriv(c,x):
     right=(i+1).clip(0,N-1)
     return (c[right]-c[left])/(x[right]-x[left])
 
+
+def partition(items, predicate=bool):
+    """
+    Iterate over a list and partition it into two lists based on the predicate
+    """
+    # Credit to Peter Otten, as posted here:
+    # https://nedbatchelder.com/blog/201306/filter_a_list_into_two_parts.html
+    a, b = itertools.tee((predicate(item), item) for item in items)
+    return ((item for pred, item in a if not pred),
+            (item for pred, item in b if pred))

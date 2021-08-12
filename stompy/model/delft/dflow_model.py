@@ -538,8 +538,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         self.update_initial_water_level()
 
         if self.dwaq:
-            # This updates
-            # a few things in self.mdu
+            # This updates a few things in self.mdu
             # Also actually writes some output, though that could be
             # folded into a later part of the process if it turns out
             # the dwaq config depends on reading some of the DFM
@@ -699,6 +698,10 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             times=np.array([start-pad,stop+pad])
             values=np.array([da.values,da.values])
         else:
+            # Be sure time is the first dimension
+            dim_order=['time'] + [d for d in da.dims if d!='time']
+            da=da.transpose(*dim_order)
+
             times=da.time.values
             values=da.values
 
@@ -740,36 +743,69 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         # the same data file.
         # the pli file can have a single entry, and include a z coordinate,
         # based on lsb setup
+
+        # Source Sink BCs in DFM have to include all of the scalars in one go.
+        # Build a list of scalar names and default BCs, then scan for any specified
+        # scalar BCs to use instead of defaults
+        scalar_names=[] # forced to lower case
+        scalar_das=[]
+
+        # In the case of a single-ended source/sink, these
+        # should pull default value from the model config, instead of
+        # assuming 0.0
+        single_ended=bc.geom.geom_type=='Point'
+        
+        if int(self.mdu['physics','Salinity']):
+            scalar_names.append('salinity')
+            if single_ended:
+                default=self.mdu['physics','InitialSalinity']
+                if default is None: default=0.0
+                else: default=float(default)
+            else:
+                default=0.0
+            scalar_das.append(xr.DataArray(default,name='salinity'))
+        if int(self.mdu['physics','Temperature']):
+            scalar_names.append('temperature')
+            if single_ended:
+                default=self.mdu['physics','InitialTemperature']
+                if default is None: default=0.0
+                else: default=float(default)
+            else:
+                default=0.0
+            scalar_das.append(xr.DataArray(default,name='temp'))
+        if self.dwaq:
+            for sub in self.dwaq.substances:
+                scalar_names.append(sub.lower())
+                if single_ended:
+                    default=self.dwaq.substances[sub].initial.default
+                else:
+                    default=0.0
+                scalar_das.append(xr.DataArray(default,name=sub))
+
         salt_bc=None
         temp_bc=None
         for scalar_bc in self.bcs:
             if isinstance(scalar_bc, hm.ScalarBC) and scalar_bc.parent==bc:
-                if scalar_bc.scalar=='salinity':
-                    salt_bc=scalar_bc
-                elif scalar_bc.scalar=='temperature':
-                    temp_bc=scalar_bc
-                else:
-                    self.log.warning("Not sure how to process scalar %s on source/sink BC"%scalar_bc.scalar)
+                scalar=scalar_bc.scalar.lower()
+                try:
+                    idx=scalar_names.index( scalar )
+                except ValueError:
+                    raise Exception("Scalar %s not in known list %s"%(scalar,scalar_names))
+                scalar_das[idx]=scalar_bc.data()
 
-        # Source/sink bcs in DFM also include salinity and temperature.
-        das=[bc.data()]
-        if int(self.mdu['physics','Salinity']):
-            if salt_bc is None:
-                salt_da=xr.DataArray(0,name='salinity')
-            else:
-                salt_da=salt_bc.data()
-            das.append(salt_da)
-        if int(self.mdu['physics','Temperature']):
-            if temp_bc is None:
-                temp_da=xr.DataArray(0.0,name='temp')
-            else:
-                temp_da=temp_bc.data()
-            das.append(temp_da)
+        # Source/sink bcs in DFM include salinity and temperature, as well as any tracers
+        # from dwaq
+        das=[bc.data()] + scalar_das
 
         # merge data arrays including time
-        # This probably won't do the right thing when
-        # there are time values...
-        da_combined=xr.concat(das,dim='component')
+        # write_tim has been updated to transpose time to be the first dimension
+        # as needed, so this should be okay
+        # But we do need to broadcast before they can be concatenated.
+        das=xr.broadcast(*das)
+        # 'minimal' here avoids a crash if one of the dataarrays has an
+        # extra coordinate that isn't actually used (like a singleton coordinate
+        # from an isel() )
+        da_combined=xr.concat(das,dim='component',coords='minimal')
 
         self.write_gen_bc(bc,quantity='source',da=da_combined)
 
@@ -795,6 +831,8 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         bc_id=bc.name # +"_" + quantity
 
         assert isinstance(bc.geom_type,list),"Didn't fully refactor, looks like"
+        if (bc.geom is None) and (None not in bc.geom_type):
+            raise Exception("BC %s, name=%s has no geometry. Maybe missing from shapefiles?"%(bc,bc.name))
         assert bc.geom.type in bc.geom_type
 
         coords=np.array(bc.geom.coords)
@@ -1236,4 +1274,45 @@ if __name__=='__main__':
         print("Shallow restart: %s to %s, mdu=%s"%(restart.run_start,
                                                    restart.run_stop,
                                                    restart.mdu.filename))
+
+
+def extract_transect_his(his_ds,pattern):
+    """
+    Helper method to create a single xr.Dataset compatible with xr_transect
+    out of a group of history output locations. 
+    his_ds: xr.Dataset for history output of a run.
+    pattern: regular expression for the station names. For example, if the
+    stations are tranA_0000, tranA_0001, ..., tranA_0099
+    then pattern='tranA_00..' or just 'tranA.*'
+    Station names are assumed to be sorted along the transect. Sorting is by
+    python default ordering, so tranA_01 and tranA_1 are not the same.
+    
+    TODO: include projected velocities
+    """
+    import re
+    # Gather station indexes for matching names
+    names={}
+    for i,name in enumerate(his_ds.station_name.values):
+        if name in names: continue # on the off chance that names are repeated.
+        if re.match(pattern,name.decode()):
+            names[name]=i
+
+    # sort names
+    roster=list(names.keys())
+    order=np.argsort(roster)
+    idxs=[ names[roster[i]] for i in order]
+
+    extra_dims=['cross_section','gategens','general_structures','nFlowLink',
+                'nNetLink','nFlowElemWithBnd','station_geom_nNodes']
+    ds=his_ds.drop_dims(extra_dims).isel(stations=idxs)
+
+    # Make it look like an xr_transect
+    dsxr=ds.rename(stations='sample',station_x_coordinate='x_sample',station_y_coordinate='y_sample',
+                   laydim='layer',laydimw='interface',zcoordinate_c='z_ctr',zcoordinate_w='z_int')
+    # add distance?
+    xy=np.c_[ dsxr.x_sample.values,
+              dsxr.y_sample.values ]
+    dsxr['d_sample']=('sample',),utils.dist_along(xy)
+
+    return dsxr
 

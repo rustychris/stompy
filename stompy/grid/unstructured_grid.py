@@ -4238,7 +4238,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         return coll
 
     def plot_edges(self,ax=None,mask=None,values=None,clip=None,labeler=None,
-                   label_jitter=0.0,lw=0.8,**kwargs):
+                   label_jitter=0.0,lw=0.8,return_mask=False,**kwargs):
         """
         plot edges as a LineCollection.
         optionally select a subset of edges with boolean array mask.
@@ -4251,6 +4251,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
           to label by str(field_value)
         lw: defaults to a thin line, usually more useful with grids, instead of 
           modern matplotlib default which is thick for data plots.
+        return_mask: return the line collection and the mask array
+
+        Returns: LineCollection, and if return_mask is True then also the mask
         """
         ax = ax or plt.gca()
 
@@ -4299,7 +4302,11 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 segs[...,1].min(),
                 segs[...,1].max()]
         request_square(ax,bounds)
-        return lcoll
+
+        if return_mask:
+            return lcoll,mask
+        else:
+            return lcoll
 
     def plot_halfedges(self,ax=None,mask=None,values=None,clip=None,
                        labeler=None,
