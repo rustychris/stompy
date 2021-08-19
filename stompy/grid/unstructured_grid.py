@@ -7607,8 +7607,8 @@ class UnTRIM08Grid(UnstructuredGrid):
         to the grid file, but nothing has been read
         """
         self.grd_fn = grd_fn
-        self.fp = open(self.grd_fn,'rt')
-        hdr = self.fp.readline().strip() #header &GRD_2008 or &LISTGRD
+        fp = open(self.grd_fn,'rt')
+        hdr = fp.readline().strip() #header &GRD_2008 or &LISTGRD
 
         if hdr == self.hdr_08:
             print( "Will read 2008 format for grid" )
@@ -7620,7 +7620,7 @@ class UnTRIM08Grid(UnstructuredGrid):
             raise Exception("hdr '%s' not recognized"%hdr)
 
         for i in range(n_parms):  # ignore TNE and TNS in new format files
-            l = self.fp.readline()
+            l = fp.readline()
             lhs,rhs = l.split('=')
             val = rhs.strip().strip(',')
             varname = lhs.strip()
@@ -7653,7 +7653,7 @@ class UnTRIM08Grid(UnstructuredGrid):
             # others: HLAND for older fmt.
 
         while 1:
-            s = self.fp.readline().strip() # header:  /
+            s = fp.readline().strip() # header:  /
             if s == '/':
                 break
 
@@ -7665,7 +7665,7 @@ class UnTRIM08Grid(UnstructuredGrid):
         self.from_simple_data(points = Nvertices,edges = Nsides, cells = Npolys)
 
         for v in range(Nvertices):
-            Cv = self.fp.readline().split()
+            Cv = fp.readline().split()
             if hdr == self.hdr_08:
                 vertex_num = int(Cv.pop(0))
                 if vertex_num != v+1:
@@ -7678,7 +7678,7 @@ class UnTRIM08Grid(UnstructuredGrid):
         self.cells['nodes'] = self.UNKNOWN
 
         for c in range(Npolys):
-            l = self.fp.readline()
+            l = fp.readline()
             Cp = l.split()
             if hdr == self.hdr_08:
                 poly_num = int(Cp.pop(0))
@@ -7725,7 +7725,7 @@ class UnTRIM08Grid(UnstructuredGrid):
         self.cells['depth_mean'] = -1000 # not sure this is doing anything...
 
         for e in range(Nsides):
-            Cs = self.fp.readline().split()
+            Cs = fp.readline().split()
             if hdr == self.hdr_08:
                 # side num = int(Cs.pop(0))
                 Cs.pop(0)
@@ -7767,7 +7767,7 @@ class UnTRIM08Grid(UnstructuredGrid):
             # ready for some values to be read
             def tokenizer():
                 while True:
-                    for item in self.fp.readline().split():
+                    for item in fp.readline().split():
                         yield item
             token_gen=tokenizer()
             # py2/py3 compatibility

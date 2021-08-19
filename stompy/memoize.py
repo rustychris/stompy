@@ -100,7 +100,7 @@ def memoize(lru=None,cache_dir=None,key_method='pickle'):
                 cache_fn=os.path.join(cache_dir,key)
             else:
                 cache_fn=None
-
+            # TODO: If pickling fails on read or write, regroup
             if memoize.disabled or recalc or (key not in cache):
                 if cache_fn and not (memoize.disabled or recalc):
                     if os.path.exists(cache_fn):
