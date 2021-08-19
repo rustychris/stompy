@@ -600,7 +600,9 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                 for k in s:
                     if k in ['type','name','geom']: continue
                     if isinstance(s[k],xr.DataArray):
-                        log.warning(f"{k} appears to be data")
+                        # Note that only a few of the parameters can be time series
+                        # iirc, crest level, gate opening, gate height
+                        log.debug(f"{k} appears to be data")
                         tim_base=f"{s['name']}_{k}.tim"
                         tim_fn=os.path.join(self.run_dir,tim_base)
                         self.write_tim(s[k],tim_fn)

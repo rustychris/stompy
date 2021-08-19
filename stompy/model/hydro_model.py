@@ -20,6 +20,7 @@ from stompy import utils, filters, memoize
 from stompy.spatial import wkb2shp, proj_utils
 #from stompy.model.delft import dfm_grid
 import stompy.grid.unstructured_grid as ugrid
+import re
 
 #from . import io as dio
 
@@ -1415,6 +1416,8 @@ class HydroModel(object):
         list of numpy records, not a numpy array, since shapefiles may not
         have the same fields).
         return empty list if not hits
+
+        see match_feature() for details on criteria
         """
         hits=[]
         for gaz in self.gazetteers:
@@ -1431,6 +1434,10 @@ class HydroModel(object):
           'geom_type' is the geom_type attribute of the geometry itself,
           e.g. 'LineString' or 'Point'. feat can specify a list of geom_type
         values
+
+        pattern matching will be used when a criterion has a re.Pattern
+        value, i.e. kws={'name':re.compile('south.*')} would match features
+        that start with 'south'.
         """
         for k in kws:
             if k=='geom_type':
@@ -1450,7 +1457,11 @@ class HydroModel(object):
                     return False
                 except ValueError: # depending on type of feat can get either
                     return False
-                if feat_val==kws[k]:
+                if isinstance(kws[k],re.Pattern):
+                    tst=kws[k].match(feat_val)
+                else:
+                    tst=feat_val==kws[k]
+                if tst:
                     continue
                 else:
                     return False

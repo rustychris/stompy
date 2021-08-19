@@ -5098,7 +5098,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     #  easier to compose selections with bitmasks, so there it is.
     #  when implementing these, note that all selections should avoid 'deleted' elements.
     #   unless the selection criteria explicitly includes them.
-    def select_edges_by_polyline(self,geom,rrtol=3.0,update_e2c=True):
+    def select_edges_by_polyline(self,geom,rrtol=3.0,update_e2c=True,
+                                 boundary=True):
         """
         same as dfm_grid.polyline_to_boundary_edges:
 
@@ -5112,7 +5113,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         update_e2c: if True, will call edge_to_cells() first.  This is safest, but
         can be slow.  If the caller can guarantee that edges['cells'] is up to date,
-        set this to False to avoid the overhead.
+        set this to False to avoid the overhead. When boundary=False, e2c isn't used 
+        and this parameter
+
+        boundary: if True follow the DFM intention, limiting the search to boundary
+        edges. if False, then this extracts paths within the grid, based on the shortest
+        path between points on the linestring
 
         returns ndarray of edge indices.
         """
@@ -5121,36 +5127,44 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         else:
             linestring=np.asanyarray(geom)
 
-        if update_e2c:
-            self.edge_to_cells()
+
+        if boundary:
+            if update_e2c:
+                self.edge_to_cells()
             
-        boundary_edges=np.nonzero( np.any(self.edges['cells']<0,axis=1) )[0]
-        adj_cells=self.edges['cells'][boundary_edges].max(axis=1)
+            boundary_edges=np.nonzero( np.any(self.edges['cells']<0,axis=1) )[0]
+            adj_cells=self.edges['cells'][boundary_edges].max(axis=1)
 
-        adj_centers=self.cells_center()[adj_cells]
-        edge_centers=self.edges_center()[boundary_edges]
-        cell_to_edge=edge_centers-adj_centers
-        cell_to_edge_dist=mag(cell_to_edge)
-        outward=-self.edges_normals(edges=boundary_edges,force_inward=True,update_e2c=update_e2c)
+            adj_centers=self.cells_center()[adj_cells]
+            edge_centers=self.edges_center()[boundary_edges]
+            cell_to_edge=edge_centers-adj_centers
+            cell_to_edge_dist=mag(cell_to_edge)
+            outward=-self.edges_normals(edges=boundary_edges,force_inward=True,update_e2c=update_e2c)
 
-        dis=np.maximum( 0.5*np.sqrt(self.cells_area()[adj_cells]),
-                        cell_to_edge_dist )
-        probes=edge_centers+(2*rrtol*dis)[:,None]*outward
-        segs=np.array([adj_centers,probes]).transpose(1,0,2)
-        if 0: # plotting for verification
-            lcoll=collections.LineCollection(segs)
-            ax.add_collection(lcoll)
+            dis=np.maximum( 0.5*np.sqrt(self.cells_area()[adj_cells]),
+                            cell_to_edge_dist )
+            probes=edge_centers+(2*rrtol*dis)[:,None]*outward
+            segs=np.array([adj_centers,probes]).transpose(1,0,2)
+            linestring_geom=geometry.LineString(linestring)
 
-        linestring_geom=geometry.LineString(linestring)
+            probe_geoms=[geometry.LineString(seg) for seg in segs]
 
-        probe_geoms=[geometry.LineString(seg) for seg in segs]
+            hits=[idx
+                  for idx,probe_geom in enumerate(probe_geoms)
+                  if linestring_geom.intersects(probe_geom)]
+            edge_hits=boundary_edges[hits]
+        else:
+            # Map linestring vertices to nodes
+            ls_nodes=[self.select_nodes_nearest(p) for p in linestring]
+            print(ls_nodes)
+            all_nodes=[]
+            edge_hits=[]
+            for a,b in zip(ls_nodes[:-1],ls_nodes[1:]):
+                if a==b: continue
+                edge_hits.extend( self.shortest_path(a,b,return_type='edges') )
 
-        hits=[idx
-              for idx,probe_geom in enumerate(probe_geoms)
-              if linestring_geom.intersects(probe_geom)]
-        edge_hits=boundary_edges[hits]
         return edge_hits
-
+    
     def select_edges_intersecting(self,geom,invert=False,mask=slice(None),
                                   by_center=False,as_type='mask'):
         """
@@ -7607,8 +7621,8 @@ class UnTRIM08Grid(UnstructuredGrid):
         to the grid file, but nothing has been read
         """
         self.grd_fn = grd_fn
-        self.fp = open(self.grd_fn,'rt')
-        hdr = self.fp.readline().strip() #header &GRD_2008 or &LISTGRD
+        fp = open(self.grd_fn,'rt')
+        hdr = fp.readline().strip() #header &GRD_2008 or &LISTGRD
 
         if hdr == self.hdr_08:
             print( "Will read 2008 format for grid" )
@@ -7620,7 +7634,7 @@ class UnTRIM08Grid(UnstructuredGrid):
             raise Exception("hdr '%s' not recognized"%hdr)
 
         for i in range(n_parms):  # ignore TNE and TNS in new format files
-            l = self.fp.readline()
+            l = fp.readline()
             lhs,rhs = l.split('=')
             val = rhs.strip().strip(',')
             varname = lhs.strip()
@@ -7653,7 +7667,7 @@ class UnTRIM08Grid(UnstructuredGrid):
             # others: HLAND for older fmt.
 
         while 1:
-            s = self.fp.readline().strip() # header:  /
+            s = fp.readline().strip() # header:  /
             if s == '/':
                 break
 
@@ -7665,7 +7679,7 @@ class UnTRIM08Grid(UnstructuredGrid):
         self.from_simple_data(points = Nvertices,edges = Nsides, cells = Npolys)
 
         for v in range(Nvertices):
-            Cv = self.fp.readline().split()
+            Cv = fp.readline().split()
             if hdr == self.hdr_08:
                 vertex_num = int(Cv.pop(0))
                 if vertex_num != v+1:
@@ -7678,7 +7692,7 @@ class UnTRIM08Grid(UnstructuredGrid):
         self.cells['nodes'] = self.UNKNOWN
 
         for c in range(Npolys):
-            l = self.fp.readline()
+            l = fp.readline()
             Cp = l.split()
             if hdr == self.hdr_08:
                 poly_num = int(Cp.pop(0))
@@ -7725,7 +7739,7 @@ class UnTRIM08Grid(UnstructuredGrid):
         self.cells['depth_mean'] = -1000 # not sure this is doing anything...
 
         for e in range(Nsides):
-            Cs = self.fp.readline().split()
+            Cs = fp.readline().split()
             if hdr == self.hdr_08:
                 # side num = int(Cs.pop(0))
                 Cs.pop(0)
@@ -7767,7 +7781,7 @@ class UnTRIM08Grid(UnstructuredGrid):
             # ready for some values to be read
             def tokenizer():
                 while True:
-                    for item in self.fp.readline().split():
+                    for item in fp.readline().split():
                         yield item
             token_gen=tokenizer()
             # py2/py3 compatibility

@@ -304,7 +304,7 @@ def fix_date_labels(ax,nticks=3):
     
 def calibration_figure_3panel(all_sources,combined=None,
                               metric_x=1,metric_ref=0,
-                              offset_source=0,scatter_x_source=0,
+                              offset_source=None,scatter_x_source=0,
                               num=None,trim_time=False,
                               lowpass=True,
                               styles=None,
@@ -315,6 +315,8 @@ def calibration_figure_3panel(all_sources,combined=None,
       do this.
     metric_x: index of the 'model' data in combined.
     metric_ref: index of the 'observed' data in combined.
+    offset_source: if not None, specify the index of the source to which other
+      sources will be shifted to
     scatter_x_ref: which item in combined to use for the x axis of the scatter.
 
     lowpass: if True, the lower left panel is a lowpass of the data, otherwise
@@ -325,6 +327,7 @@ def calibration_figure_3panel(all_sources,combined=None,
 
     trim_time: truncate all sources to the shortest common time period
 
+    
     offset_method: 'mean' calculates offsets between stations by mean.  'median'
      by median, which can be better when a source has noise or model crashes and
      corrupts values at the end.
