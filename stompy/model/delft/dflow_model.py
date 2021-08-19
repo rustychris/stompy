@@ -1304,6 +1304,7 @@ def extract_transect_his(his_ds,pattern):
 
     extra_dims=['cross_section','gategens','general_structures','nFlowLink',
                 'nNetLink','nFlowElemWithBnd','station_geom_nNodes']
+    extra_dims=[d for d in extra_dims if d in his_ds.dims]
     ds=his_ds.drop_dims(extra_dims).isel(stations=idxs)
 
     # Make it look like an xr_transect
