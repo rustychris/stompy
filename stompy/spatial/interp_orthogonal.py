@@ -53,6 +53,7 @@ def simple_quad_gen_to_grid(sqg,aniso=None):
             j_long=grid.edges['orient']==90
         K=np.where( j_long, Klong, Kshort)
         grid.add_edge_field('K',K,on_exists='overwrite')
+        grid.add_edge_field('long',j_long,on_exists='overwrite')
 
         grid.orient_cells()
 
@@ -74,7 +75,7 @@ class OrthoInterpolator(object):
     """
     nom_res=None # resolution for new grid if a polygon is specified
 
-    anisotropy=0.05 # lower values means less radial diffusion
+    anisotropy=0.05 # lower values means less lateral diffusion
     # alpha=1.0  # lower values mean smoother results
 
     background_field=None
@@ -84,6 +85,12 @@ class OrthoInterpolator(object):
 
     # No support yet for weights.
     # background_weight=0.02
+
+    # tuples of (polygon,[Klon,Klat])
+    # Samples within the polygon are eliminated, and the given diffusivities
+    # installed. Useful if the local point distribution is too gnarly for
+    # anisotropy to handle
+    overrides=()
     
     def __init__(self,region,samples=None,**kw):
         """
@@ -115,7 +122,7 @@ class OrthoInterpolator(object):
             # samples.  Otherwise we have to worry about boundary
             # points falling just outside the grid boundary.
             if self.clip_samples:
-                boundary=grid.boundary_polygon()
+                boundary=self.grid.boundary_polygon()
                 sel=[boundary.contains(geometry.Point(xy))
                      for xy in samples[['x','y']].values]
                 samples=samples.iloc[sel,:]
@@ -126,6 +133,20 @@ class OrthoInterpolator(object):
         if self.background_field is not None:
             self.add_background_samples()
 
+        for geom,Kxy in self.overrides:
+            # Which samples to drop:
+            to_drop = np.array([ geom.contains(geometry.Point(xy))
+                                 for xy in self.samples[ ['x','y'] ].values ])
+            j_sel=self.grid.select_edges_intersecting(geom)
+            # Not quite right -- doesn't respect changing orientations
+            # this is just a global orient, right?
+            j_long=self.grid.edges['long']
+            
+            self.grid.edges['K'][j_sel & j_long   ]=Kxy[0]
+            self.grid.edges['K'][j_sel & (~j_long)]=Kxy[1]
+            
+            self.samples=self.samples[~to_drop]
+            
         self.result = self.solve()
         
     def add_background_samples(self):
@@ -245,24 +266,6 @@ class OrthoInterpolator(object):
                     M[n,n]=-np.sum(Ks)
                     for nbr,K in zip(nbrs,Ks):
                         M[n,nbr] = M[n,nbr] + K
-                    
-                # old code:
-                if 0:
-                    M[n,n]=-2*(K[0]+K[1])
-                    if row==0:
-                        M[n,patch_nodes[row+1,col]]=2*K[0]
-                    elif row==nrows-1:
-                        M[n,patch_nodes[row-1,col]]=2*K[0]
-                    else:
-                        M[n,patch_nodes[row-1,col]]=K[0]
-                        M[n,patch_nodes[row+1,col]]=K[0]
-                    if col==0:
-                        M[n,patch_nodes[row,col+1]]=2*K[1]
-                    elif col==ncols-1:
-                        M[n,patch_nodes[row,col-1]]=2*K[1]
-                    else:
-                        M[n,patch_nodes[row,col-1]]=K[1]
-                        M[n,patch_nodes[row,col+1]]=K[1]
 
         # This soln is indexed by node_idxs
         soln=sparse.linalg.spsolve(M.tocsr(),b)
@@ -274,12 +277,6 @@ class OrthoInterpolator(object):
         plt.figure(num).clf()
         fig,ax=plt.subplots(num=num)
 
-        # Wrong -- result is node centered
-        #ccoll=self.grid.plot_cells(values=self.result,ax=ax,cmap='jet',
-        #                           **kw)
-        #tri=self.grid.mpl_triangulation()
-        #ccoll=ax.tripcolor(tri,self.result,cmap='jet',shading='gouraud',
-        #                   **kw)
         ccoll=self.grid.contourf_node_values(self.result,32,cmap='jet',
                                              **kw)
         
