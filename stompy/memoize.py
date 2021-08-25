@@ -114,7 +114,7 @@ def memoize(lru=None,cache_dir=None,key_method='pickle'):
 
                 if not memoize.disabled:
                     cache[key]=value
-                    if value_src is 'calculated' and cache_fn:
+                    if value_src=='calculated' and cache_fn:
                         with open(cache_fn,'wb') as fp:
                             pickle.dump(value,fp,-1)
                             # print "Wrote cache to file"

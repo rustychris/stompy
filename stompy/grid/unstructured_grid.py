@@ -5156,7 +5156,6 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         else:
             # Map linestring vertices to nodes
             ls_nodes=[self.select_nodes_nearest(p) for p in linestring]
-            print(ls_nodes)
             all_nodes=[]
             edge_hits=[]
             for a,b in zip(ls_nodes[:-1],ls_nodes[1:]):
