@@ -5066,7 +5066,18 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             for c in np.nonzero(mask)[0]:
                 ax.text(xy[c,0],xy[c,1],labeler(c,self.cells[c]))
 
-        request_square(ax)
+        # We're
+        bounds=[np.nanmin( polys[...,0]),
+                np.nanmax( polys[...,0]),
+                np.nanmin( polys[...,1]),
+                np.nanmax( polys[...,1])]
+        
+        if (bounds[0]<bounds[1]) and (bounds[2]<bounds[3]):
+            request_square(ax,bounds)
+        else:
+            # in case the bounds are degenerate
+            request_square(ax)
+                
         return coll
 
     def edges_length(self,sel=slice(None)):
