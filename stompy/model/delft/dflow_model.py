@@ -553,6 +553,8 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         self.mdu.write()
 
     def write_monitors(self):
+        # start with empty
+        open(self.mdu.filepath( ('output','ObsFile') ),'wt').close()
         self.write_monitor_points()
         self.write_monitor_sections()
 
@@ -716,10 +718,22 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                     times=times[sel]
                     values=values[sel]
                 else:
-                    times = [start, stop]
-                    closest_val = values[times.index(min(times, key=lambda t: abs(t - start)))]
-                    log.warning(f'No data for simulation period: {start} - {stop}. Setting value to: {closest_val}')
-                    values = [closest_val, closest_val]
+                    # No original data fell within the time span
+                    # all the data could be before, after, or maybe we hit a gap
+                    if times.max() < start:
+                        times = [start, stop]
+                        values=[values[-1],values[-1]]
+                        log.warning(f'{file_path}: data ends ({times.max()}) before simulation period: {start} - {stop}.')
+                    elif times.min() > stop:
+                        times = [start, stop]
+                        values=[values[0],values[0]]
+                        log.warning(f'{file_path}: data starts ({times.min()}) after simulation period: {start} - {stop}.')
+                    else:
+                        idx=np.searchsorted(times,start)
+                        assert idx<len(times),"Logic is off somewhere above"
+                        times=[times[idx-1],times[idx]]
+                        values=[values[idx-1],values[idx]]
+                        log.warning(f'{file_path}: data has gap around simulation period: {start} - {stop}.')
             
         elapsed_time=(times - ref_date)/dt
         data=np.c_[elapsed_time,values]
