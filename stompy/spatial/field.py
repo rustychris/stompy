@@ -1992,7 +1992,8 @@ class SimpleGrid(QuadrilateralGrid):
 
         return self.dx,self.dy
 
-    def trace_contour(self,vmin,vmax,union=True):
+    def trace_contour(self,vmin,vmax,union=True,method='mpl',
+                      gdal_contour='gdal_contour'):
         """
         Trace a filled contour between vmin and vmax, returning
         a single shapely geometry (union=True) or a list of
@@ -2002,13 +2003,33 @@ class SimpleGrid(QuadrilateralGrid):
         Note that matplotlib is not infallible here, and complicated
         or large inputs can create erroneous output.  gdal_contour
         might help.
+
+        To use gdal_contour instead, pass method='gdal', and optionally
+        specify the path to the gdal_contour executable. This currently
+        behaves differently than the mpl approach. Here vmin is traced,
+        and vmax is ignored. This should be harmonized at some point. TODO
         """
-        cset=self.contourf([vmin,vmax],ax='hidden')
-        segs=cset.allsegs
-        geoms=[]
-        for seg in segs[0]:
-            if len(seg)<3: continue
-            geoms.append( geometry.Polygon(seg) )
+        if method=='mpl':
+            cset=self.contourf([vmin,vmax],ax='hidden')
+            segs=cset.allsegs
+            geoms=[]
+            for seg in segs[0]:
+                if len(seg)<3: continue
+                geoms.append( geometry.Polygon(seg) )
+        elif method=='gdal': 
+            import tempfile
+            (fd1,fname_tif)=tempfile.mkstemp(suffix=".tif")
+            (fd2,fname_shp)=tempfile.mkstemp(suffix=".shp")
+            os.unlink(fname_shp)
+            os.close(fd1)
+            os.close(fd2)
+            self.write_gdal(fname_tif)
+            res=subprocess.run([gdal_contour,"-fl",str(vmin),str(vmax),fname_tif,fname_shp],
+                                capture_output=True)
+            print(res.stdout)
+            print(res.stderr)
+            geoms=wkb2shp.shp2geom(fname_shp)['geom']
+            union=False
         if union:
             poly=geoms[0]
             for geo in geoms[1:]:
@@ -3030,17 +3051,24 @@ class GdalGrid(SimpleGrid):
                             F=A,
                             projection=self.gds.GetProjection() )
 
-def rasterize_grid_cells(g,values,dx,dy,stretch=True):
+def rasterize_grid_cells(g,values,dx=None,dy=None,stretch=True,
+                         cell_mask=slice(None),match=None):
     """ 
     g: UnstructuredGrid
     values: scalar values for each cell of the grid.  Must be uint16.
     dx,dy: resolution of the resulting raster
     stretch: use the full range of a uint16
 
+    cell_mask: bitmask of cell indices to use. values should still be full
+    size.
+
+    match: an existing SimpleGrid field to copy extents/shape from
+
     returns: SimpleGrid field in memory
     """
     from . import wkb2shp
     dtype=np.uint16
+    values=values[cell_mask]
     if stretch:
         vmin=values.min()
         vmax=values.max()
@@ -3048,14 +3076,18 @@ def rasterize_grid_cells(g,values,dx,dy,stretch=True):
         values=1+( (values-vmin)*fac ).astype(dtype)
     else:
         values=values.astype(np.uint16)
-    polys=[g.cell_polygon(c) for c in range(g.Ncells())]
+    polys=[g.cell_polygon(c) for c in np.arange(g.Ncells())[cell_mask]]
     poly_ds=wkb2shp.wkb2shp("Memory",polys,
                             fields=dict(VAL=values.astype(np.uint32)))
-    
-    extents=g.bounds()
-    
-    Nx=int( 1+ (extents[1]-extents[0])/dx )
-    Ny=int( 1+ (extents[3]-extents[2])/dy )
+
+    if match:
+        extents=match.extents
+        Ny,Nx=match.F.shape
+    else:
+        extents=g.bounds()
+        Nx=int( 1+ (extents[1]-extents[0])/dx )
+        Ny=int( 1+ (extents[3]-extents[2])/dy )
+        
     F=np.zeros( (Ny,Nx), np.float64)
     
     target_field=SimpleGrid(F=F,extents=extents)
