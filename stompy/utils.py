@@ -26,7 +26,14 @@ except ImportError:
     log.warning("xarray unavailable")
     xr=None
 
-from collections import OrderedDict,Iterable
+try:
+    # Moved around python 3.3
+    from collections.abc import Iterable
+except ImportError:
+    # Will error around 3.9
+    from collections import Iterable
+    
+from collections import OrderedDict
 import sys
 from scipy.interpolate import RectBivariateSpline,interp1d,LinearNDInterpolator
 from scipy import optimize
