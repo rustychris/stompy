@@ -3788,6 +3788,9 @@ class MultiRasterField(Field):
     # If finite, any point sample greater than this value will be clamped to this value
     clip_max = np.inf
 
+    # Values below this will be interpreted is missing data
+    min_valid = None
+
     order = 1 # interpolation order
 
     # After clipping, this value will be added to the result.
@@ -3823,8 +3826,6 @@ class MultiRasterField(Field):
 
     def bounds(self):
         """ Aggregate bounds """
-        # Old code -- seems broken
-        # all_extents = np.array(self.extents)
         all_extents=self.sources['extent']
 
         return [ all_extents[:,0].min(),
@@ -3862,6 +3863,23 @@ class MultiRasterField(Field):
 
         self.build_index()
 
+    def polygon_mask(self,poly,crop=True,return_values=False):
+        """ 
+        Mimic SimpleGrid.polygon_mask
+        Requires return_values==True, since a bitmask doesn't make
+        sense over a stack of layers.
+
+        return_values: must be True, and will 
+         return just the values of F that fall inside poly. 
+        """
+        assert crop==True,"MultiRasterField only implements crop=True behavior"
+        assert return_values==True,"MultiRasterField only makes sense for return_values=True"
+
+        xyxy=poly.bounds
+        xxyy=[xyxy[0], xyxy[2], xyxy[1], xyxy[3]]
+        tile=self.extract_tile(xxyy)
+        return tile.polygon_mask(poly,crop=False,return_values=True)
+        
     # Thin wrapper to make a multiraster field look like one giant high resolution
     # raster.
     @property
@@ -3894,6 +3912,9 @@ class MultiRasterField(Field):
                                          rec['resolution'],
                                          rec['filename']))
 
+    # TODO:
+    #  For large sources rasters, replace them with a list of tiles, so we can load
+    #  and cache smaller tiles.
     max_count = 20 
     open_count = 0
     serial = 0
@@ -3911,7 +3932,10 @@ class MultiRasterField(Field):
                 self.sources['field'][victim] = None
                 self.open_count -= 1
             # open the new guy:
-            self.sources['field'][i] = GdalGrid(self.sources['filename'][i])
+            self.sources['field'][i] = src = GdalGrid(self.sources['filename'][i])
+            # Need to treat this here, since otherwise those values may propagate
+            # in interpolation and then it will be hard to detect them.
+            src.F[ src.F < self.min_valid ] = np.nan
             self.open_count += 1
 
         self.serial += 1
@@ -3990,6 +4014,9 @@ class MultiRasterField(Field):
 
         for hit in hits:
             missing = np.isnan(edgeF)
+            # now redundant with edit of src.F
+            #if self.min_valid is not None:
+            #    missing = missing | (edgeF<self.min_valid)
             src = self.source(hit)
 
             # for the moment, keep the nearest interpolation
@@ -4104,6 +4131,10 @@ class MultiRasterField(Field):
 
             # only update missing values
             missing = np.isnan(target.F[ row_slice,col_slice ])
+            # Now redundant with updating src.F above
+            # if self.min_valid is not None:
+            #     # Also ignore out-of-bounds values from newF
+            #     missing = missing & (newF>=self.min_valid)
             target.F[ row_slice,col_slice ][missing] = newF[missing]
         return target
 
