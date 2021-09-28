@@ -921,6 +921,36 @@ class WindBC(BC):
                        legend_label=label+"-"+"xy"[xy],
                        color=self.get_color())
 
+
+class RainfallRateBC(BC):
+    """
+    WIP.
+    Adopt same naming convention as DFM. Rainfall*Rate*. Data for now
+    are in mm/day, again following DFM convention.
+    """
+    rainfall_rate=None
+    def __init__(self,**kw):
+        if 'name' not in kw:
+            # commonly applied globally, so may not have a geographic name
+            kw['name']='rainfall'
+        super(RainfallRateBC,self).__init__(**kw)
+        
+    def src_data(self):
+        assert self.rainfall_rate is not None
+        return self.rainfall_rate
+    def plot_bokeh(self,da,plot,label=None):
+        # this will have to get smarter time...
+        # da will almost certainly have an xy dimension for the two components.
+        # for now, we assume no spatial variation, and plot two time series
+        if label is None:
+            label=self.name
+        plot.line( da.time.values.copy(),
+                   da.values.copy(),
+                   legend_label=label,
+                   color=self.get_color())
+
+
+            
 class ScalarBC(BC):
     scalar=None
     value=None

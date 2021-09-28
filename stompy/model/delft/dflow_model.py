@@ -699,6 +699,8 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             self.write_flow_bc(bc)
         elif isinstance(bc,hm.WindBC):
             self.write_wind_bc(bc)
+        elif isinstance(bc,hm.RainfallRateBC):
+            self.write_rainfall_rate_bc(bc)
         elif isinstance(bc,hm.RoughnessBC):
             self.write_roughness_bc(bc)
         elif isinstance(bc,hm.ScalarBC):
@@ -948,6 +950,24 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                    "FILENAME=%s"%tim_fn,
                    "FILETYPE=2",
                    "METHOD=1",
+                   "OPERAND=O",
+                   "\n"]
+            fp.write("\n".join(lines))
+
+        self.write_tim(bc.data(),tim_path)
+
+    def write_rainfall_rate_bc(self,bc):
+        assert bc.geom is None,"Spatially rain not yet supported"
+
+        tim_fn=bc.name+".tim"
+        tim_path=os.path.join(self.run_dir,tim_fn)
+
+        # write_config()
+        with open(self.ext_force_file(),'at') as fp:
+            lines=["QUANTITY=rainfall_rate",
+                   "FILENAME=%s"%tim_fn,
+                   "FILETYPE=1", # uniform scalar
+                   "METHOD=1",   # copying from wind above
                    "OPERAND=O",
                    "\n"]
             fp.write("\n".join(lines))
