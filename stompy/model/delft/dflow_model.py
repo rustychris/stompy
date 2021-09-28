@@ -23,6 +23,8 @@ from stompy.spatial import wkb2shp, proj_utils
 from stompy.model.delft import dfm_grid
 import stompy.grid.unstructured_grid as ugrid
 
+from scipy import sparse
+
 from . import io as dio
 from . import waq_scenario
 from .. import hydro_model as hm
@@ -1332,4 +1334,100 @@ def extract_transect_his(his_ds,pattern):
     dsxr['d_sample']=('sample',),utils.dist_along(xy)
 
     return dsxr
+
+# Utilities for setting grid bathymetry
+def dem_to_cell_bathy(dem,g,fill_iters=20):
+    """
+    dem: field.SimpleGrid
+    g: UnstructuredGrid
+    fill_iters: how hard to try filling in missing data
+
+    returns cell-mean values, shape=[g.Ncells()]
+    """
+    cell_means=np.zeros(g.Ncells(),np.float64)
+    for c in utils.progress(range(g.Ncells()),msg="dem_to_cell_bathy: %s"):
+        #msk=dem.polygon_mask(g.cell_polygon(c))
+        #cell_means[c]=np.nanmean(dem.F[msk])
+        cell_means[c]=np.nanmean(dem.polygon_mask(g.cell_polygon(c),return_values=True))
+    
+    for _ in range(fill_iters):
+        missing=np.nonzero(np.isnan(cell_means))[0]
+        if len(missing)==0:
+            break
+        new_depths=[]
+        print("filling %d missing cell depths"%len(missing))
+        for c in missing:
+            new_depths.append( np.nanmean(cell_means[g.cell_to_cells(c)]) )
+        cell_means[missing]=new_depths
+    else:
+        print("Filling still left %d nan cell elevations"%len(missing))
+    return cell_means
+    
+def dem_to_cell_node_bathy(dem,g,cell_z=None):
+    """
+    dem: field.SimpleGrid
+    g: UnstructuredGrid
+    cell_z: optional precomputed cell values
+
+    Extract cell-mean values from dem, and map to nodes.
+    The mapping inverts the node->cell conversion that can happen
+    in DFM (depending on bedlevtype).
+    For example, bedlevtype 6 averages node values to get cell values, then
+    averages adjacent cells to get edge values. This code will find node values
+    that approximate the dem-based cell value.
+
+    This is not bulletproof!  In small-ish domains it can help with maintaining
+    conveyance in small channels. In some cases there is a tough tradeoff between
+    the damping (which favors small node movements, but tends to spread errors
+    out) and no damping (favors small errors, and spreads large node movements out
+    over many nodes).
+    """
+    if cell_z is None:
+        cell_z=dem_to_cell_bathy(dem,g)
+    
+    V=[]
+    I=[]
+    J=[]
+    for c in utils.progress(range(g.Ncells())):
+        nodes=g.cell_to_nodes(c)
+        val=1./len(nodes)
+        V.append( [val]*len(nodes) )
+        I.append( [c]*len(nodes))
+        J.append( nodes )
+        # Equivalent to this for a dok_matrix:
+        # node_z_to_cell_z[c,nodes]=val
+        # But 10x faster
+    V=np.concatenate(V)
+    I=np.concatenate(I)
+    J=np.concatenate(J)
+    node_z_to_cell_z=sparse.coo_matrix( (V,(I,J)), shape=(g.Ncells(), g.Nnodes()))
+
+    # A x = b
+    # A: node_z_to_cell_z
+    #  x: node_z
+    #    b: cell_z
+    # to better allow regularization, change this to a node elevation update.
+    # A ( node_z0 + node_delta ) = cell_z
+    # A*node_delta = cell_z - A*node_z0 
+    
+    node_z0=dem(g.nodes['x'])
+    bad_nodes=np.isnan(node_z0)
+    node_z0[bad_nodes]=0.0 # could come up with something better..
+    if np.any(bad_nodes):
+        print("%d bad node elevations"%bad_nodes.sum())
+    b=cell_z - node_z_to_cell_z.dot(node_z0)
+
+    # damp tries to keep the adjustments to O(2m)
+    res=sparse.linalg.lsqr(node_z_to_cell_z.tocsr(),b,damp=0.05)
+    node_delta, istop, itn, r1norm  = res[:4]
+    print("Adjustments to node elevations are %.2f to %.2f"%(node_delta.min(),
+                                                             node_delta.max()))
+    final=node_z0+node_delta
+    if np.any(np.isnan(final)):
+        print("Bad news")
+        import pdb
+        pdb.set_trace()
+    return final
+    
+    
 
