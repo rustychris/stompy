@@ -2337,7 +2337,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 best=(A,pc)
         return np.array(best[1][::-1]) # reverse, to return a CCW, positive area string.
 
-    def find_cycles(self,max_cycle_len=4,starting_edges=None,check_area=True):
+    def find_cycles(self,max_cycle_len='auto',starting_edges=None,check_area=True):
         """ traverse edges, returning a list of lists, each list giving the
         CCW-ordered node indices which make up a 'facet' or cycle in the graph
         (i.e. potentially a cell).
@@ -2347,9 +2347,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
          with positive area.   This can be an issue if the outer ring of the grid is
          short enough to be a cycle itself.
         """
-        def traverse(a,b):
-            cs=self.angle_sort_adjacent_nodes(b,ref_nbr=a)
-            return b,cs[-1]
+        if max_cycle_len=='auto':
+            max_cycle_len=self.max_sides
 
         visited=set() # directed tuple of nodes
 
@@ -2358,25 +2357,36 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         if starting_edges is None:
             starting_edges=self.valid_edge_iter()
 
-        for j in starting_edges:
-            if j % 10000==0:
-                logging.info("Edge %d/%d, %d cycles"%(j,self.Nedges(),len(cycles)))
-            # iterate over the two half-edges
-            for A,B in (self.edges['nodes'][j], self.edges['nodes'][j,::-1]):
-                cycle=[A]
+        for ji,j in enumerate(starting_edges):
+            if ji>0 and ji % 10000==0:
+                logging.info("Edge %d/%d, %d cycles"%(ji,self.Nedges(),len(cycles)))
 
-                while (A,B) not in visited and len(cycle)<max_cycle_len:
-                    visited.add( (A,B) )
-                    cycle.append(B)
-                    A,B = traverse(A,B)
-                    if B==cycle[0]:
-                        if check_area:
-                            A=signed_area( self.nodes['x'][cycle] )
-                            if A>0:
-                                cycles.append(cycle)
-                        else:
+            if isinstance(j,HalfEdge):
+                halfedges=[j]
+            else:
+                # iterate over the two half-edges
+                halfedges=[self.halfedge(j,0),
+                           self.halfedge(j,1)]
+            # for A,B in (self.edges['nodes'][j], self.edges['nodes'][j,::-1]):
+            # Skip half edges already visited:
+            halfedges=[ he for he in halfedges if (he.node_rev(),he.node_fwd()) not in visited]
+            for he in halfedges:
+                cycle=[he.node_rev()]
+                trav=he
+                while trav.node_fwd() != he.node_rev() and len(cycle)<=max_cycle_len:
+                    cycle.append(trav.node_fwd())
+                    visited.add((trav.node_rev(),trav.node_fwd()))
+                    trav=trav.fwd()
+                visited.add((trav.node_rev(),trav.node_fwd()))
+                    
+                if len(cycle)<=max_cycle_len:
+                    # potential cycle:
+                    if check_area:
+                        A=signed_area( self.nodes['x'][cycle] )
+                        if A>0:
                             cycles.append(cycle)
-                        break
+                    else:
+                        cycles.append(cycle)
         return cycles
     def make_cells_from_edges(self,max_sides=None):
         max_sides=max_sides or self.max_sides
@@ -5993,15 +6003,21 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             self.renumber()
 
     def create_dual(self,center='centroid',create_cells=False,
-                    remove_disconnected=False,remove_1d=True):
+                    remove_disconnected=False,remove_1d=True,
+                    extend_to_boundary=False):
         """
         Return a new grid which is the dual of this grid. This
-        is currently only robust for triangle->'hex' grids.  other
-        source grids will require more nuance in coalescing centers.
+        is robust for triangle->'hex' grids, and provides reasonable
+        results for other grids.
 
         remove_1d: avoid creating edges in the dual which have no
           cell.  This happens when an input cell has all of its nodes
           on the boundary.
+
+        extend_to_boundary: in contrast to remove_1d, this adds 
+          edges to these 1d features to make them 2d, more or less
+          taking the implied rays and intersecting them with the
+          boundary of the original grid.
         """
         if remove_disconnected and not create_cells:
             # anecdotal, but remove_disconnected calls boundary_linestrings,
@@ -6014,16 +6030,19 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         else:
             cc=self.cells_center()
 
-        gd.add_node_field('dual_cell',np.zeros(0,'i4'))
-        gd.add_edge_field('dual_edge',np.zeros(0,'i4'))
+        gd.add_node_field('dual_cell',np.zeros(0,np.int32))
+        if expand_boundary:
+            gd.add_node_field('dual_edge',np.zeros(0,np.int32))
+        gd.add_edge_field('dual_edge',np.zeros(0,np.int32))
 
-        if remove_1d:
+        # precalculate mask of boundary nodes
+        if remove_1d or extend_to_boundary:
             e2c=self.edge_to_cells()
             boundary_edge_mask=e2c.min(axis=1)<0
             boundary_nodes=np.unique(self.edges['nodes'][boundary_edge_mask])
             boundary_node_mask=np.zeros(self.Nnodes(),np.bool8)
             boundary_node_mask[boundary_nodes]=True
-            # now if a cells nodes are all True in boundary_node_mask,
+            # below, if a cell's nodes are all True in boundary_node_mask,
             # it will be skipped
 
         cell_to_dual_node={}
@@ -6038,18 +6057,44 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         e2c=self.edge_to_cells()
 
+        if expand_to_boundary:
+            boundary_edge_to_dual_node=-np.ones(self.Nedges(),np.int64)
+            edge_center=self.edges_center()
+        
         for j in self.valid_edge_iter():
             if e2c[j].min() < 0:
-                continue # boundary
-            if remove_1d and np.all(boundary_node_mask[self.edges['nodes'][j]]):
+                if expand_to_boundary:
+                    # Boundary edges *also* get nodes at their midpoints
+                    boundary_edge_to_dual_node[j] = dnj = gd.add_node(x=edge_center[j],
+                                                                      dual_edge=j)
+                    # And induce a dual edge from the neighboring cell's dual
+                    # node to this edge's midpoint
+                    dnc=cell_to_dual_node[e2c[j,:].max()]
+                    dj=gd.add_edge(nodes=[dnj,dnc],dual_edge=j)
+                else:
+                    continue # boundary
+            elif remove_1d and np.all(boundary_node_mask[self.edges['nodes'][j]]):
                 continue # would create a 1D link
+            else:
+                # Regular interior edge
+                dn1=cell_to_dual_node[e2c[j,0]]
+                dn2=cell_to_dual_node[e2c[j,1]]
 
-            dn1=cell_to_dual_node[e2c[j,0]]
-            dn2=cell_to_dual_node[e2c[j,1]]
+                dj_exist=gd.nodes_to_edge([dn1,dn2]) 
+                if dj_exist is None:
+                    dj=gd.add_edge(nodes=[dn1,dn2],dual_edge=j)
 
-            dj_exist=gd.nodes_to_edge([dn1,dn2]) 
-            if dj_exist is None:
-                dj=gd.add_edge(nodes=[dn1,dn2],dual_edge=j)
+        if expand_to_boundary:
+            # Nodes also imply an edge in the dual -- and maybe even two
+            # edges if we want this edge to go through the node
+            for n in np.nonzero(boundary_node_mask)[0]:
+                jbdry=[j for j in self.node_to_edges(n) if boundary_edge_mask[j]]
+                # jbdry could be a multiple of 2 if there are multiple boundaries
+                # tangent to each other at n. Not going to handle that right now.
+                assert len(jbdry)==2,"Not ready for coincident boundaries"
+                dnodes=boundary_edge_to_dual_node[jbdry]
+                assert np.all(dnodes>=0)
+                gd.add_edge(nodes=dnodes)
 
         if create_cells:
             # to create cells in the dual -- these map to interior nodes
