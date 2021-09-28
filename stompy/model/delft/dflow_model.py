@@ -215,7 +215,33 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         model.run_stop=stop
 
         model.load_gazetteer_from_run()
+        model.load_structures_from_run()
         return model
+
+    def load_structures_from_run(self):
+        struct_file=self.mdu.filepath( ('geometry','structurefile'))
+        if struct_file is None or not os.path.exists(struct_file):
+            return
+        structures=[]
+        for sec in dio.SectionedConfig(struct_file).section_dicts():
+            # sec will have _section(sec)
+            del sec['_section']
+            # Replace .tim entries with loaded timeseries
+            for k in sec:
+                if sec[k].endswith('.tim'):
+                    tim_fn=os.path.join(self.mdu.base_path,sec[k])
+                    if os.path.exists(tim_fn):
+                        sec[k]=self.read_tim(tim_fn)
+            # Try to populate geometry from the pli
+            if 'polylinefile' in sec:
+                pli_fn=os.path.join(self.mdu.base_path,sec['polylinefile'])
+                pli=dio.read_pli(pli_fn)
+                # This probably doesn't round-trip correctly -- should it be
+                # an array? shapely.LineString?
+                sec['geom']=pli[0][1] # grab first polyline, and just the coordinates
+
+            structures.append(sec)
+        self.structures=structures
 
     def load_gazetteer_from_run(self):
         """
@@ -1315,8 +1341,12 @@ def extract_transect_his(his_ds,pattern):
 
     # sort names
     roster=list(names.keys())
+    if len(roster)==0:
+        return None
     order=np.argsort(roster)
     idxs=[ names[roster[i]] for i in order]
+
+
 
     extra_dims=['cross_section','gategens','general_structures','nFlowLink',
                 'nNetLink','nFlowElemWithBnd','station_geom_nNodes']
@@ -1324,8 +1354,11 @@ def extract_transect_his(his_ds,pattern):
     ds=his_ds.drop_dims(extra_dims).isel(stations=idxs)
 
     # Make it look like an xr_transect
-    dsxr=ds.rename(stations='sample',station_x_coordinate='x_sample',station_y_coordinate='y_sample',
-                   laydim='layer',laydimw='interface',zcoordinate_c='z_ctr',zcoordinate_w='z_int')
+    dsxr=ds.rename(stations='sample',station_x_coordinate='x_sample',station_y_coordinate='y_sample')
+    z_renames=dict(laydim='layer',laydimw='interface',zcoordinate_c='z_ctr',zcoordinate_w='z_int')
+    z_renames={k:z_renames[k] for k in z_renames if k in dsxr.dims}
+    dsxr=dsxr.rename(**z_renames)
+    
     # add distance?
     xy=np.c_[ dsxr.x_sample.values,
               dsxr.y_sample.values ]
