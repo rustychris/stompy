@@ -1263,6 +1263,23 @@ class SectionedConfig(object):
 
             yield [idx,section] + list(parsed)
 
+    # experimental interface for files with duplicate sections
+    def section_dicts(self):
+        """
+        Iterator over sections, returning a dictionary over each
+        """
+        sec=None
+        for idx,section,key,value,comment in self.entries():
+            if key==section: # new section
+                if sec is not None:
+                    yield sec
+                # TODO: Make this a case-insensitive dict
+                sec={'_section':section}
+            else:
+                sec[key]=value
+        if sec is not None:
+            yield sec
+            
     def parse_row(self,row):
         section_patt=r'^(\[[A-Za-z0-9 ]+\])([#;].*)?$'
         value_patt = r'^([A-Za-z0-9_ ]+)\s*=([^#;]*)([#;].*)?$'
