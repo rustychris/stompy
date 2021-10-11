@@ -578,6 +578,18 @@ def LinearNDExtrapolator(points,values,eps=None):
     return int_ij_extra
 
 def interp_near(x,sx,sy,max_dx=None):
+    x=np.asarray(x)
+    sx=np.asarray(sx)
+    
+    if ( np.issubdtype(x.dtype,np.datetime64)
+         and np.issubdtype(sx.dtype,np.datetime64)
+         and ( isinstance(max_dx,np.timedelta64) or (max_dx is None)) ):
+        # Convert them epoch seconds
+        x=to_unix(x)
+        sx=to_unix(sx)
+        if max_dx is not None:
+            max_dx=max_dx/np.timedelta64(1,'s')
+            
     src_idx=np.searchsorted(sx,x) # gives the index for the element *after* x
     right_idx=src_idx.clip(0,len(sx)-1)
     left_idx=(src_idx-1).clip(0,len(sx)-1)
