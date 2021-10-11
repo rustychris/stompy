@@ -123,7 +123,10 @@ def lowpass_fir(x,winsize,ignore_nan=True,axis=-1,mode='same',use_fft=False,
     # hanning windows have first/last elements==0.
     # but it's counter-intuitive - so force a window with nonzero
     # elements matching the requested size
-    if window=='hanning':
+    if isinstance(winsize,np.ndarray):
+        win=winsize
+        winsize=len(win)
+    elif window=='hanning':
         win=np.hanning(winsize+2)[1:-1]
     elif window=='boxcar':
         win=np.ones(winsize)
