@@ -234,6 +234,12 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                     tim_fn=os.path.join(self.mdu.base_path,sec[k])
                     if os.path.exists(tim_fn):
                         sec[k]=self.read_tim(tim_fn)
+                else:
+                    # Try parsing as float
+                    try:
+                        sec[k]=float(sec[k])
+                    except ValueError:
+                        pass
             # Try to populate geometry from the pli
             if 'polylinefile' in sec:
                 pli_fn=os.path.join(self.mdu.base_path,sec['polylinefile'])
