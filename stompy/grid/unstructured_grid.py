@@ -4748,6 +4748,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         offset: remove the given coordinates (for centering around 0)
         refresh: force recalculation of any cached state
+
+        cell_mask: either bool array with True for included cells, or
+         an array of cell indices.
         """
         cacheable=(cell_mask is None) and (offset[0]==0) and (offset[1]==0)
         if ( cacheable
@@ -4764,9 +4767,13 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         
         if cell_mask is None:
             cell_mask=np.nonzero( ~self.cells['deleted'] )[0]
+        else:
+            cell_mask=np.asarray(cell_mask)
+            if np.issubdtype(cell_mask.dtype,np.bool8):
+                cell_mask=np.nonzero(cell_mask)[0]
 
         if self.max_sides>3:
-            for c in np.nonzero(cell_mask)[0]:
+            for c in cell_mask:
                 nodes=np.array(self.cell_to_nodes(c))
 
                 # this only works for convex cells
