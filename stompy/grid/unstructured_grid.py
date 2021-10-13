@@ -316,6 +316,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     LAND=1  # edge mark - may mean land, or a grid boundary which hasn't been marked as flow
     FLOW=2  # edge mark
     BOUNDARY=3 # cell mark
+    OPEN=4  # edge mark - typ. ocean boundary.
 
     GridException=GridException
 
@@ -1429,7 +1430,196 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         logging.debug("Done reading sms grid")
         return g
-    
+
+    def write_gr3(self,fn,z_flip='node_z_bed',z='depth',bc_marks='auto'):
+        """
+        Write Schism-compatible gr3 grid to fn
+        z: ndarray of values to write, or name of node field to use.
+        z_flip: name of positive-up node field, which will be negated and
+          written out
+
+        bc_marks: 'auto' write boundary markers if self['bc_id'] exists
+         True: write bc_marks, and fail if field doesn't exist
+         False: skip marks even if present
+        """
+        import pandas as pd
+
+        has_bc_data=('bc_id' in self.edges.dtype.names)
+        if bc_marks=='auto':
+            bc_marks=has_bc_data
+        elif bc_marks:
+            assert has_bc_data
+            
+        fp=open(fn,'wt')
+        name=getattr(self,'name','unnamed')
+        fp.write(name+"\n")
+        fp.write("%d %d\n"%(self.Ncells(),self.Nnodes()))
+        node_df=pd.DataFrame()
+        node_df['id']=1+np.arange(self.Nnodes())
+        node_df['x']=self.nodes['x'][:,0]
+        node_df['y']=self.nodes['x'][:,1]
+        if isinstance(z,np.ndarray):
+            node_df['z']=z
+        elif z in self.nodes.dtype.names:
+            node_df['z']=self.nodes[z] # pretty sure these are positive down
+        elif z_flip in self.nodes.dtype.names:
+            node_df['z']=-self.nodes[z_flip]
+
+        fp.write( node_df.to_csv(None,index=False,sep=' ',header=False,float_format="%.6f") )
+
+        cell_df=pd.DataFrame(self.cells['nodes']+1).reset_index() # to 1-based
+        cell_df['index']+=1 # back to 1-based
+        cell_df['nnodes']=(self.cells['nodes']>=0).sum(axis=1)
+        cell_df=cell_df[ ['index','nnodes',0,1,2,3] ] # reorder columns
+        cell_df[3] = np.where( cell_df[3]>0, cell_df[3], np.nan)
+        fp.write( cell_df.to_csv(None,index=False,sep=' ',header=False,
+                                 float_format='%d') )
+
+        # 1 = Number of open boundaries
+        # 13 = Total number of open boundary nodes
+        # 13 = Number of nodes for open boundary 1
+        if bc_marks:
+            for bc_type,bc_label in [ (self.OPEN,'open'),
+                                      (self.LAND,'land') ]:
+                bc_mask=self.edges['mark']==bc_type
+                if np.any(bc_mask):
+                    n_bc=self.edges['bc_id'][bc_mask].max() + 1
+                else:
+                    n_bc=0
+                fp.write("%d = Number of %s boundaries\n"%(n_bc,bc_label))
+
+                #          number of edges    1 extra node per linestring
+                nodes_total = bc_mask.sum() + n_bc
+                fp.write("%d = Total number of %s boundary nodes\n"%(nodes_total,bc_label))
+                self.edge_to_cells()
+                exterior_nodes=self.boundary_cycle()
+                for bc_id in range(n_bc):
+                    bc_id_mask=bc_mask & (self.edges['bc_id']==bc_id)
+                    n_bc_id=bc_id_mask.sum() + 1
+
+                    # Now the goal is to look at the nodes
+                    # grab an edge, scan to the start of the linestring, and output in order
+                    j0=np.nonzero(bc_id_mask)[0][0]
+                    he=self.halfedge(j0,1) # have it face out so we traverse the outside
+                    # sanity checks
+                    assert he.cell_opp()>=0
+                    assert he.cell()<0
+
+                    if bc_type==self.OPEN:
+                        is_interior=""
+                    else:
+                        # Have to figure out whether this falls on the exterior boundary
+                        # or an island
+                        if he.node_fwd() in exterior_nodes:
+                            is_interior="0 "
+                        else:
+                            is_interior="1 "
+
+                    fp.write("%d %s= number of nodes for %s boundary %d\n"%(n_bc_id,is_interior,bc_label,bc_id+1))
+
+                    while bc_id_mask[he.j]:
+                        he=he.fwd()
+                    n_written=0
+                    while 1:
+                        fp.write("%d\n"%(1+he.node_rev())) # to 1-based
+                        n_written+=1
+                        he=he.rev()
+                        if not bc_id_mask[he.j]:
+                            break
+                    assert n_written==n_bc_id
+            
+        fp.close()
+        
+    @classmethod
+    def read_gr3(cls,fn):
+        fp=open(fn,'rt')
+        g=cls(max_sides=4)
+        
+        g.filename=fn
+        g.name=fp.readline().strip()
+        
+        # 108 130
+        Nc,Nn = [int(s) for s in fp.readline().split()]
+
+        xyzs=[]
+
+
+        for n in range(Nn):
+            fields=fp.readline().split()
+            idx=int(fields[0]) # 1-based
+            assert n+1==idx
+
+            x,y,z=[float(s) for s in fields[1:]]
+            xyzs.append([x,y,z])
+        xyzs=np.array(xyzs)
+        g.from_simple_data(points=xyzs)
+        g.add_node_field('depth',xyzs[:,2])
+        g.add_node_field('node_z_bed',-xyzs[:,2])
+
+        cells=[]
+
+        for c in range(Nc):
+            fields=fp.readline().split()
+            idx=int(fields[0]) # 1-based
+            nnodes=int(fields[1])
+            nodes=np.array([int(s) for s in fields[2:]])
+
+            g.add_cell_and_edges(nodes=nodes-1)
+
+        # So far so good
+        def value_key(caster=int): # parse <int> = <string>
+            line=fp.readline()
+            if line=='': return None,None
+            parts=line.split('=')
+            return caster(parts[0]),parts[1].strip()
+        def value_value_key(caster=int): # parse <int> <int> = <string>
+            line=fp.readline()
+            if line=='': return None,None
+            parts=line.split('=')
+            vals=parts[0].split()
+            return caster(vals[0]),caster(vals[1]),parts[1].strip()
+
+        # These are linestrings
+        # 0: not a bc
+        # 1: open boundary
+        # 2: land boundary
+        g.edges['mark']=cls.LAND
+        # which bc of the corresponding type.
+        g.add_edge_field('bc_id',-np.ones(g.Nedges(),np.int32))
+
+        while 1:
+            Nbc,bc_type=value_key() # 1 = Number of open boundaries
+            if Nbc is None:
+                break
+
+            if bc_type.lower()=='number of open boundaries':
+                mark=cls.OPEN
+            elif bc_type.lower()=='number of land boundaries':
+                mark=cls.LAND
+            else:
+                raise Exception("Unknown boundary type '%s'"%bc_type)
+
+            # not using this
+            Nbc_nodes,_=value_key() # 13 = Total number of open boundary nodes
+
+            for bc_id in range(Nbc):
+                if mark==cls.OPEN:
+                    N_this_bc,_=value_key() # 13 = Number of nodes for open boundary 1
+                elif mark==cls.LAND:
+                    # interior: 0 for external boundary
+                    #           1 for island boundary
+                    N_this_bc,interior,_=value_value_key() # 13 0 = Number of nodes for land boundary
+
+                nodes=[int(fp.readline().strip()) for _ in range(N_this_bc)]
+                nodes=np.array(nodes)-1 # to 0-based
+                for a,b in zip(nodes[:-1],nodes[1:]):
+                    j=g.nodes_to_edge(a,b)
+                    g.edges['mark'][j]=mark
+                    g.edges['bc_id'][j]=bc_id
+
+        fp.close()
+        return g
+            
     def write_to_xarray(self,ds=None,mesh_name='mesh',
                         node_coordinates='node_x node_y',
                         face_node_connectivity='face_node',
@@ -2959,6 +3149,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         """
         if n2 is None:
             n1,n2=n1
+
+        assert n1!=n2,"Duplicate node %d in nodes_to_edge"%n1
 
         candidates1 = self.node_to_edges(n1)
         candidates2 = self.node_to_edges(n2)
@@ -5245,7 +5437,20 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     def node_point(self,n):
         return geometry.Point( self.nodes['x'][n] )
 
-    def boundary_linestrings(self):
+    def boundary_linestrings(self,return_nodes=False,sort=False):
+        """
+        Extract line strings for all boundaries, as determined by
+        edges having less than two adjacent cells.
+
+        returns a list of arrays.
+        defaults to arrays of xy coordinates
+        return_nodes: return arrays of node indices
+
+        sort: order the linestrings by absolute area, with the
+         largest having positive CCW area, and all others having
+         positive CW area. Does not attempt to resolve pond-on-an-island
+         nested boundaries.
+        """
         # could be much smarter and faster, directly traversing boundary edges
         # but this way is easy
         e2c=self.edge_to_cells()
@@ -5253,40 +5458,48 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         # so use any()
         boundary_edges=(np.any(e2c<0,axis=1))&(~self.edges['deleted'])
 
-        if 0: # old, slow implementation
-            segs=self.nodes['x'][self.edges['nodes'][boundary_edges]]
-            lines=join_features.merge_lines(segments=segs)
-        else:
-            marked=np.zeros(self.Nedges(),np.bool8)
-            lines=[]
-            for j in np.nonzero(boundary_edges)[0]:
-                if marked[j]:
-                    continue
-                trav=self.halfedge(j,0)
-                if trav.cell()>=0:
-                    trav=trav.opposite()
-                assert trav.cell()<0
-                start=trav
-                this_line_nodes=[trav.node_rev(),trav.node_fwd()]
-                while 1:
-                    if marked[trav.j]:
-                        print("maybe hit a dead end -- boundary maybe not closed")
-                        print("edge centered at %s traversed twice"%(self.edges_center()[trav.j]))
-                        import pdb
-                        pdb.set_trace()
-                        break
-                    this_line_nodes.append(trav.node_fwd())
-                    marked[trav.j]=True
-                    trav=trav.fwd()
-                    # in grids with no cell marks, trav test appears
-                    # unreliable
-                    if trav==start:
-                        break
-                    if this_line_nodes[-1]==this_line_nodes[0]:
-                        print("trav was different, but nodes are the same")
-                        break
-                lines.append( self.nodes['x'][this_line_nodes] )
-
+        marked=np.zeros(self.Nedges(),np.bool8)
+        lines=[]
+        for j in np.nonzero(boundary_edges)[0]:
+            if marked[j]:
+                continue
+            trav=self.halfedge(j,0)
+            if trav.cell()>=0:
+                trav=trav.opposite()
+            assert trav.cell()<0
+            start=trav
+            this_line_nodes=[trav.node_rev()]
+            while 1:
+                if marked[trav.j]:
+                    print("maybe hit a dead end -- boundary maybe not closed")
+                    print("edge centered at %s traversed twice"%(self.edges_center()[trav.j]))
+                    import pdb
+                    pdb.set_trace()
+                    break
+                this_line_nodes.append(trav.node_fwd())
+                marked[trav.j]=True
+                trav=trav.fwd()
+                # in grids with no cell marks, trav test appears
+                # unreliable
+                if trav==start:
+                    break
+                if this_line_nodes[-1]==this_line_nodes[0]:
+                    print("trav was different, but nodes are the same")
+                    break
+            lines.append( np.array(this_line_nodes) )
+            assert np.all( np.diff(lines[-1])!=0 )
+        if sort:
+            areas=np.array( [signed_area(self.nodes['x'][l]) for l in lines] )
+            order=np.argsort(-np.abs(areas))
+            areas=areas[order]
+            lines=[ lines[i] for i in order ]
+            for i,line in enumerate(lines):
+                if (i==0)!=(areas[i]>0):
+                    lines[i]=lines[i][::-1]
+                    
+        if not return_nodes:
+            lines=[self.nodes['x'][line] for line in lines]
+            
         return lines
 
     def boundary_polygon_by_edges(self,allow_multiple=False):
@@ -8411,187 +8624,6 @@ class RgfGrid(UnstructuredGrid):
                 row,col=[int(s) for s in line.split()]
                 ijs.append( [row,col] )
         self.enclosure=np.array(ijs)-1
-
-
-class SchismGrid(UnstructuredGrid):
-    # edge mark codes
-    BC_NONE=0
-    BC_OPEN=1
-    BC_LAND=2
-
-    def write_gr3(self,fn,z_flip='node_z_bed',z='depth'):
-        import pandas as pd
-    
-        fp=open(fn,'wt')
-        name=getattr(self,'name','unnamed')
-        fp.write(name+"\n")
-        fp.write("%d %d\n"%(self.Ncells(),self.Nnodes()))
-        node_df=pd.DataFrame()
-        node_df['id']=1+np.arange(self.Nnodes())
-        node_df['x']=self.nodes['x'][:,0]
-        node_df['y']=self.nodes['x'][:,1]
-        if isinstance(z,np.ndarray):
-            node_df['z']=z
-        elif z in self.nodes.dtype.names:
-            node_df['z']=self.nodes[z] # pretty sure these are positive down
-        elif z_flip in self.nodes.dtype.names:
-            node_df['z']=-self.nodes[z_flip]
-
-        fp.write( node_df.to_csv(None,index=False,sep=' ',header=False,float_format="%.6f") )
-
-        cell_df=pd.DataFrame(self.cells['nodes']+1).reset_index() # to 1-based
-        cell_df['index']+=1 # back to 1-based
-        cell_df['nnodes']=(self.cells['nodes']>=0).sum(axis=1)
-        cell_df=cell_df[ ['index','nnodes',0,1,2,3] ] # reorder columns
-        cell_df[3] = np.where( cell_df[3]>0, cell_df[3], np.nan)
-        fp.write( cell_df.to_csv(None,index=False,sep=' ',header=False,
-                                 float_format='%d') )
-
-        # 1 = Number of open boundaries
-        # 13 = Total number of open boundary nodes
-        # 13 = Number of nodes for open boundary 1
-
-        for bc_type,bc_label in [ (self.BC_OPEN,'open'),
-                                  (self.BC_LAND,'land') ]:
-            bc_mask=self.edges['bc_mark']==bc_type
-            if np.any(bc_mask):
-                n_bc=self.edges['bc_id'][bc_mask].max() + 1
-            else:
-                n_bc=0
-            fp.write("%d = Number of %s boundaries\n"%(n_bc,bc_label))
-
-            #          number of edges    1 extra node per linestring
-            nodes_total = bc_mask.sum() + n_bc
-            fp.write("%d = Total number of %s boundary nodes\n"%(nodes_total,bc_label))
-            self.edge_to_cells()
-            exterior_nodes=self.boundary_cycle()
-            for bc_id in range(n_bc):
-                bc_id_mask=bc_mask & (self.edges['bc_id']==bc_id)
-                n_bc_id=bc_id_mask.sum() + 1
-                
-                # Now the goal is to look at the nodes
-                # grab an edge, scan to the start of the linestring, and output in order
-                j0=np.nonzero(bc_id_mask)[0][0]
-                he=self.halfedge(j0,1) # have it face out so we traverse the outside
-                # sanity checks
-                assert he.cell_opp()>=0
-                assert he.cell()<0
-                
-                if bc_type==self.BC_OPEN:
-                    is_interior=""
-                else:
-                    # Have to figure out whether this falls on the exterior boundary
-                    # or an island
-                    if he.node_fwd() in exterior_nodes:
-                        is_interior="0 "
-                    else:
-                        is_interior="1 "
-                        
-                fp.write("%d %s= number of nodes for %s boundary %d\n"%(n_bc_id,is_interior,bc_label,bc_id+1))
-
-                while bc_id_mask[he.j]:
-                    he=he.fwd()
-                n_written=0
-                while 1:
-                    fp.write("%d\n"%(1+he.node_rev())) # to 1-based
-                    n_written+=1
-                    he=he.rev()
-                    if not bc_id_mask[he.j]:
-                        break
-                assert n_written==n_bc_id
-            
-        fp.close()
-        
-    @classmethod
-    def read_gr3(cls,fn):
-        fp=open(fn,'rt')
-        g=cls(max_sides=4)
-        
-        g.filename=fn
-        g.name=fp.readline().strip()
-        
-        # 108 130
-        Nc,Nn = [int(s) for s in fp.readline().split()]
-
-        xyzs=[]
-
-
-        for n in range(Nn):
-            fields=fp.readline().split()
-            idx=int(fields[0]) # 1-based
-            assert n+1==idx
-
-            x,y,z=[float(s) for s in fields[1:]]
-            xyzs.append([x,y,z])
-        xyzs=np.array(xyzs)
-        g.from_simple_data(points=xyzs)
-        g.add_node_field('depth',xyzs[:,2])
-        g.add_node_field('node_z_bed',-xyzs[:,2])
-
-        cells=[]
-
-        for c in range(Nc):
-            fields=fp.readline().split()
-            idx=int(fields[0]) # 1-based
-            nnodes=int(fields[1])
-            nodes=np.array([int(s) for s in fields[2:]])
-
-            g.add_cell_and_edges(nodes=nodes-1)
-
-        # So far so good
-        def value_key(caster=int): # parse <int> = <string>
-            line=fp.readline()
-            if line=='': return None,None
-            parts=line.split('=')
-            return caster(parts[0]),parts[1].strip()
-        def value_value_key(caster=int): # parse <int> <int> = <string>
-            line=fp.readline()
-            if line=='': return None,None
-            parts=line.split('=')
-            vals=parts[0].split()
-            return caster(vals[0]),caster(vals[1]),parts[1].strip()
-
-        # These are linestrings
-        # 0: not a bc
-        # 1: open boundary
-        # 2: land boundary
-        g.add_edge_field('bc_mark',np.zeros(g.Nedges(),np.int32))
-        g.edges['bc_mark']=cls.BC_NONE
-        # which bc of the corresponding type.
-        g.add_edge_field('bc_id',-np.ones(g.Nedges(),np.int32))
-
-        while 1:
-            Nbc,bc_type=value_key() # 1 = Number of open boundaries
-            if Nbc is None:
-                break
-
-            if bc_type.lower()=='number of open boundaries':
-                mark=cls.BC_OPEN
-            elif bc_type.lower()=='number of land boundaries':
-                mark=cls.BC_LAND
-            else:
-                raise Exception("Unknown boundary type '%s'"%bc_type)
-
-            # not using this
-            Nbc_nodes,_=value_key() # 13 = Total number of open boundary nodes
-
-            for bc_id in range(Nbc):
-                if mark==cls.BC_OPEN:
-                    N_this_bc,_=value_key() # 13 = Number of nodes for open boundary 1
-                elif mark==cls.BC_LAND:
-                    # interior: 0 for external boundary
-                    #           1 for island boundary
-                    N_this_bc,interior,_=value_value_key() # 13 0 = Number of nodes for land boundary
-
-                nodes=[int(fp.readline().strip()) for _ in range(N_this_bc)]
-                nodes=np.array(nodes)-1 # to 0-based
-                for a,b in zip(nodes[:-1],nodes[1:]):
-                    j=g.nodes_to_edge(a,b)
-                    g.edges['bc_mark'][j]=mark
-                    g.edges['bc_id'][j]=bc_id
-
-        fp.close()
-        return g
 
 def cleanup_dfm_multidomains(grid):
     """
