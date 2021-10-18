@@ -1458,7 +1458,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         node_df['id']=1+np.arange(self.Nnodes())
         node_df['x']=self.nodes['x'][:,0]
         node_df['y']=self.nodes['x'][:,1]
-        if isinstance(z,np.ndarray):
+        if isinstance(z,np.ndarray) or np.isreal(z):
             node_df['z']=z
         elif z in self.nodes.dtype.names:
             node_df['z']=self.nodes[z] # pretty sure these are positive down
@@ -5332,7 +5332,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     #  when implementing these, note that all selections should avoid 'deleted' elements.
     #   unless the selection criteria explicitly includes them.
     def select_edges_by_polyline(self,geom,rrtol=3.0,update_e2c=True,
-                                 boundary=True):
+                                 boundary=True,return_nodes=False):
         """
         same as dfm_grid.polyline_to_boundary_edges:
 
@@ -5353,7 +5353,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         edges. if False, then this extracts paths within the grid, based on the shortest
         path between points on the linestring
 
-        returns ndarray of edge indices.
+        returns ndarray of edge indices, unless return_nodes is given in which case 
+        in-order node indices are returned.
         """
         if isinstance(geom,geometry.LineString):
             linestring=np.array(geom.coords)
@@ -5395,6 +5396,18 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 if a==b: continue
                 edge_hits.extend( self.shortest_path(a,b,return_type='edges') )
 
+        if return_nodes:
+            nodes=list( self.edges['nodes'][edge_hits[0]] )
+            if nodes[-1] in self.edges['nodes'][edge_hits[1]]:
+                nodes=nodes[::-1]
+
+            for j in edge_hits[1:]:
+                for n in self.edges['nodes'][j]:
+                    if nodes[-1]!=n:
+                        nodes.append(n)
+                        break
+            return nodes
+        
         return edge_hits
     
     def select_edges_intersecting(self,geom,invert=False,mask=slice(None),

@@ -78,8 +78,12 @@ class MultiVar(object):
             val=part_kwargs[key]
             if self.mu.rev_meta[key]=='face_dimension':
                 g2l=self.mu.cell_g2l
+            elif self.mu.rev_meta[key]=='node_dimension':
+                g2l=self.mu.node_g2l
+            elif self.mu.rev_meta[key]=='edge_dimension':
+                g2l=self.mu.edge_g2l
             else:
-                raise Exception("Only cell mapping global-to-local has been implemented")
+                raise Exception("Mapping global-to-local not implemented for %s"%key)
 
             # val could be an int, a sequence of ints, or a slice.
             # while numpy allows a multidimension index array, xarray does
@@ -331,6 +335,7 @@ class MultiUgrid(object):
             self.edge_l2g.append(j_map)
             self.cell_l2g.append(c_map)
 
+    # TODO: likely abstract out commonality here
     _cell_g2l=None
     @property
     def cell_g2l(self):
@@ -342,7 +347,31 @@ class MultiUgrid(object):
                 cell_g2l[l2g[valid],1]=np.arange(len(l2g))[valid]
             self._cell_g2l=cell_g2l
         return self._cell_g2l
-    
+
+    _node_g2l=None
+    @property
+    def node_g2l(self):
+        if self._node_g2l is None:
+            node_g2l=np.zeros((self.grid.Nnodes(),2),np.int32)
+            for proc,l2g in enumerate(self.node_l2g):
+                valid=l2g>=0
+                node_g2l[l2g[valid],0]=proc
+                node_g2l[l2g[valid],1]=np.arange(len(l2g))[valid]
+            self._node_g2l=node_g2l
+        return self._node_g2l
+
+    _edge_g2l=None
+    @property
+    def edge_g2l(self):
+        if self._edge_g2l is None:
+            edge_g2l=np.zeros((self.grid.Nedges(),2),np.int32)
+            for proc,l2g in enumerate(self.edge_l2g):
+                valid=l2g>=0
+                edge_g2l[l2g[valid],0]=proc
+                edge_g2l[l2g[valid],1]=np.arange(len(l2g))[valid]
+            self._edge_g2l=edge_g2l
+        return self._edge_g2l
+
     def __getitem__(self,k):
         """
         Returns a proxy object (MultiVar) - delaying the partition translation until .values is called.
