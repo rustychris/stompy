@@ -1,4 +1,4 @@
-from ..grid import multi_ugrid, unstructured_grid
+from ...grid import multi_ugrid, unstructured_grid
 import numpy as np
 import glob, os
 
