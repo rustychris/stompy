@@ -728,6 +728,8 @@ class StageBC(BC):
     # If other than None, can compare to make sure it's the same as the model
     # datum.
     datum=None
+    dredge_depth=None # DFM doesn't need this, but SCHISM might
+    
     geom_type=['LineString']
     standard_name='sea_surface_height'
     water_level=None
@@ -1394,6 +1396,23 @@ class HydroModel(object):
         else:
             raise Exception("BC type %s not handled by class %s"%(bc.__class__,self.__class__))
 
+    def infer_initial_water_level(self):
+        """
+        Pull an initial water level based on the first
+        StageBC. If no stage BC is found, return None.
+        No handling of MultiBCs, and does not check whether
+        an initial water level has already been set.
+        """
+        for bc in self.bcs:
+            if isinstance(bc,hm.StageBC):
+                wl=bc.evaluate(t=self.run_start)
+                return float(wl)
+        self.log.info("Could not find BC to get initial water level")
+        return None
+
+    def update_initial_water_level(self):
+        pass # override in subclass
+    
     def partition(self,partition_grid=None):
         """
         For multidomain runs, partition the grid. Overload in subclass

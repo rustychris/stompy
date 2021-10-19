@@ -1258,11 +1258,18 @@ class SectionedConfig(object):
             if parsed[0] is None: # blank line
                 continue # don't send back blank rows
 
-            if parsed[0][0]=='[':
+            if self.is_section(parsed[0]):
                 section=parsed[0]
 
             yield [idx,section] + list(parsed)
 
+    def is_section(self,s):
+        """
+        Test whether the first item in the tuple returned by parse_row is the
+        start of a section.
+        """
+        return s[0]=='['
+        
     # experimental interface for files with duplicate sections
     def section_dicts(self):
         """
@@ -1279,37 +1286,54 @@ class SectionedConfig(object):
                 sec[key]=value
         if sec is not None:
             yield sec
-            
-    def parse_row(self,row):
-        section_patt=r'^(\[[A-Za-z0-9 ]+\])([#;].*)?$'
-        value_patt = r'^([A-Za-z0-9_ ]+)\s*=([^#;]*)([#;].*)?$'
-        # 2019-12-31: appears that some mdu's written by delta shell have
-        # lines near the top that are just an asterisk.  Assume
-        # those are comments
-        blank_patt = r'^\s*([\*#;].*)?$'
 
-        m_sec = re.match(section_patt, row)
+    # Start of section lines are assumed to have two groups:
+    #  section name and option comment
+    section_patt=r'^(\[[A-Za-z0-9 ]+\])([#;].*)?$'
+    # value lines have key, value, and optional comment
+    value_patt = r'^([A-Za-z0-9_ ]+)\s*=([^#;]*)([#;].*)?$'
+    
+    # 2019-12-31: appears that some mdu's written by delta shell have
+    # lines near the top that are just an asterisk.  Assume
+    # those are comments
+    # blank lines can have a comment
+    blank_patt = r'^\s*([\*#;].*)?$'
+    # End of section lines may not exist, or subclasses may define
+    # with an option comment.
+    end_section_patt=None
+    
+    def parse_row(self,row):
+        m_sec = re.match(self.section_patt, row)
         if m_sec is not None:
             return m_sec.group(1), None, m_sec.group(2)
 
-        m_val = re.match(value_patt, row)
+        m_val = re.match(self.value_patt, row)
         if m_val is not None:
             return m_val.group(1).strip(), m_val.group(2).strip(), m_val.group(3)
 
-        m_cmt = re.match(blank_patt, row)
+        m_cmt = re.match(self.blank_patt, row)
         if m_cmt is not None:
             return None,None,m_cmt.group(1)
+
+        if self.end_section_patt is not None:
+            m_end_sec = re.match(self.end_section_patt, row)
+            if m_end_sec is not None:
+                # Gets return same as a comment
+                return None,None,m_end_sec.group(1)
 
         print("Failed to parse row:")
         print(row)
 
+    def format_section(self,s):
+        return '[%s]'%s.lower()
+    
     def get_value(self,sec_key):
         """
         return the string-valued settings for a given key.
         if they key is not found, returns None.
         If the key is present but with no value, returns the empty string
         """
-        section='[%s]'%sec_key[0].lower()
+        section=self.format_section(sec_key[0])
         key = sec_key[1].lower()
 
         for row_idx,row_sec,row_key,row_value,row_comment in self.entries():
@@ -1323,14 +1347,14 @@ class SectionedConfig(object):
         # sec_key: tuple of section and key (section without brackets)
         # value: either the value (a string, or something that can be converted via str())
         #   or a tuple of value and comment, without the leading comment character
-        section='[%s]'%sec_key[0].lower()
+        section=self.format_section(sec_key[0])
         key=sec_key[1]
 
         last_row_of_section={} # map [lower_section] to the index of the last entry in that section
 
         if isinstance(value,tuple):
             value,comment=value
-            comment='# ' + comment
+            comment=self.inline_comment_prefixes[0] + ' ' + comment
         else:
             comment=None
 
@@ -1367,10 +1391,10 @@ class SectionedConfig(object):
         empty, this still returns True.
         """
         if isinstance(sec_key,tuple):
-            section='[%s]'%sec_key[0].lower()
+            section=self.format_section(sec_key[0])
             key = sec_key[1].lower()
         else:
-            section='[%s]'%sec_key.lower()
+            section=self.format_section(sec_key)
             key=None
             
         for row_idx,row_sec,row_key,row_value,row_comment in self.entries():
@@ -1382,10 +1406,10 @@ class SectionedConfig(object):
 
     def __delitem__(self,sec_key):
         if isinstance(sec_key,tuple):
-            section='[%s]'%sec_key[0].lower()
+            section=self.format_section(sec_key[0])
             key = sec_key[1].lower()
         else:
-            section='[%s]'%sec_key.lower()
+            section=self.format_section(sec_key)
             key=None
 
         new_rows=[]
@@ -1399,7 +1423,7 @@ class SectionedConfig(object):
                 new_rows.append(row)
                 continue # don't send back blank rows
 
-            if parsed[0][0]=='[':
+            if self.is_section(parsed[0]):
                 row_sec=parsed[0]
 
                 if (row_sec == section) and (key is None):

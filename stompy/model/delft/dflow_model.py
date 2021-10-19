@@ -1053,19 +1053,11 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         return float(self.mdu['geometry','WaterLevIni'])
 
     def update_initial_water_level(self):
-        """
-        Automatically set an initial water level based on the first
-        StageBC. If no stage BC is found, makes no changes, otherwise
-        updates self.mdu.  Currently not smart about MultiBCs.
-        """
-        for bc in self.bcs:
-            if isinstance(bc,hm.StageBC):
-                wl=bc.evaluate(t=self.run_start)
-                self.mdu['geometry','WaterLevIni']=float(wl)
-                self.log.info("Pulling initial water level from BC: %.3f"%wl)
-                return
-        self.log.info("Could not find BC to get initial water level")
-    
+        wl=self.infer_initial_water_level()
+        if wl is not None:
+            self.mdu['geometry','WaterLevIni']=wl
+            self.log.info("Pulling initial water level from BC: %.3f"%wl)
+        
     def map_outputs(self):
         """
         return a list of map output files
