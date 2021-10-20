@@ -357,6 +357,13 @@ class SchismModel(hm.HydroModel,hm.MpiModel):
             num_procs=1
 
         if num_procs>1:
+            try:
+                # kludge in different mpiexec
+                self.mpi_bin_exe=self.schism_mpi_bin_exe
+                self.log.info("Override mpiexec for SCHISM to %s"%self.mpi_bin_exe)
+            except AttributeError:
+                pass
+            
             return self.mpirun([self.schism_bin],working_dir=self.run_dir,wait=wait)
         else:
             self.log.info("Running command: %s"%self.schism_bin)
