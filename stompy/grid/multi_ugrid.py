@@ -395,10 +395,31 @@ class MultiUgrid(object):
             valid=np.all( [kk in varnames for kk in k] )
             
         if valid:
-            return MultiVar(self,
-                            [ds[k] for ds in self.dss])
+            # Is this partitioned?
+            partitioned=False
+            for d in self.dss[0][k].dims:
+                if d in self.rev_meta:
+                    partitioned=True
+                    break
+            if partitioned:
+                return MultiVar(self,
+                                [ds[k] for ds in self.dss])
+            else:
+                # Should all be the same, so use the first domain
+                return self.dss[0][k]
         else:
             raise KeyError("%s is not an existing variable"%k)
+
+    def __setitem__(self,k,v):
+        dims,values=v
+        for dim in dims:
+            if dim in self.rev_meta:
+                raise Exception("Assigning to partitioned dimension is not supported")
+        # might be overkill to assign to all, but otherwise we get into a situation where
+        # a coordinate that was created through this route would not be available in some
+        # subdomains.
+        for ds in self.dss:
+            ds[k]=v
     
     def __getattr__(self,k):
         # Two broad cases here
