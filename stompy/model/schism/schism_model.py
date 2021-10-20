@@ -1,5 +1,7 @@
 from ...grid import multi_ugrid, unstructured_grid
 import numpy as np
+import xarray as xr
+import datetime
 import shutil
 import glob, os
 from .. import hydro_model as hm
@@ -19,12 +21,83 @@ class Namelist(dio.SectionedConfig):
     def format_section(self,s):
         return '&%s'%s.upper()
 
+def read_stations(run_dir):
+    fp=open(os.path.join(run_dir,'station.in'))
+    flags=fp.readline().split('!')[0].split()[:9] # longer for more tracers?
+    flags=[int(f) for f in flags]
+    n_stations=int(fp.readline().split('!')[0].split()[0])
+    stations=np.loadtxt(fp)
+    return flags, stations
+    
+def station_output(run_dir,param=None):
+    if param is None:
+        param=sch.Namelist(os.path.join(run_dir,'param.nml'))
+    start_dt=datetime.datetime(year=int(param['OPT','start_year']),
+                               month=int(param['OPT','start_month']),
+                               day=int(param['OPT','start_day']))
+
+    t_start=np.datetime64(start_dt) + float(param['OPT','start_hour'])*3600*np.timedelta64(1,'s')
+    flags,stations=read_stations(run_dir)
+
+    ds=xr.Dataset()
+    # Would be nice present the data both as points and as profiles.
+    ds['x']=('station',), stations[:,1]
+    ds['y']=('station',), stations[:,2]
+    ds['z']=('station',), stations[:,3]
+
+    names=['elev','airpressure','wind_u','wind_v','temp','salt','u','v','w']
+    
+    for i,flag in enumerate(flags):
+        if flag==0: continue
+        sta_fn=os.path.join(run_dir,'outputs','staout_%d'%(i+1))
+        sta_raw=np.loadtxt(sta_fn)
+    
+        if 'time' not in ds.dims:
+            ds['time_s']=('time',),sta_raw[:,0]
+            ds['time']=('time',),t_start+ds['time_s']*np.timedelta64(1,'s')
+        
+        ds[names[i]]=('time','station'),sta_raw[:,1:]
+
+    return ds
+
 class SchismModel(hm.HydroModel,hm.MpiModel):
     def __init__(self,*a,**kw):
         super(SchismModel,self).__init__(*a,**kw)
         self.structures=[]
         self.load_defaults()
 
+    @classmethod
+    def load(cls,run_dir):
+        model=cls(run_dir=run_dir) # would be nice to have a way to skip subclass init stuff.
+        param_fn=os.path.join(model.run_dir,'param.nml')
+        sediment_fn=os.path.join(model.run_dir,'sediment.nml')
+
+        model.param=Namelist(param_fn)
+        if os.path.exists(sediment_fn):
+            model.sediment=Namelist(sediment_fn)
+
+        model.grid=unstructured_grid.UnstructuredGrid.read_gr3(os.path.join(model.run_dir,'hgrid.gr3'))
+        return model
+    
+    def station_output(self):
+        ds=station_output(self.run_dir,param=self.param)
+        return ds
+
+    def map_output(self,seq):
+        ms=MultiSchism(self.grid, # os.path.join(self.run_dir,'hgrid.gr3'),
+                       os.path.join(self.run_dir,'outputs','schout_*_%d.nc'%seq))
+
+        # Add a real time variable
+        start_dt=datetime.datetime(year=int(self.param['OPT','start_year']),
+                                   month=int(self.param['OPT','start_month']),
+                                   day=int(self.param['OPT','start_day']))
+        t_start=np.datetime64(start_dt) + float(self.param['OPT','start_hour'])*3600*np.timedelta64(1,'s')
+
+        ms['time_s']=('time',),ms['time'].values
+        ms['time']=('time',),t_start+ms['time_s'].values*np.timedelta64(1,'s')
+        
+        return ms
+    
     def add_Structure(self,**kw):
         # not wired up to schism yet
         self.structures.append(kw)
