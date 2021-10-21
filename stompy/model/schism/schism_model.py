@@ -224,44 +224,63 @@ class SchismModel(hm.HydroModel,hm.MpiModel):
             flow_data=[] # a 1-D data array time series for each type 1 flow bc
 
             for bc_id,bc,bc_edges in open_bcs:
-                #33 3 0 2 2 3 ! turn off velocity bc at ocean. T,S, and sed relax to IC
                 # REFACTOR!
+                def bc_to_flag(bc):
+                    # For now it's either timeseries or constant
+                    if bc is None:
+                        return 0
+                    if 'time' in bc.data().dims:
+                        return 1
+                    return 2
+                    
                 flow_flag=elev_flag=temp_flag=salt_flag=sed0_flag=0
                 if isinstance(bc,hm.StageBC):
-                    data=bc.data()
-                    if 'time' in data.dims:
-                        elev_flag=1
-                    else:
-                        # assume it's a constant
-                        elev_flag=2
-
+                    elev_flag=bc_to_flag(bc)
                     stage_count+=1
-                    assert stage_count<=1,"I think there can only be one stage BC"
 
                 if isinstance(bc,hm.FlowBC):
-                    data=-bc.data() # Flip to SCHISM convention, negative=inflow
-                    if 'time' in data.dims:
-                        flow_flag=1
-                    else:
-                        flow_flag=2
+                    flow_flag=bc_to_flag(bc)
+                    # data=-bc.data() # Flip to SCHISM convention, negative=inflow
 
+                # Scan for scalar BCs
+                scalar_bcs=[None,None,None] # slots for temp,salt,sed0
+                # These should match bc.scalar
+                scalar_names=['temperature','salinity','sed0']
+                
+                # TODO: need to inspect inputs, maybe in update_config(),
+                # and establish the sequence of scalars that appear here
+                
+                for child_bc in self.bcs:
+                    if isinstance(child_bc,hm.ScalarBC) and child_bc.parent==bc:
+                        self.log.info("Found child BC")
+                        assert child_bc.scalar in scalar_names,"Expecting scalar (%s), got %s"%(", ".join(scalar_names),
+                                                                                                child_bc.scalar)
+                        scalar_bcs[scalar_names.index(child_bc.scalar)]=child_bc
+
+                flags=[elev_flag,flow_flag]
+                for child_bc in scalar_bcs:
+                    flags.append(bc_to_flag(child_bc))
+                    
                 fp.write(" ".join(["%d"%n for n in
-                                   (1+len(bc_edges), # number of nodes
-                                    elev_flag,
-                                    flow_flag,
-                                    temp_flag,
-                                    salt_flag,
-                                    sed0_flag)]) + "\n")
+                                   [1+len(bc_edges)] + flags]) # number of nodes
+                         + "\n")
 
                 if elev_flag==1:
-                    elev_data.append(data)
+                    elev_data.append(bc.data())
                 elif elev_flag==2:
-                    fp.write("%.5f ! constant stage\n"%data.item())
+                    fp.write("%.5f ! constant stage\n"%bc.data.item())
 
+                # Flow must be negated for schism convention
                 if flow_flag==1:
-                    flow_data.append(data)
+                    flow_data.append(-bc.data())
                 elif flow_flag==2:
-                    fp.write("%.5f ! constant discharge\n"%data.item())
+                    fp.write("%.5f ! constant discharge\n"%-bc.data().item())
+
+                for flag,bc in zip(flags[2:],scalar_bcs):
+                    if flag==1:
+                        raise Exception("Not ready for scalar time series")
+                    elif flag==2:
+                        fp.write("%.5f ! constant scalar\n"%bc.data().item())
 
             # Will have to come back for the others
         if elev_data:
