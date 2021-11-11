@@ -28,7 +28,32 @@ def read_stations(run_dir):
     n_stations=int(fp.readline().split('!')[0].split()[0])
     stations=np.loadtxt(fp)
     return flags, stations
-    
+
+def loadbigtxt(fn,ncols,dtype=np.float32):
+    rows=[]
+    N=None
+    with open(fn,'rt') as fp:
+        while 1:
+            ncol=0
+            row=[]
+            while ncol<ncols:
+                line=fp.readline()
+                if line=='':
+                    if ncol>0:
+                        print("End of file mid-row")
+                    break
+                chunk=np.fromstring(line,dtype,sep=' ')
+                row.append(chunk)
+                ncol+=len(chunk)
+            if ncol<ncols:
+                break
+            row=np.concatenate(row)
+            N=N or len(row)
+            assert len(row)==N,"row %d: %d != %d"%(len(rows),len(row),N)
+            rows.append(row)
+    return np.array(rows)
+
+
 def station_output(run_dir,param=None):
     if param is None:
         param=sch.Namelist(os.path.join(run_dir,'param.nml'))
@@ -50,8 +75,11 @@ def station_output(run_dir,param=None):
     for i,flag in enumerate(flags):
         if flag==0: continue
         sta_fn=os.path.join(run_dir,'outputs','staout_%d'%(i+1))
-        sta_raw=np.loadtxt(sta_fn)
-    
+        # schism will only write 6000 stations on a line, which creates problems
+        # for np.loadtxt. Use local implementation with a specified column
+        # count.
+        sta_raw=loadbigtxt(sta_fn,ncols=1+len(stations))
+            
         if 'time' not in ds.dims:
             ds['time_s']=('time',),sta_raw[:,0]
             ds['time']=('time',),t_start+ds['time_s']*np.timedelta64(1,'s')
@@ -60,15 +88,38 @@ def station_output(run_dir,param=None):
 
     return ds
 
+
+# Snippet related to changing station data into station x layer
+#  sta_df=ds[ ['x','y','z']].to_dataframe()
+#  
+#  x=ds['x'].values
+#  y=ds['y'].values
+#  
+#  station2=np.zeros(ds.dims['station'],np.int32) - 1
+#  station2[0]=0
+#  for station in range(ds.dims['station']):
+#      if station==0:
+#          i2=0
+#      elif x[station]==x[station-1] and y[station]==y[station-1]:
+#          pass
+#      else:
+#          i2+=1
+#      station2[station]=i2
+#       
+#  ds['station2']=('station',),station2
+#  ds2=xr_utils.redimension(ds,new_dims=['station2'],intragroup_dim='layer')
+
+
+
 class SchismModel(hm.HydroModel,hm.MpiModel):
     def __init__(self,*a,**kw):
-        super(SchismModel,self).__init__(*a,**kw)
-        self.structures=[]
         self.load_defaults()
+        self.structures=[]
+        super(SchismModel,self).__init__(*a,**kw)
 
     @classmethod
     def load(cls,run_dir):
-        model=cls(run_dir=run_dir) # would be nice to have a way to skip subclass init stuff.
+        model=cls(configure=False,run_dir=run_dir) 
         param_fn=os.path.join(model.run_dir,'param.nml')
         sediment_fn=os.path.join(model.run_dir,'sediment.nml')
 
@@ -224,44 +275,64 @@ class SchismModel(hm.HydroModel,hm.MpiModel):
             flow_data=[] # a 1-D data array time series for each type 1 flow bc
 
             for bc_id,bc,bc_edges in open_bcs:
-                #33 3 0 2 2 3 ! turn off velocity bc at ocean. T,S, and sed relax to IC
                 # REFACTOR!
+                def bc_to_flag(bc):
+                    # For now it's either timeseries or constant
+                    if bc is None:
+                        return 0
+                    if 'time' in bc.data().dims:
+                        return 1
+                    return 2
+                    
                 flow_flag=elev_flag=temp_flag=salt_flag=sed0_flag=0
                 if isinstance(bc,hm.StageBC):
-                    data=bc.data()
-                    if 'time' in data.dims:
-                        elev_flag=1
-                    else:
-                        # assume it's a constant
-                        elev_flag=2
-
+                    elev_flag=bc_to_flag(bc)
                     stage_count+=1
-                    assert stage_count<=1,"I think there can only be one stage BC"
 
                 if isinstance(bc,hm.FlowBC):
-                    data=-bc.data() # Flip to SCHISM convention, negative=inflow
-                    if 'time' in data.dims:
-                        flow_flag=1
-                    else:
-                        flow_flag=2
+                    flow_flag=bc_to_flag(bc)
+                    # data=-bc.data() # Flip to SCHISM convention, negative=inflow
 
+                # Scan for scalar BCs
+                scalar_bcs=[None,None,None] # slots for temp,salt,sed0
+                # These should match bc.scalar
+                scalar_names=['temperature','salinity','sed0']
+                
+                # TODO: need to inspect inputs, maybe in update_config(),
+                # and establish the sequence of scalars that appear here
+                
+                for child_bc in self.bcs:
+                    if isinstance(child_bc,hm.ScalarBC) and child_bc.parent==bc:
+                        self.log.info("Found child BC")
+                        assert child_bc.scalar in scalar_names,"Expecting scalar (%s), got %s"%(", ".join(scalar_names),
+                                                                                                child_bc.scalar)
+                        scalar_bcs[scalar_names.index(child_bc.scalar)]=child_bc
+
+                flags=[elev_flag,flow_flag]
+                for child_bc in scalar_bcs:
+                    flags.append(bc_to_flag(child_bc))
+                    
                 fp.write(" ".join(["%d"%n for n in
-                                   (1+len(bc_edges), # number of nodes
-                                    elev_flag,
-                                    flow_flag,
-                                    temp_flag,
-                                    salt_flag,
-                                    sed0_flag)]) + "\n")
+                                   [1+len(bc_edges)] + flags]) # number of nodes
+                         + "\n")
 
                 if elev_flag==1:
-                    elev_data.append(data)
+                    elev_data.append(bc.data())
                 elif elev_flag==2:
-                    fp.write("%.5f ! constant stage\n"%data.item())
+                    fp.write("%.5f ! constant stage\n"%bc.data.item())
 
+                # Flow must be negated for schism convention
                 if flow_flag==1:
-                    flow_data.append(data)
+                    flow_data.append(-bc.data())
                 elif flow_flag==2:
-                    fp.write("%.5f ! constant discharge\n"%data.item())
+                    fp.write("%.5f ! constant discharge\n"%-bc.data().item())
+
+                for flag,bc in zip(flags[2:],scalar_bcs):
+                    if flag==1:
+                        raise Exception("Not ready for scalar time series")
+                    elif flag==2:
+                        fp.write("%.5f ! constant scalar\n"%bc.data().item())
+                        fp.write("1.0 ! scalar nudging\n")
 
             # Will have to come back for the others
         if elev_data:
@@ -441,6 +512,28 @@ class SchismModel(hm.HydroModel,hm.MpiModel):
         else:
             self.log.info("Running command: %s"%self.schism_bin)
             return utils.call_with_path(self.schism_bin,self.run_dir)
+
+    def read_vgrid_in(self):
+        vgrid_fn=os.path.join(self.run_dir,'vgrid.in')
+        with open(vgrid_fn,'rt') as fp:
+            def line():
+                return fp.readline().split('!')[0].strip()
+            ivcor=int(line())
+            print(f'ivcor={ivcor}')
+            if ivcor==1:
+                nvrt=int(line())
+                print(f'nvrt={nvrt}')
+                lsc=np.zeros( self.grid.Nnodes(), dtype=[ ('k0',np.int32), ('sigma',np.float64,nvrt)])
+                lsc['sigma']=np.nan
+                for i in range(self.grid.Nnodes()):
+                    l=line().split()
+                    assert int(l[0])-1==i,"Node id mismatch %d!=%d"%(l[0]-1,i)
+                    k1=int(l[1])
+                    lsc['k0'][i]=k1-1
+                    lsc['sigma'][i,k1-1:]=[float(s) for s in l[2:]]
+                return lsc
+            else:
+                raise Exception("No code to parse sz vgrid yet")        
         
 class MultiSchism(multi_ugrid.MultiUgrid):
     def __init__(self,grid_fn,paths,xr_kwargs={}):
