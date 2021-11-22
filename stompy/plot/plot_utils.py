@@ -6,6 +6,7 @@ from builtins import range
 from builtins import object
 
 import time
+import matplotlib
 from matplotlib.collections import LineCollection
 from matplotlib.transforms import Transform,Affine2D
 import matplotlib.transforms as transforms
@@ -1418,3 +1419,15 @@ def reduce_text_overlap(ax,max_iter=200):
         txt.set_position( np.array(txt.get_position()) + delta)
     return deltas
 
+def mypause(interval):
+    # https://stackoverflow.com/questions/45729092/make-interactive-matplotlib
+    # -window-not-pop-to-front-on-each-update-windows-7/45734500#45734500
+    backend = plt.rcParams['backend']
+    if backend in matplotlib.rcsetup.interactive_bk:
+        figManager = matplotlib._pylab_helpers.Gcf.get_active()
+        if figManager is not None:
+            canvas = figManager.canvas
+            if canvas.figure.stale:
+                canvas.draw()
+            canvas.start_event_loop(interval)
+            return        

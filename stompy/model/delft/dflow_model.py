@@ -42,6 +42,8 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
     # If set, a DFlowModel instance which will be continued
     restart_from=None
 
+    fixed_weirs=None
+
     # If True, initialize to WaqOnlineModel instance.
     dwaq=False
     # Specify location of proc_def.def file:
@@ -571,6 +573,10 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
 
         self.update_initial_water_level()
 
+        if self.fixed_weirs is not None:
+            self.mdu['geometry','FixedWeirFile']='fixed_weirs.pliz'
+            dio.write_pli(self.mdu.filepath(('geometry','FixedWeirFile')),self.fixed_weirs)
+            
         if self.dwaq:
             # This updates a few things in self.mdu
             # Also actually writes some output, though that could be
@@ -746,30 +752,28 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             values=da.values
 
             if trim_time:
-                sel=(times>=start)&(times<=stop)
-                if sum(sel) > 1:
-                    # Expand by one
-                    sel[:-1] = sel[1:] | sel[:-1]
-                    sel[1:] = sel[1:] | sel[:-1]
-                    times=times[sel]
-                    values=values[sel]
+                # Check for no original data within the time span
+                if times[-1] < start:
+                    times = [start, stop]
+                    values=[values[-1],values[-1]]
+                    log.warning(f'{file_path}: data ends ({times.max()}) before simulation period: {start} - {stop}.')
+                elif times[0] > stop:
+                    times = [start, stop]
+                    values=[values[0],values[0]]
+                    log.warning(f'{file_path}: data starts ({times.min()}) after simulation period: {start} - {stop}.')
                 else:
-                    # No original data fell within the time span
-                    # all the data could be before, after, or maybe we hit a gap
-                    if times.max() < start:
-                        times = [start, stop]
-                        values=[values[-1],values[-1]]
-                        log.warning(f'{file_path}: data ends ({times.max()}) before simulation period: {start} - {stop}.')
-                    elif times.min() > stop:
-                        times = [start, stop]
-                        values=[values[0],values[0]]
-                        log.warning(f'{file_path}: data starts ({times.min()}) after simulation period: {start} - {stop}.')
-                    else:
-                        idx=np.searchsorted(times,start)
-                        assert idx<len(times),"Logic is off somewhere above"
-                        times=[times[idx-1],times[idx]]
-                        values=[values[idx-1],values[idx]]
-                        log.warning(f'{file_path}: data has gap around simulation period: {start} - {stop}.')
+                    # common case -- trim and pad out 1 sample
+                    i_start,i_stop=np.searchsorted(da.time,[start,stop])
+                    # i_start will come back pointing to the first element in da.time
+                    # >=start. Either way, step back 1 just to be sure
+                    # i_stop will come back pointing to the first element ...
+                    # >=stop. Add 2: 1 because stop is exclusive, and 1 so we get one
+                    # entry beyond
+                    i_start=max(0,i_start-1)
+                    i_stop=min(len(da.time),i_stop+2)
+
+                    times=times[i_start:i_stop]
+                    values=values[i_start:i_stop]
             
         elapsed_time=(times - ref_date)/dt
         data=np.c_[elapsed_time,values]
@@ -1080,6 +1084,35 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         fns.sort()
         return fns[0]
 
+    def his_dataset(self,decode_geometry=True,set_coordinates=True):
+        """
+        Return history dataset, with some minor additions to make
+        it friendly
+        """
+        his_ds=xr.open_dataset(self.his_output())
+        if set_coordinates:
+            # Doctor up the dimensions
+            # Misconfigured runs may have duplicates here.
+            cross_sections=[s.decode().strip() for s in his_ds.cross_section_name.values]
+            if len(cross_sections)>len(np.unique(cross_sections)):
+                print("Yuck - duplicate cross section names")
+                mask=np.zeros(len(cross_sections),np.bool8)
+                for i,crs in enumerate(cross_sections):
+                    mask[i]=crs not in cross_sections[:i]
+                    
+                his_ds=his_ds.isel(cross_section=mask)
+                cross_sections=np.array(cross_sections)[mask]
+                
+            his_ds['cross_section']=('cross_section',),cross_sections
+            
+            stations=[s.decode().strip() for s in his_ds.station_name.values]
+            his_ds['stations']=('stations',),stations
+
+        if decode_geometry:
+            xr_utils.decode_geometry(his_ds,'cross_section_geom',replace=True)
+        
+        return his_ds
+
     def hyd_output(self):
         """ Path to DWAQ-format hyd file """
         return os.path.join( self.run_dir,
@@ -1119,7 +1152,6 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         """
         if not deep:
             assert mdu_suffix,"Shallow restart must provide suffix for new mdu file"
-        else:
             self.run_dir=model.run_dir
             
         self.mdu=model.mdu.copy()
@@ -1143,20 +1175,30 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                                +'_rst.nc'))
         # That gets rst_base relative to the cwd, but we need it relative
         # to the new runs run_dir
+        # raise Exception('HERE - this is effectively including an extra basepath I think??')
+        #import pdb
+        #pdb.set_trace()
         self.mdu['restart','RestartFile']=os.path.relpath(rst_base,start=self.run_dir)
-
+        # Currently rst_base is relative to pwd
     def restart_inputs(self):
         """
         Return a list of paths to restart data that will be used as the 
         initial condition for this run. Assumes nonmerged style of restart data.
+        Paths are relative to run_dir. For MPI runs, expands paths to reflect
+        all subdomains. For serial runs RestartFile is returned in a list, no
+        modifications
         """
         rst_base=self.mdu['restart','RestartFile']
         path=os.path.dirname(rst_base)
         base=os.path.basename(rst_base)
         # Assume that it has the standard naming
         suffix=base[-23:] # just the date-time portion
-        rsts=[ (rst_base[:-23] + '_%04d'%p + rst_base[-23:])
-               for p in range(self.num_procs)]
+        if self.num_procs>1:
+            rsts=[ (rst_base[:-23] + '_%04d'%p + rst_base[-23:])
+                   for p in range(self.num_procs)]
+        else:
+            self.log.warning("Handling restart data with serial run is note tested")
+            rsts=[rst_base]
         return rsts
     
     def modify_restart_data(self,modify_ic):
@@ -1171,21 +1213,33 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         it should take **kw, to flexibly allow more information to be passed in
          in the future.
         """
+        #import pdb
+        #pdb.set_trace()
         for proc,rst in enumerate(self.restart_inputs()):
-            old_dir=os.path.dirname(rst)
-            new_rst=os.path.join(self.mdu.output_dir(),os.path.basename(rst))
+            old_dir=os.path.dirname(rst)  # '../run_dye_test-p06a/DFM_OUTPUT_flowfm'
+            # new_rst=os.path.join(self.mdu.output_dir(),os.path.basename(rst)) # 'run_dye_test-p06b/DFM_OUTPUT_flowfm/flowfm_0000_20161210_060000_rst.nc'
+            new_rst=os.path.join(os.path.basename(rst)) # 'run_dye_test-p06b/DFM_OUTPUT_flowfm/flowfm_0000_20161210_060000_rst.nc'
+            # previously this kept restart data in output_dir. Cleaner to have restart
+            # data in the run_dir.
+            # Now new_rst is relative to run_dir, and should be different from rst regardless
+            # of deep/shallow restart
             assert rst!=new_rst
-            ds=xr.open_dataset(rst)
+            # Note: rst and new_rst both relative to self.run_dir, but cwd may be something
+            # else
+            rst_abs=os.path.join(self.run_dir,rst) 
+            ds=xr.open_dataset(rst_abs)
             new_ds=modify_ic(ds,proc=proc,model=self)
             if new_ds is None:
                 new_ds=ds # assume modified in place
 
-            dest_dir=os.path.dirname(new_rst)
+            new_rst_abs=os.path.join(self.run_dir,new_rst)
+            dest_dir=os.path.dirname(new_rst_abs)
             if not os.path.exists(dest_dir):
                 os.makedirs(dest_dir)
-            new_ds.to_netcdf(new_rst)
+            new_ds.to_netcdf(new_rst_abs)
+        # Update mdu to reflect new files
         old_rst_base=self.mdu['restart','RestartFile']
-        new_rst_base=os.path.join( self.mdu.output_dir(), os.path.basename(old_rst_base))
+        new_rst_base=os.path.basename(old_rst_base) # relative to run_dir
         self.mdu['restart','RestartFile']=new_rst_base
         
     def extract_section(self,name=None,chain_count=1,refresh=False,

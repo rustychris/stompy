@@ -182,7 +182,7 @@ def redimension(ds,new_dims,
         # This is the beast: but now it's including some crap values at the beginning
         new_vals=ds[vname].values[var_new_slice]
         mask=np.zeros_like(new_vals,'b1')
-        mask[mask_slice] = True
+        mask[tuple(mask_slice)] = True
 
         new_vals=np.ma.array(new_vals,mask=mask)
 
@@ -422,3 +422,39 @@ def structure_to_dataset(arr,dim,extra={}):
             extra_dims=['d%02d'%d for d in arr[fld].shape[1:]]
         ds[fld]=dim+tuple(extra_dims),arr[fld]
     return ds
+
+def decode_geometry(ds,field,replace=True, on_error='pass'):
+    from shapely import geometry
+    node_counts=ds[ds[field].attrs['node_count']]
+    coordx,coordy=ds[field].attrs['node_coordinates'].split()
+    node_x=ds[coordx]
+    node_y=ds[coordy]
+    node_stops=np.cumsum(node_counts)
+    node_starts=node_stops-node_counts
+
+    # For simplicity assume a 1D array of geometries
+    geoms=np.empty(node_counts.shape,dtype=object)
+    geom_type=ds[field].attrs['geometry_type']
+
+    warned=False
+    
+    for idx in np.ndindex(*node_counts.shape):
+        slc=slice(node_starts.values[idx],node_stops.values[idx])
+        if geom_type=='line':
+            pnts=np.c_[ node_x.values[slc], node_y.values[slc]]
+            if pnts.shape[0]>1:
+                geom=geometry.LineString(pnts)
+            else:
+                if not warned:
+                    print("Some lines are degenerate")
+                    warned=True
+                geom=None
+        else:
+            raise Exception("Unhandled geometry type %s"%geom_type)
+        geoms[idx]=geom
+
+    if replace:
+        old_attrs=dict(ds[field].attrs)
+        ds[field]=node_counts.dims, geoms
+        ds[field].attrs.update(old_attrs)
+    return geoms

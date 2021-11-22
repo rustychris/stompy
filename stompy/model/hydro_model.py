@@ -1126,7 +1126,17 @@ class HydroModel(object):
     # this is only used for setting utc_to_native, and native_to_utc
     utc_offset=np.timedelta64(0,'h') # -8 for PST
 
-    def __init__(self,**kw):
+    def __init__(self,configure=True,**kw):
+        """
+        configure: if True, will call self.configure().
+        This is an attempt to make instantiation cleaner, where __init__ may
+        be called during a load() (so don't configure the model, read the configuration
+        from disk), or regular construction (where the past usage has been that 
+        the model is automatically configured in the constructor).
+
+        tricky, though. e.g. gazetteers. Choice of gazetteer is tied to choice
+        of grid, yet it is handy to have when loading a model.
+        """
         self.log=log
         self.bcs=[]
         self.extra_files=[]
@@ -1136,6 +1146,12 @@ class HydroModel(object):
         self.mon_points=[]
 
         utils.set_keywords(self,kw)
+        if configure:
+            self.configure()
+            
+    def configure(self):
+        # subclasses should put grid, BC, IC, monitoring, etc. here.
+        pass
 
     def add_extra_file(self,path,copy=True):
         self.extra_files.append( (path,copy) )
@@ -1457,7 +1473,6 @@ class HydroModel(object):
             return hits[0]['geom']
         else:
             return None
-        
     def match_gazetteer(self,**kws):
         """
         search all gazetteers with criteria specified in keyword arguments,
