@@ -1366,8 +1366,6 @@ def extract_transect_his(his_ds,pattern):
     order=np.argsort(roster)
     idxs=[ names[roster[i]] for i in order]
 
-
-
     extra_dims=['cross_section','gategens','general_structures','nFlowLink',
                 'nNetLink','nFlowElemWithBnd','station_geom_nNodes']
     extra_dims=[d for d in extra_dims if d in his_ds.dims]
@@ -1376,7 +1374,9 @@ def extract_transect_his(his_ds,pattern):
     # Make it look like an xr_transect
     dsxr=ds.rename(stations='sample',station_x_coordinate='x_sample',station_y_coordinate='y_sample')
     z_renames=dict(laydim='layer',laydimw='interface',zcoordinate_c='z_ctr',zcoordinate_w='z_int')
-    z_renames={k:z_renames[k] for k in z_renames if k in dsxr.dims}
+    # zcoordinate_c is not a dim, though it's a coordinate.
+    z_renames={k:z_renames[k] for k in z_renames if (k in dsxr) or (k in dsxr.dims)}
+    
     dsxr=dsxr.rename(**z_renames)
     
     # add distance?
