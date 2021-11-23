@@ -57,17 +57,24 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
     # dredge_depth=-1.0
 
     def __init__(self,*a,**kw):
-        super(DFlowModel,self).__init__(*a,**kw)
-
-        self.structures=[]
+        # Still working out the ordering.
+        # currently HydroModel calls configure(), and configure
+        # might assume that self.mdu exists.
+        # I don't think there is a downside to setting up a default
+        # mdu right here.
         self.load_default_mdu()
 
+        super(DFlowModel,self).__init__(*a,**kw)
+
+    def configure(self):
+        super(DFlowModel,self).configure()
+        
         if self.restart_from is not None:
             self.set_restart_from(self.restart_from)
 
         if self.dwaq is True:
             self.dwaq=waq_scenario.WaqOnlineModel(model=self)
-            
+
     def load_default_mdu(self):
         """
         Load a default set of config values from data/defaults-r53925.mdu
@@ -1420,8 +1427,6 @@ def extract_transect_his(his_ds,pattern):
     order=np.argsort(roster)
     idxs=[ names[roster[i]] for i in order]
 
-
-
     extra_dims=['cross_section','gategens','general_structures','nFlowLink',
                 'nNetLink','nFlowElemWithBnd','station_geom_nNodes']
     extra_dims=[d for d in extra_dims if d in his_ds.dims]
@@ -1430,7 +1435,10 @@ def extract_transect_his(his_ds,pattern):
     # Make it look like an xr_transect
     dsxr=ds.rename(stations='sample',station_x_coordinate='x_sample',station_y_coordinate='y_sample')
     z_renames=dict(laydim='layer',laydimw='interface',zcoordinate_c='z_ctr',zcoordinate_w='z_int')
-    z_renames={k:z_renames[k] for k in z_renames if k in dsxr.dims}
+    # We need to rename both dimensions and coordinates. For some reason this used to work, then
+    # it stopped working, b/c k was checked only against dsxr.dims. Try checking against dsxr
+    # which should include dims and coordinates. Ok - have to check both.
+    z_renames={k:z_renames[k] for k in z_renames if (k in dsxr) or (k in dsxr.dims)}
     dsxr=dsxr.rename(**z_renames)
     
     # add distance?
