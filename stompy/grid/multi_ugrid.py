@@ -199,6 +199,18 @@ class MultiVar(object):
     def __len__(self):
         shape,left_idx,right_idx=self.shape_and_indexes()
         return shape[0]
+
+    def to_dataarray(self):
+        """
+        Materialize to a non-partitioned DataArray.
+        """
+        # Would be nice to put coordinates together, too.
+        # Have to be careful to drop or merge any coordinates
+        # that span a partitioned dimension, though.
+        da=xr.DataArray(self.values,dims=self.dims,
+                        name=self.sub_vars[0].name,
+                        attrs=self.sub_vars[0].attrs)
+        return da
         
         
 class MultiUgrid(object):
