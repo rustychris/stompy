@@ -1145,6 +1145,7 @@ class HydroModel(object):
         self.bcs=[]
         self.extra_files=[]
         self.gazetteers=[]
+        self.structures=[] # note that what goes in this list is model-dependent
 
         self.mon_sections=[]
         self.mon_points=[]

@@ -57,17 +57,24 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
     # dredge_depth=-1.0
 
     def __init__(self,*a,**kw):
-        super(DFlowModel,self).__init__(*a,**kw)
-
-        self.structures=[]
+        # Still working out the ordering.
+        # currently HydroModel calls configure(), and configure
+        # might assume that self.mdu exists.
+        # I don't think there is a downside to setting up a default
+        # mdu right here.
         self.load_default_mdu()
 
+        super(DFlowModel,self).__init__(*a,**kw)
+
+    def configure(self):
+        super(DFlowModel,self).configure()
+        
         if self.restart_from is not None:
             self.set_restart_from(self.restart_from)
 
         if self.dwaq is True:
             self.dwaq=waq_scenario.WaqOnlineModel(model=self)
-            
+
     def load_default_mdu(self):
         """
         Load a default set of config values from data/defaults-r53925.mdu
