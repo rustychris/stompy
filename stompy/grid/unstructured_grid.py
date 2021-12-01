@@ -8087,7 +8087,14 @@ class UnTRIM08Grid(UnstructuredGrid):
             token_gen=tokenizer()
             # py2/py3 compatibility
             def itok(): return int(six.next(token_gen))
-            def ftok(): return float(six.next(token_gen))
+            def ftok():
+                # Some Janet files come back with ?, presumably for missing depth
+                # data
+                s=six.next(token_gen).strip()
+                if s=='?':
+                    return np.nan
+                else:
+                    return float()
 
             for c in range(Npolys):
                 check_c=itok()
