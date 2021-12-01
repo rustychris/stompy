@@ -887,27 +887,31 @@ class WindBC(BC):
             # commonly applied globally, so may not have a geographic name
             kw['name']='wind'
         super(WindBC,self).__init__(**kw)
-    def write_pli(self):
-        assert self.geom is None,"Spatially limited wind not yet supported"
-        return # nothing to do
 
-    def default_tim_fn(self):
-        # different than super class because typically no nodes
-        return os.path.join(self.model.run_dir,self.filename_base() + ".tim")
+    # Old DFM specific code:
+    # def write_pli(self):
+    #     assert self.geom is None,"Spatially limited wind not yet supported"
+    #     return # nothing to do
+    # 
+    # def default_tim_fn(self):
+    #     # different than super class because typically no nodes
+    #     return os.path.join(self.model.run_dir,self.filename_base() + ".tim")
 
-    def write_config(self):
-        old_bc_fn=self.model.ext_force_file()
-
-        with open(old_bc_fn,'at') as fp:
-            lines=["QUANTITY=windxy",
-                   "FILENAME=%s.tim"%self.filename_base(),
-                   "FILETYPE=2",
-                   "METHOD=1",
-                   "OPERAND=O",
-                   "\n"]
-            fp.write("\n".join(lines))
-    def write_data(self):
-        self.write_tim(self.data())
+    # def write_config(self):
+    #     old_bc_fn=self.model.ext_force_file()
+    # 
+    #     with open(old_bc_fn,'at') as fp:
+    #         lines=["QUANTITY=windxy",
+    #                "FILENAME=%s.tim"%self.filename_base(),
+    #                "FILETYPE=2",
+    #                "METHOD=1",
+    #                "OPERAND=O",
+    #                "\n"]
+    #         fp.write("\n".join(lines))
+    
+    #def write_data(self):
+    #    self.write_tim(self.data())
+    
     def src_data(self):
         assert self.wind is not None
         return self.wind
@@ -1141,6 +1145,7 @@ class HydroModel(object):
         self.bcs=[]
         self.extra_files=[]
         self.gazetteers=[]
+        self.structures=[] # note that what goes in this list is model-dependent
 
         self.mon_sections=[]
         self.mon_points=[]
