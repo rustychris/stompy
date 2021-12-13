@@ -8102,7 +8102,7 @@ class UnTRIM08Grid(UnstructuredGrid):
                 if s=='?':
                     return np.nan
                 else:
-                    return float()
+                    return float(s)
 
             for c in range(Npolys):
                 check_c=itok()

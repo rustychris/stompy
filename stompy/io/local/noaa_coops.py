@@ -207,8 +207,13 @@ def coops_dataset_product(station,product,
             if product in ['water_level','hourly_height',"one_minute_water_level","predictions"]:
                 while 1:
                     # not all stations have NAVD, so fall back to MSL
-                    params['datum']=datums[0] 
-                    req=requests.get(base_url,params=params)
+                    params['datum']=datums[0]
+                    try:
+                        req=requests.get(base_url,params=params)
+                    except requests.ConnectionError:
+                        log.warning("Unable to connect to tidesandcurrents.noaa.gov -- possibly on HPC node")
+                        data=dict(error=dict(message="Internet access error"))
+                        break
                     try:
                         data=req.json()
                     except ValueError: # thrown by json parsing

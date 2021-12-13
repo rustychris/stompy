@@ -2137,6 +2137,36 @@ class SimpleGrid(QuadrilateralGrid):
         cgrid = CurvilinearGrid(XY,self.F)
         return cgrid
 
+    def to_unstructured(self,node_var='z',trim=np.isnan):
+        """
+        Generate a rectilinear UnstructuredGrid, with the field value
+        saved on nodes[node_var].
+        trim: a function applied to the node values where, if true, the node should
+          be deleted. Must be vectorized.
+        """
+        from ..grid import unstructured_grid
+        g=unstructured_grid.UnstructuredGrid(max_sides=4,
+                                             extra_node_fields=[(node_var,self.F.dtype)])
+
+        X,Y=self.XY()
+        # will update coordinates afterwards
+        maps=g.add_rectilinear(p0=[0,0],p1=[1,1],nx=X.shape[0],ny=X.shape[1])
+
+        g.nodes['x'][maps['nodes'],0]=X
+        g.nodes['x'][maps['nodes'],1]=Y
+        g.nodes[node_var][maps['nodes']]=self.F
+
+        # TODO: Possible that cells need to be re-oriented.
+        # Should test area for one cell...
+
+        if trim is not None:
+            to_trim=trim(g.nodes[node_var])
+            for n in np.nonzero(to_trim)[0]:
+                g.delete_node_cascade(n)
+            g.renumber()
+
+        return g
+
     def apply_xform(self,xform):
         # assume that the transform is not a simple scaling in x and y,
         # so we have to switch to a curvilinear grid.
