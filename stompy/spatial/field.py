@@ -3866,7 +3866,7 @@ class MultiRasterField(Field):
     clip_max = np.inf
 
     # Values below this will be interpreted is missing data
-    min_valid = None
+    min_valid = -np.inf
 
     order = 1 # interpolation order
 
