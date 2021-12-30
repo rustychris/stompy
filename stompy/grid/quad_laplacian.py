@@ -409,6 +409,26 @@ def prepare_angles_halfedge(gen):
 
     gen.add_edge_field('angle',edge_angles,on_exists='overwrite')
 
+def adjusted_scale(gen, scale, nom_res=None):
+    """
+    Replace positive scale values on shared edges with negative counts
+    """
+    scale=scale.copy()
+    e2c=gen.edge_to_cells()
+    for j in np.nonzero( (e2c.min(axis=1)>=0) )[0]:
+        if scale[j]<0: continue # already good
+        L=gen.edges_length(j)
+        if scale[j]==0.0:
+            if nom_res is not None:
+                res=nom_res
+            else:
+                continue
+        else:
+            res=scale[j]
+        scale[j]=-max(1,np.round(L/res))
+        print("Mapped edge scale %g to %g"%(res,scale[j]))
+    return scale
+
 def linear_scales(gen,method='adhoc'):
     """
     Infer scales from the edges of the generating grid
@@ -417,8 +437,6 @@ def linear_scales(gen,method='adhoc'):
     method: 'adhoc' reverts to a simple extrapolation approach, rather 
     than solving a proper laplacian.  The Laplacian code turned out be
     brittle on the very coarse triangulation of gen.
-
-    
     """
     scales=gen.edges['scale']
     scales=np.where( np.isfinite(scales), scales, 0.0)
@@ -2056,6 +2074,7 @@ class QuadGen(object):
 
         # Just figures out the contour values and sets them on the patches.
         patch_to_contour=[{},{}] # coord, cell index=>array of contour values
+        self.patch_to_contour=patch_to_contour
 
         def add_swath_contours_new(comp_cells,node_field,coord,scale):
             if len(comp_cells)==1 and comp_cells[0] in c_ragged:
@@ -2088,6 +2107,15 @@ class QuadGen(object):
             o_dval_ds=swath_grad[order]
             o_ds_dval=1./o_dval_ds
 
+            uniform_scale=False
+
+            if not uniform_scale:
+                # Rather than using s as a distance in geographic space, which
+                # scaled by a single value of local_scale, here normalize
+                # ds by variable scale in o_scales, and consider s a distance in grid space
+                o_scales=scale( g_int.nodes['x'][swath_nodes])[order]
+                o_ds_dval /= o_scales
+
             # trapezoid rule integration
             d_vals=np.diff(o_vals)
             # Particularly near the ends there are a lot of
@@ -2102,13 +2130,23 @@ class QuadGen(object):
             s=np.r_[0,s]
 
             # HERE -- calculate this from resolution
-            # might have i/j swapped.  range of s is 77m, and field
-            # is 1. to 1.08.  better now..
-            local_scale=scale( g_int.nodes['x'][swath_nodes] ).mean(axis=0)
+            # Scale is under-utilized here.
+            
+            # This is just calculating a mean scale over the whole swath
+            if uniform_scale:
+                local_scale=scale( g_int.nodes['x'][swath_nodes] ).mean(axis=0)
+            else:
+                local_scale=1.0
+                
+            # s gives the average geographic distance along the swath.
+            # this takes the average geographic length of the swath,
+            # and divides by local scale to get the number of cells
             n_swath_cells=int(np.round( (s.max() - s.min())/local_scale))
             n_swath_cells=max(1,n_swath_cells)
 
+            # Evenly divide up geographic space into the desired number of cells
             s_contours=np.linspace(s[0],s[-1],1+n_swath_cells)
+            # Then map back to the node field values.
             adj_contours=np.interp( s_contours,
                                     s,o_vals)
             adj_contours[0]=field_min
@@ -2275,10 +2313,17 @@ class SimpleQuadGen(object):
     gmsh_path='gmsh'
     merge_tol=0.01
     
-    def __init__(self,gen,cells=None,execute=True,**kw):
+    def __init__(self,gen,cells=None,execute=True,adjust_scale=True,**kw):
+        """
+        adjust_scale: make a copy of the edge array and update scale to be sure that 
+        shared edges always have a given edge count
+        """
         utils.set_keywords(self,kw)
         self.gen=gen
         self.cells=cells
+        if adjust_scale:
+            self.gen.edges=self.gen.edges.copy()
+            self.gen.edges['scale']=adjusted_scale(self.gen,self.gen.edges['scale'],self.nom_res)
         if execute:
             self.execute()
             

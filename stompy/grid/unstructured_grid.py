@@ -2420,7 +2420,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             self.log.warning("Increasing max_sides from %d to %d"%(self.max_sides,ugB.max_sides))
             self.modify_max_sides(ugB.max_sides)
         else:
-            self.log.warning("max_sides is okay (%d)"%(self.max_sides))
+            self.log.info("max_sides is okay (%d)"%(self.max_sides))
             
         node_map=np.zeros( ugB.Nnodes(), 'i4')-1
         edge_map=np.zeros( ugB.Nedges(), 'i4')-1
