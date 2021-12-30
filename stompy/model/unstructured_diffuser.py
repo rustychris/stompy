@@ -252,7 +252,8 @@ class Diffuser(object):
                     values.append(v)
                 b[mic2] += flux_per_gradient / (area_c[ic2]*dzc[ic2]) * dirichlet[ic1]
 
-        if self.alpha is not 0:
+        # Used to test 'is not 0:' but modern python complains
+        if isinstance(self.alpha,np.ndarray): 
             for c in range(N):
                 if self.is_calc_c[c]:
                     mic=self.c_map[c]
