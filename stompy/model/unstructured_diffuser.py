@@ -50,7 +50,7 @@ class Diffuser(object):
     def set_dirichlet(self,value,cell=None,xy=None,on_duplicate='error'):
         if cell is None:
             cell = self.grid.point_to_cell(xy)
-        else:
+        if xy is None:
             xy = self.grid.cells_center()[cell]
 
         if cell is None:
