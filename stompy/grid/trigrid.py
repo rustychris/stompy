@@ -1410,9 +1410,9 @@ class TriGrid(object):
     def write_mat(self,fn,order='ccw'):
         from scipy.io import savemat
 
-        if order is 'ccw':
+        if order == 'ccw':
             cslice=slice(None)
-        elif order is 'cw':
+        elif order == 'cw':
             cslice=slice(None,None,-1)
         else:
             raise Exception("Bad order: %s"%order)

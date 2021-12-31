@@ -2324,11 +2324,11 @@ class SuntansModel(hm.HydroModel):
             # fabricate a dzz
             eta_2d,dv_2d,z_w_2d=xr.broadcast( transect['eta'], transect['dv'], -ds['z_w'])
             z_w_2d=z_w_2d.clip(-dv_2d,eta_2d)
-            z_bot=z_w_2d.isel(Nkw=slice(1,None))
-            z_top=z_w_2d.isel(Nkw=slice(None,-1))
+            z_bot=z_w_2d.isel(Nkw=slice(1,None)).values
+            z_top=z_w_2d.isel(Nkw=slice(None,-1)).values
             # must use values to avoid xarray getting smart with aligning axes.
-            dzz=z_top.values-z_bot.values
-            z_ctr=0.5*(z_bot.values+z_top.values)
+            dzz=z_top-z_bot
+            z_ctr=0.5*(z_bot+z_top)
             z_ctr[dzz==0.0]=np.nan
         else:
             dzz=transect.dzz.values.copy() # sample, Nk

@@ -245,6 +245,19 @@ def add_rozovski(tran,src='U',dst='Uroz',frame='roz',comp_names=['downstream','l
     add_rotated(tran,src=src,dst=dst,frame=frame,comp_names=comp_names,
                 angle_field='roz_angle')
 
+def add_normal_tangential(tran,src='U',dst='Utrn',frame='trn',comp_names=['downstream','left']):
+    """
+    Add velocity components normal and tangential to the section. Downstream/normal
+    component assumes the section is oriented left to right while looking downstream. 
+    Tangential component is positive to the left (to maintain right-handed coordinate
+    system).
+    """
+    xy=np.c_[ tran.x_sample.values, tran.y_sample.values]
+    dxy=np.vstack( [ xy[1]-xy[0], xy[2:]-xy[:-2], xy[-1]-xy[-2]] )
+    angle_fld=frame+'_angle'
+    tran[angle_fld]=('sample',),np.arctan2(dxy[:,0],-dxy[:,1]) # includes rotation to get normal
+    add_rotated(tran,src=src,dst=dst,frame=frame,angle_field=angle_fld)
+
 def add_rotated(tran,src='U',dst='Uroz',frame='roz',comp_names=['downstream','left'],
                 angle_field='roz_angle'):
     """
@@ -252,16 +265,17 @@ def add_rotated(tran,src='U',dst='Uroz',frame='roz',comp_names=['downstream','le
     'dst', and naming the new coordinate dimension 'frame', with component labels
     'comp_names'.
     Defaults are suitable for Rozovski rotation.
-    Modifies tran in place.
+    Modifies tran in place, with the new velocities in a new variable.
     """
-    vec_norm=xr.concat( [np.cos(tran.roz_angle),
-                         np.sin(tran.roz_angle)],
+    angle=tran[angle_field]
+    vec_norm=xr.concat( [np.cos(angle),
+                         np.sin(angle)],
                         dim=frame).transpose('sample',frame)
 
-    tran['roz_vec_norm']=vec_norm
+    tran[frame+'_vec_norm']=('sample','xy'),vec_norm.values
 
-    R = np.array( [[np.cos(tran.roz_angle),-np.sin(tran.roz_angle)],
-                   [np.sin(tran.roz_angle),np.cos(tran.roz_angle)]] ).transpose(2,0,1)
+    R = np.array( [[np.cos(angle),-np.sin(angle)],
+                   [np.sin(angle),np.cos(angle)]] ).transpose(2,0,1)
     src_frame=tran[src].dims[-1]
     transform=src_frame + '_to_' + frame
     tran[transform]=('sample',src_frame,frame),R

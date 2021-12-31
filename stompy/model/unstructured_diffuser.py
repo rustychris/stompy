@@ -50,7 +50,7 @@ class Diffuser(object):
     def set_dirichlet(self,value,cell=None,xy=None,on_duplicate='error'):
         if cell is None:
             cell = self.grid.point_to_cell(xy)
-        else:
+        if xy is None:
             xy = self.grid.cells_center()[cell]
 
         if cell is None:
@@ -172,7 +172,7 @@ class Diffuser(object):
         area_c=self.area_c
 
         meth='coo' # 'dok'
-        if meth is 'dok':
+        if meth == 'dok':
             A=sparse.dok_matrix((Ncalc,Ncalc),np.float64)
         else:
             # construct the matrix from a sequence of indices and values
@@ -204,7 +204,7 @@ class Diffuser(object):
                 v1=flux_per_gradient / (area_c[ic1]*dzc[ic1])
                 v2=flux_per_gradient / (area_c[ic2]*dzc[ic2])
                 
-                if meth is 'dok':
+                if meth == 'dok':
                     A[mic1,mic2] -= v1
                     A[mic1,mic1] += v1
                     A[mic2,mic2] += v2
@@ -221,7 +221,7 @@ class Diffuser(object):
             elif not is_calc_c[ic2]:
                 mic1 = c_map[ic1]
                 v=flux_per_gradient / (self.area_c[ic1]*dzc[ic1])
-                if meth is 'dok':
+                if meth == 'dok':
                     A[mic1,mic1] += v
                 else:
                     ij.append(  (mic1,mic1) )
@@ -245,19 +245,20 @@ class Diffuser(object):
                 # ...
                 # A[mic2,mic2]*x[2]  = b[2] + flux_per_gradient / (area_c[ic2]*dzc[ic2])*x[1]
                 v=flux_per_gradient / (area_c[ic2]*dzc[ic2])
-                if meth is 'dok':
+                if meth == 'dok':
                     A[mic2,mic2] += v
                 else:
                     ij.append( (mic2,mic2) )
                     values.append(v)
                 b[mic2] += flux_per_gradient / (area_c[ic2]*dzc[ic2]) * dirichlet[ic1]
 
-        if self.alpha is not 0:
+        # Used to test 'is not 0:' but modern python complains
+        if isinstance(self.alpha,np.ndarray): 
             for c in range(N):
                 if self.is_calc_c[c]:
                     mic=self.c_map[c]
                     v=self.alpha[c]*self.dt
-                    if meth is 'dok':
+                    if meth == 'dok':
                         A[mic,mic] -= v
                     else:
                         ij.append( (mic,mic) )
@@ -270,7 +271,7 @@ class Diffuser(object):
             # arrived at minus sign by trial and error.
             b[mic] -= value/(area_c[ic2]*dzc[ic2]) * self.dt
 
-        if meth is 'dok':
+        if meth == 'dok':
             self.A = sparse.coo_matrix(A)
         else:
             ijs=np.array(ij,dtype=np.int32)
