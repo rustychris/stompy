@@ -2443,3 +2443,32 @@ def partition(items, predicate=bool):
     a, b = itertools.tee((predicate(item), item) for item in items)
     return ((item for pred, item in a if not pred),
             (item for pred, item in b if pred))
+
+def distinct_substrings(strs,split_on='_.- '):
+    """                                                                                                                                                                 
+    strs: list of str                                                                                                                                                   
+    returns a list of strs, with the longest common prefix and suffix removed                                                                                           
+    """
+    for i in range(0,len(strs[0])):
+        for s in strs[1:]:
+            if s[i] != strs[0][i]:
+                break
+        else:
+            continue
+        break
+    for j in range(1,len(strs[0])):
+        for s in strs[1:]:
+            if s[-j]!=strs[0][-j]:
+                break
+        else:
+            continue
+        break
+    j-=1
+    while (i>0) and (strs[0][i-1] not in split_on):
+        i-=1
+    while (j>0) and (strs[0][-j] not in split_on):
+        j-=1
+    j=-j
+    
+    if j==0: j=None
+    return [s[i:j] for s in strs]
