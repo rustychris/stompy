@@ -601,12 +601,21 @@ class UgridXr(object):
 
     def vertical_averaging_weights(self,time_slice=slice(None),
                                    ztop=None,zbottom=None,dz=None,
-                                   face_slice=slice(None)):
+                                   face_slice=slice(None),
+                                   query='weight'):
         """
         reimplementation of sunreader.Sunreader::averaging_weights
         
         returns: weights as array [faces,Nk] to average over a cell-centered quantity
         for the range specified by ztop,zbottom, and dz.
+
+        query: by default returns averaging weights, but can also specify
+          'dz': thickness of each 3D cell
+          'z_center': elevation of the middle of each 3D cell
+          'z_bottom': elevation of the bottom of each 3D cell
+          'z_top': elevation of the top of each 3D cell
+
+        can also be a list of the same
 
         range is specified by 2 of the 3 of ztop, zbottom, dz, all non-negative.
         ztop: dimensional distance from freesurface, 
@@ -771,18 +780,47 @@ class UgridXr(object):
 
         ii = tuple(np.indices( h.shape ) )
         z = layer_bounds.min(axis=1) # bottom of each cell
+
         all_dz[ii+(ctops[ii],)] = h-z[ctops]
         all_dz[ii+(cbeds[ii],)] -= bed - z[cbeds]
-        
-        # make those weighted averages
-        # have to add extra axis to get broadcasting correct
-        all_dz = all_dz / np.sum(all_dz,axis=-1)[...,None]
 
-        if all_dz.ndim==3:
-            # we have both time and level
-            # transpose to match the shape of velocity data -
-            all_dz = all_dz.transpose([0,2,1])
-        return all_dz
+        # handle the various query options
+        if isinstance(query,str):
+            queries=[query]
+            singleton=True
+        else:
+            queries=query
+            singleton=False
+            
+        results=[]
+        for query in queries:
+            if query in ['weight','dz']:
+                if query=='weight':
+                    # make those weighted averages
+                    # have to add extra axis to get broadcasting correct
+                    result = all_dz / np.sum(all_dz,axis=-1)[...,None]
+                else:
+                    result = all_dz
+            elif query=='z_bottom':
+                # Might need to be smarter if all_dz include time.
+                result=bed.values[:,None]+np.cumsum(all_dz,axis=-1) - all_dz
+            elif query=='z_top':
+                result=bed.values[:,None]+np.cumsum(all_dz,axis=-1)
+            elif query=='z_center':
+                result=bed.values[:,None]+np.cumsum(all_dz,axis=-1) - 0.5*all_dz
+            else:
+                raise Exception("Unknown query %s"%q)
+
+            if result.ndim==3:
+                # we have both time and level
+                # transpose to match the shape of velocity data -
+                result = result.transpose([0,2,1])
+                
+            results.append(result)
+        if singleton:
+            return results[0]
+        else:
+            return results
 
     def datenums(self):
         """ return datenums, referenced to UTC
