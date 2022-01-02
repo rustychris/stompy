@@ -191,6 +191,10 @@ class MultiVar(object):
             result[left_slice]=sv.values[right_slice]
         return result
 
+    @property
+    def attrs(self):
+        return self.sub_vars[0].attrs
+    
     def __array__(self):
         """ This lets numpy-expecting functions accept this franken-array
         """
@@ -456,9 +460,15 @@ class MultiUgrid(object):
         for k in state:
             setattr(self,k,state[k])
 
+    # These should give the correct names, but won't have the correct
+    # dimensions for partitioned variables.
     @property
     def data_vars(self):
         return self.dss[0].data_vars
+
+    @property
+    def variables(self):
+        return self.dss[0].variables
 
     def isel(self,**kwargs):
         """

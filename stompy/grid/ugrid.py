@@ -426,6 +426,7 @@ class UgridXr(object):
     face_v_vname=None
     face_eta_vname=None
     face_depth_vname=None
+    layer_vname=None
 
     def __init__(self,nc,mesh_name=None,**kw):
         """
@@ -526,7 +527,11 @@ class UgridXr(object):
         # time_slice used to be time_step
         mesh_name = self.mesh_name
 
-        slices={self.time_dim:time_slice}
+        if self.time_dim is not None:
+            slices={self.time_dim:time_slice}
+        else:
+            slices={}
+            
         if face_slice is not None:
             slices[self.face_dim]=face_slice
 
@@ -568,6 +573,9 @@ class UgridXr(object):
     def layer_var_name(self):
         # this had been searching in dimensions, but that doesn't seem quite 
         # right
+        if self.layer_vname is not None:
+            return self.layer_vname
+        
         for name in self.nc.variables: # but also try looking for it.
             if self.nc[name].attrs.get('standard_name') in ['ocean_zlevel_coordinate',
                                                             'ocean_z_coordinate',
@@ -619,14 +627,20 @@ class UgridXr(object):
 
         face_dim=self.face_dim
 
+        if self.time_dim is not None:
+            time_kw={self.time_dim:time_slice}
+        else:
+            time_kw={}
+            
         if self.face_eta_vname is None:
             self.face_eta_vname=self.find_var(standard_name='sea_surface_height_above_geoid')
             assert self.face_eta_vname is not None,"Failed to discern eta variable"
         surface=self.face_eta_vname
 
         face_select={face_dim:face_slice}
-        h = self.nc[self.face_eta_vname].isel({self.time_dim:time_slice,
-                                               face_dim:face_slice})
+        hsel={face_dim:face_slice}
+        hsel.update(time_kw)
+        h = self.nc[self.face_eta_vname].isel(**hsel)
 
         if self.face_depth_vname is None:
             self.face_depth_vname=self.find_var(standard_name=["sea_floor_depth_below_geoid",
@@ -637,7 +651,10 @@ class UgridXr(object):
             self.face_depth_vname=self.find_var(stanford_name=["sea_floor_depth_below_geoid",
                                                                "sea_floor_depth"],
                                                 location='face') # ala 'Mesh_depth'
-        
+        if self.face_depth_vname is None:
+            self.face_depth_vname=self.find_var(standard_name=['altitude'],
+                                                location='face')
+            
         depth=self.face_depth_vname
         assert depth is not None,"Failed to find depth variable"
         
