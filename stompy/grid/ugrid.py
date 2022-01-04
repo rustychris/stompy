@@ -426,6 +426,7 @@ class UgridXr(object):
     face_v_vname=None
     face_eta_vname=None
     face_depth_vname=None
+    edge_normal_vnames=None # (x-normal,y-normal)
 
     def __init__(self,nc,mesh_name=None,**kw):
         """
@@ -776,3 +777,36 @@ class UgridXr(object):
         """
         return self.nc['time'].values
 
+    def interp_perot(self,edge_values):
+        """
+        Interpolate an edge-centered, normal vector component 
+        value to a cell centered vector value.
+        """
+        # Originally borrowed model.stream_tracer.U_perot, but
+        # (a) that's a weird place for the code to live, and
+        # (b) that code seems to have a different sign convention, or
+        # at least it was giving bad results in some spot tests.
+
+        cc=self.grid.cells_center()
+        ec=self.grid.edges_center()
+        normals=self.edge_normals()
+
+        e2c=self.grid.edge_to_cells()
+        el=self.grid.edges_length()
+        Uc=np.zeros((self.grid.Ncells(),2),np.float64)
+
+        for c in np.arange(self.grid.Ncells()):
+            js=self.grid.cell_to_edges(c)
+            for nf,j in enumerate(js):
+                de2f=utils.mag(cc[c]-ec[j])
+                # Uc ~ m3/s * m
+                Uc[c,:] += edge_values[j]*normals[j]*de2f*el[j]
+        Uc /= self.grid.cells_area()[:,None]
+        return Uc
+
+    def edge_normals(self):
+        if self.edge_normal_vnames is not None:
+            ex,ey=self.edge_normal_vnames
+            return np.c_[self.nc[ex].values, self.nc[ey].values]
+        else:
+            return self.grid.edges_normals()
