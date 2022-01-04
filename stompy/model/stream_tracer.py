@@ -302,7 +302,7 @@ def steady_streamline_twoways(g,Uc,x0,**kw):
     """
     ds_fwd=steady_streamline_oneway(g,Uc,x0,**kw)
     ds_rev=steady_streamline_oneway(g,-Uc,x0,**kw)
-    ds_rev.time.values *= -1
+    ds_rev.time.values[...] *= -1
     ds=xr.concat( [ds_rev.isel(time=slice(None,None,-1)), ds_fwd],
                       dim='time' )
     del ds['stop_condition']
