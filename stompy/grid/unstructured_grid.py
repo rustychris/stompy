@@ -2618,6 +2618,18 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         vertex_vals[weights==0]=0
         cvals=vertex_vals.sum(axis=1)/weights.sum(axis=1)
         return cvals
+    
+    def interp_edge_to_cell(self,values):
+        """
+        Average edge-centered values to get cell centered values.
+        """
+        # Could be vectorized, but I don't remember the call to get
+        # numpy to sum over repeated indices.
+        cvals=np.zeros(self.Ncells(),values.dtype)
+        counts=np.zeros(self.Ncells(),np.int32)
+        for c in self.valid_cell_iter():
+            cvals[c]=np.mean(values[self.cell_to_edges(c)])
+        return cvals    
 
     def cells_to_edge(self,a,b):
         j1=self.cell_to_edges(a)
