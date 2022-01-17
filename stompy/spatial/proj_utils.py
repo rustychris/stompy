@@ -115,3 +115,40 @@ def ll_to_utm(LL,center_lon=None):
     return X
 
     
+def reproject_bounds(src_bounds,src_projection,tgt_projection,mode='outside'):
+    """
+    Transform a coordinate-aligned bounding box into a new coordinate system.
+    src_bounds: xxyy sequence for source bounding box
+    src_projection, tgt_projection: proj.4 compatible text strings giving coordinate references.
+    mode: 'outside' the returned box will be larger than the src_bounds
+          'inside': not yet supported and not well-defined. This would return a projected 
+                    bounding box that is inscribed in the true bounding polygon. A naive 
+                    implementation may return an empty region.
+    """
+    x0,x1,y0,y1 = src_bounds
+    # Recent proj seems to have a project bounds method, but a quick check of my local
+    # install does not have or expose this, so do a goofy manual approach
+    N=10 # how many points to use when discretizing the boundary
+    x=np.linspace(x0,x1,N)
+    y=np.linspace(y0,y1,N)
+    XY=np.zeros((4*N,2),np.float64)
+    
+    XY[:N,0]=x
+    XY[:N,1]=y0
+    
+    XY[N:2*N,0]=x
+    XY[N:2*N,1]=y1
+    
+    XY[2*N:3*N,0]=x0
+    XY[2*N:3*N,1]=y
+    
+    XY[3*N:4*N,0]=x1
+    XY[3*N:4*N,1]=y
+    
+    tgtXY=mapper(src_projection,tgt_projection)(XY)
+    if mode=='outside':
+        return [tgtXY[:,0].min(),tgtXY[:,0].max(),
+                tgtXY[:,1].min(),tgtXY[:,1].max()]
+    else:
+        raise Exception("Only mode='outside' is implemented")
+    

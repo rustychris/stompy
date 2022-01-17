@@ -191,6 +191,10 @@ class MultiVar(object):
             result[left_slice]=sv.values[right_slice]
         return result
 
+    @property
+    def attrs(self):
+        return self.sub_vars[0].attrs
+    
     def __array__(self):
         """ This lets numpy-expecting functions accept this franken-array
         """
@@ -199,6 +203,18 @@ class MultiVar(object):
     def __len__(self):
         shape,left_idx,right_idx=self.shape_and_indexes()
         return shape[0]
+
+    def to_dataarray(self):
+        """
+        Materialize to a non-partitioned DataArray.
+        """
+        # Would be nice to put coordinates together, too.
+        # Have to be careful to drop or merge any coordinates
+        # that span a partitioned dimension, though.
+        da=xr.DataArray(self.values,dims=self.dims,
+                        name=self.sub_vars[0].name,
+                        attrs=self.sub_vars[0].attrs)
+        return da
         
         
 class MultiUgrid(object):
@@ -444,9 +460,15 @@ class MultiUgrid(object):
         for k in state:
             setattr(self,k,state[k])
 
+    # These should give the correct names, but won't have the correct
+    # dimensions for partitioned variables.
     @property
     def data_vars(self):
         return self.dss[0].data_vars
+
+    @property
+    def variables(self):
+        return self.dss[0].variables
 
     def isel(self,**kwargs):
         """

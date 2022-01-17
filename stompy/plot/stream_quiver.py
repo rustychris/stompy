@@ -40,9 +40,29 @@ class StreamlineQuiver(object):
     def __init__(self,g,U,**kw):
         self.coll_args={}
         utils.set_keywords(self,kw)
+        
+        if self.clip is not None:
+            # This is a more aggressive version of clip -- truncate the grid and
+            # hydro data. When pack is on, the simple clipping of starting point
+            # doesn't help much.
+            # This stanza could be conditional on pack=True, if it matters.
+            g=g.copy()
+            cell_clip=g.cell_clip_mask(self.clip)
+            for c in np.nonzero(~cell_clip)[0]:
+                g.delete_cell(c)
+            g.delete_orphan_edges()
+            g.delete_orphan_nodes()
+            mappings=g.renumber()
+            # mappings is indexed by the old cell, and returns the new cell.
+            cell_map=mappings['cell_map']
+            revmap=np.zeros(g.Ncells(),np.int32)
+            revmap[cell_map[cell_map>=0]] = np.arange(len(cell_map))[cell_map>=0]
+            U=U[revmap,:]
+        
         self.g=g
         self.U=U
         self.island_points=[] # log weird island points for debugging
+    
         self.Umag=utils.mag(U)
         self.boundary=g.boundary_polygon()
         self.init_tri()
@@ -149,7 +169,7 @@ class StreamlineQuiver(object):
         if self.pack:
             stops=[None,trace.stop_condition.item()]
         else:
-            stops=trace.stop_conditions.values
+            stops=trace.stop_condition.values
             
         if stops[0]=='leave_domain':
             xys=xys[1:]
@@ -297,6 +317,7 @@ class StreamlineQuiver(object):
         ax.axis('off')
         ax.set_position([0,0,1,1])
         return fig,ax
+    
     def segments_and_speeds(self,include_truncated=True):
         """
         Extract segments starting from nodes marked as tip.
@@ -336,20 +357,7 @@ class StreamlineQuiver(object):
                     [-0.5,0],
                    [0,-0.5]])
 
-    def manual_arrows(self,x,y,u,v,speeds,size=1.0): 
-        # manual arrow heads.
-        angles=np.arctan2(v,u)
-
-        polys=[ utils.rot(angle,self.sym) for angle in angles]
-        polys=np.array(polys)
-        polys[speeds<0.1,:]=self.diam
-        polys *= size
-        polys[...,0] += x[:,None]
-        polys[...,1] += y[:,None]
-        pcoll=collections.PolyCollection(polys,array=speeds,**self.coll_args)
-        return pcoll
-
-    def plot_quiver(self,ax=None,include_truncated=True):
+    def plot_quiver(self,ax=None,include_truncated=True,**kwargs):
         """
         Add the quiver plot to the given axes.
         The quiver is split into two collections: a line (shaft) and
@@ -364,14 +372,38 @@ class StreamlineQuiver(object):
             ax=plt.gca()
 
         segs,speeds=self.segments_and_speeds(include_truncated=include_truncated)
-        return self.plot_segs_and_speeds(segs,speeds,ax)
-    
-    def plot_segs_and_speeds(self,segs,speeds,ax):
+        return self.plot_segs_and_speeds(segs,speeds,ax,**kwargs)
+
+    def manual_arrows(self,x,y,u,v,speeds,size=1.0,**kw):
+        # manual arrow heads.
+        angles=np.arctan2(v,u)
+
+        polys=[ utils.rot(angle,self.sym) for angle in angles]
+        polys=np.array(polys)
+        polys[speeds<0.1,:]=self.diam
+        polys *= size
+        polys[...,0] += x[:,None]
+        polys[...,1] += y[:,None]
+        pcoll_args=dict(self.coll_args)
+        pcoll_args.update(kw)
+        print(pcoll_args)
+        pcoll=collections.PolyCollection(polys,**pcoll_args)
+        return pcoll
+
+    def plot_segs_and_speeds(self,segs,speeds,ax,**kw):
         speeds=np.asanyarray(speeds)
         result={}
-        result['lcoll']=collections.LineCollection(segs,
-                                                   array=speeds,
-                                                   lw=self.lw,**self.coll_args)
+
+        # Handling the keyword arguments for formatting is ugly b/c there is
+        # a line collection and a patch collection, with overlapping but
+        # not identical kwargs. So handle the major ones manually, punt on
+        # all else.
+
+        coll_args=dict(lw=self.lw,array=speeds)
+        coll_args.update(self.coll_args)
+        coll_args.update(kw)
+        lcoll_args=dict(coll_args)
+        result['lcoll']=lcoll=collections.LineCollection(segs,**lcoll_args)
         ax.add_collection(result['lcoll'])
 
         # Need end points, end velocity for each segments
@@ -383,14 +415,14 @@ class StreamlineQuiver(object):
             xyuvs.append( [seg[-1,0],seg[-1,1],uv[0],uv[1]])
         xyuvs=np.array(xyuvs)
 
+        pcoll_args=dict(coll_args)
+        pcoll_args['lw']=0.0 # don't add to the polygon
+        if 'color' in pcoll_args:
+            pcoll_args['fc']=pcoll_args.pop('color')
+            pcoll_args.pop('array')
         pcoll=self.manual_arrows(xyuvs[:,0],xyuvs[:,1],
                                  xyuvs[:,2],xyuvs[:,3],
-                                 speeds,size=self.size)
-        pcoll.set_array(speeds)
-        #pcoll.set_cmap(self.cmap)
-        #pcoll.set_clim(self.clim)
-        pcoll.set_lw(0)
-
+                                 speeds,size=self.size,**pcoll_args)
         ax.add_collection(pcoll)
         result['pcoll']=pcoll
 

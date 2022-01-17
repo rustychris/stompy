@@ -340,7 +340,12 @@ def shp2geom(shp_fn,use_wkt=False,target_srs=None,
         if use_wkt:
             geo=wkt.loads( f.GetGeometryRef().ExportToWkt() )
         else:
-            geo=wkb.loads( f.GetGeometryRef().ExportToWkb() )
+            data=f.GetGeometryRef().ExportToWkb()
+            # API changed somewhere to return mutable bytearray, but
+            # wkb only accepts bytes.
+            if isinstance(data,bytearray):
+                data=bytes(data)
+            geo=wkb.loads( data )
         geo=geom_xform(geo)
         #except:
         #    geo=None
