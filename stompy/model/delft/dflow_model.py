@@ -201,7 +201,8 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         if fn is None:
             # no mdu was found
             return None
-        model=DFlowModel()
+        # use cls(), so that custom subclasses can be used
+        model=cls()
         model.load_mdu(fn)
         model.mdu_basename=os.path.basename(fn)
         try:

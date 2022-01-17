@@ -1512,8 +1512,10 @@ class MDUFile(SectionedConfig):
         """
         t_ref=utils.to_dt64( datetime.datetime.strptime(self['time','RefDate'],'%Y%m%d') )
         dt=self.t_unit_td64()
-        t_start = t_ref+int(self['time','tstart'])*dt
-        t_stop = t_ref+int(self['time','tstop'])*dt
+        # float() is a bit dicey. Some older np doesn't like mixing floats
+        # and datetimes.
+        t_start = t_ref+float(self['time','tstart'])*dt
+        t_stop = t_ref+float(self['time','tstop'])*dt
         return t_ref,t_start,t_stop
 
     def t_unit_td64(self,default='S'):
@@ -1527,6 +1529,8 @@ class MDUFile(SectionedConfig):
             dt=np.timedelta64(60,'s')
         elif t_unit.lower() == 's':
             dt=np.timedelta64(1,'s')
+        elif t_unit.lower() == 'h':
+            dt=np.timedelta64(3600,'s')
         else:
             raise Exception("Bad time unit %s"%t_unit)
 
