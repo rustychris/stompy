@@ -1016,7 +1016,7 @@ class MpiModel(object):
         else:
             return self._mpiexec
     @mpiexec.setter
-    def set_mpiexec(self,m):
+    def mpiexec(self,m):
         self._mpiexec=m
 
     def mpirun(self,cmd,num_procs=None,working_dir=".",wait=True):
@@ -1425,7 +1425,7 @@ class HydroModel(object):
         an initial water level has already been set.
         """
         for bc in self.bcs:
-            if isinstance(bc,hm.StageBC):
+            if isinstance(bc,StageBC):
                 wl=bc.evaluate(t=self.run_start)
                 return float(wl)
         self.log.info("Could not find BC to get initial water level")
