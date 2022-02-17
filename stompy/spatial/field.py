@@ -4,6 +4,7 @@ from __future__ import print_function
 # still tracking down the last few calls missing the np. prefix,
 # leftover from 'from numpy import *'
 import numpy as np 
+import six
 
 import glob,types
 import copy
@@ -709,13 +710,11 @@ class XYZField(Field):
         
         return XYZField(newX,newF, projection = self.projection() )
     def write_text(self,fname,sep=' '):
-        fp = file(fname,'wt')
-
-        for i in range(len(self.F)):
-            fp.write( "%f%s%f%s%f\n"%(self.X[i,0],sep,
-                                      self.X[i,1],sep,
-                                      self.F[i] ) )
-        fp.close()
+        with open(fname,'wt') as fp:
+            for i in range(len(self.F)):
+                fp.write( "%f%s%f%s%f\n"%(self.X[i,0],sep,
+                                          self.X[i,1],sep,
+                                          self.F[i] ) )
 
     def intersect(self,other,op,radius=0.1):
         """ Create new pointset that has points that are in both fields, and combine
@@ -2122,7 +2121,7 @@ class SimpleGrid(QuadrilateralGrid):
         else:
             good = ~np.isnan(self.F)
 
-        i,j = where(good)
+        i,j = np.where(good)
 
         X = np.zeros( (len(i),2), np.float64 )
         X[:,0] = x[j]
@@ -3721,7 +3720,8 @@ class CompositeField(Field):
             for mode in [self.data_mode[src_i],self.alpha_mode[src_i]]:
                 if mode is None or mode.strip() in ['',b'']: continue
                 # This is getting a SyntaxError when using python 2.
-                exec(mode) # used to be eval.
+                # exec(mode) # used to be eval.
+                six.exec_(mode)
 
             data_missing=np.isnan(src_data.F)
             src_alpha.F[data_missing]=0.0
