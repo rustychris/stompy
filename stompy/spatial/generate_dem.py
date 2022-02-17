@@ -50,7 +50,17 @@ def create_dataset(args):
                 return mrf
             elif len(files)==1:
                 # Is this an okay place to test for projection?
-                gg=field.GdalGrid(files[0],geo_bounds=geo_bounds,target_projection=projection)
+                # HERE: attrs may have 'projection', and want to use that if present to override
+                # when loading here:
+                if 'projection' in attrs.dtype.names:
+                    source_projection=attrs['projection']
+                    if source_projection=='':
+                        source_projection=None # defaults to GDAL's projection info
+                else:
+                    source_projection=None
+
+                gg=field.GdalGrid(files[0],geo_bounds=geo_bounds,target_projection=projection,
+                                  source_projection=source_projection)
                 gg.default_interpolation='linear'
                 return gg
         
