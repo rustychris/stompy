@@ -47,7 +47,7 @@ def pathify(polygon):
         take an array-like [N,2] set of points defining a polygon,
         return an array which is ordered ccw (or cw is ccw=False)
         """
-        a=np.asarray(a)
+        a=np.asarray(a) # pre-shapely 2
         area=utils.signed_area(a)
         if ccw == (area<0):
             a=a[::-1]
