@@ -2675,16 +2675,16 @@ class SimpleGrid(QuadrilateralGrid):
             driver = gdal.GetDriverByName("GTiff")
             if options is None:
                 options=["COMPRESS=LZW"]
-        else:
-            driver = gdal.GetDriverByName("MEM")
-            if options is None:
-                options=[]
-
+                
             if os.path.exists(output_file):
                 if overwrite:
                     os.unlink(output_file)
                 else:
                     raise Exception("File %s already exists"%output_file)
+        else:
+            driver = gdal.GetDriverByName("MEM")
+            if options is None:
+                options=[]
 
         gtype = numpy_type_to_gdal[self.F.dtype.type]
         dst_ds = driver.Create(output_file, self.F.shape[1], self.F.shape[0], 1, gtype,
@@ -2985,7 +2985,8 @@ class GdalGrid(SimpleGrid):
 
         return [xmin,xmax,ymin,ymax],[dx,dy]
 
-    def __init__(self,filename,bounds=None,geo_bounds=None,target_projection=None):
+    def __init__(self,filename,bounds=None,geo_bounds=None,target_projection=None,
+                 source_projection=None):
         """ Load a raster dataset into memory.
         bounds: [x-index start, x-index end, y-index start, y-index end]
          will load a subset of the raster.
@@ -3006,7 +3007,8 @@ class GdalGrid(SimpleGrid):
         tgt_geo_bounds=None
 
         if (target_projection is not None):
-            source_projection=self.gds.GetProjection()
+            if source_projection is None:
+                source_projection=self.gds.GetProjection()
             
             if (source_projection is None) or (source_projection==""):
                 raise Exception("Target projection was given, but there is no source projection for %s"%filename)
@@ -3603,7 +3605,8 @@ class CompositeField(Field):
                                                          self.alpha_mode[src_i]))
 
             source=self.load_source(src_i) # HERE - need to be smarter about overlapping bounds, and also reproject on the fly
-            if source.F.size==0:
+
+            if isinstance(source,SimpleGrid) and source.F.size==0: # could be other type of field.
                 # So the geom overlapped the current tile, but the raster itself came up empty.
                 log.info("Source %s came up empty after cropping. Check projection, and whether polygon intersects data"
                          %(self.sources['src_name'][src_i]))
@@ -3763,7 +3766,7 @@ class CompositeField(Field):
 
     def ortho_diffuser(self,res,aniso,source,src_data,src_geom,result_data):
         """
-        Strong curvilinear anisotropic interpolatio
+        Strong curvilinear anisotropic interpolation
         """
         from . import interp_orthogonal
         oink=interp_orthogonal.OrthoInterpolator(region=src_geom,

@@ -437,8 +437,8 @@ class StreamlineQuiver(object):
         segs=[ [ [X,Y],[X+self.max_t*U,Y]] ]
         speeds=[U]
 
-        pad_x=kw.get('pad_x',10)
+        pad_x=kw.pop('pad_x',10)
         ax.text(segs[0][-1][0]+pad_x,segs[0][-1][1],label,
                va='center')
-        return self.plot_segs_and_speeds(segs=segs,speeds=speeds,ax=ax)
+        return self.plot_segs_and_speeds(segs=segs,speeds=speeds,ax=ax,**kw)
 

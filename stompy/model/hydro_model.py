@@ -360,8 +360,10 @@ class BC(object):
         Apply filter stack to da, including model-based time zone
         correction of model is set.
         """
-        for filt in self.filters[::-1]:
-            da=filt.transform_output(da)
+        if len(self.filters):
+            da=da.copy(deep=True) # deep=True is default, here just as peace of mind
+            for filt in self.filters[::-1]:
+                da=filt.transform_output(da)
         da=self.to_model_timezone(da)
         return da
     def to_model_timezone(self,da):

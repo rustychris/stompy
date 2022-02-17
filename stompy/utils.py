@@ -2445,9 +2445,9 @@ def partition(items, predicate=bool):
             (item for pred, item in b if pred))
 
 def distinct_substrings(strs,split_on='_.- '):
-    """                                                                                                                                                                 
-    strs: list of str                                                                                                                                                   
-    returns a list of strs, with the longest common prefix and suffix removed                                                                                           
+    """
+    strs: list of str
+    returns a list of strs, with the longest common prefix and suffix removed
     """
     for i in range(0,len(strs[0])):
         for s in strs[1:]:
@@ -2469,6 +2469,6 @@ def distinct_substrings(strs,split_on='_.- '):
     while (j>0) and (strs[0][-j] not in split_on):
         j-=1
     j=-j
-    
+
     if j==0: j=None
     return [s[i:j] for s in strs]
