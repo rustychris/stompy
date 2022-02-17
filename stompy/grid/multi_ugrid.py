@@ -305,8 +305,12 @@ class MultiUgrid(object):
         Close and reopen individual datasets, in case unlimited dimensions (i.e. time) have
         been extended.  Does not recompute the grid.
         """
-        [ds.close() for ds in self.dss]
+        self.close()
         self.dss=self.load()
+
+    def close(self):
+        for ds in self.dss:
+            ds.close() 
 
     def create_global_grid_and_mapping(self):
         self.node_l2g=[]
