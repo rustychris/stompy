@@ -3766,7 +3766,7 @@ class CompositeField(Field):
 
     def ortho_diffuser(self,res,aniso,source,src_data,src_geom,result_data):
         """
-        Strong curvilinear anisotropic interpolatio
+        Strong curvilinear anisotropic interpolation
         """
         from . import interp_orthogonal
         oink=interp_orthogonal.OrthoInterpolator(region=src_geom,

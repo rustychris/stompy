@@ -5410,6 +5410,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         if return_nodes:
             nodes=list( self.edges['nodes'][edge_hits[0]] )
+            # BUG HERE! 2022-01-17 RH: details lost to the sands of time.
+            # probably DFM related.
             if nodes[-1] in self.edges['nodes'][edge_hits[1]]:
                 nodes=nodes[::-1]
 
