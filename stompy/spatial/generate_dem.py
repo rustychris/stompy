@@ -28,6 +28,11 @@ def create_dataset(args):
         xyxy=attrs['geom'].bounds
         geo_bounds=[xyxy[0], xyxy[2], xyxy[1], xyxy[3]]
 
+        if attrs['src_name']=='':
+            # for some data_mode, don't need a source, but upstream
+            # code expects something. here is something.
+            return field.ConstantField(0.0)
+
         if attrs['src_name'].startswith('py:'):
             expr=attrs['src_name'][3:]
             # something like 'ConstantField(-1.0)'

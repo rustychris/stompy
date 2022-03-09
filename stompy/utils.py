@@ -1395,6 +1395,7 @@ def to_dt64(x):
     elif isinstance(x,pd.Timestamp):
         return x.to_datetime64()
     else:
+        # 2022-02: This has gotten problematic, as MPL has changed their standard.
         if np.issubdtype(x.dtype, np.floating):
             x=num2date(x)
 
@@ -1406,6 +1407,9 @@ def to_dt64(x):
             return x
 
         assert False
+
+def matlab_to_dt64(x):
+    return (x-1)*86400*np.timedelta64(1,'s') + np.datetime64('0000-01-01 00:00')
 
 def to_unix(t):
     """
