@@ -54,8 +54,8 @@ def pathify(polygon):
         return a
 
     vertices = np.concatenate(
-        [ ensure_orientation(polygon.exterior,ccw=True)]
-        + [ ensure_orientation(r,ccw=False) for r in polygon.interiors])
+        [ ensure_orientation(polygon.exterior.coords,ccw=True)]
+        + [ ensure_orientation(r.coords,ccw=False) for r in polygon.interiors])
     codes = np.concatenate(
         [ring_coding(polygon.exterior)]
         + [ring_coding(r) for r in polygon.interiors])
