@@ -2476,3 +2476,24 @@ def distinct_substrings(strs,split_on='_.- '):
 
     if j==0: j=None
     return [s[i:j] for s in strs]
+
+def combinations(values,k):
+    """
+    Return all combinations of choosing k elements from the 
+    sequence values. Returns a generator.
+    """
+    # iterate over starting value, 
+    # recursive call to get remainder of sequence
+    # if we want to choose 3, then the first of those
+    # if k=2, then I want to omit the last item
+    if k==0:
+        yield ()
+        return
+    N=len(values)
+    assert k<=N
+    # if k==N, this is range(1)=[0], exactly one choice.
+    # if k==1, this is range(N)=all elements.
+    for i in range(N-k+1):
+        for rest in combinations(values[i+1:],k-1):
+            res=(values[i],) + rest
+            yield res
