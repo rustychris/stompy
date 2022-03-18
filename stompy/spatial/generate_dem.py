@@ -218,7 +218,8 @@ def main(argv=None):
             # if the file exists, its extents will not be updated.
             output_fn=os.path.join(dem_dir,'merged.tif')
             os.path.exists(output_fn) and os.unlink(output_fn)
-            log.info("Merging using gdal_merge.py")
+
+            log.info("Merging %d tiles using gdal_merge.py"%len(calls))
 
             # Try importing gdal_merge directly, which will more reliably
             # find the right library since if we got this far, python already
@@ -226,7 +227,11 @@ def main(argv=None):
             # to get the right way of importing this, since it's intended as
             # a script and not a module.
             try:
-                from Scripts import gdal_merge
+                # This way seems deprecated, and fails outright on 2022-03
+                # windows install.
+                #from Scripts import gdal_merge
+                # This is maybe sanctioned, tho
+                from osgeo_utils import gdal_merge
             except ImportError:
                 log.info("Failed to import gdal_merge, will try subprocess",exc_info=args.verbose>1)
                 gdal_merge=None
