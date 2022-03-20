@@ -4,6 +4,7 @@ from __future__ import print_function
 # still tracking down the last few calls missing the np. prefix,
 # leftover from 'from numpy import *'
 import numpy as np 
+import six
 
 import glob,types
 import copy
@@ -709,13 +710,11 @@ class XYZField(Field):
         
         return XYZField(newX,newF, projection = self.projection() )
     def write_text(self,fname,sep=' '):
-        fp = file(fname,'wt')
-
-        for i in range(len(self.F)):
-            fp.write( "%f%s%f%s%f\n"%(self.X[i,0],sep,
-                                      self.X[i,1],sep,
-                                      self.F[i] ) )
-        fp.close()
+        with open(fname,'wt') as fp:
+            for i in range(len(self.F)):
+                fp.write( "%f%s%f%s%f\n"%(self.X[i,0],sep,
+                                          self.X[i,1],sep,
+                                          self.F[i] ) )
 
     def intersect(self,other,op,radius=0.1):
         """ Create new pointset that has points that are in both fields, and combine
@@ -2122,7 +2121,7 @@ class SimpleGrid(QuadrilateralGrid):
         else:
             good = ~np.isnan(self.F)
 
-        i,j = where(good)
+        i,j = np.where(good)
 
         X = np.zeros( (len(i),2), np.float64 )
         X[:,0] = x[j]
@@ -2676,16 +2675,16 @@ class SimpleGrid(QuadrilateralGrid):
             driver = gdal.GetDriverByName("GTiff")
             if options is None:
                 options=["COMPRESS=LZW"]
-        else:
-            driver = gdal.GetDriverByName("MEM")
-            if options is None:
-                options=[]
-
+                
             if os.path.exists(output_file):
                 if overwrite:
                     os.unlink(output_file)
                 else:
                     raise Exception("File %s already exists"%output_file)
+        else:
+            driver = gdal.GetDriverByName("MEM")
+            if options is None:
+                options=[]
 
         gtype = numpy_type_to_gdal[self.F.dtype.type]
         dst_ds = driver.Create(output_file, self.F.shape[1], self.F.shape[0], 1, gtype,
@@ -2986,7 +2985,8 @@ class GdalGrid(SimpleGrid):
 
         return [xmin,xmax,ymin,ymax],[dx,dy]
 
-    def __init__(self,filename,bounds=None,geo_bounds=None,target_projection=None):
+    def __init__(self,filename,bounds=None,geo_bounds=None,target_projection=None,
+                 source_projection=None):
         """ Load a raster dataset into memory.
         bounds: [x-index start, x-index end, y-index start, y-index end]
          will load a subset of the raster.
@@ -3007,7 +3007,8 @@ class GdalGrid(SimpleGrid):
         tgt_geo_bounds=None
 
         if (target_projection is not None):
-            source_projection=self.gds.GetProjection()
+            if source_projection is None:
+                source_projection=self.gds.GetProjection()
             
             if (source_projection is None) or (source_projection==""):
                 raise Exception("Target projection was given, but there is no source projection for %s"%filename)
@@ -3604,7 +3605,8 @@ class CompositeField(Field):
                                                          self.alpha_mode[src_i]))
 
             source=self.load_source(src_i) # HERE - need to be smarter about overlapping bounds, and also reproject on the fly
-            if source.F.size==0:
+
+            if isinstance(source,SimpleGrid) and source.F.size==0: # could be other type of field.
                 # So the geom overlapped the current tile, but the raster itself came up empty.
                 log.info("Source %s came up empty after cropping. Check projection, and whether polygon intersects data"
                          %(self.sources['src_name'][src_i]))
@@ -3721,7 +3723,8 @@ class CompositeField(Field):
             for mode in [self.data_mode[src_i],self.alpha_mode[src_i]]:
                 if mode is None or mode.strip() in ['',b'']: continue
                 # This is getting a SyntaxError when using python 2.
-                exec(mode) # used to be eval.
+                # exec(mode) # used to be eval.
+                six.exec_(mode)
 
             data_missing=np.isnan(src_data.F)
             src_alpha.F[data_missing]=0.0
@@ -3763,7 +3766,7 @@ class CompositeField(Field):
 
     def ortho_diffuser(self,res,aniso,source,src_data,src_geom,result_data):
         """
-        Strong curvilinear anisotropic interpolatio
+        Strong curvilinear anisotropic interpolation
         """
         from . import interp_orthogonal
         oink=interp_orthogonal.OrthoInterpolator(region=src_geom,

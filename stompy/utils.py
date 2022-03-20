@@ -1395,6 +1395,7 @@ def to_dt64(x):
     elif isinstance(x,pd.Timestamp):
         return x.to_datetime64()
     else:
+        # 2022-02: This has gotten problematic, as MPL has changed their standard.
         if np.issubdtype(x.dtype, np.floating):
             x=num2date(x)
 
@@ -1406,6 +1407,9 @@ def to_dt64(x):
             return x
 
         assert False
+
+def matlab_to_dt64(x):
+    return (x-1)*86400*np.timedelta64(1,'s') + np.datetime64('0000-01-01 00:00')
 
 def to_unix(t):
     """
@@ -2445,9 +2449,9 @@ def partition(items, predicate=bool):
             (item for pred, item in b if pred))
 
 def distinct_substrings(strs,split_on='_.- '):
-    """                                                                                                                                                                 
-    strs: list of str                                                                                                                                                   
-    returns a list of strs, with the longest common prefix and suffix removed                                                                                           
+    """
+    strs: list of str
+    returns a list of strs, with the longest common prefix and suffix removed
     """
     for i in range(0,len(strs[0])):
         for s in strs[1:]:
@@ -2469,6 +2473,27 @@ def distinct_substrings(strs,split_on='_.- '):
     while (j>0) and (strs[0][-j] not in split_on):
         j-=1
     j=-j
-    
+
     if j==0: j=None
     return [s[i:j] for s in strs]
+
+def combinations(values,k):
+    """
+    Return all combinations of choosing k elements from the 
+    sequence values. Returns a generator.
+    """
+    # iterate over starting value, 
+    # recursive call to get remainder of sequence
+    # if we want to choose 3, then the first of those
+    # if k=2, then I want to omit the last item
+    if k==0:
+        yield ()
+        return
+    N=len(values)
+    assert k<=N
+    # if k==N, this is range(1)=[0], exactly one choice.
+    # if k==1, this is range(N)=all elements.
+    for i in range(N-k+1):
+        for rest in combinations(values[i+1:],k-1):
+            res=(values[i],) + rest
+            yield res

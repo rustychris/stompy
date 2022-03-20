@@ -1944,7 +1944,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         geoms=wkb2shp.shp2geom(shp_fn)
         for geo in geoms['geom']:
             if geo.type =='Polygon':
-                coords=np.array(geo.exterior)
+                coords=np.array(geo.exterior.coords) # shapely 2.0 compat
                 if np.all(coords[-1] ==coords[0] ):
                     coords=coords[:-1]
 
@@ -1959,7 +1959,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 # really needs edges to exist first.
                 self.add_cell_and_edges(nodes=nodes)
             elif geo.type=='LineString':
-                coords=np.array(geo)
+                coords=np.array(geo.coords)
                 self.add_linestring(coords)
             else:
                 raise GridException("Not ready for geometry type %s"%geo.type)
@@ -5569,7 +5569,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             xy = self.nodes['x'][self.cell_to_nodes(i)]
             cell_geoms[idx] = geometry.Polygon(xy)
         del cell_geoms[(idx+1):]
-        return ops.cascaded_union(cell_geoms)
+        #return ops.cascaded_union(cell_geoms)
+        # Updated api as of 2022-02-22
+        return ops.unary_union(cell_geoms)
 
     def boundary_polygon(self):
         """ return polygon, potentially with holes, representing the domain.

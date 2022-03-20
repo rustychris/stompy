@@ -615,6 +615,9 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
 
     def write_monitors(self):
         # start with empty
+        if not self.mdu['output','ObsFile']:
+            self.mdu['output','ObsFile']='obs.xyn'
+            
         open(self.mdu.filepath( ('output','ObsFile') ),'wt').close()
         self.write_monitor_points()
         self.write_monitor_sections()
