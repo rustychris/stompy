@@ -427,8 +427,16 @@ def decode_geometry(ds,field,replace=True, on_error='pass'):
     from shapely import geometry
     node_counts=ds[ds[field].attrs['node_count']]
     coordx,coordy=ds[field].attrs['node_coordinates'].split()
-    node_x=ds[coordx]
-    node_y=ds[coordy]
+    try:
+        node_x=ds[coordx]
+        node_y=ds[coordy]
+    except KeyError:
+        print("node_coordinates %s %s do not exist"%(coordx,coordy))
+        if on_error=='pass':
+            return
+        else:
+            raise
+            
     node_stops=np.cumsum(node_counts)
     node_starts=node_stops-node_counts
 
