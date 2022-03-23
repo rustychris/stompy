@@ -1094,6 +1094,25 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         fns=glob.glob(os.path.join(output_dir,'*_map.nc'))
         fns.sort()
         return fns
+
+    _mu=None
+    def map_dataset(self,force_multi=False):
+        """
+        Return map dataset. For MPI runs, this will emulate a single, merged
+        global dataset via multi_ugrid. For serial runs it directly opens
+        an xarray dataset.
+
+        Does not chain in time.
+        """
+        if self.num_procs<=1 and not force_multi:
+            # xarray caches this.
+            return xr.open_dataset(self.map_outputs()[0])
+        else:
+            from stompy.grid import multi_ugrid
+            # This is slow so cache the result
+            if self._mu is None:
+                self._mu=multi_ugrid.MultiUgrid(self.map_outputs())
+            return self._mu
     
     def his_output(self):
         """
