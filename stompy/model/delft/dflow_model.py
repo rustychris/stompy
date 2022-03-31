@@ -1139,6 +1139,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
 
             for coord,names in [ ('cross_section','cross_section_name'),
                                  ('weigens','weigen_id'),
+                                 ('source_sink','source_sink_name'),
                                  ('stations','station_name'),
                                  ('general_structures','general_structure_id'),
                                  ('gategens','gategen_name')]:
@@ -1150,8 +1151,8 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                     mask=[val not in coord_vals[:i]
                           for i,val in enumerate(coord_vals)]
                     mask=np.array(mask, np.bool8 )
-                    his_ds=his_ds.isel(coord=mask)
-                    coord_vals==np.array(coord_vals)[mask]
+                    his_ds=his_ds.isel(**{coord:mask})
+                    coord_vals=np.array(coord_vals)[mask]
                     
                 his_ds[coord]=(coord,),coord_vals
 
