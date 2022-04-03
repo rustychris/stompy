@@ -380,6 +380,9 @@ class MultiUgrid(object):
                 assert np.all(n_map>=0)
                 assert np.all(j_map>=0)
                 assert np.all(c_map>=0)
+                # Would be nice to factor this out
+                sel_proc=self.grid.cells['ghostness'][c_map] < ghostness
+                c_map=np.where(sel_proc, c_map, -1)
                 self.grid.cells['ghostness'][c_map] = ghostness
                 self.grid.cells['proc'][c_map]=gnum
 
