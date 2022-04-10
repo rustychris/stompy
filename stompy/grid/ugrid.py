@@ -18,6 +18,7 @@ import pytz
 from ..io import qnc
 import xarray as xr
 from .. import utils
+from . import multi_ugrid as mu
 import time
 
 def ncslice(ncvar,**kwargs):
@@ -459,6 +460,12 @@ class UgridXr(object):
             # bit of a punt, makes assumptions
             self.layer_dim=self.nc[self.layer_var_name()].dims[0]
 
+        # Time is slightly different. defaults to 'time', but that may not exist.
+        if self.time_dim is not None:
+            if self.time_dim not in self.nc.dims:
+                self.time_dim=None
+                self.time_vname=None
+
     def find_var(self,**kwargs):
         """ find a variable name based on attributes (and other details, as
         added)
@@ -647,10 +654,17 @@ class UgridXr(object):
             assert self.face_eta_vname is not None,"Failed to discern eta variable"
         surface=self.face_eta_vname
 
-        face_select={face_dim:face_slice}
-        hsel={face_dim:face_slice}
+        face_select={}
+        hsel={}
+        
+        if face_slice!=slice(None):
+            face_select[face_dim]=face_slice
+            hsel[face_dim]=face_slice
+            
         hsel.update(time_kw)
-        h = self.nc[self.face_eta_vname].isel(**hsel)
+        h=self.nc[self.face_eta_vname]
+        if len(hsel):
+            h = h.isel(**hsel)
 
         if self.face_depth_vname is None:
             self.face_depth_vname=self.find_var(standard_name=["sea_floor_depth_below_geoid",
@@ -668,13 +682,22 @@ class UgridXr(object):
         depth=self.face_depth_vname
         assert depth is not None,"Failed to find depth variable"
         
-        bed = self.nc[depth].isel(**face_select)
+        bed = self.nc[depth]
+        if len(face_select):
+            bed=bed.isel(**face_select)
+            
         if self.nc[depth].attrs.get('positive')=='down':
             log.debug("Cell depth is positive-down")
             bed=-bed
         else:
             log.debug("Cell depth is positive-up, or at least that is the assumption")
 
+        # special handling for multi-ugrid
+        if isinstance(h,mu.MultiVar):
+            h=h.to_dataarray()
+        if isinstance(bed,mu.MultiVar):
+            bed=bed.to_dataarray()
+            
         h,bed=xr.broadcast(h,bed)
         
         # for now, can only handle an array of cells - i.e. if you want
