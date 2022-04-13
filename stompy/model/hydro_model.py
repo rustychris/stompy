@@ -2506,7 +2506,7 @@ class NwisStageBC(NwisBC,StageBC):
                                   products=[self.product_id],
                                   cache_dir=self.cache_dir)
         if ds is not None:
-            ds['water_level']=('time',), 0.3048*ds['height_gage']
+            ds['water_level']=('time',), 0.3048*ds['height_gage'].values
             ds['water_level'].attrs['units']='m'
             ds['water_level'].attrs['standard_name']=self.standard_name
         return ds
@@ -2571,7 +2571,7 @@ class NwisFlowBC(NwisBC,FlowBC):
                                   products=[self.product_id],
                                   cache_dir=self.cache_dir)
         if ds is not None:
-            ds['flow']=('time',), 0.028316847*ds['stream_flow_mean_daily']
+            ds['flow']=('time',), 0.028316847*ds['stream_flow_mean_daily'].values
             ds['flow'].attrs['units']='m3 s-1'
             ds['flow'].attrs['standard_name']=self.standard_name
         return ds
