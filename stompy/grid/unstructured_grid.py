@@ -6236,6 +6236,40 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         else:
             return return_values
 
+    def distance_transform_nodes(self,nodes,max_distance=None):
+        """
+        Akin to image processing distance transform, centered on nodes
+        and connceted by edges.
+        nodes: a sequence of node indices or a bitmask
+        max_distance: stop seaching when distance reaches this threshold.
+          This is not currently an efficient implementation, and you will almost
+          certainly want to supply max_distance.
+        """
+
+        if np.issubdtype(nodes.dtype,np.bool8):
+            nodes=np.nonzero(nodes)[0]
+
+        dists=np.zeros(self.Nnodes(),np.float64)
+        dists[:]=np.inf
+        dists[nodes]=0.0
+        #L=15.0
+
+        queue=list(nodes)
+
+        while len(queue):
+            n=queue.pop(0)
+            nval=dists[n]
+            for nbr in self.node_to_nodes(n):
+                if dists[nbr]<=nval:
+                    continue
+                d=mag(self.nodes['x'][n] - self.nodes['x'][nbr])
+                if dists[nbr]>nval+d:
+                    dists[nbr]=nval+d
+                    if (nbr not in queue) and (dists[nbr]<max_distance):
+                        queue.append(nbr)
+        return dists
+
+        
     def remove_disconnected_components(self,renumber=True):
         """
         Clean up disconnected portions of the grid.  Disconnected

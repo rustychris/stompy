@@ -1040,6 +1040,8 @@ class MpiModel(object):
         if num_procs is None:
             num_procs=self.num_procs
 
+        # TODO: mpi_flavor is currently handling multiple roles: how to start
+        # a job, and to some degree the machinery that is running behind the scenes.
         if self.mpi_flavor=='mpiexec':
             self.mpirun_mpiexec(cmd,num_procs,working_dir,wait=wait)
         elif self.mpi_flavor=='slurm':

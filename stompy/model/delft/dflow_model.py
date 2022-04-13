@@ -1096,11 +1096,14 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         return fns
 
     _mu=None
-    def map_dataset(self,force_multi=False):
+    def map_dataset(self,force_multi=False,grid=None):
         """
         Return map dataset. For MPI runs, this will emulate a single, merged
         global dataset via multi_ugrid. For serial runs it directly opens
         an xarray dataset.
+
+        grid: if given, the subdomains will be mapped to the given grid, instead
+        of constructing a grid.
 
         Does not chain in time.
         """
@@ -1111,7 +1114,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             from stompy.grid import multi_ugrid
             # This is slow so cache the result
             if self._mu is None:
-                self._mu=multi_ugrid.MultiUgrid(self.map_outputs())
+                self._mu=multi_ugrid.MultiUgrid(self.map_outputs(),grid=grid)
             return self._mu
     
     def his_output(self):
@@ -1139,6 +1142,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
 
             for coord,names in [ ('cross_section','cross_section_name'),
                                  ('weigens','weigen_id'),
+                                 ('source_sink','source_sink_name'),
                                  ('stations','station_name'),
                                  ('general_structures','general_structure_id'),
                                  ('gategens','gategen_name')]:
@@ -1150,8 +1154,8 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                     mask=[val not in coord_vals[:i]
                           for i,val in enumerate(coord_vals)]
                     mask=np.array(mask, np.bool8 )
-                    his_ds=his_ds.isel(coord=mask)
-                    coord_vals==np.array(coord_vals)[mask]
+                    his_ds=his_ds.isel(**{coord:mask})
+                    coord_vals=np.array(coord_vals)[mask]
                     
                 his_ds[coord]=(coord,),coord_vals
 
