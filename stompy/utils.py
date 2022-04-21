@@ -602,7 +602,7 @@ def interp_near(x,sx,sy,max_dx=None):
     try:
         y_at_x[ (dx>max_dx) | (dx<0) ] = np.nan
     except TypeError: # so it was a scalar...
-        if (dx>max_dx) | (dx<0):
+        if (max_dx is not None) and ((dx>max_dx) or (dx<0)):
             y_at_x=np.nan
     return y_at_x
 
