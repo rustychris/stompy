@@ -806,7 +806,8 @@ class UgridXr(object):
         z = layer_bounds.min(axis=1) # bottom of each cell
 
         all_dz[ii+(ctops[ii],)] = h-z[ctops]
-        all_dz[ii+(cbeds[ii],)] -= bed - z[cbeds]
+        # isub doesn't play nicely with dask array, so write out the isub
+        all_dz[ii+(cbeds[ii],)] = all_dz[ii+(cbeds[ii],)] - (bed - z[cbeds])
 
         # handle the various query options
         if isinstance(query,str):
