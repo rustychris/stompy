@@ -252,7 +252,8 @@ class MultiUgrid(object):
         self.rev_meta={meta[k]:k for k in meta} # Reverse that
 
         if cleanup_dfm=='auto':
-            cleanup_dfm='Deltares' in self.dss[0].attrs['Conventions']
+            cleanup_dfm=('Deltares' in self.dss[0].attrs.get('Conventions',"")
+                          or 'D-Flow FM' in self.dss[0].attrs.get('source',""))
             
         if cleanup_dfm:
             for g in self.grids:

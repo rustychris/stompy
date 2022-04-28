@@ -4132,6 +4132,13 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             if k in ['edges','nodes']: # may have to make this more generic..
                 self.cells[k][i][:len(v)] = v
                 self.cells[k][i][len(v):] = self.UNDEFINED # -1
+            elif self.cells[k].ndim==2: # catch-all when lengths don't match
+                # Need this in cases where there are other per-edge or per-node fields
+                # and the source of the data has fewer maxsides than self.
+                # Have to punt on the undefined value (though could go with nan if
+                # if it's float-valued)
+                self.cells[k][i][:len(v)] = v
+                self.cells[k][i][len(v):] = self.UNDEFINED # -1
             else:
                 self.cells[k][i]=v
 
