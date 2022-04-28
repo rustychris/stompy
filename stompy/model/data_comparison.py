@@ -77,7 +77,6 @@ def combine_sources(all_sources,dt=np.timedelta64(900,'s'),min_period=True):
             return None
         t_min,t_max=period_union(all_sources)
         
-    dt=np.timedelta64(900,"s")  # compare at 15 minute intervals.
     resample_bins=np.arange(utils.floor_dt64(t_min,dt),
                             utils.ceil_dt64(t_max,dt)+dt,
                             dt)
@@ -101,11 +100,10 @@ def combine_sources(all_sources,dt=np.timedelta64(900,'s'),min_period=True):
         # dim='time' is needed for vector-valued data to indicate not to
         # take the mean across vector components, just within bins on the
         # time axis
-        da_r=(# ada.groupby_bins(da.time,resample_bins,labels=bin_labels)
-            da.groupby_bins('dnum',bins,labels=bin_labels)
+        # This is slow, but more general than a hand-rolled numpy solution
+        da_r=(da.groupby_bins('dnum',bins,labels=bin_labels)
               .mean(dim='time')
-              #.rename(time_bins='time')
-            .rename(dnum_bins='time')
+              .rename(dnum_bins='time')
               .to_dataset())
         return da_r
 

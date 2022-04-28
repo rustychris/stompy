@@ -191,6 +191,10 @@ class MultiVar(object):
             result[left_slice]=sv.values[right_slice]
         return result
 
+    @property
+    def attrs(self):
+        return self.sub_vars[0].attrs
+    
     def __array__(self):
         """ This lets numpy-expecting functions accept this franken-array
         """
@@ -199,6 +203,18 @@ class MultiVar(object):
     def __len__(self):
         shape,left_idx,right_idx=self.shape_and_indexes()
         return shape[0]
+
+    def to_dataarray(self):
+        """
+        Materialize to a non-partitioned DataArray.
+        """
+        # Would be nice to put coordinates together, too.
+        # Have to be careful to drop or merge any coordinates
+        # that span a partitioned dimension, though.
+        da=xr.DataArray(self.values,dims=self.dims,
+                        name=self.sub_vars[0].name,
+                        attrs=self.sub_vars[0].attrs)
+        return da
         
         
 class MultiUgrid(object):
@@ -223,7 +239,8 @@ class MultiUgrid(object):
     # a nonzero tolerance
     merge_tol=0.0
     
-    def __init__(self,paths,cleanup_dfm='auto',xr_kwargs={},
+    def __init__(self,paths,cleanup_dfm='auto',xr_kwargs={},grid=None,
+                 match_grid_tol=1e-3,
                  **grid_kwargs):
         """
         paths: 
@@ -233,6 +250,12 @@ class MultiUgrid(object):
         cleanup_dfm: True: remove extra bits common in DFM output that either
          lead to duplicate edges, or cannot be handled by multi_ugrid. If 'auto'
          then check for 'Deltares' in Conventions.
+
+        grid: instead of building a new grid, match the partitioned datasets
+          to an existing grid. Caveat emptor -- be sure the supplied grid is an
+          exact match!  match_grid_tol gives the tolerance in matching up nodes.
+          note that edges may not preserve orientation, and cells may not preserve
+          exact node order.
 
         ** (grid_kwargs): keyword arguments passed to read_ugrid.
         xr_kwargs: dict of arguments passed to xr.open_dataset.
@@ -280,7 +303,7 @@ class MultiUgrid(object):
             else:
                 self.rev_meta['nFlowElem']='face_dimension'
 
-        self.create_global_grid_and_mapping()
+        self.create_global_grid_and_mapping(grid=grid,match_grid_tol=match_grid_tol)
         
     def load(self,**xr_kwargs):
         return [xr.open_dataset(p,**xr_kwargs) for p in self.paths]
@@ -290,10 +313,30 @@ class MultiUgrid(object):
         Close and reopen individual datasets, in case unlimited dimensions (i.e. time) have
         been extended.  Does not recompute the grid.
         """
-        [ds.close() for ds in self.dss]
+        self.close()
         self.dss=self.load()
 
-    def create_global_grid_and_mapping(self):
+    def close(self):
+        for ds in self.dss:
+            ds.close() 
+
+    def create_global_grid_and_mapping(self,grid=None,match_grid_tol=1e-3):
+        """
+        grid: if given, a pre-existing global grid. subdomains will be matched
+          exactly to this grid.
+        """
+        if grid is None:
+            generate=True
+        else:
+            self.grid=grid.copy()
+            # initialize to 0 for unset.
+            self.grid.add_cell_field( 'ghostness', np.zeros(self.grid.Ncells(), np.int32),
+                                      on_exists='overwrite')
+            # initialize to -1 for unset.
+            self.grid.add_cell_field( 'proc', np.zeros( self.grid.Ncells(), np.int32)-1,
+                                      on_exists='overwrite')
+            generate=False
+            
         self.node_l2g=[]
         self.edge_l2g=[]
         self.cell_l2g=[]
@@ -312,25 +355,37 @@ class MultiUgrid(object):
             # positive the more likely cell is to be real
             ghostness=100*np.ones(g.Ncells(), np.int32)
             ghostness[bnd_cell] -= 1
-            
-            if gnum==0:
-                self.grid=self.grids[0].copy()
-                n_map=np.arange(self.grid.Nnodes())
-                j_map=np.arange(self.grid.Nedges())
-                c_map=np.arange(self.grid.Ncells())
-                self.grid.add_cell_field( 'ghostness', ghostness )
-                self.grid.add_cell_field( 'proc', np.zeros( g.Ncells(), np.int32) )
+
+            if generate:
+                if gnum==0:
+                    self.grid=self.grids[0].copy()
+                    n_map=np.arange(self.grid.Nnodes())
+                    j_map=np.arange(self.grid.Nedges())
+                    c_map=np.arange(self.grid.Ncells())
+                    self.grid.add_cell_field( 'ghostness', ghostness )
+                    self.grid.add_cell_field( 'proc', np.zeros( g.Ncells(), np.int32) )
+                else:
+                    n_map,j_map,c_map = self.grid.add_grid(g,merge_nodes='auto',
+                                                           tol=self.merge_tol)
+                    # c_map will be g.Ncells(), mapping to global idx.
+                    # either ghostness not set, or the existing value is ghostier
+                    # than new value:
+                    sel_proc=self.grid.cells['ghostness'][c_map] < ghostness
+                    c_map=np.where(sel_proc, c_map, -1)
+                    # just the selected cells get this proc
+                    self.grid.cells['proc'][c_map[sel_proc]]=gnum
+                    self.grid.cells['ghostness'][c_map[sel_proc]]=ghostness[sel_proc]
             else:
-                n_map,j_map,c_map = self.grid.add_grid(g,merge_nodes='auto',
-                                                       tol=self.merge_tol)
-                # c_map will be g.Ncells(), mapping to global idx.
-                # either ghostness not set, or the existing value is ghostier
-                # than new value:
+                # i.e. g.nodes['x'][n] == self.grid.nodes['x'][node_map[n]]
+                n_map,j_map,c_map = g.match_to_grid(self.grid,tol=match_grid_tol)
+                assert np.all(n_map>=0)
+                assert np.all(j_map>=0)
+                assert np.all(c_map>=0)
+                # Would be nice to factor this out
                 sel_proc=self.grid.cells['ghostness'][c_map] < ghostness
                 c_map=np.where(sel_proc, c_map, -1)
-                # just the selected cells get this proc
-                self.grid.cells['proc'][c_map[sel_proc]]=gnum
-                self.grid.cells['ghostness'][c_map[sel_proc]]=ghostness[sel_proc]
+                self.grid.cells['ghostness'][c_map] = ghostness
+                self.grid.cells['proc'][c_map]=gnum
 
             self.node_l2g.append(n_map)
             self.edge_l2g.append(j_map)
@@ -445,9 +500,15 @@ class MultiUgrid(object):
         for k in state:
             setattr(self,k,state[k])
 
+    # These should give the correct names, but won't have the correct
+    # dimensions for partitioned variables.
     @property
     def data_vars(self):
         return self.dss[0].data_vars
+
+    @property
+    def variables(self):
+        return self.dss[0].variables
 
     def isel(self,**kwargs):
         """

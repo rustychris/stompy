@@ -431,6 +431,7 @@ class SuntansModel(hm.HydroModel):
     # like z_datum['NAVD88']=-5.
     z_offset=0.0
     ic_ds=None
+    bc_ds=None
     met_ds=None
     
     # None: not a restart, or
@@ -457,9 +458,15 @@ class SuntansModel(hm.HydroModel):
     # single-core). 
     use_edge_depths=False # write depth data per-edge in a separate file.
 
-    def __init__(self):
-        super(SuntansModel,self).__init__()
+    def __init__(self,*a,**kw):
         self.load_template(os.path.join(os.path.dirname(__file__),"data","suntans.dat"))
+        super(SuntansModel,self).__init__(*a,**kw)
+
+    def configure(self):
+        super(SuntansModel,self).configure()
+        
+        if self.restart_model is not None:
+            self.set_restart_from(self.restart_model)
         
     @property
     def time0(self):
@@ -907,23 +914,30 @@ class SuntansModel(hm.HydroModel):
         """
         prereq: self.bc_ds has been set.
         """
-        if len(self.bc_ds.Ntype3)==0:
-            log.warning("Cannot set initial h from BC because there are no type 3 edges")
-            return
+        if self.bc_ds is not None:
+            if len(self.bc_ds.Ntype3)==0:
+                log.warning("Cannot set initial h from self.bc_ds because there are no type 3 edges")
+                return
+            log.info("Will pull initial h from self.bc_ds")
 
-        time_i=np.searchsorted(self.bc_ds.time.values,self.run_start)
+            time_i=np.searchsorted(self.bc_ds.time.values,self.run_start)
 
-        # both bc_ds and ic_ds should already incorporate the depth offset, so
-        # no further adjustment here.
-        h=self.bc_ds.h.isel(Nt=time_i).mean().values
-
-        # this is positive down, already shifted, clipped.
-        #cell_depths=self.ic_ds['dv'].values
-
-        # This led to drying issues in 3D, and ultimately was not the fix
-        # for issues in 2D
-        #self.ic_ds.eta.values[:]=np.maximum(h,-cell_depths)
-
+            # both bc_ds and ic_ds should already incorporate the depth offset, so
+            # no further adjustment here.
+            h=self.bc_ds.h.isel(Nt=time_i).mean().values
+        else:
+            log.info("Will pull initial h from self.bcs")
+            for bc in self.bcs:
+                if isinstance(bc,hm.StageBC):
+                    data=bc.data()
+                    if 'time' in data.dims:
+                        data=data.sel(time=self.run_start,method='nearest')
+                    h=float(data.values)
+                    break
+            else:
+                log.warning("Cannot set initial h from self.bcs because there are no Stage BCs")
+                return
+                
         self.ic_ds.eta.values[...]=h
 
         log.info("Setting initial eta from BCs, value=max(z_bed,%.4f) (including z_offset of %.2f)"%(h,self.z_offset))
@@ -2201,7 +2215,8 @@ class SuntansModel(hm.HydroModel):
                     break
     
     def extract_transect(self,xy=None,ll=None,time=slice(None),dx=None,
-                         vars=['uc','vc','Ac','dv','dzz','eta','w']):
+                         vars=['uc','vc','Ac','dv','dzz','eta','w'],
+                         datasets=None,grids=None):
         """
         xy: [N,2] coordinates defining the line of the transect
         time: if an integer or slice of integers, interpret as index
@@ -2214,6 +2229,11 @@ class SuntansModel(hm.HydroModel):
 
         Simple chaining is allowed, but if time spans two runs, the later
         run will be used.
+
+        datasets,grids: if supplied, a list of datasets to use instead of chaining
+         and/or merging subdomains. datasets can be either a path to netcdf file
+         or xr.Dataset. if grids are not supplied, grids will be extracted from
+         respective Datasets.
         """
         if xy is None:
             xy=self.ll_to_native(ll)
@@ -2243,7 +2263,14 @@ class SuntansModel(hm.HydroModel):
 
         merged=int(self.config['mergeArrays'])>0
         def gen_sources(): # iterator over proc,sub_g,map_fn
-            if merged:
+            if datasets is not None:
+                for proc,ds in enumerate(datasets):
+                    if grids is None:
+                        g=unstructured_grid.UnstructredGrid.from_ugrid(ds)
+                    else:
+                        g=grids[proc]
+                    yield [proc,g,ds]
+            elif merged:
                 map_fn=self.map_outputs()[0]
                 g=unstructured_grid.UnstructuredGrid.from_ugrid(map_fn)
                 yield [0,g,map_fn]
@@ -2289,7 +2316,10 @@ class SuntansModel(hm.HydroModel):
                 if c is not None:
                     proc_point_cell[proc,pnti]=c
                     if ds is None:
-                        ds=xr.open_dataset(map_fn)
+                        if isinstance(map_fn,str):
+                            ds=xr.open_dataset(map_fn)
+                        else:
+                            ds=map_fn.copy()
                         # doctor up the Nk dimensions
                         ds['Nkf']=ds['Nk'] # copy the variable
                         del ds['Nk'] # delete old variable, leaving Nk as just a dimension
@@ -2324,11 +2354,11 @@ class SuntansModel(hm.HydroModel):
             # fabricate a dzz
             eta_2d,dv_2d,z_w_2d=xr.broadcast( transect['eta'], transect['dv'], -ds['z_w'])
             z_w_2d=z_w_2d.clip(-dv_2d,eta_2d)
-            z_bot=z_w_2d.isel(Nkw=slice(1,None))
-            z_top=z_w_2d.isel(Nkw=slice(None,-1))
+            z_bot=z_w_2d.isel(Nkw=slice(1,None)).values
+            z_top=z_w_2d.isel(Nkw=slice(None,-1)).values
             # must use values to avoid xarray getting smart with aligning axes.
-            dzz=z_top.values-z_bot.values
-            z_ctr=0.5*(z_bot.values+z_top.values)
+            dzz=z_top-z_bot
+            z_ctr=0.5*(z_bot+z_top)
             z_ctr[dzz==0.0]=np.nan
         else:
             dzz=transect.dzz.values.copy() # sample, Nk

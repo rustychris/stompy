@@ -57,17 +57,24 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
     # dredge_depth=-1.0
 
     def __init__(self,*a,**kw):
-        super(DFlowModel,self).__init__(*a,**kw)
-
-        self.structures=[]
+        # Still working out the ordering.
+        # currently HydroModel calls configure(), and configure
+        # might assume that self.mdu exists.
+        # I don't think there is a downside to setting up a default
+        # mdu right here.
         self.load_default_mdu()
 
+        super(DFlowModel,self).__init__(*a,**kw)
+
+    def configure(self):
+        super(DFlowModel,self).configure()
+        
         if self.restart_from is not None:
             self.set_restart_from(self.restart_from)
 
         if self.dwaq is True:
             self.dwaq=waq_scenario.WaqOnlineModel(model=self)
-            
+
     def load_default_mdu(self):
         """
         Load a default set of config values from data/defaults-r53925.mdu
@@ -194,7 +201,8 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         if fn is None:
             # no mdu was found
             return None
-        model=DFlowModel()
+        # use cls(), so that custom subclasses can be used
+        model=cls()
         model.load_mdu(fn)
         model.mdu_basename=os.path.basename(fn)
         try:
@@ -417,17 +425,27 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             self.run_dflowfm(cmd,mpi=False)
         else:
             # Copy the partitioned network files:
-            for proc in range(self.num_procs):
-                old_grid_fn=self.restart_from.subdomain_grid_filename(proc)
-                new_grid_fn=self.subdomain_grid_filename(proc)
-                print("Copying pre-partitioned grid files: %s => %s"%(old_grid_fn,new_grid_fn))
-                shutil.copyfile(old_grid_fn,new_grid_fn)
+            if self.restart_deep:
+                for proc in range(self.num_procs):
+                    old_grid_fn=self.restart_from.subdomain_grid_filename(proc)
+                    new_grid_fn=self.subdomain_grid_filename(proc)
+                    self.log.info("Copying pre-partitioned grid files: %s => %s"%(old_grid_fn,new_grid_fn))
+                    shutil.copyfile(old_grid_fn,new_grid_fn)
+            else:
+                self.log.info("Shallow restart, don't copy partitioned grid")
                 
             # not a cross platform solution!
             gen_parallel=os.path.join(self.dfm_bin_dir,"generate_parallel_mdu.sh")
             cmd=[gen_parallel,os.path.basename(self.mdu.filename),"%d"%self.num_procs,'6']
             return utils.call_with_path(cmd,self.run_dir)
 
+    @property
+    def restart_deep(self):
+        """
+        True if this is a restart and we are doing a deep copy
+        """
+        return bool(self.restart) and (self.run_dir!=self.restart_from.run_dir)
+        
     _dflowfm_exe=None
     @property
     def dflowfm_exe(self):
@@ -584,6 +602,9 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             # the dwaq config depends on reading some of the DFM
             # details.
             self.dwaq.write_waq()
+
+        if self.restart_from is not None:
+            self.set_restart_file()
         
     def write_config(self):
         # Assumes update_config() already called
@@ -594,6 +615,9 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
 
     def write_monitors(self):
         # start with empty
+        if not self.mdu['output','ObsFile']:
+            self.mdu['output','ObsFile']='obs.xyn'
+            
         open(self.mdu.filepath( ('output','ObsFile') ),'wt').close()
         self.write_monitor_points()
         self.write_monitor_sections()
@@ -607,7 +631,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                     name=mon_feat['name']
                 except KeyError:
                     name="obs_pnt_%03d"%i
-                xy=np.array(mon_feat['geom'])
+                xy=np.array(mon_feat['geom'].coords[0]) # shapely api update
                 fp.write("%.3f %.3f '%s'\n"%(xy[0],xy[1],name))
     def write_monitor_sections(self):
         fn=self.mdu.filepath( ('output','CrsFile') )
@@ -618,7 +642,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                     name=mon_feat['name']
                 except KeyError:
                     name="obs_sec_%03d"%i
-                xy=np.array(mon_feat['geom'])
+                xy=np.array(mon_feat['geom'].coords) # shapely api update
                 dio.write_pli(fp,[ (name,xy) ])
 
     def add_Structure(self,**kw):
@@ -1070,6 +1094,28 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         fns=glob.glob(os.path.join(output_dir,'*_map.nc'))
         fns.sort()
         return fns
+
+    _mu=None
+    def map_dataset(self,force_multi=False,grid=None):
+        """
+        Return map dataset. For MPI runs, this will emulate a single, merged
+        global dataset via multi_ugrid. For serial runs it directly opens
+        an xarray dataset.
+
+        grid: if given, the subdomains will be mapped to the given grid, instead
+        of constructing a grid.
+
+        Does not chain in time.
+        """
+        if self.num_procs<=1 and not force_multi:
+            # xarray caches this.
+            return xr.open_dataset(self.map_outputs()[0])
+        else:
+            from stompy.grid import multi_ugrid
+            # This is slow so cache the result
+            if self._mu is None:
+                self._mu=multi_ugrid.MultiUgrid(self.map_outputs(),grid=grid)
+            return self._mu
     
     def his_output(self):
         """
@@ -1093,20 +1139,25 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         if set_coordinates:
             # Doctor up the dimensions
             # Misconfigured runs may have duplicates here.
-            cross_sections=[s.decode().strip() for s in his_ds.cross_section_name.values]
-            if len(cross_sections)>len(np.unique(cross_sections)):
-                print("Yuck - duplicate cross section names")
-                mask=np.zeros(len(cross_sections),np.bool8)
-                for i,crs in enumerate(cross_sections):
-                    mask[i]=crs not in cross_sections[:i]
-                    
-                his_ds=his_ds.isel(cross_section=mask)
-                cross_sections=np.array(cross_sections)[mask]
+
+            for coord,names in [ ('cross_section','cross_section_name'),
+                                 ('weigens','weigen_id'),
+                                 ('source_sink','source_sink_name'),
+                                 ('stations','station_name'),
+                                 ('general_structures','general_structure_id'),
+                                 ('gategens','gategen_name')]:
+                if names not in his_ds: continue
+                coord_vals=[s.decode().strip() for s in his_ds[names].values]
                 
-            his_ds['cross_section']=('cross_section',),cross_sections
-            
-            stations=[s.decode().strip() for s in his_ds.station_name.values]
-            his_ds['stations']=('stations',),stations
+                if len(coord_vals)>len(np.unique(coord_vals)):
+                    print('Yuck - duplicate %s names'%coord)
+                    mask=[val not in coord_vals[:i]
+                          for i,val in enumerate(coord_vals)]
+                    mask=np.array(mask, np.bool8 )
+                    his_ds=his_ds.isel(**{coord:mask})
+                    coord_vals=np.array(coord_vals)[mask]
+                    
+                his_ds[coord]=(coord,),coord_vals
 
         if decode_geometry:
             xr_utils.decode_geometry(his_ds,'cross_section_geom',replace=True)
@@ -1158,19 +1209,28 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         self.mdu_basename=os.path.basename( model.mdu_basename.replace('.mdu',mdu_suffix+".mdu") )
         self.mdu.set_filename( os.path.join(self.run_dir, self.mdu_basename) )
         self.restart=True
-        self.restart_model=model
+        self.restart_from=model # used to be restart_model, but I don't think makes sense
         self.ref_date=model.ref_date
         self.run_start=model.restartable_time()
         assert self.run_start is not None,"Trying to restart run that has no restart data"
         
         self.num_procs=model.num_procs
         self.grid=model.grid
-        
+
+        # For now, these are synonymous
         if deep:
             assert self.run_dir != model.run_dir
-        
-        rst_base=os.path.join(model.mdu.output_dir(),
-                              (model.mdu.name
+        else:
+            assert self.run_dir == model.run_dir
+
+        self.set_restart_file()
+    def set_restart_file(self):
+        """ 
+        Update mdu['restart','RestartFile'] based on run_start and self.restart_from
+        Should be called when dealing with a restart and self.run_start is modified.
+        """
+        rst_base=os.path.join(self.restart_from.mdu.output_dir(),
+                              (self.restart_from.mdu.name
                                +'_'+utils.to_datetime(self.run_start).strftime('%Y%m%d_%H%M%S')
                                +'_rst.nc'))
         # That gets rst_base relative to the cwd, but we need it relative
@@ -1420,8 +1480,6 @@ def extract_transect_his(his_ds,pattern):
     order=np.argsort(roster)
     idxs=[ names[roster[i]] for i in order]
 
-
-
     extra_dims=['cross_section','gategens','general_structures','nFlowLink',
                 'nNetLink','nFlowElemWithBnd','station_geom_nNodes']
     extra_dims=[d for d in extra_dims if d in his_ds.dims]
@@ -1430,7 +1488,9 @@ def extract_transect_his(his_ds,pattern):
     # Make it look like an xr_transect
     dsxr=ds.rename(stations='sample',station_x_coordinate='x_sample',station_y_coordinate='y_sample')
     z_renames=dict(laydim='layer',laydimw='interface',zcoordinate_c='z_ctr',zcoordinate_w='z_int')
-    z_renames={k:z_renames[k] for k in z_renames if k in dsxr.dims}
+    # zcoordinate_c is not a dim, though it's a coordinate.
+    z_renames={k:z_renames[k] for k in z_renames if (k in dsxr) or (k in dsxr.dims)}
+    
     dsxr=dsxr.rename(**z_renames)
     
     # add distance?

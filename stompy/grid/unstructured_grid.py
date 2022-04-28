@@ -1944,7 +1944,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         geoms=wkb2shp.shp2geom(shp_fn)
         for geo in geoms['geom']:
             if geo.type =='Polygon':
-                coords=np.array(geo.exterior)
+                coords=np.array(geo.exterior.coords) # shapely 2.0 compat
                 if np.all(coords[-1] ==coords[0] ):
                     coords=coords[:-1]
 
@@ -1959,7 +1959,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 # really needs edges to exist first.
                 self.add_cell_and_edges(nodes=nodes)
             elif geo.type=='LineString':
-                coords=np.array(geo)
+                coords=np.array(geo.coords)
                 self.add_linestring(coords)
             else:
                 raise GridException("Not ready for geometry type %s"%geo.type)
@@ -2420,7 +2420,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             self.log.warning("Increasing max_sides from %d to %d"%(self.max_sides,ugB.max_sides))
             self.modify_max_sides(ugB.max_sides)
         else:
-            self.log.warning("max_sides is okay (%d)"%(self.max_sides))
+            self.log.info("max_sides is okay (%d)"%(self.max_sides))
             
         node_map=np.zeros( ugB.Nnodes(), 'i4')-1
         edge_map=np.zeros( ugB.Nedges(), 'i4')-1
@@ -2618,6 +2618,18 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         vertex_vals[weights==0]=0
         cvals=vertex_vals.sum(axis=1)/weights.sum(axis=1)
         return cvals
+    
+    def interp_edge_to_cell(self,values):
+        """
+        Average edge-centered values to get cell centered values.
+        """
+        # Could be vectorized, but I don't remember the call to get
+        # numpy to sum over repeated indices.
+        cvals=np.zeros(self.Ncells(),values.dtype)
+        counts=np.zeros(self.Ncells(),np.int32)
+        for c in self.valid_cell_iter():
+            cvals[c]=np.mean(values[self.cell_to_edges(c)])
+        return cvals    
 
     def cells_to_edge(self,a,b):
         j1=self.cell_to_edges(a)
@@ -5405,6 +5417,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         if return_nodes:
             nodes=list( self.edges['nodes'][edge_hits[0]] )
+            # BUG HERE! 2022-01-17 RH: details lost to the sands of time.
+            # probably DFM related.
             if nodes[-1] in self.edges['nodes'][edge_hits[1]]:
                 nodes=nodes[::-1]
 
@@ -5562,7 +5576,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             xy = self.nodes['x'][self.cell_to_nodes(i)]
             cell_geoms[idx] = geometry.Polygon(xy)
         del cell_geoms[(idx+1):]
-        return ops.cascaded_union(cell_geoms)
+        #return ops.cascaded_union(cell_geoms)
+        # Updated api as of 2022-02-22
+        return ops.unary_union(cell_geoms)
 
     def boundary_polygon(self):
         """ return polygon, potentially with holes, representing the domain.
@@ -6227,6 +6243,40 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         else:
             return return_values
 
+    def distance_transform_nodes(self,nodes,max_distance=None):
+        """
+        Akin to image processing distance transform, centered on nodes
+        and connceted by edges.
+        nodes: a sequence of node indices or a bitmask
+        max_distance: stop seaching when distance reaches this threshold.
+          This is not currently an efficient implementation, and you will almost
+          certainly want to supply max_distance.
+        """
+
+        if np.issubdtype(nodes.dtype,np.bool8):
+            nodes=np.nonzero(nodes)[0]
+
+        dists=np.zeros(self.Nnodes(),np.float64)
+        dists[:]=np.inf
+        dists[nodes]=0.0
+        #L=15.0
+
+        queue=list(nodes)
+
+        while len(queue):
+            n=queue.pop(0)
+            nval=dists[n]
+            for nbr in self.node_to_nodes(n):
+                if dists[nbr]<=nval:
+                    continue
+                d=mag(self.nodes['x'][n] - self.nodes['x'][nbr])
+                if dists[nbr]>nval+d:
+                    dists[nbr]=nval+d
+                    if (nbr not in queue) and (dists[nbr]<max_distance):
+                        queue.append(nbr)
+        return dists
+
+        
     def remove_disconnected_components(self,renumber=True):
         """
         Clean up disconnected portions of the grid.  Disconnected
@@ -7627,12 +7677,17 @@ class UnTRIM08Grid(UnstructuredGrid):
     DEPTH_UNKNOWN = np.nan
 
     angle = 0.0
-    location = "'n/a'"
+    location = "''" # don't use a slash in here!
 
-    def __init__(self,grd_fn=None,grid=None,extra_cell_fields=[],extra_edge_fields=[]):
+    def __init__(self,grd_fn=None,grid=None,extra_cell_fields=[],extra_edge_fields=[],
+                 clean=False):
         """
         grd_fn: Read from an untrim .grd file
         grid: initialize from existing UnstructuredGrid (though not necessarily an untrim grid)
+        clean: if initializing from another grid and this is True, fix up edge marks, order, and
+        orientation to follow conventions.
+          This had defaulted to True, but that can be surprising when trying to load both a grid
+        and data. 
         """
         # NB: these depths are as soundings - positive down.
         super(UnTRIM08Grid,self).__init__( extra_cell_fields = extra_cell_fields + [('depth_mean',np.float64),
@@ -7646,6 +7701,11 @@ class UnTRIM08Grid(UnstructuredGrid):
             self.read_from_file(grd_fn)
         elif grid is not None:
             self.copy_from_grid(grid)
+            if clean:
+                self.edges['mark']=self.inferred_edge_marks()
+                # Even if the incoming grid had been renumbered(), untrim
+                # has a specific order
+                self.renumber()
 
     def Nred(self):
         # nothing magic - just reads the cell attributes
@@ -7688,6 +7748,38 @@ class UnTRIM08Grid(UnstructuredGrid):
         return np.argsort(mark_order[self.edges['mark']]+10*self.edges['deleted'],
                           kind='mergesort')[:Nactive]
 
+    def copy(self):
+        # Deep copy
+        # details of this interface have morphed over time.
+        # In theory UnstructuredGrid.copy() do this, and there's no
+        # need for a specific untrim version. But having
+        # UnstructuredGrid.copy() call a subclass constructor gets into
+        # issues when the interface is not standardized. That could be
+        # dealt with by requiring subclasses to either support a constructor
+        # that allows copying, or to reimplement copy(). Rather than thinking
+        # the big thoughts, I'm just overriding copy().
+        g=UnTRIM08Grid()
+        
+        g.cell_dtype=self.cell_dtype
+        g.edge_dtype=self.edge_dtype
+        g.node_dtype=self.node_dtype
+
+        g.cells=self.cells.copy()
+        g.edges=self.edges.copy()
+        g.nodes=self.nodes.copy()
+
+        g.cell_defaults=self.cell_defaults.copy()
+        g.edge_defaults=self.edge_defaults.copy()
+        g.node_defaults=self.node_defaults.copy()
+
+        # Subgrid is stored as references to ragged objects, which
+        # need to be copied explicitly
+        g.cells['subgrid'] = copy.deepcopy(self.cells['subgrid'])
+        g.edges['subgrid'] = copy.deepcopy(self.edges['subgrid'])
+
+        g.refresh_metadata()
+        return g
+    
     def copy_from_grid(self,grid):
         super(UnTRIM08Grid,self).copy_from_grid(grid)
 
@@ -8094,7 +8186,14 @@ class UnTRIM08Grid(UnstructuredGrid):
             token_gen=tokenizer()
             # py2/py3 compatibility
             def itok(): return int(six.next(token_gen))
-            def ftok(): return float(six.next(token_gen))
+            def ftok():
+                # Some Janet files come back with ?, presumably for missing depth
+                # data
+                s=six.next(token_gen).strip()
+                if s=='?':
+                    return np.nan
+                else:
+                    return float(s)
 
             for c in range(Npolys):
                 check_c=itok()
@@ -8144,8 +8243,30 @@ class UnTRIM08Grid(UnstructuredGrid):
 
     def Nsubgrid_edges(self):
         # equivalent to TNS
-        return sum( [len(sg[0]) for sg in self.edges['subgrid'] if sg!=0] )
+        # Note that this should not count land cells!
+        # just internal and flow edges
+        return sum( [len(sg[0])
+                     for sg,mark in zip(self.edges['subgrid'],self.edges['mark'])
+                     if sg!=0 and mark!=self.LAND] )
 
+    def inferred_edge_marks(self):
+        """
+        Generate an edge marks array that makes sure any mark=0 edges
+        get labelled as land. This does not alter the grid -- just returns
+        a mark array. The returned array may be the existing marks if no
+        changes are required, so don't modify the array unless you don't
+        care about edges['marks'].
+        """
+        e2c=self.edge_to_cells()
+        boundary=e2c.min(axis=1)<0
+        marks=self.edges['mark']
+        sel=(marks==0) & boundary
+        if np.any(sel):
+            return np.where(sel,self.LAND,marks)
+        else:
+            # Already consistent
+            return marks
+    
     def write_untrim08(self,fn,overwrite=False):
         """ write this grid out in the untrim08 format.
         Note that for some fields (red/black, subgrid depth), if this
@@ -8160,26 +8281,30 @@ class UnTRIM08Grid(UnstructuredGrid):
 
             n_parms = 11
 
-            Nland = sum(self.edges['mark']==self.LAND)
-            Nflow = sum(self.edges['mark']==self.FLOW)
-            Ninternal = sum(self.edges['mark']==0)
+            # Commonly marks have not been set, but we at least know where
+            # boundaries are.
+            edge_marks=self.inferred_edge_marks()
+            
+            Nland = sum(edge_marks==self.LAND)
+            Nflow = sum(edge_marks==self.FLOW)
+            Ninternal = sum(edge_marks==0)
             Nbc = sum(self.cells['mark'] == self.BOUNDARY)
 
             # 2018-08-10 RH: reorder this to match how things come
             # out of Janet, in hopes of making this file readable
             # by Janet.
-            fp.write("NE      =  %d,\n"%self.Ncells())
-            fp.write("NS      =  %d,\n"%self.Nedges())
-            fp.write("NV      =  %d,\n"%self.Nnodes())
-            fp.write("TNE     =  %d,\n"%self.Nsubgrid_cells())
-            fp.write("TNS     =  %d,\n"%self.Nsubgrid_edges())
-            fp.write("NBC     =  %d,\n"%Nbc)
-            fp.write("NR      =  %d,\n"%self.Nred())
-            fp.write("NSI     =  %d,\n"%Ninternal)
-            fp.write("NSF     =  %d,\n"%(Ninternal+Nflow))
-            fp.write("ANGLE   =  %.4f,\n"%self.angle)
-            fp.write("LOCATION  =  %s\n"%self.location)
-
+            # 2021-12-01 RH: reorder again?
+            fp.write("NV      =%d,\n"%self.Nnodes())
+            fp.write("NE      =%d,\n"%self.Ncells())
+            fp.write("NR      =%d,\n"%self.Nred())
+            fp.write("NS      =%d,\n"%self.Nedges())
+            fp.write("NSI     =%d,\n"%Ninternal)
+            fp.write("NSF     =%d,\n"%(Ninternal+Nflow))
+            fp.write("NBC     =%d,\n"%Nbc)
+            fp.write("TNE     =%d,\n"%self.Nsubgrid_cells())
+            fp.write("TNS     =%d,\n"%self.Nsubgrid_edges())
+            fp.write("ANGLE   =%.4f,\n"%self.angle)
+            fp.write("LOCATION=%s\n"%self.location)
             fp.write("/\n")
 
             for v in range(self.Nnodes()):
@@ -8207,10 +8332,14 @@ class UnTRIM08Grid(UnstructuredGrid):
                 node_str = " ".join( ["%14d"%(n+1) for n in nodes] )
                 fp.write(node_str+" "+edge_str+"\n")
 
+            e2c=self.edges['cells']
+            # During grid generation, may have some -2 or other values here.
+            # Make them all 0 in hopes of keeping Janet happy
+            e2c1=np.where(e2c>=0,1+e2c,0)
             for e in range(self.Nedges()):
                 fp.write("%10d %14d %14d %14d %14d\n"%(e+1,
                                                        self.edges['nodes'][e,0]+1,self.edges['nodes'][e,1]+1,
-                                                       self.edges['cells'][e,0]+1,self.edges['cells'][e,1]+1))
+                                                       e2c1[e,0],e2c1[e,1]))
 
             # since we have to do this 4 times, make a helper function
             def fmt_wrap_lines(fp,values,fmt="%14.4f ",per_line=10):
@@ -8221,7 +8350,11 @@ class UnTRIM08Grid(UnstructuredGrid):
                 for i,a in enumerate(values):
                     if i>0 and i%10==0:
                         fp.write("\n")
-                    fp.write("%14.4f "%a)
+                    if np.isfinite(a):
+                        fp.write("%14.4f "%a)
+                    else:
+                        # Janet maybe prefers '?' over 'nan'
+                        fp.write("             ? ")
                 fp.write("\n")
 
             # subgrid bathy
