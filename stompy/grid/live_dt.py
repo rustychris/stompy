@@ -3,7 +3,12 @@ from __future__ import print_function
 # Maintain a live constrained delaunay triangulation of the grid.
 # designed as a mixin
 
-from collections import defaultdict, Iterable
+from collections import defaultdict
+
+try:
+    from collections.abc import Iterable
+except:
+    from collections import Iterable
 
 import logging
 log = logging.getLogger('stompy.live_dt')

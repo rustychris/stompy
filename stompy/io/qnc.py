@@ -6,7 +6,11 @@ import os
 import uuid
 from .. import utils
 import numpy as np
-import collections
+try:
+    from collections.abc import Iterable
+except ImportErro:
+    from collections import Iterable
+    
 from scipy import interpolate
 from scipy.signal import decimate
 
@@ -123,7 +127,7 @@ class QuickVar(object): # wraps netcdf variable
             #  so of transpose, 
             retranspose=[i for i in self._transpose 
                          if (isinstance(k_untransposed[i],slice) or
-                             isinstance(k_untransposed[i],collections.Iterable))]
+                             isinstance(k_untransposed[i],Iterable))]
             # and renumber via cheesy np trick
             if len(retranspose):
                 retranspose=np.argsort(np.argsort(retranspose))
@@ -140,7 +144,7 @@ class QuickVar(object): # wraps netcdf variable
         for idx in idxs:
             post=slice(None)
 
-            if isinstance(idx, collections.Iterable):
+            if isinstance(idx, Iterable):
                 idx=np.asarray(idx)
                 if ( idx.ndim!=1 or 
                      (len(idx)>1 and np.any(np.diff(idx)<=0)) ):
