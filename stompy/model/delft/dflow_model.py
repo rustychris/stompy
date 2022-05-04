@@ -631,7 +631,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                     name=mon_feat['name']
                 except KeyError:
                     name="obs_pnt_%03d"%i
-                xy=np.array(mon_feat['geom'])
+                xy=np.array(mon_feat['geom'].coords[0]) # shapely api update
                 fp.write("%.3f %.3f '%s'\n"%(xy[0],xy[1],name))
     def write_monitor_sections(self):
         fn=self.mdu.filepath( ('output','CrsFile') )
@@ -642,7 +642,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                     name=mon_feat['name']
                 except KeyError:
                     name="obs_sec_%03d"%i
-                xy=np.array(mon_feat['geom'])
+                xy=np.array(mon_feat['geom'].coords) # shapely api update
                 dio.write_pli(fp,[ (name,xy) ])
 
     def add_Structure(self,**kw):
