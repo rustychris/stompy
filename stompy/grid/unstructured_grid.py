@@ -7327,7 +7327,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             # write polygon info
             fp.write(poly_hdr+"\n")
             cell_write_str1 = " %10d %10d %16.7f %16.7f %16.7f "
-            cell_depths = self.cells['cell_depth']
+            try:
+                cell_depths = self.cells['cell_depth']
+            except ValueError:
+                # 2022-05-16 RH: too lazy to chase down who decides the name
+                # here. So handle either one.
+                cell_depths = self.cells['depth']
             # OLD: Make sure cells['edges'] is set, but don't replace
             #   data if it is already there.
             # 2020-12-31: Some issues with grids having out of order
