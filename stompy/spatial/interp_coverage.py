@@ -11,7 +11,7 @@ from functools import reduce
 import shapely.geometry
 
 try:
-    import constrained_delaunay
+    from . import constrained_delaunay
     import CGAL
 except ImportError:
     # print "interp_coverage is not available"
