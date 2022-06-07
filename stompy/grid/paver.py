@@ -17,7 +17,11 @@ from scipy import optimize as opt
 
 import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
-from collections import Iterable
+
+try:
+    from collections.abc import Iterable
+except ImportError:
+    from collections import Iterable
 
 from shapely import geometry as geo
 from shapely import wkb 

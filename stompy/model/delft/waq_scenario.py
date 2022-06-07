@@ -43,7 +43,12 @@ try:
 except ImportError:
     cascaded_union = None
 
-from collections import defaultdict, OrderedDict, Iterable
+from collections import defaultdict, OrderedDict
+try:
+    from collections.abc import Iterable
+except ImportError:
+    from collections import Iterable
+
 import scipy.spatial
 
 from  ... import scriptable

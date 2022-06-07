@@ -929,8 +929,12 @@ def cbar_interactive(cbar,extras=[],symmetric=False):
         if event.inaxes is cbar.ax:
             if cbar.orientation=='vertical':
                 coord=event.ydata
+                _,_,cmin,cmax = cbar.ax.axis()
             else:
                 coord=event.xdata
+                cmin,cmax,_,_ = cbar.ax.axis()
+            # Recent MPL appears to leave ax dimensional
+            coord=(coord-cmin)/(cmax-cmin)
 
             if event.button==1:
                 rel=0.1
