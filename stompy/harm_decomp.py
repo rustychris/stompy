@@ -4,7 +4,7 @@ from __future__ import print_function
 import numpy as np
 from numpy.linalg import norm,qr,pinv
 
-from . import tide_consts    
+from . import tide_consts, memoize
 
 
 ###
@@ -14,7 +14,30 @@ def recompose(t,comps,omegas):
     for i in range(len(omegas)):
         d += comps[i,0] * np.cos(t*omegas[i] - comps[i,1])
     return d
-            
+
+
+@memoize.memoize(lru=2)
+def getAinv(t, omegas):
+    # A is a matrix of basis functions - two (cos/sin) for each frequency
+    n_bases = 2*len(omegas)
+    basis_len = len(t)
+
+    # form the linear system
+    # each column of A is a basis function
+    A = np.zeros( (basis_len,n_bases), np.float64)
+
+    for i in range(len(omegas)):
+        A[:,2*i] = np.cos(omegas[i]*t)
+        A[:,2*i+1] = np.sin(omegas[i]*t)
+
+    Ainv = pinv(A)
+        
+    # and can we say anything about the conditioning of A ?
+    cnum = norm(A,ord=2) * norm(Ainv,ord=2)
+    if cnum > 10:
+        print("Harmonic decomposition: condition number may be too high: ",cnum)
+    return Ainv
+
 def decompose(t,h,omegas):
     """ 
     take an arbitrary timeseries defined by times t and values h plus a list
@@ -25,50 +48,25 @@ def decompose(t,h,omegas):
 
     super cheap caching: remembers the last t and omegas, and if they are the same
     it will reuse the matrix from before.
+
+    omegas: can also be 'select' which will call select_omegas() with default parameters.
+      in this case omegas will be returned as a second value
     """
+    return_omegas=False
+    
     t=np.asanyarray(t)
+    if isinstance(omegas,str) and omegas=='select':
+        omegas=select_omegas(t.max()-t.min())
+        return_omegas=True
+
     omegas=np.asanyarray(omegas)
 
     valid=np.isfinite(t)&np.isfinite(h)
     t=t[valid]
     h=h[valid]
-    
-    def sim(a,b):
-        if a is b:
-            return True
-        if a is None or b is None:
-            return False
-        return (a.shape == b.shape) and np.allclose(a,b)
-    if sim(decompose.cached_t,t) and sim(decompose.cached_omegas,omegas):
-        Ainv = decompose.cached_Ainv
-    else:
-        # A is a matrix of basis functions - two (cos/sin) for each frequency
-        n_bases = 2*len(omegas)
-        basis_len = len(h)
 
-        # form the linear system
-        # each column of A is a basis function
-        A = np.zeros( (basis_len,n_bases), np.float64)
-
-        for i in range(len(omegas)):
-            A[:,2*i] = np.cos(omegas[i]*t)
-            A[:,2*i+1] = np.sin(omegas[i]*t)
-
-        Ainv = pinv(A)
-
-        decompose.cached_Ainv=Ainv
-        decompose.cached_t = t.copy()
-        decompose.cached_omegas = omegas.copy()
-        
-        # and can we say anything about the conditioning of A ?
-        def cond_num(L):
-            return norm(L,ord=2)*norm(pinv(L),ord=2)
-
-        # sort of arbitrary...
-        cnum = cond_num(A)
-        if cnum > 10:
-            print("Harmonic decomposition: condition number may be too high: ",cnum)
-        
+    Ainv = getAinv(t,omegas)
+            
     x=np.dot(Ainv,h)
 
     # now rows are constituents, and we get the cos/sin as two columns
@@ -90,8 +88,11 @@ def decompose(t,h,omegas):
         rms = np.sqrt( ((h - recomposed)**2).mean() )
 
         print("RMS Error:",rms)
-    
-    return comps
+
+    if return_omegas:
+        return comps, omegas
+    else:
+        return comps
 
 def noaa_37_names():
     """ 
@@ -117,6 +118,16 @@ def names_to_omegas(names):
     omega_per_sec = omega_deg_per_hour * (1./3600) * (1/360.)
     return 2*np.pi*omega_per_sec
 
+def omegas_to_names(omegas):
+    """
+    Match speed (rad/sec) to known constituents. Selects the closest speed,
+    with a special exception for 0.0 (which gets 'DC')
+    """
+    speed_rad_per_sec = tide_consts.speeds * (1./3600) * (np.pi/180)
+    idxs= [ np.argmin( np.abs(speed_rad_per_sec - omega)) for omega in omegas]
+    names = [ tide_consts.const_names[idx] if omega>0 else 'DC'
+              for idx,omega in zip(idxs,omegas)]
+    return names
 
 def decompose_noaa37(t,h):
     return decompose(t,h,noaa_37_omegas())
