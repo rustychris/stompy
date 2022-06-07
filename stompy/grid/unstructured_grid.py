@@ -2629,7 +2629,65 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         counts=np.zeros(self.Ncells(),np.int32)
         for c in self.valid_cell_iter():
             cvals[c]=np.mean(values[self.cell_to_edges(c)])
-        return cvals    
+        return cvals
+
+    def interp_perot(self,values,edge_normals=None):
+        """
+        Interpolate edge-normal vector components to cell-centered
+        vector value.
+        edge_normals can be supplied in case data uses a different convention
+        than self.
+        """
+        # With some preprocessing, this could be turned into a sparse matrix
+        # multiplication and be much faster.
+        cc=self.cells_center()
+        ec=self.edges_center()
+
+        if edge_normals is None: edge_normals=self.edges_normals()
+                
+        e2c=self.edge_to_cells()
+        el=self.edges_length()
+        Uc=np.zeros((self.Ncells(),2),np.float64)
+
+        for c in np.arange(self.Ncells()):
+            js=self.cell_to_edges(c)
+            for nf,j in enumerate(js):
+                de2f=mag(cc[c]-ec[j])
+                # Uc ~ m3/s * m
+                Uc[c,:] += values[j]*edge_normals[j]*de2f*el[j]
+        Uc /= self.cells_area()[:,None]
+        return Uc
+
+    def interp_perot_matrix(self,edge_normals=None):
+        """
+        preprocessed version of perot interp. 1000x faster on 50k cells
+        than looping version above.
+        """
+        if edge_normals is None:
+            edge_normals=self.edges_normals()
+
+        from scipy import sparse
+        # rows are cell0u,cell0v,cell1u,cell1v, ...
+        M=sparse.dok_matrix( (2*self.Ncells(),self.Nedges()), np.float64)
+            
+        cc=self.cells_center()
+        ec=self.edges_center()
+
+                
+        e2c=self.edge_to_cells()
+        el=self.edges_length()
+        Uc=np.zeros((self.Ncells(),2),np.float64)
+
+        Ac=self.cells_area()
+        
+        for c in np.arange(self.Ncells()):
+            js=self.cell_to_edges(c)
+            for nf,j in enumerate(js):
+                de2f=mag(cc[c]-ec[j])
+                M[2*c+0,j] = edge_normals[j,0]*de2f*el[j] / Ac[c]
+                M[2*c+1,j] = edge_normals[j,1]*de2f*el[j] / Ac[c]
+                
+        return M
 
     def cells_to_edge(self,a,b):
         j1=self.cell_to_edges(a)

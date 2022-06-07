@@ -860,28 +860,14 @@ class UgridXr(object):
         """
         Interpolate an edge-centered, normal vector component 
         value to a cell centered vector value.
+        returns float64[Ncells,2]
         """
         # Originally borrowed model.stream_tracer.U_perot, but
         # (a) that's a weird place for the code to live, and
         # (b) that code seems to have a different sign convention, or
         # at least it was giving bad results in some spot tests.
-
-        cc=self.grid.cells_center()
-        ec=self.grid.edges_center()
-        normals=self.edge_normals()
-
-        e2c=self.grid.edge_to_cells()
-        el=self.grid.edges_length()
-        Uc=np.zeros((self.grid.Ncells(),2),np.float64)
-
-        for c in np.arange(self.grid.Ncells()):
-            js=self.grid.cell_to_edges(c)
-            for nf,j in enumerate(js):
-                de2f=utils.mag(cc[c]-ec[j])
-                # Uc ~ m3/s * m
-                Uc[c,:] += edge_values[j]*normals[j]*de2f*el[j]
-        Uc /= self.grid.cells_area()[:,None]
-        return Uc
+        # And now it has moved again to unstructured grid...
+        return self.grid.interp_perot(edge_values,edge_normals=self.edge_normals)
 
     def edge_normals(self):
         if self.edge_normal_vnames is not None:
