@@ -6256,6 +6256,11 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             return return_values
 
     def select_cells_along_ray(self,x0,vec):
+        """
+        From the point x0, march in the direction given by vec
+        and report all cells encountered along the way.
+        if x0 falls outside the grid return None
+        """
         edge_norm=self.edges_normals(cache='norm')
         
         p_dtype=[ ('x',np.float64,2),
@@ -6264,7 +6269,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         p=np.zeros((),p_dtype)
         p['x']=x0
         p['j_last']=-1 # particle state
-        p['c']=self.select_cells_nearest(p['x'],inside=True)
+        c=self.select_cells_nearest(p['x'],inside=True)
+        if c is None:
+            return None # starting point is not in grid
+        p['c']=c
         path=[p.copy()]
 
         while True:
