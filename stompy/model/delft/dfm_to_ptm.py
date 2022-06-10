@@ -477,7 +477,7 @@ class DFlowToPTMHydro(object):
                 if len(potential_edges)==1:
                     j=potential_edges[0]
                 elif len(potential_edges)==0:
-                    print("No boundary edge for link %d->%d to an edge"%(l_from,l_to))
+                    print("No boundary edge for link %d->%d. Likely src/sink"%(l_from,l_to))
                     link_to_edge_sign[link_idx,:]=[9999999,0] # may be able to relax this
                     continue
                 else:
