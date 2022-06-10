@@ -720,7 +720,7 @@ class DFlowToPTMHydro(object):
 # [Qa, Qb, Qc, Qd, Qd].  I don't understand what that's about.
 # look at cell 18, around time index 200, 201
 
-if 1:
+if 0:
     # Testing
     mdu_path="../flowfm.mdu"
     converter=DFlowToPTMHydro(mdu_path,'test_hydro.nc',# time_slice=slice(0,100),
