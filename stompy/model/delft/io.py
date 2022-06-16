@@ -1493,7 +1493,9 @@ class MDUFile(SectionedConfig):
         """
         base name of mdu filename, w/o extension, which is used in various other filenames.
         """
-        return os.path.basename(self.filename).split('.')[0]
+        base=os.path.basename(self.filename)
+        assert base.endswith('.mdu'),"Not sure what dfm does in this case"
+        return base[:-4]
     def output_dir(self):
         """
         path to the folder holding DFM output based on MDU filename
