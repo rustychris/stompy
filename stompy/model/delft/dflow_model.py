@@ -1096,7 +1096,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         return fns
 
     _mu=None
-    def map_dataset(self,force_multi=False,grid=None):
+    def map_dataset(self,force_multi=False,grid=None,xr_kwargs={}):
         """
         Return map dataset. For MPI runs, this will emulate a single, merged
         global dataset via multi_ugrid. For serial runs it directly opens
@@ -1105,16 +1105,18 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         grid: if given, the subdomains will be mapped to the given grid, instead
         of constructing a grid.
 
+        xr_kwargs: options to pass to xarray, whether multi or single.
+
         Does not chain in time.
         """
         if self.num_procs<=1 and not force_multi:
             # xarray caches this.
-            return xr.open_dataset(self.map_outputs()[0])
+            return xr.open_dataset(self.map_outputs()[0],**xr_kwargs)
         else:
             from stompy.grid import multi_ugrid
             # This is slow so cache the result
             if self._mu is None:
-                self._mu=multi_ugrid.MultiUgrid(self.map_outputs(),grid=grid)
+                self._mu=multi_ugrid.MultiUgrid(self.map_outputs(),grid=grid,xr_kwargs=xr_kwargs)
             return self._mu
     
     def his_output(self):
@@ -1130,12 +1132,20 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         fns.sort()
         return fns[0]
 
-    def his_dataset(self,decode_geometry=True,set_coordinates=True):
+    _his_ds=None
+    def his_dataset(self,decode_geometry=True,set_coordinates=True,refresh=False):
         """
         Return history dataset, with some minor additions to make
         it friendly
         """
+        if (self._his_ds is not None) and (not refresh):
+            return self._his_ds
+        
         his_ds=xr.open_dataset(self.his_output())
+        if refresh:
+            his_ds.close()
+        his_ds=xr.open_dataset(self.his_output())
+            
         if set_coordinates:
             # Doctor up the dimensions
             # Misconfigured runs may have duplicates here.
@@ -1161,7 +1171,8 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
 
         if decode_geometry:
             xr_utils.decode_geometry(his_ds,'cross_section_geom',replace=True)
-        
+
+        self._his_ds=his_ds
         return his_ds
 
     def hyd_output(self):
