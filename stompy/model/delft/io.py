@@ -421,15 +421,27 @@ def read_pli(fn,one_per_line=True):
                     node_labels.append("") 
                 features.append( (label, np.array(geometry), node_labels) )
         else: # line-oriented approach which can handle unannounced node labels
+            def getline():
+                while True:
+                    l=fp.readline()
+                    if l=="": return l # EOF
+                    # lazy comment handling
+                    l=l.split('#')[0]
+                    l=l.split('*')[0]
+                    l=l.strip()
+                    if l!="":
+                        return l
+                
             while True:
-                label=fp.readline().strip()
+                label=getline()
                 if label=="":
                     break
-                nrows,ncols = [int(s) for s in fp.readline().split()]
+
+                nrows,ncols = [int(s) for s in getline().split()]
                 geometry=[]
                 node_labels=[]
                 for row in range(nrows):
-                    values=fp.readline().strip().split(None,ncols+1)
+                    values=getline().split(None,ncols+1)
                     geometry.append( [float(s) for s in values[:ncols]] )
                     if len(values)>ncols:
                         node_labels.append(values[ncols])

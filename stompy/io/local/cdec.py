@@ -40,7 +40,7 @@ def cdec_df_to_ds(df):
     #     ds['time']=ds.time.values.astype('<M8')
     # make the adjustment to UTC  FIX THIS
     # ds.time.values[:] += np.timedelta64(8,'h')
-    df['time_local']=df['DATE TIME'].dt.tz_localize(cdec_time_zone)
+    df['time_local']=df['DATE TIME'].dt.tz_localize(cdec_time_zone,ambiguous='NaT')
     df['time']=df.time_local.dt.tz_convert(ref_time_zone)
     # if not times:
     #     # force type, which for empty list defaults to float64

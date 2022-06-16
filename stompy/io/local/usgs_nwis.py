@@ -180,6 +180,10 @@ def nwis_dataset(station,start_date,end_date,products,
         return None 
 
     if len(datasets)>1:
+        # occasionally dataset have repeat timestamps. why? who knows.
+        datasets=[ds.isel(time=np.r_[True,np.diff(ds.time.values)>np.timedelta64(0,'s')])
+                  for ds in datasets]
+        
         # it's possible that not all variables appear in all datasets
         # dataset=xr.concat( datasets, dim='time')
         dataset=datasets[0]

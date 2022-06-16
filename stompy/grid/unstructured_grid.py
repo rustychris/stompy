@@ -1010,8 +1010,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             max_cell_faces=cell_nodes.shape[1]
             for i in range(len(cell_nodes)):
                 if cell_nodes[i,2] < 0:  # first ghost cell (which are sorted to end of list)
+                    ncells=i # don't count ghost cells
                     break
-            ncells = i  # don't count ghost cells
             cells = -1 * np.ones((ncells, max_cell_faces), dtype=int)
             for i in range(ncells):
                 for k in range(max_cell_faces):
@@ -2629,7 +2629,65 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         counts=np.zeros(self.Ncells(),np.int32)
         for c in self.valid_cell_iter():
             cvals[c]=np.mean(values[self.cell_to_edges(c)])
-        return cvals    
+        return cvals
+
+    def interp_perot(self,values,edge_normals=None):
+        """
+        Interpolate edge-normal vector components to cell-centered
+        vector value.
+        edge_normals can be supplied in case data uses a different convention
+        than self.
+        """
+        # With some preprocessing, this could be turned into a sparse matrix
+        # multiplication and be much faster.
+        cc=self.cells_center()
+        ec=self.edges_center()
+
+        if edge_normals is None: edge_normals=self.edges_normals()
+                
+        e2c=self.edge_to_cells()
+        el=self.edges_length()
+        Uc=np.zeros((self.Ncells(),2),np.float64)
+
+        for c in np.arange(self.Ncells()):
+            js=self.cell_to_edges(c)
+            for nf,j in enumerate(js):
+                de2f=mag(cc[c]-ec[j])
+                # Uc ~ m3/s * m
+                Uc[c,:] += values[j]*edge_normals[j]*de2f*el[j]
+        Uc /= self.cells_area()[:,None]
+        return Uc
+
+    def interp_perot_matrix(self,edge_normals=None):
+        """
+        preprocessed version of perot interp. 1000x faster on 50k cells
+        than looping version above.
+        """
+        if edge_normals is None:
+            edge_normals=self.edges_normals()
+
+        from scipy import sparse
+        # rows are cell0u,cell0v,cell1u,cell1v, ...
+        M=sparse.dok_matrix( (2*self.Ncells(),self.Nedges()), np.float64)
+            
+        cc=self.cells_center()
+        ec=self.edges_center()
+
+                
+        e2c=self.edge_to_cells()
+        el=self.edges_length()
+        Uc=np.zeros((self.Ncells(),2),np.float64)
+
+        Ac=self.cells_area()
+        
+        for c in np.arange(self.Ncells()):
+            js=self.cell_to_edges(c)
+            for nf,j in enumerate(js):
+                de2f=mag(cc[c]-ec[j])
+                M[2*c+0,j] = edge_normals[j,0]*de2f*el[j] / Ac[c]
+                M[2*c+1,j] = edge_normals[j,1]*de2f*el[j] / Ac[c]
+                
+        return M
 
     def cells_to_edge(self,a,b):
         j1=self.cell_to_edges(a)
@@ -3052,7 +3110,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         else:
             return [b[0],b[2],b[1],b[3]]
 
-    def edges_normals(self,edges=slice(None),force_inward=False,update_e2c=True):
+    def edges_normals(self,edges=slice(None),force_inward=False,update_e2c=True,
+                      cache=False,update=False):
         """
         Calculate unit normal vectors for all edges, or a subset if edges
         is specified.
@@ -3062,6 +3121,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
            are positive left-to-right (i.e. from cell 0 to cell 1)
 
         update_e2c: whether to recalculate edges['cells'] for the required edges.
+
+        cache: if a string, normals are saved on the grid in the given variable.
+        if the grid is edited, these are not updated!
+        update: only relevant when cache is set. Force recalculation.
         """
         # does not assume the grid is orthogonal - normals are found by rotating
         # the tangent vector
@@ -3074,6 +3137,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         # so this pointing left to right, and is in fact pointing towards c1.
         # had been axis=1, and [:,0,::-1]
         # but with edges possibly a single index, make it more general
+        if cache and not update and cache in self.edges.dtype.names:
+            return self.edges[cache]
+        
         normals = np.diff(self.nodes['x'][self.edges['nodes'][edges]],axis=-2)[...,0,::-1]
         normals[...,1] *= -1
         normals /= mag(normals)[...,None]
@@ -3086,6 +3152,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             # This feels a bit sketch when edges is a single index.  Tested with
             # numpy 1.14.0 and it does the right thing
             normals[to_flip] *= -1
+
+        if cache:
+            self.add_edge_field(cache,normals,on_exists='overwrite')
+            
         return normals
 
     # Variations on access to topology
@@ -4142,6 +4212,13 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         for k,v in six.iteritems(kwargs):
             if k in ['edges','nodes']: # may have to make this more generic..
+                self.cells[k][i][:len(v)] = v
+                self.cells[k][i][len(v):] = self.UNDEFINED # -1
+            elif self.cells[k].ndim==2: # catch-all when lengths don't match
+                # Need this in cases where there are other per-edge or per-node fields
+                # and the source of the data has fewer maxsides than self.
+                # Have to punt on the undefined value (though could go with nan if
+                # if it's float-valued)
                 self.cells[k][i][:len(v)] = v
                 self.cells[k][i][len(v):] = self.UNDEFINED # -1
             else:
@@ -6236,6 +6313,87 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         else:
             return return_values
 
+    def select_cells_along_ray(self,x0,vec):
+        """
+        From the point x0, march in the direction given by vec
+        and report all cells encountered along the way.
+        if x0 falls outside the grid return None
+        """
+        edge_norm=self.edges_normals(cache='norm')
+        
+        p_dtype=[ ('x',np.float64,2),
+                 ('j_last',np.int32),
+                 ('c',np.int32)]
+        p=np.zeros((),p_dtype)
+        p['x']=x0
+        p['j_last']=-1 # particle state
+        c=self.select_cells_nearest(p['x'],inside=True)
+        if c is None:
+            return None # starting point is not in grid
+        p['c']=c
+        path=[p.copy()]
+
+        while True:
+            # move point to the boundary of the next cell in
+            # the vec direction
+
+            # code taken from pypart/basic.py
+            dt=np.inf # 
+            j_cross=None
+            j_cross_normal=None
+
+            for j in self.cell_to_edges(p['c']):
+                if j==p['j_last']:
+                    continue # don't cross back
+                # get an outward normal:
+                normal=edge_norm[j]
+                if self.edges['cells'][j,1]==p['c']: # ~checked
+                    normal=-normal
+                # vector from xy to a point on the edge
+                d_xy_n = self.nodes['x'][self.edges['nodes'][j,0]] - p['x']
+                # perpendicular distance
+                dp_xy_n=d_xy_n[0] * normal[0] + d_xy_n[1]*normal[1]
+                assert dp_xy_n>=0 #otherwise sgn probably wrong above
+
+                closing=vec[0]*normal[0] + vec[1]*normal[1]
+
+                #if closing<0: 
+                #    continue
+                #else:
+                dt_j=dp_xy_n/closing
+                if dt_j>0 and dt_j<dt:
+                    j_cross=j
+                    dt=dt_j
+                    j_cross_normal=normal
+
+            # Take the step
+            delta=vec*dt
+            # see if we're stuck
+            if mag(delta) / (mag(delta) + mag(p['x'])) < 1e-14:
+                print("Steps are too small")
+                break
+
+            p['x'] += delta
+            p['j_last'] = j_cross
+
+            assert j_cross is not None
+
+            # print "Cross edge"
+            e_cells=self.edges['cells'][j_cross]
+            if e_cells[0]==p['c']:
+                new_c=e_cells[1]
+            elif e_cells[1]==p['c']:
+                new_c=e_cells[0]
+            else:
+                assert False
+
+            if new_c<0:
+                path.append(p.copy()) # will repeat the cell
+                break # done - hit the boundary
+            p['c']=new_c
+            path.append(p.copy())
+        return np.array(path)
+        
     def distance_transform_nodes(self,nodes,max_distance=None):
         """
         Akin to image processing distance transform, centered on nodes
@@ -7235,7 +7393,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             # write polygon info
             fp.write(poly_hdr+"\n")
             cell_write_str1 = " %10d %10d %16.7f %16.7f %16.7f "
-            cell_depths = self.cells['cell_depth']
+            try:
+                cell_depths = self.cells['cell_depth']
+            except ValueError:
+                # 2022-05-16 RH: too lazy to chase down who decides the name
+                # here. So handle either one.
+                cell_depths = self.cells['depth']
             # OLD: Make sure cells['edges'] is set, but don't replace
             #   data if it is already there.
             # 2020-12-31: Some issues with grids having out of order

@@ -272,7 +272,14 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         if fn and os.path.exists(fn):
             stations=pd.read_csv(self.mdu.filepath(['output','ObsFile']),
                                  sep=' ',names=['x','y','name'],quotechar="'")
-            stations['geom']=[geometry.Point(x,y) for x,y in stations.loc[ :, ['x','y']].values ]
+            # crude workaround to silence warning. numpy and pandas will attempt
+            # to use the array interface to streamline storage of Points.
+            # that angers shapely. probably once that interface disappears this
+            # will silently work just fine. but I'm tired of seeing the warnings.
+            pnts=np.zeros(len(stations),dtype=object)
+            for i,(x,y) in enumerate(stations.loc[ :, ['x','y']].values):
+                pnts[i]=geometry.Point(x,y)
+            stations['geom']=pnts
             self.gazetteers.append(stations.to_records())
 
     def parse_old_bc(self,fn):
@@ -350,7 +357,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             elif ext=='.xyz':
                 xyz_fn=os.path.join(os.path.dirname(ext_fn),
                                     rec['FILENAME'])
-                df=pd.read_csv(xyz_fn,sep='\s+',names=['x','y','z'])
+                df=pd.read_csv(xyz_fn,sep=r'\s+',names=['x','y','z'])
                 ds=xr.Dataset()
                 ds['x']=('sample',),df['x']
                 ds['y']=('sample',),df['y']
@@ -631,7 +638,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                     name=mon_feat['name']
                 except KeyError:
                     name="obs_pnt_%03d"%i
-                xy=np.array(mon_feat['geom'])
+                xy=np.array(mon_feat['geom'].coords[0]) # shapely api update
                 fp.write("%.3f %.3f '%s'\n"%(xy[0],xy[1],name))
     def write_monitor_sections(self):
         fn=self.mdu.filepath( ('output','CrsFile') )
@@ -642,7 +649,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                     name=mon_feat['name']
                 except KeyError:
                     name="obs_sec_%03d"%i
-                xy=np.array(mon_feat['geom'])
+                xy=np.array(mon_feat['geom'].coords) # shapely api update
                 dio.write_pli(fp,[ (name,xy) ])
 
     def add_Structure(self,**kw):

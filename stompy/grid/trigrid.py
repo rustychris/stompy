@@ -42,7 +42,6 @@ from .. import priority_queue as pq
 from ..spatial import join_features
 
 import os, types
-from collections import Iterable
 
 try:
     try:

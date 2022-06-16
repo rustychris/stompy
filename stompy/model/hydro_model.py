@@ -652,7 +652,8 @@ class RoughnessBC(BC):
     def src_data(self):
         if self.shapefile is not None:
             shp_data=wkb2shp.shp2geom(self.shapefile)
-            coords=np.array( [np.array(pnt) for pnt in shp_data['geom'] ] )
+            # shapely api update
+            coords=np.array( [np.array(pnt.coords[0]) for pnt in shp_data['geom'] ] )
             n=shp_data['n']
             da=xr.DataArray(n,dims=['location'],name='n')
             da=da.assign_coords(x=xr.DataArray(coords[:,0],dims='location'))
@@ -677,8 +678,12 @@ class RoughnessBC(BC):
         mode: this is passed to bokeh, 'cdn' yields small files but requires an internet
          connection to view them.  'inline' yields self-contained, larger (~800k) files.
         """
-        import bokeh.io as bio # output_notebook, show, output_file
-        import bokeh.plotting as bplt
+        try:
+            import bokeh.io as bio # output_notebook, show, output_file
+            import bokeh.plotting as bplt
+        except ImportError:
+            self.log.info('Bokeh not found, will skip bokeh output')
+            return
 
         bplt.reset_output()
 
@@ -2087,7 +2092,8 @@ class HycomMultiScalarBC(HycomMultiBC):
         hy_wet=np.isfinite(hy_ds0[hy_scalar].isel(depth=0).values)
 
         for i,sub_bc in enumerate(self.sub_bcs):
-            sub_bc.edge_center=np.array(sub_bc.geom.centroid)
+            # shapely api update
+            sub_bc.edge_center=np.array(sub_bc.geom.centroid.coords[0])
             hyc_dists=utils.dist( sub_bc.edge_center, hy_xy )
             # lazy way to skip over dry cells.  Note that velocity differs
             # here, since it's safe to just use 0 velocity, but a zero
@@ -2255,7 +2261,8 @@ class HycomMultiVelocityBC(HycomMultiBC):
         for i,sub_bc in enumerate(self.sub_bcs):
             sub_bc.inward_normal=sub_bc.get_inward_normal()
             sub_bc.edge_length=sub_bc.geom.length
-            sub_bc.edge_center=np.array(sub_bc.geom.centroid)
+            # shapely api update
+            sub_bc.edge_center=np.array(sub_bc.geom.centroid.coords[0])
 
             # skip the transforms...
             hyc_dists=utils.dist( sub_bc.edge_center, hy_xy )
@@ -2508,7 +2515,7 @@ class NwisStageBC(NwisBC,StageBC):
                                   products=[self.product_id],
                                   cache_dir=self.cache_dir)
         if ds is not None:
-            ds['water_level']=('time',), 0.3048*ds['height_gage']
+            ds['water_level']=('time',), 0.3048*ds['height_gage'].values
             ds['water_level'].attrs['units']='m'
             ds['water_level'].attrs['standard_name']=self.standard_name
         return ds
@@ -2573,7 +2580,7 @@ class NwisFlowBC(NwisBC,FlowBC):
                                   products=[self.product_id],
                                   cache_dir=self.cache_dir)
         if ds is not None:
-            ds['flow']=('time',), 0.028316847*ds['stream_flow_mean_daily']
+            ds['flow']=('time',), 0.028316847*ds['stream_flow_mean_daily'].values
             ds['flow'].attrs['units']='m3 s-1'
             ds['flow'].attrs['standard_name']=self.standard_name
         return ds
