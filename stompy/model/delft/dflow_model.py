@@ -261,6 +261,14 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             structures.append(sec)
         self.structures=structures
 
+    def load_fixed_weirs_from_run(self):
+        fw_file=self.mdu.filepath( ('geometry','FixedWeirFile') )
+        if fw_file is None or not os.path.exists(fw_file):
+            return
+
+        self.fixed_weirs=dio.read_pli(fw_file)
+    
+
     def load_gazetteer_from_run(self):
         """
         Populate gazetteers with geometry read in from an existing run.
@@ -1204,9 +1212,9 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         last_rst.close()
         return rst_time
     
-    def create_restart(self,**restart_args):
-        new_model=self.__class__() # in case of subclassing, rather than DFlowModel()
-        new_model.set_restart_from(self,**restart_args)
+    def create_restart(self,deep=True,mdu_suffix="",**kwargs):
+        new_model=self.__class__(**kwargs) # in case of subclassing, rather than DFlowModel()
+        new_model.set_restart_from(self,deep=deep,mdu_suffix=mdu_suffix)
         return new_model
 
     def set_restart_from(self,model,deep=True,mdu_suffix=""):
