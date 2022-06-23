@@ -638,6 +638,9 @@ class DFlowToPTMHydro(object):
                 valid=(js!=9999999)
                 if np.any(~valid):
                     absQlost=np.abs(Qs[~valid]).sum()
+                    # for plotting after the fact
+                    self.unmapped_faces=np.nonzero(~valid)[0]
+                    self.unmapped_fluxes=Qs[~valid]
                     print("Ignoring fluxes from %d faces, sum(abs(Q))=%.3f m3/s"%
                           ((~valid).sum(),absQlost))
                 h_flow_avg[js[valid],ptm_ks[valid]]=(Qs*sgns)[valid]
@@ -720,12 +723,7 @@ class DFlowToPTMHydro(object):
 # [Qa, Qb, Qc, Qd, Qd].  I don't understand what that's about.
 # look at cell 18, around time index 200, 201
 
-if 0:
-    # Testing
-    mdu_path="../flowfm.mdu"
-    converter=DFlowToPTMHydro(mdu_path,'test_hydro.nc',# time_slice=slice(0,100),
-                              grd_fn='test_sub.grd',overwrite=True)
-elif __name__=='__main__':
+if __name__=='__main__':
     # Command line use:
     import argparse
     parser = argparse.ArgumentParser()

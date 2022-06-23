@@ -2989,7 +2989,7 @@ class GdalGrid(SimpleGrid):
         (x0, dx, r1, y0, r2, dy ) = gds.GetGeoTransform()
         nx = gds.RasterXSize
         ny = gds.RasterYSize
-
+        
         # As usual, this may be off by a half pixel...
         x1 = x0 + nx*dx
         y1 = y0 + ny*dy
@@ -3127,6 +3127,11 @@ class GdalGrid(SimpleGrid):
                             F=A,
                             projection=source_projection )
 
+        # most callers have no need to the GDAL dataset object,
+        # and holding a reference here can get in the way of being able
+        # to delete files when on windows.
+        self.gds=None # effectively close the dataset
+        
         if target_projection is not None:
             transformed=self.warp(target_projection)
             
@@ -3135,6 +3140,7 @@ class GdalGrid(SimpleGrid):
             self.extents=transformed.extents
             self.F=transformed.F
             self._projection=transformed.projection()
+            self.dx,self.dy = transformed.delta()
 
 def rasterize_grid_cells(g,values,dx=None,dy=None,stretch=True,
                          cell_mask=slice(None),match=None):
@@ -3614,7 +3620,6 @@ class CompositeField(Field):
         # This appears to give equivalent results (at least for binary-valued
         # inputs), and runs about 80x faster on a small-ish input.
         dist_xform=ndimage.distance_transform_edt
-        
         for src_i in ordered_srcs:
             log.info(self.sources['src_name'][src_i])
             log.info("   data mode: %s  alpha mode: %s"%(self.data_mode[src_i],
@@ -3627,6 +3632,8 @@ class CompositeField(Field):
                 log.info("Source %s came up empty after cropping. Check projection, and whether polygon intersects data"
                          %(self.sources['src_name'][src_i]))
                 continue
+            # could consider adding a to_grid to simple grid, as this
+            # currently goes through the generic interpolate interface.
             src_data = source.to_grid(bounds=bounds,dx=dx,dy=dy)
             src_alpha= SimpleGrid(extents=src_data.extents,
                                   F=np.ones(src_data.F.shape,'f8'))
@@ -3760,8 +3767,8 @@ class CompositeField(Field):
             total_alpha=result_alpha.F*(1-src_alpha.F) + src_alpha.F
             result_data.F   = result_data.F * result_alpha.F *(1-src_alpha.F) + cleaned*src_alpha.F
             # to avoid contracting data towards zero, have to normalize data by the total alpha.
-            valid=total_alpha>1e-10 # avoid #DIVZERO
-            result_data.F[valid] /= total_alpha[valid]
+            valid_alpha=total_alpha>1e-10 # avoid #DIVZERO
+            result_data.F[valid_alpha] /= total_alpha[valid_alpha]
             result_alpha.F  = total_alpha
 
             if stackup:

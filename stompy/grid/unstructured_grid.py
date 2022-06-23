@@ -5328,7 +5328,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             # force to a bitmask, even though could be inefficient
             mask=np.asarray(mask)
             if np.issubdtype(mask.dtype,np.integer):
-                bitmask=np.zeros(self.Ncells(),np.bool)
+                bitmask=np.zeros(self.Ncells(),bool) # np.bool deprecated
                 bitmask[mask]=True
                 if masked_values is not None:
                     masked_values=masked_values[ np.argsort(mask) ]
