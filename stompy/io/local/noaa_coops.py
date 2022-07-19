@@ -94,10 +94,8 @@ def coops_json_to_ds(json,params):
 def coops_dataset(station,start_date,end_date,products,
                   days_per_request=None,cache_dir=None):
     """
-    bare bones retrieval script for NOAA Tides and Currents data.
-    In particular, no error handling yet, doesn't batch requests, no caching,
-    can't support multiple parameters, no metadata, etc.
-
+    basic retrieval script for NOAA Tides and Currents data.
+    
     days_per_request: break up the request into chunks no larger than this many
     days.  for hourly data, this should be less than 365.  for six minute, I think
     the limit is 32 days.

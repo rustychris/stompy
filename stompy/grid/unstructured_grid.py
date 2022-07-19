@@ -781,6 +781,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         ignore_fields.extend([node_x_name,node_y_name])
         node_x=nc[node_x_name]
+        node_dimension=node_x.dims[0] # save for tracking metadata
         node_y=nc[node_y_name]
         try:
             # xarray access is slow - pull complete arrays beforehand
@@ -925,6 +926,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                               'face_node_connectivity','edge_node_connectivity',
                               'face_edge_connectivity','edge_face_connectivity',
                               'node_coordinates','face_coordinates','edge_coordinates']}
+        # node_dimension is often omitted, but easy to figure out
+        if ug.nc_meta['node_dimension'] is None:
+            ug.nc_meta['node_dimension']=node_dimension
         
         ug.filename=filename
         return ug
