@@ -1148,7 +1148,8 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         return fns[0]
 
     _his_ds=None
-    def his_dataset(self,decode_geometry=True,set_coordinates=True,refresh=False):
+    def his_dataset(self,decode_geometry=True,set_coordinates=True,refresh=False,
+                    **xr_kwargs):
         """
         Return history dataset, with some minor additions to make
         it friendly
@@ -1156,17 +1157,17 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         if (self._his_ds is not None) and (not refresh):
             return self._his_ds
         
-        his_ds=xr.open_dataset(self.his_output())
         if refresh:
+            his_ds=xr.open_dataset(self.his_output()) # is there a way to know if it's cached?
             his_ds.close()
-        his_ds=xr.open_dataset(self.his_output())
+        his_ds=xr.open_dataset(self.his_output(),**xr_kwargs)
             
         if set_coordinates:
             # Doctor up the dimensions
             # Misconfigured runs may have duplicates here.
 
             for coord,names in [ ('cross_section','cross_section_name'),
-                                 ('weigens','weigen_id'),
+                                 ('weirgens','weirgen_id'),
                                  ('source_sink','source_sink_name'),
                                  ('stations','station_name'),
                                  ('general_structures','general_structure_id'),
@@ -1622,3 +1623,68 @@ def dem_to_cell_node_bathy(dem,g,cell_z=None):
     
     
 
+def rst_mappers(rst,g,signed=True):
+    """
+    Create a sparse matrix that maps a per-flowlink, signed quantity (i.e. flow)
+    or unsigned (salinity?)
+    ported from waq_scenario.py
+    rst: an xr.Dataset from a DFM restart file
+    """
+    M=sparse.dok_matrix( (g.Nedges(),rst.dims['nFlowLink']), np.float64)
+    Melem=sparse.dok_matrix( (g.Ncells(),rst.dims['nFlowElem']), np.float64)
+    e2c=g.edge_to_cells(recalc=True)
+    cc=g.cells_center()
+    elem_xy=np.c_[ rst.FlowElem_xzw.values,
+                   rst.FlowElem_yzw.values ]
+
+    def elt_to_cell(elt):
+        # in general elts are preserved as the same cell index,
+        # and this is actually more robust than the geometry
+        # check because of some non-orthogonal cells that have
+        # a circumcenter outside the corresponding cell.
+        if utils.dist(elem_xy[elt] - cc[elt])<2.0:
+            Melem[elt,elt]=1
+            return elt
+        # in a few cases the circumcenter is not inside the cell,
+        # so better to select the nearest circumcenter than the
+        # cell containing it.
+        c=g.select_cells_nearest(elem_xy[elt],inside=False)
+        assert c is not None
+        Melem[c,elt]=1
+        return c
+
+    flow_links0=rst.FlowLink.values-1
+    for link,(eltA,eltB) in utils.progress(enumerate(flow_links0)):
+        assert eltB>=0
+        cB=elt_to_cell(eltB)
+
+        if (eltA<0) or (eltA>=rst.dims['nFlowElem']): # it's a boundary.
+            # so find a boundary edge for that cell
+            for j in g.cell_to_edges(cB):
+                if e2c[j,0]<0:
+                    sgn=1
+                    break
+                elif e2c[j,1]<0:
+                    sgn=-1
+                    break
+            else:
+                print("Link %d -- %d does not map to a grid boundary, likely a discharge, and will be ignored."%(eltA,eltB))
+                # This is probably a discharge. Ignore it.
+                continue
+        else:
+            cA=elt_to_cell(eltA)
+            j=g.cells_to_edge(cA,cB)
+            if j is None:
+                raise Exception("%d to %d was not an edge in the grid"%(eltA,eltB))
+            if (e2c[j,0]==cA) and (e2c[j,1]==cB):
+                # positive DWAQ flow is A->B
+                # positive edge normal for grid is the same
+                sgn=1
+            elif (e2c[j,1]==cA) and (e2c[j,0]==cB):
+                sgn=-1
+            else:
+                raise Exception("Bad match on link->edge")
+        if not signed: 
+            sgn=1
+        M[j,link]=sgn
+    return M,Melem
