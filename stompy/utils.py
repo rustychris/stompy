@@ -2506,8 +2506,8 @@ def subsets(values,k_min=1,k_max=None):
     """
     if k_max is None:
         k_max=len(values)
-        for k in range(k_min,k_max+1):
-            yield from combinations(values,k)
+    for k in range(k_min,k_max+1):
+        yield from combinations(values,k)
             
             
 def dominant_period(h,t,uniform=True,guess=None):
