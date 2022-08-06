@@ -1140,7 +1140,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         return fns
 
     _mu=None
-    def map_dataset(self,force_multi=False,grid=None,xr_kwargs={}):
+    def map_dataset(self,force_multi=False,grid=None,chain=False,xr_kwargs={}):
         """
         Return map dataset. For MPI runs, this will emulate a single, merged
         global dataset via multi_ugrid. For serial runs it directly opens
@@ -1151,18 +1151,57 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
 
         xr_kwargs: options to pass to xarray, whether multi or single.
 
-        Does not chain in time.
+        chain: if True, attempt to chain in time. Experimental!
         """
-        if self.num_procs<=1 and not force_multi:
-            # xarray caches this.
-            return xr.open_dataset(self.map_outputs()[0],**xr_kwargs)
+        if not chain:
+            if self.num_procs<=1 and not force_multi:
+                # xarray caches this.
+                return xr.open_dataset(self.map_outputs()[0],**xr_kwargs)
+            else:
+                from stompy.grid import multi_ugrid
+                # This is slow so cache the result
+                if self._mu is None:
+                    self._mu=multi_ugrid.MultiUgrid(self.map_outputs(),grid=grid,xr_kwargs=xr_kwargs)
+                return self._mu
         else:
-            from stompy.grid import multi_ugrid
-            # This is slow so cache the result
-            if self._mu is None:
-                self._mu=multi_ugrid.MultiUgrid(self.map_outputs(),grid=grid,xr_kwargs=xr_kwargs)
+            mdus=self.chain_restarts()
+            # This gets complicated since we are chaining in time and dealing
+            # with potentially multiple subdomains.
+            # Since MultiUgrid is not a proper Dataset, have to chain in time
+            # at the processor level.
+
+            # Scan for filenames across restarts
+            map_fns=np.zeros( (len(mdus),self.num_procs), object)
+            
+            for i_restart,mdu in enumerate(mdus):
+                output_dir=mdu.output_dir()
+                fns=glob.glob(os.path.join(output_dir,'*_map.nc'))
+                fns.sort()
+                assert len(fns) == self.num_procs
+                map_fns[i_restart,:]=fns
+            
+            # Create chained datasets per processor:
+            proc_dss=[] # chained dataset for each processor
+            for proc in range(self.num_procs):
+                proc_dss=[xr.open_dataset(fn,**xr_kwargs)
+                          for fn in map_fns[:,proc]]
+                proc_dasks=[]
+                for ds in proc_dss[::-1]:
+                    if len(proc_dasks)>0:
+                        cutoff=proc_dasks[0].time.values[0]
+                        tidx=np.searchsorted(ds.time.values, cutoff)
+                        if tidx==0:
+                            continue
+                        ds=ds.isel(time=slice(0,tidx))
+                    dask_ds=ds.chunk()
+                    proc_dasks.insert(0,dask_ds)
+                proc_ds=xr.concat(proc_dasks,dim='time')
+                proc_dss.append(proc_ds)
+            HERE # convince multi_ugrid to take this list of datasets
+            # and create a merged dataset
+            self._mu=multi_ugrid.MultiUgrid(proc_dss,grid=grid,xr_kwargs=xr_kwargs)
             return self._mu
-    
+                    
     def his_output(self):
         """
         return path to history file output
