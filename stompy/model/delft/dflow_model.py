@@ -68,7 +68,9 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
 
     def configure(self):
         super(DFlowModel,self).configure()
-        
+
+        # This is questionable -- new code in create_restart does this
+        # explicitly and pass configure=False
         if self.restart_from is not None:
             self.set_restart_from(self.restart_from)
 
@@ -454,6 +456,33 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             cmd=[gen_parallel,os.path.basename(self.mdu.filename),"%d"%self.num_procs,'6']
             return utils.call_with_path(cmd,self.run_dir)
 
+    def chain_restarts(self):
+        """
+        Attempt to chain back restarts, returning a list of
+        MDU objects in chronological order ending with self.mdu
+        """
+        # eventually support criteria on how far back
+        # returns a list of MDU objects (with .filename set),
+        # including self.mdu
+        mdus=[self.mdu]
+
+        mdu=self.mdu
+
+        while 1:
+            if not mdu['restart','RestartFile']:
+                break
+            restart=mdu['restart','RestartFile']
+            # '../data_2016long_3d_asbuilt_impaired_scen2_l100-v007/DFM_OUTPUT_flowfm/flowfm_20160711_000000_rst.nc'
+            # For now, this only works if the paths are 'normal'
+            restart_mdu=os.path.dirname(restart).replace('DFM_OUTPUT_','')+".mdu"
+            restart_mdu=os.path.normpath( os.path.join(os.path.dirname(mdu.filename),restart_mdu) )
+            if not os.path.exists(restart_mdu):
+                self.log.warning("Expected preceding restart at %s, but not there"%restart_mdu)
+                break
+            mdu=dio.MDUFile(restart_mdu)
+            mdus.insert(0,mdu)
+        return mdus
+        
     @property
     def restart_deep(self):
         """
@@ -1147,20 +1176,18 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         fns.sort()
         return fns[0]
 
-    _his_ds=None
-    def his_dataset(self,decode_geometry=True,set_coordinates=True,refresh=False,
-                    **xr_kwargs):
+    @classmethod
+    def clean_his_dataset(cls, fn, decode_geometry=True,set_coordinates=True,refresh=False,
+                          **xr_kwargs):
         """
-        Return history dataset, with some minor additions to make
-        it friendly
+        The work of his_dataset. 
         """
-        if (self._his_ds is not None) and (not refresh):
-            return self._his_ds
-        
         if refresh:
-            his_ds=xr.open_dataset(self.his_output()) # is there a way to know if it's cached?
+            # might be able to make this call faster by turning off all decoding?
+            his_ds=xr.open_dataset(fn,**xr_kwargs) # is there a way to know if it's cached?
             his_ds.close()
-        his_ds=xr.open_dataset(self.his_output(),**xr_kwargs)
+
+        his_ds=xr.open_dataset(fn,**xr_kwargs)
             
         if set_coordinates:
             # Doctor up the dimensions
@@ -1187,6 +1214,57 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
 
         if decode_geometry:
             xr_utils.decode_geometry(his_ds,'cross_section_geom',replace=True)
+        return his_ds
+    
+    _his_ds=None
+    def his_dataset(self,decode_geometry=True,set_coordinates=True,refresh=False,
+                    chain=False,**xr_kwargs):
+        """
+        Return history dataset, with some minor additions to make
+        it friendly.
+        If chain is True, chain back through restarts, concatenate (slicing out
+        duplicate time stamps from earlier runs), and return. Note that this will
+        result in a xr.Dataset with dask array entries. That may result in poor
+        performance, in which case ds=ds.compute() might help (but only after the
+        dataset has been subsetted enough to fit in memory).
+        """
+        # Caveat: caching and chain are not really aware of each other.
+        # as is, if the first call uses chain, then later calls will get
+        # the chained dataset even if they have chain=False.
+        # or vice versa.
+        if (self._his_ds is not None) and (not refresh):
+            return self._his_ds
+
+        clean_kwargs=dict(decode_geometry=decode_geometry,
+                          set_coordinates=set_coordinates,refresh=refresh)
+        clean_kwargs.update(xr_kwargs)
+        
+        # for chaining: aside from the path what is needed from self?
+        # basically nothing.
+        if chain:
+            mdus=self.chain_restarts()
+            his_fns=[]
+            for mdu in mdus:
+                output_dir=mdu.output_dir()
+                fns=glob.glob(os.path.join(output_dir,'*_his.nc'))
+                fns.sort()
+                his_fns.append(fns[0])
+            his_dss=[self.clean_his_dataset(fn,**clean_kwargs)
+                     for fn in his_fns]
+            his_dasks=[]
+            for ds in his_dss[::-1]:
+                if len(his_dasks)>0:
+                    cutoff=his_dasks[0].time.values[0]
+                    tidx=np.searchsorted( ds.time.values, cutoff)
+                    if tidx==0:
+                        continue
+                    ds=ds.isel(time=slice(0,tidx))
+                dask_ds=ds.chunk()
+                his_dasks.insert(0,dask_ds)
+            print(f"{len(his_dasks)} chained datasets")
+            his_ds=xr.concat(his_dasks,dim='time')
+        else:
+            his_ds=self.clean_his_dataset(self.his_output(),**clean_kwargs)
 
         self._his_ds=his_ds
         return his_ds
@@ -1214,6 +1292,8 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         return rst_time
     
     def create_restart(self,deep=True,mdu_suffix="",**kwargs):
+        # Consider skipping configure as we want to preserve as much of the original
+        # run as possible.
         new_model=self.__class__(**kwargs) # in case of subclassing, rather than DFlowModel()
         new_model.set_restart_from(self,deep=deep,mdu_suffix=mdu_suffix)
         return new_model
