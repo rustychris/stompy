@@ -1164,49 +1164,51 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                     self._mu=multi_ugrid.MultiUgrid(self.map_outputs(),grid=grid,xr_kwargs=xr_kwargs)
                 return self._mu
         else:
-            mdus=self.chain_restarts()
-            # This gets complicated since we are chaining in time and dealing
-            # with potentially multiple subdomains.
-            # Since MultiUgrid is not a proper Dataset, have to chain in time
-            # at the processor level.
+            # as with his_dataset(), caching is not aware of options like chain.
+            if self._mu is None:
+                mdus=self.chain_restarts()
+                # This gets complicated since we are chaining in time and dealing
+                # with potentially multiple subdomains.
+                # Since MultiUgrid is not a proper Dataset, have to chain in time
+                # at the processor level.
 
-            # Scan for filenames across restarts
-            map_fns=np.zeros( (len(mdus),self.num_procs), object)
-            
-            for i_restart,mdu in enumerate(mdus):
-                output_dir=mdu.output_dir()
-                fns=glob.glob(os.path.join(output_dir,'*_map.nc'))
-                fns.sort()
-                assert len(fns) == self.num_procs
-                map_fns[i_restart,:]=fns
-            
-            # Create chained datasets per processor:
-            all_proc_dss=[] # chained dataset for each processor
-            for proc in range(self.num_procs):
-                one_proc_dss=[xr.open_dataset(fn,**xr_kwargs)
-                              for fn in map_fns[:,proc]]
-                proc_dasks=[]
-                for ds in one_proc_dss[::-1]:
-                    if len(proc_dasks)>0:
-                        cutoff=proc_dasks[0].time.values[0]
-                        tidx=np.searchsorted(ds.time.values, cutoff)
-                        if tidx==0:
-                            continue
-                        ds=ds.isel(time=slice(0,tidx))
-                    dask_ds=ds.chunk()
-                    proc_dasks.insert(0,dask_ds)
-                # data_vars='minimal' is necessary otherwise things like
-                # mesh topology will also get concatenated in time.
-                # 'different' would probably also work.
-                proc_ds=xr.concat(proc_dasks,dim='time',data_vars='minimal')
-                all_proc_dss.append(proc_ds)
-            if len(all_proc_dss)==1 and not force_multi:
-                self._mu=all_proc_dss[0]
-            else:
-                from ...grid import multi_ugrid
-                # multi_ugrid will take a list of datasets
-                # and create a merged dataset
-                self._mu=multi_ugrid.MultiUgrid(all_proc_dss,grid=grid,xr_kwargs=xr_kwargs)
+                # Scan for filenames across restarts
+                map_fns=np.zeros( (len(mdus),self.num_procs), object)
+
+                for i_restart,mdu in enumerate(mdus):
+                    output_dir=mdu.output_dir()
+                    fns=glob.glob(os.path.join(output_dir,'*_map.nc'))
+                    fns.sort()
+                    assert len(fns) == self.num_procs
+                    map_fns[i_restart,:]=fns
+
+                # Create chained datasets per processor:
+                all_proc_dss=[] # chained dataset for each processor
+                for proc in range(self.num_procs):
+                    one_proc_dss=[xr.open_dataset(fn,**xr_kwargs)
+                                  for fn in map_fns[:,proc]]
+                    proc_dasks=[]
+                    for ds in one_proc_dss[::-1]:
+                        if len(proc_dasks)>0:
+                            cutoff=proc_dasks[0].time.values[0]
+                            tidx=np.searchsorted(ds.time.values, cutoff)
+                            if tidx==0:
+                                continue
+                            ds=ds.isel(time=slice(0,tidx))
+                        dask_ds=ds.chunk()
+                        proc_dasks.insert(0,dask_ds)
+                    # data_vars='minimal' is necessary otherwise things like
+                    # mesh topology will also get concatenated in time.
+                    # 'different' would probably also work.
+                    proc_ds=xr.concat(proc_dasks,dim='time',data_vars='minimal')
+                    all_proc_dss.append(proc_ds)
+                if len(all_proc_dss)==1 and not force_multi:
+                    self._mu=all_proc_dss[0]
+                else:
+                    from ...grid import multi_ugrid
+                    # multi_ugrid will take a list of datasets
+                    # and create a merged dataset
+                    self._mu=multi_ugrid.MultiUgrid(all_proc_dss,grid=grid,xr_kwargs=xr_kwargs)
             return self._mu
                     
     def his_output(self):
