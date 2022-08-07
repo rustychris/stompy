@@ -1158,7 +1158,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                 # xarray caches this.
                 return xr.open_dataset(self.map_outputs()[0],**xr_kwargs)
             else:
-                from stompy.grid import multi_ugrid
+                from ...grid import multi_ugrid
                 # This is slow so cache the result
                 if self._mu is None:
                     self._mu=multi_ugrid.MultiUgrid(self.map_outputs(),grid=grid,xr_kwargs=xr_kwargs)
@@ -1181,12 +1181,12 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                 map_fns[i_restart,:]=fns
             
             # Create chained datasets per processor:
-            proc_dss=[] # chained dataset for each processor
+            all_proc_dss=[] # chained dataset for each processor
             for proc in range(self.num_procs):
-                proc_dss=[xr.open_dataset(fn,**xr_kwargs)
-                          for fn in map_fns[:,proc]]
+                one_proc_dss=[xr.open_dataset(fn,**xr_kwargs)
+                              for fn in map_fns[:,proc]]
                 proc_dasks=[]
-                for ds in proc_dss[::-1]:
+                for ds in one_proc_dss[::-1]:
                     if len(proc_dasks)>0:
                         cutoff=proc_dasks[0].time.values[0]
                         tidx=np.searchsorted(ds.time.values, cutoff)
@@ -1195,11 +1195,18 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                         ds=ds.isel(time=slice(0,tidx))
                     dask_ds=ds.chunk()
                     proc_dasks.insert(0,dask_ds)
-                proc_ds=xr.concat(proc_dasks,dim='time')
-                proc_dss.append(proc_ds)
-            HERE # convince multi_ugrid to take this list of datasets
-            # and create a merged dataset
-            self._mu=multi_ugrid.MultiUgrid(proc_dss,grid=grid,xr_kwargs=xr_kwargs)
+                # data_vars='minimal' is necessary otherwise things like
+                # mesh topology will also get concatenated in time.
+                # 'different' would probably also work.
+                proc_ds=xr.concat(proc_dasks,dim='time',data_vars='minimal')
+                all_proc_dss.append(proc_ds)
+            if len(all_proc_dss)==1 and not force_multi:
+                self._mu=all_proc_dss[0]
+            else:
+                from ...grid import multi_ugrid
+                # multi_ugrid will take a list of datasets
+                # and create a merged dataset
+                self._mu=multi_ugrid.MultiUgrid(all_proc_dss,grid=grid,xr_kwargs=xr_kwargs)
             return self._mu
                     
     def his_output(self):

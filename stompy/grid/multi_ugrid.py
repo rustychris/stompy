@@ -246,6 +246,7 @@ class MultiUgrid(object):
         paths: 
             list of paths to netcdf files
             single glob pattern
+            list of xr.Dataset
 
         cleanup_dfm: True: remove extra bits common in DFM output that either
          lead to duplicate edges, or cannot be handled by multi_ugrid. If 'auto'
@@ -265,7 +266,8 @@ class MultiUgrid(object):
             # more likely to get datasets in order of processor rank
             # with a sort.
             paths.sort()
-        self.paths=paths
+        # list of str vs list of xr.Dataset is handled in self.load()
+        self.paths=paths # paths might be xr.Datasets!
         self.dss=self.load(**xr_kwargs)
         self.grids=[unstructured_grid.UnstructuredGrid.read_ugrid(ds,**grid_kwargs) for ds in self.dss]
 
@@ -306,7 +308,12 @@ class MultiUgrid(object):
         self.create_global_grid_and_mapping(grid=grid,match_grid_tol=match_grid_tol)
         
     def load(self,**xr_kwargs):
-        return [xr.open_dataset(p,**xr_kwargs) for p in self.paths]
+        if isinstance(self.paths[0],str):
+            return [xr.open_dataset(p,**xr_kwargs) for p in self.paths]
+        elif isinstance(self.paths[0],xr.Dataset):
+            return self.paths
+        else:
+            raise Exception("Unsure whether paths has Datasets or paths (%s)"%self.paths[0])
     
     def reload(self):
         """
