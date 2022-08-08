@@ -8,7 +8,7 @@ import os
 import matplotlib.pyplot as plt
 from . import plot_utils
 from .. import utils
-from ..grid import unstructured_grid
+from ..grid import unstructured_grid, multi_ugrid
 
 from ipywidgets import Button, Layout, jslink, IntText, IntSlider, AppLayout, Output
 import ipywidgets as widgets
@@ -28,6 +28,11 @@ import ipywidgets as widgets
 # Maybe this can use the observe methods?
 # Probably best to separate Layer, which is more like plot-type, from
 # PlotVar. It's really plotvar that needs to know dimensions.
+
+# TODO:
+#  Allow passing a grid into the NBViz constructor for a UGDataset.
+#  Work around not having nc_meta. Maybe a local implementation with heuristics?
+#  Add in the logic for extra sliders, specifically layer.
 
 class Fig:
     """ Manages a single matplotlib figure
@@ -79,6 +84,8 @@ class UGDataset(Dataset):
     def __init__(self,ds,grid=None,**kw):
         super().__init__(**kw)
         self.ds=ds
+        if isinstance(ds,multi_ugrid.MultiUgrid):
+            grid=ds.grid
         if grid is None:
             grid=unstructured_grid.UnstructuredGrid.read_ugrid(ds)            
         self.grid=grid
@@ -292,7 +299,7 @@ class NBViz(widgets.AppLayout):
         time_max=ds.ds.dims['time']-1
         
         self.play = widgets.Play(
-            value=50,
+            value=time_min,
             min=time_min,
             max=time_max,
             step=1,
@@ -364,6 +371,7 @@ class NBViz(widgets.AppLayout):
         layer=ds.create_layer(variable)
         if layer is None:
             print("Could not create layer")
+            return
         # will have to be smarter once active_dims actually represents
         # the active layer. and active_dims will probably show all
         # dimensions, but we'll show sliders only for the ones for the
