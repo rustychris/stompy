@@ -850,7 +850,10 @@ class UgridXr(object):
                 if query=='weight':
                     # make those weighted averages
                     # have to add extra axis to get broadcasting correct
-                    result = all_dz / np.sum(all_dz,axis=-1)[...,None]
+                    # avoid warnings.
+                    denom= np.sum(all_dz,axis=-1)[...,None]
+                    denom[denom==0.0]=np.nan
+                    result = all_dz/denom
                 else:
                     result = all_dz
             elif query=='z_bottom':

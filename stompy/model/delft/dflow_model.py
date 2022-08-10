@@ -105,7 +105,70 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                     shutil.rmtree(m)
                 else:
                     raise Exception("What is %s ?"%m)
+
+    def write(self):
+        if not bool(self.restart):
+            super().write()
+        else:
+            # Do some of the typical work of restart, but then copy as much
+            # as possible from the parent run.
+            if self.restart_deep:
+                self.set_run_dir(self.run_dir,mode='create')
+                self.update_config()
+                self.write_config()
+                self.copy_files_for_restart()
+                                
+                # If/when this gets smarter, say overriding BCs, it will have to become
+                # more granular here. One option would be to create BC instances that know
+                # how to copy over the original files and stanzas verbatim.
+            else:
+                self.log.warning("Shallow restart logic in DFlowModel.write() is sketchy")
+                # less sure about these.
+                self.update_config()
+                self.mdu.write()
+                
+    def copy_files_for_restart(self):
+        """
+        Do the real work of setting up a restart by copying files
+        from parent run.
+        Implied that this is a deep restart
+        """
+
+        # The restart equivalent of these steps in write():
+        #   self.write_extra_files()
+        #   self.write_forcing()
+        #   self.write_grid()
         
+        # hard to know what all files we might want.
+        # include any tim, pli, pliz, ext, xyz, ini
+        # restart version of partition I think handles the grid?
+        # also include any file that appears in FlowFM.ext
+        # (because some forcing input like wind can have weird suffixes)
+        # and include the original grid (check name in mdu)
+        
+        # skip any .steps, .cache
+        # skip any mdu
+        # probably skip anything without an extension
+        with open(self.restart_from.mdu.filepath(('external forcing','ExtForceFile'))) as fp:
+            flowfm_ext=fp.read()
+        with open(self.mdu.filename) as fp:
+            flowfm_mdu=fp.read()
+
+        for fn in os.listdir(self.restart_from.run_dir):
+            _,suffix = os.path.splitext(fn)
+            do_copy = ( (suffix in ['.tim','.pli','.pliz','.ext','.xyz','.ini','.xyn'])
+                        or (fn in flowfm_ext)
+                        or (fn in flowfm_mdu)
+                        or (fn==self.mdu['geometry','NetFile']) )
+            # a bit kludgey. restart paths often include DFM_OUTPUT_flowfm, but definitely
+            # don't want to copy that.
+            fn_path=os.path.join(self.restart_from.run_dir,fn)
+            if fn.startswith('DFM_OUTPUT') or os.path.isdir(fn_path):
+                do_copy=False
+                
+            if do_copy:
+                shutil.copyfile(fn_path, os.path.join(self.run_dir,fn))
+                
     def write_forcing(self,overwrite=True):
         bc_fn=self.ext_force_file()
         assert bc_fn,"DFM script requires old-style BC file.  Set [external forcing] ExtForceFile"
@@ -677,10 +740,15 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                     name="obs_pnt_%03d"%i
                 xy=np.array(mon_feat['geom'].coords[0]) # shapely api update
                 fp.write("%.3f %.3f '%s'\n"%(xy[0],xy[1],name))
-    def write_monitor_sections(self):
+    def write_monitor_sections(self,append=True):
         fn=self.mdu.filepath( ('output','CrsFile') )
         if fn is None: return
-        with open(fn,'at') as fp:
+        if append:
+            mode='at'
+        else:
+            mode='wt'
+            
+        with open(fn,mode) as fp:
             for i,mon_feat in enumerate(self.mon_sections):
                 try:
                     name=mon_feat['name']
@@ -1342,7 +1410,8 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
     def create_restart(self,deep=True,mdu_suffix="",**kwargs):
         # Consider skipping configure as we want to preserve as much of the original
         # run as possible.
-        new_model=self.__class__(**kwargs) # in case of subclassing, rather than DFlowModel()
+        # 2022-08-10: trying that, fingers crossed
+        new_model=self.__class__(configure=False,**kwargs) # in case of subclassing, rather than DFlowModel()
         new_model.set_restart_from(self,deep=deep,mdu_suffix=mdu_suffix)
         return new_model
 

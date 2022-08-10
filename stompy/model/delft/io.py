@@ -480,7 +480,8 @@ def write_pli(file_like,pli_data):
             if len(data) != len(node_labels):
                 raise Exception("%d nodes, but there are %d node labels"%(len(data),
                                                                           len(node_labels)))
-            block="\n".join( [ "  ".join(["%15s"%d for d in row]) + "   " + node_label
+            # .strip to trim leading white space
+            block="\n".join( [ "  ".join(["%15s"%d for d in row]).strip() + "   " + node_label
                                for row,node_label in zip(data,node_labels)] )
             fp.write(block)
             fp.write("\n")
