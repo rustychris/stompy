@@ -1334,7 +1334,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
     
     _his_ds=None
     def his_dataset(self,decode_geometry=True,set_coordinates=True,refresh=False,
-                    chain=False,**xr_kwargs):
+                    chain=False,prechain=None,**xr_kwargs):
         """
         Return history dataset, with some minor additions to make
         it friendly.
@@ -1343,6 +1343,10 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         result in a xr.Dataset with dask array entries. That may result in poor
         performance, in which case ds=ds.compute() might help (but only after the
         dataset has been subsetted enough to fit in memory).
+
+        prechain: when chaining, the list of un-merged datasets will be passed
+        to this function before attempting to concatenate, and will proceed with
+        whatever datasets are returned from this function.
         """
         # Caveat: caching and chain are not really aware of each other.
         # as is, if the first call uses chain, then later calls will get
@@ -1367,6 +1371,8 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                 his_fns.append(fns[0])
             his_dss=[self.clean_his_dataset(fn,**clean_kwargs)
                      for fn in his_fns]
+            #if prechain:
+            #    his_dss=prechain(his_dss)
             his_dasks=[]
             for ds in his_dss[::-1]:
                 if len(his_dasks)>0:
@@ -1378,7 +1384,13 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                 dask_ds=ds.chunk()
                 his_dasks.insert(0,dask_ds)
             print(f"{len(his_dasks)} chained datasets")
-            his_ds=xr.concat(his_dasks,dim='time')
+            if prechain: # can i do this here?
+                his_dasks=prechain(his_dasks)
+            # data_vars='minimal' should avoid adding time dimension to static things like
+            # geometry. 'different' also worth trying, though currently there are kludges
+            # in client code for flipped sections, and they would have to be more complete
+            # to avoid issues with using 'different'
+            his_ds=xr.concat(his_dasks,dim='time',data_vars='minimal')
         else:
             his_ds=self.clean_his_dataset(self.his_output(),**clean_kwargs)
 
