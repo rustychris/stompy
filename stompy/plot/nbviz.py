@@ -6,6 +6,7 @@ Created on Thu Aug  4 05:00:18 2022
 """
 import os
 import matplotlib.pyplot as plt
+import numpy as np
 from . import plot_utils
 from .. import utils
 from ..grid import unstructured_grid, multi_ugrid
@@ -93,6 +94,10 @@ class UGDataset(Dataset):
         # select field to plot for cells:
         self.dim_selectors=dict(time=self.ds.dims['time']-5)
         #self.set_cell_var('eta')
+        
+    def available_vars(self):
+        # To show when creating a new plot
+        return self.available_cell_vars() # + edge_vars ...
 
     def create_layer(self,variable):
         if variable in self.available_cell_vars():
@@ -165,13 +170,21 @@ class UGDataset(Dataset):
         
 
 class Layer:
-    pass
+    @property
+    def label(self):
+        return str(id(self))
+    
+    def layer_edit_pane(self):
+        return widgets.Label("Edit layer")
 
 class UGLayer(Layer):
     def __init__(self,ds,variable):
         self.ds=ds
         self.variable=variable
         self.dims=None # uninitialized.
+    @property
+    def label(self):
+        return self.variable
     
 class UGCellLayer(UGLayer):
     """
@@ -179,7 +192,8 @@ class UGCellLayer(UGLayer):
     dataset.
     """
     ccoll=None
-        
+    update_clims=True # autoscale colorbar when coordinates change
+    
     def init_plot(self,Fig):
         # okay if it is an empty dict, just not None
         assert self.dims is not None
@@ -189,6 +203,7 @@ class UGCellLayer(UGLayer):
                                            cmap='turbo',ax=self.Fig.ax)
         self.cax=self.Fig.get_cax()
         self.ccbar=plot_utils.cbar(self.ccoll,cax=self.cax)
+        self.Fig.ax.axis('equal') # somehow lost the auto zooming. try here.
     def get_data(self):
         return self.ds.select_cell_data(self.variable,self.dims)
     
@@ -224,7 +239,10 @@ class UGCellLayer(UGLayer):
         # call. probably keep a list of layers, broadcast dim
         # changes, and let layers notify of update.
         if self.ccoll is not None:
-            self.ccoll.set_array(self.get_data())
+            data=self.get_data()
+            self.ccoll.set_array(data)
+            if self.update_clims:
+                self.ccoll.set_clim(np.nanmin(data), np.nanmax(data))
     
     def available_vars(self):
         # to show options for changing the variable of an existing layer
@@ -232,6 +250,16 @@ class UGCellLayer(UGLayer):
         # new variable has different dimensions. 
         return self.ds.available_cell_vars()
     
+    def layer_edit_pane(self):
+        var_selector = widgets.Dropdown(options=self.available_vars(),
+                                        value=self.variable,
+                                        description='Var:')
+        var_selector.observe(self.on_change_var, names='value')
+        return var_selector
+
+    def on_change_var(self,change):
+        self.set_variable(change['new'])
+        
     def set_variable(self,v):
         if v==self.variable: return
         print("set_variable: ",v)
@@ -245,7 +273,6 @@ class UGCellLayer(UGLayer):
             self.Fig.redraw()
 
 
-                         
 # use while debugging to see how layouts are working
 def create_expanded_button(description, button_style):
     return Button(description=description, button_style=button_style, 
@@ -263,6 +290,7 @@ class NBViz(widgets.AppLayout):
     # layout. That will streamline display logic, but
     # not sure what the other implications are.
     active_layer=None
+    new_layer="--new--"
     
     def __init__(self,datasets=None):
         # at the moment datasets can only be ugrid-ish xr.Dataset,
@@ -322,42 +350,71 @@ class NBViz(widgets.AppLayout):
                 
         self.time_slider.observe(on_time_change, names='value')
         
-                   
-        self.var_selector = widgets.Dropdown(options=["No active layer"],
-                                             description="Var:")
-        self.var_selector.observe(self.on_var_change,names='value')
+        self.layer_selector = widgets.Select(options=[self.new_layer],
+                                             description="Layer:")
+        self.layer_selector.observe(self.on_layer_change,names='value')
         
         global_controls=self.global_controls_widget()
         
         # so far have failed to use MPL figure as a widget.
         super().__init__(header=time_control,
-                         left_sidebar=self.var_selector,
-                         center=None, # create_expanded_button('Center', 'warning'),
+                         left_sidebar=self.layer_selector,
+                         center=self.new_layer_pane(), # create_expanded_button('Center', 'warning'),
                          right_sidebar=global_controls,
+                         pane_widths=[5, 5, 5],
                          footer=None)
         # displaying the viz object in the notebook then displays the 
         # widgets.
     def global_controls_widget(self):
         # buttons, toggles, etc. that control the global state of the figure
+        # so far I'm striking out on getting this layout to work better...
+        row_layout= Layout(
+            display='flex',
+            flex_flow='row',
+            justify_content='space-between'
+        )
+        
         show_axes=widgets.Checkbox(value=True,
                                    description='Show axes')
         show_axes.observe(self.on_show_axes_change,names='value')
         tight_layout=widgets.Button(description="Tight layout")
         tight_layout.on_click(self.do_tight_layout)
         self.save_enabled=widgets.Checkbox(value=False,
-                                           description="")
+                                           description="",
+                                           layout=Layout(width='auto'))
         self.save_path=widgets.Text(value='image-%04d.png',
                                     placeholder='path for saved plots',
                                     description='Save image:',
-                                    disabled=True)
+                                    disabled=True,
+                                    layout=Layout(width='auto'))
         # might not work - may need to do it python side.
         def cb(change,save_path=self.save_path):
             save_path.disabled=not change['new']
         self.save_enabled.observe(cb,names='value')
         
-        vbox=widgets.VBox([widgets.HBox([show_axes,tight_layout]),
-                           widgets.HBox([self.save_enabled,self.save_path])])
+        vbox=widgets.VBox([widgets.Box([show_axes,tight_layout],layout=row_layout),
+                           widgets.Box([self.save_enabled,self.save_path],
+                                        layout=row_layout)])
         return vbox
+
+    def active_dataset(self):
+        return self.datasets[0] # temporary hack.
+    def var_options(self):
+        return self.active_dataset().available_vars()
+    # dummy
+    plt_options=['pseudocolor','quiver']
+    def new_layer_pane(self):
+        plt_selector=widgets.Dropdown(options=self.plt_options)
+        var_selector=widgets.Dropdown(options=self.var_options())
+        button=widgets.Button(description="Add layer")
+        button.on_click(lambda b: self.add_layer(var_selector.value))
+        # How to slim up this thing?
+        # width=50% leaves the center pane very wide, but just uses 50%
+        # of the area.
+        vbox=widgets.VBox([plt_selector,var_selector,button])
+        # layout=Layout(width='50%', height='80px'))
+        return vbox
+    
     def save_frame(self):
         fn_template=self.save_path.value
         fn=fn_template.format(**self.active_dims)
@@ -367,7 +424,9 @@ class NBViz(widgets.AppLayout):
             self.Fig.ax.axis(change['new'])
     def do_tight_layout(self,b):
         self.Fig.do_tight_layout()
-    def add_layer(self,ds,variable):
+    def add_layer(self,variable,ds=None):
+        if ds is None: ds=self.active_dataset()
+        
         layer=ds.create_layer(variable)
         if layer is None:
             print("Could not create layer")
@@ -380,7 +439,34 @@ class NBViz(widgets.AppLayout):
         layer.update_dims(self.active_dims)
         layer.init_plot(self.Fig)
         self.activate_layer(layer)
+        self.update_layer_selector()
         
+    def on_layer_change(self,change):
+        print("Got layer change")
+        if change['new']==self.new_layer:
+            self.center = self.new_layer_pane()
+        else:
+            self.set_active_layer_from_label(change['new'])
+            if self.active_layer is not None:
+                self.center = self.active_layer.layer_edit_pane()
+
+    def set_active_layer_from_label(self,label):
+        for layer in self.layers:
+            if layer.label == label:
+                self.active_layer=layer
+                return
+        self.active_layer=None
+        
+    def update_layer_selector(self):
+        options=[self.new_layer]
+        for layer in self.layers:
+            options.append(layer.label)
+        self.layer_selector.options=tuple(options)
+        if self.active_layer is None:
+            self.layer_selector.value=self.new_layer
+        else:
+            self.layer_selector.value=self.active_layer.label
+
     def on_var_change(self,change):
         if self.active_layer is None: 
             print("var change but no active layer")
@@ -397,11 +483,12 @@ class NBViz(widgets.AppLayout):
         # small problem: setting the options will force a change to the
         # value, and currently that sets a value that doesn't plot (face_node)
         # So disable the callback while changing options:
-        self.var_selector.unobserve(self.on_var_change,names='value')
+        # TODO disentangle var_selector and layer_selector
         
-        self.var_selector.options=self.active_layer.available_vars()
-        self.var_selector.value=layer.variable
-        self.var_selector.observe(self.on_var_change,names='value')
+        #self.layer_selector.unobserve(self.on_var_change,names='value')
+        #self.layer_selector.options=self.active_layer.available_vars()
+        #self.layer_selector.value=layer.variable
+        #self.layer_selector.observe(self.on_var_change,names='value')
 
     def deactivate_layer(self):
         self.active_layer=None

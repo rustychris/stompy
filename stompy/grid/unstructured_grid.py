@@ -1023,7 +1023,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
             grd = UnstructuredGrid(edges=edges, points=points,
                                    cells=cells, max_sides=max_cell_faces)
-
+            grd.twod_area_name = twod_area_name
+            
             if elevations:
                 cell_key='Geometry/2D Flow Areas/' + twod_area_name + '/Cells Minimum Elevation'
                 edge_key='Geometry/2D Flow Areas/' + twod_area_name + '/Faces Minimum Elevation'
