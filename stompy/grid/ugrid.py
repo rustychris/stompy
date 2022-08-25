@@ -747,6 +747,7 @@ class UgridXr(object):
         # this used to be called Nk, but that's misleading.  it's the k index
         # of the bed layer, not the number of layers per water column.
         kbed = np.searchsorted(k_sign*layer_interfaces,k_sign*bed)
+        # print("kbed: ",kbed)
 
         one_dz = k_sign*(layer_bounds[:,1]-layer_bounds[:,0])
         all_dz=np.ones(h.shape+one_dz.shape)*one_dz
@@ -774,11 +775,26 @@ class UgridXr(object):
         # with this min call it's only correct for k_sign==-1
         ctops = np.searchsorted(k_sign*(layer_interfaces + self.surface_dzmin), 
                                 k_sign*h)
-
+        # print("k_sign:",k_sign)
+        #print("k_sign*h", k_sign*h)
+        #print("k_sign*(layer_interfaces+self.surface_dzmin)\n",
+        #      k_sign*(layer_interfaces + self.surface_dzmin))
+        #print("surface_dzmin: ", self.surface_dzmin)
+        
         # default h_to_ctop will use the dzmin appropriate for the surface,
         # but at the bed, it goes the other way - safest just to say dzmin=0,
         # and also clamp to known Nk
-        cbeds = np.searchsorted(k_sign*layer_interfaces,k_sign*bed) 
+        cbeds = np.searchsorted(k_sign*layer_interfaces,k_sign*bed)
+
+        # 2022-08-01 RH: 
+        # pretty sure that ctops should never be below cbed. even for a dry
+        # water column?
+        if k_sign==1:
+            ctops=np.maximum(ctops,cbeds)
+        else:
+            ctops=np.minimum(ctops,cbeds)
+
+        # print("bed:",bed,"  h: ",h)
 
         # dimension problems here - Nk has dimensions like face_slice or face_slice,time_slice
         # cbeds has dimensions like face_slice,time_slice
@@ -800,14 +816,25 @@ class UgridXr(object):
             cbeds=np.maximum(cbeds,kbed) # maybe redundant now
             drymask = (all_k < cbeds[...,None]) | (all_k>ctops[...,None])
 
+        # print("cbeds:",cbeds)
+            
         all_dz[drymask] = 0.0
 
         ii = tuple(np.indices( h.shape ) )
         z = layer_bounds.min(axis=1) # bottom of each cell
 
+        # print("h",h)
+        # print("ii",ii)
+        # print("ctops[ii]",ctops[ii])
+        # print("z[ctop]",z[ctops])
+        
         all_dz[ii+(ctops[ii],)] = h-z[ctops]
         # isub doesn't play nicely with dask array, so write out the isub
         all_dz[ii+(cbeds[ii],)] = all_dz[ii+(cbeds[ii],)] - (bed - z[cbeds])
+
+        # DBG
+        # print("all_dz",all_dz)
+        
 
         # handle the various query options
         if isinstance(query,str):
@@ -816,14 +843,17 @@ class UgridXr(object):
         else:
             queries=query
             singleton=False
-            
+
         results=[]
         for query in queries:
             if query in ['weight','dz']:
                 if query=='weight':
                     # make those weighted averages
                     # have to add extra axis to get broadcasting correct
-                    result = all_dz / np.sum(all_dz,axis=-1)[...,None]
+                    # avoid warnings.
+                    denom= np.sum(all_dz,axis=-1)[...,None]
+                    denom[denom==0.0]=np.nan
+                    result = all_dz/denom
                 else:
                     result = all_dz
             elif query=='z_bottom':
@@ -860,28 +890,14 @@ class UgridXr(object):
         """
         Interpolate an edge-centered, normal vector component 
         value to a cell centered vector value.
+        returns float64[Ncells,2]
         """
         # Originally borrowed model.stream_tracer.U_perot, but
         # (a) that's a weird place for the code to live, and
         # (b) that code seems to have a different sign convention, or
         # at least it was giving bad results in some spot tests.
-
-        cc=self.grid.cells_center()
-        ec=self.grid.edges_center()
-        normals=self.edge_normals()
-
-        e2c=self.grid.edge_to_cells()
-        el=self.grid.edges_length()
-        Uc=np.zeros((self.grid.Ncells(),2),np.float64)
-
-        for c in np.arange(self.grid.Ncells()):
-            js=self.grid.cell_to_edges(c)
-            for nf,j in enumerate(js):
-                de2f=utils.mag(cc[c]-ec[j])
-                # Uc ~ m3/s * m
-                Uc[c,:] += edge_values[j]*normals[j]*de2f*el[j]
-        Uc /= self.grid.cells_area()[:,None]
-        return Uc
+        # And now it has moved again to unstructured grid...
+        return self.grid.interp_perot(edge_values,edge_normals=self.edge_normals)
 
     def edge_normals(self):
         if self.edge_normal_vnames is not None:

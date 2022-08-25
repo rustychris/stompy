@@ -24,6 +24,7 @@ class MultiVar(object):
     i.e. DataArray.
     Handles isel() calls by dispatching non-partitioned dimensions
     """
+    _size=None
     def __init__(self,mu,sub_vars):
         self.mu=mu
         self.sub_vars=sub_vars
@@ -108,6 +109,17 @@ class MultiVar(object):
         return MultiVar(self.mu,
                         [da.sel(**kwargs) for da in self.sub_vars])
 
+    _size=None
+    @property
+    def size(self):
+        if self._size is None:
+            self._size=sum([v.size for v in self.sub_vars])
+        return self._size
+
+    @property
+    def ndim(self):
+        return self.sub_vars[0].ndim
+            
     def shape_and_indexes(self):
         """
         Determine the shape of the combined variable, and how to 
@@ -204,7 +216,11 @@ class MultiVar(object):
         shape,left_idx,right_idx=self.shape_and_indexes()
         return shape[0]
 
-    def to_dataarray(self):
+
+    def to_dataarray(self): # old name
+        return self.compute()
+    
+    def compute(self):
         """
         Materialize to a non-partitioned DataArray.
         """
@@ -246,6 +262,7 @@ class MultiUgrid(object):
         paths: 
             list of paths to netcdf files
             single glob pattern
+            list of xr.Dataset
 
         cleanup_dfm: True: remove extra bits common in DFM output that either
          lead to duplicate edges, or cannot be handled by multi_ugrid. If 'auto'
@@ -265,7 +282,8 @@ class MultiUgrid(object):
             # more likely to get datasets in order of processor rank
             # with a sort.
             paths.sort()
-        self.paths=paths
+        # list of str vs list of xr.Dataset is handled in self.load()
+        self.paths=paths # paths might be xr.Datasets!
         self.dss=self.load(**xr_kwargs)
         self.grids=[unstructured_grid.UnstructuredGrid.read_ugrid(ds,**grid_kwargs) for ds in self.dss]
 
@@ -275,7 +293,8 @@ class MultiUgrid(object):
         self.rev_meta={meta[k]:k for k in meta} # Reverse that
 
         if cleanup_dfm=='auto':
-            cleanup_dfm='Deltares' in self.dss[0].attrs['Conventions']
+            cleanup_dfm=('Deltares' in self.dss[0].attrs.get('Conventions',"")
+                          or 'D-Flow FM' in self.dss[0].attrs.get('source',""))
             
         if cleanup_dfm:
             for g in self.grids:
@@ -303,9 +322,16 @@ class MultiUgrid(object):
                 self.rev_meta['nFlowElem']='face_dimension'
 
         self.create_global_grid_and_mapping(grid=grid,match_grid_tol=match_grid_tol)
+        # make the dimension mapping available
+        self.grid.nc_meta=meta
         
     def load(self,**xr_kwargs):
-        return [xr.open_dataset(p,**xr_kwargs) for p in self.paths]
+        if isinstance(self.paths[0],str):
+            return [xr.open_dataset(p,**xr_kwargs) for p in self.paths]
+        elif isinstance(self.paths[0],xr.Dataset):
+            return self.paths
+        else:
+            raise Exception("Unsure whether paths has Datasets or paths (%s)"%self.paths[0])
     
     def reload(self):
         """
@@ -427,6 +453,11 @@ class MultiUgrid(object):
             self._edge_g2l=edge_g2l
         return self._edge_g2l
 
+    def __iter__(self):
+        """ iterate over variable names
+        """
+        return self.dss[0].__iter__()
+    
     def __getitem__(self,k):
         """
         Returns a proxy object (MultiVar) - delaying the partition translation until .values is called.

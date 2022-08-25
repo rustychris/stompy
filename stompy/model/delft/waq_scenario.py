@@ -43,7 +43,12 @@ try:
 except ImportError:
     cascaded_union = None
 
-from collections import defaultdict, OrderedDict, Iterable
+from collections import defaultdict, OrderedDict
+try:
+    from collections.abc import Iterable
+except ImportError:
+    from collections import Iterable
+
 import scipy.spatial
 
 from  ... import scriptable
@@ -1910,11 +1915,22 @@ class HydroFiles(Hydro):
             rel_symlink(self.get_path('areas-file'),
                         self.are_filename,overwrite=self.overwrite)
 
-    def areas(self,t):
+    _areas_mmap=None
+    def areas(self,t,memmap=False):
         ti_req=ti=self.t_sec_to_index(t)
 
         stride=4+self.n_exch*4
         area_fn=self.get_path('areas-file')
+
+        if memmap:
+            if self._areas_mmap is None:
+                self._areas_mmap=np.memmap(area_fn,self.are_dtype())
+                if (ti>=self._areas_mmap.shape[0]) or ( self._areas_mmap['tstamp'][ti] !=t ):
+                    self.log.warning("area memmap failed -- too short or mismatched timestamp")
+                    self._areas_mmap=False
+            if self._areas_mmap is not False:
+                return self._areas_mmap['area'][ti]
+        
         with open(area_fn,'rb') as fp:
             while 1: # in case we have to scan backwards to find real data
                 fp.seek(stride*ti)
@@ -1935,10 +1951,10 @@ class HydroFiles(Hydro):
         if ti<ti_req:
             self.log.warning("Area data ends early by %d steps. Use previous"%(ti_req-ti))
 
-        tstamp=np.fromstring(tstamp_data,'i4')[0]
+        tstamp=np.frombuffer(tstamp_data,np.int32)[0]
         if (ti==ti_req) and (tstamp!=t):
             self.log.warning("WARNING: time stamp mismatch: %d [file] != %d [requested]"%(tstamp,t))
-        return np.fromstring(raw,'f4')
+        return np.frombuffer(raw,np.float32)
 
     def write_vol(self):
         if not self.enable_write_symlink:
@@ -1948,10 +1964,12 @@ class HydroFiles(Hydro):
                         self.vol_filename,
                         overwrite=self.overwrite)
 
-    def volumes(self,t):
-        return self.seg_func(t,label='volumes-file')
+    def volumes(self,t,**kw):
+        return self.seg_func(t,label='volumes-file',**kw)
 
-    def seg_func(self,t_sec=None,fn=None,label=None):
+    _seg_mmap=None # dict of fn => memmap'd data
+    
+    def seg_func(self,t_sec=None,fn=None,label=None,memmap=False):
         """ 
         Get segment function data at a given timestamp (must match a timestamp
         - no interpolation).
@@ -1961,7 +1979,7 @@ class HydroFiles(Hydro):
         
         if t_sec is not specified, returns a callable which takes t_sec
         """
-        def f(t_sec,closest=False):
+        def f(t_sec,closest=False,memmap=memmap):
             if isinstance(t_sec,datetime.datetime):
                 t_sec = int( (t_sec - self.time0).total_seconds() )
             
@@ -1971,6 +1989,26 @@ class HydroFiles(Hydro):
             ti=self.t_sec_to_index(t_sec) 
 
             stride=4+self.n_seg*4
+
+            if memmap:
+                if self._seg_mmap is None: self._seg_mmap={} # jit init
+                if self._seg_mmap.get(filename,None) is False:
+                    memmap=False # tried and failed, revert to file access
+                else:
+                    if filename not in self._seg_mmap:
+                        # TODO: catch errors, e.g. network filesystem
+                        self._seg_mmap[filename] = np.memmap(filename, self.vol_dtype(),mode='r')
+                    data=self._seg_mmap[filename]
+                    # confirm time stamp
+                    if (ti>=data.shape[0]) or (data['tstamp'][ti]!=t_sec):
+                        # could add scanning to the memmap code path, or factor it out.
+                        # another day.  for now fall through to file-based.
+                        self.log.warning("Tried to memmap but time stamps don't align")
+                        self._seg_mmap[filename].close()
+                        self._seg_mmap[filename]=False
+                        memmap=False
+                    else:
+                        return data['volume'][ti]
             
             with open(filename,'rb') as fp:
                 fp.seek(stride*ti)
@@ -2075,10 +2113,10 @@ class HydroFiles(Hydro):
                     self.log.warning("Flow data ends early by %d steps"%(len(self.t_secs)-1-ti))
                 return np.zeros(self.n_exch,'f4')
             else:
-                tstamp=np.fromstring(tstamp_data,'i4')[0]
+                tstamp=np.frombuffer(tstamp_data,'i4')[0]
                 if tstamp!=t:
                     self.log.warning("flows: time stamp mismatch: %d != %d"%(tstamp,t))
-                data=np.fromstring(fp.read(self.n_exch*4),'f4')
+                data=np.fromfile(fp, np.float32, self.n_exch)
                 if len(data)!=self.n_exch:
                     self.log.warning("flow: incomplete frame, %d items < %d exchanges"%(len(data),self.n_exch))
                     return np.zeros(self.n_exch,'f4')
@@ -2104,7 +2142,7 @@ class HydroFiles(Hydro):
                 self.log.info("update_flows: File is too short")
                 return False
             else:
-                tstamp=np.fromstring(tstamp_data,'i4')[0]
+                tstamp=np.frombuffer(tstamp_data,'i4')[0]
                 if tstamp!=t:
                     self.log.warning("update_flows: time stamp mismatch: %d != %d"%(tstamp,t))
                 fp.write(new_flows.astype('f4'))
@@ -2144,7 +2182,8 @@ class HydroFiles(Hydro):
     def pointers(self):
         poi_fn=self.get_path('pointers-file')
         with open(poi_fn,'rb') as fp:
-            return np.fromstring( fp.read(), 'i4').reshape( (self.n_exch,4) )
+            #return np.fromstring( fp.read(), 'i4').reshape( (self.n_exch,4) )
+            return np.fromfile(fp, np.int32).reshape( (self.n_exch,4) )
 
     def bottom_depths_2d(self):
         """ 

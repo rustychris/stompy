@@ -68,7 +68,9 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
 
     def configure(self):
         super(DFlowModel,self).configure()
-        
+
+        # This is questionable -- new code in create_restart does this
+        # explicitly and pass configure=False
         if self.restart_from is not None:
             self.set_restart_from(self.restart_from)
 
@@ -103,7 +105,70 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                     shutil.rmtree(m)
                 else:
                     raise Exception("What is %s ?"%m)
+
+    def write(self):
+        if not bool(self.restart):
+            super().write()
+        else:
+            # Do some of the typical work of restart, but then copy as much
+            # as possible from the parent run.
+            if self.restart_deep:
+                self.set_run_dir(self.run_dir,mode='create')
+                self.update_config()
+                self.write_config()
+                self.copy_files_for_restart()
+                                
+                # If/when this gets smarter, say overriding BCs, it will have to become
+                # more granular here. One option would be to create BC instances that know
+                # how to copy over the original files and stanzas verbatim.
+            else:
+                self.log.warning("Shallow restart logic in DFlowModel.write() is sketchy")
+                # less sure about these.
+                self.update_config()
+                self.mdu.write()
+                
+    def copy_files_for_restart(self):
+        """
+        Do the real work of setting up a restart by copying files
+        from parent run.
+        Implied that this is a deep restart
+        """
+
+        # The restart equivalent of these steps in write():
+        #   self.write_extra_files()
+        #   self.write_forcing()
+        #   self.write_grid()
         
+        # hard to know what all files we might want.
+        # include any tim, pli, pliz, ext, xyz, ini
+        # restart version of partition I think handles the grid?
+        # also include any file that appears in FlowFM.ext
+        # (because some forcing input like wind can have weird suffixes)
+        # and include the original grid (check name in mdu)
+        
+        # skip any .steps, .cache
+        # skip any mdu
+        # probably skip anything without an extension
+        with open(self.restart_from.mdu.filepath(('external forcing','ExtForceFile'))) as fp:
+            flowfm_ext=fp.read()
+        with open(self.mdu.filename) as fp:
+            flowfm_mdu=fp.read()
+
+        for fn in os.listdir(self.restart_from.run_dir):
+            _,suffix = os.path.splitext(fn)
+            do_copy = ( (suffix in ['.tim','.pli','.pliz','.ext','.xyz','.ini','.xyn'])
+                        or (fn in flowfm_ext)
+                        or (fn in flowfm_mdu)
+                        or (fn==self.mdu['geometry','NetFile']) )
+            # a bit kludgey. restart paths often include DFM_OUTPUT_flowfm, but definitely
+            # don't want to copy that.
+            fn_path=os.path.join(self.restart_from.run_dir,fn)
+            if fn.startswith('DFM_OUTPUT') or os.path.isdir(fn_path):
+                do_copy=False
+                
+            if do_copy:
+                shutil.copyfile(fn_path, os.path.join(self.run_dir,fn))
+                
     def write_forcing(self,overwrite=True):
         bc_fn=self.ext_force_file()
         assert bc_fn,"DFM script requires old-style BC file.  Set [external forcing] ExtForceFile"
@@ -261,6 +326,14 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             structures.append(sec)
         self.structures=structures
 
+    def load_fixed_weirs_from_run(self):
+        fw_file=self.mdu.filepath( ('geometry','FixedWeirFile') )
+        if fw_file is None or not os.path.exists(fw_file):
+            return
+
+        self.fixed_weirs=dio.read_pli(fw_file)
+    
+
     def load_gazetteer_from_run(self):
         """
         Populate gazetteers with geometry read in from an existing run.
@@ -272,7 +345,14 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         if fn and os.path.exists(fn):
             stations=pd.read_csv(self.mdu.filepath(['output','ObsFile']),
                                  sep=' ',names=['x','y','name'],quotechar="'")
-            stations['geom']=[geometry.Point(x,y) for x,y in stations.loc[ :, ['x','y']].values ]
+            # crude workaround to silence warning. numpy and pandas will attempt
+            # to use the array interface to streamline storage of Points.
+            # that angers shapely. probably once that interface disappears this
+            # will silently work just fine. but I'm tired of seeing the warnings.
+            pnts=np.zeros(len(stations),dtype=object)
+            for i,(x,y) in enumerate(stations.loc[ :, ['x','y']].values):
+                pnts[i]=geometry.Point(x,y)
+            stations['geom']=pnts
             self.gazetteers.append(stations.to_records())
 
     def parse_old_bc(self,fn):
@@ -350,7 +430,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             elif ext=='.xyz':
                 xyz_fn=os.path.join(os.path.dirname(ext_fn),
                                     rec['FILENAME'])
-                df=pd.read_csv(xyz_fn,sep='\s+',names=['x','y','z'])
+                df=pd.read_csv(xyz_fn,sep=r'\s+',names=['x','y','z'])
                 ds=xr.Dataset()
                 ds['x']=('sample',),df['x']
                 ds['y']=('sample',),df['y']
@@ -439,6 +519,33 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             cmd=[gen_parallel,os.path.basename(self.mdu.filename),"%d"%self.num_procs,'6']
             return utils.call_with_path(cmd,self.run_dir)
 
+    def chain_restarts(self):
+        """
+        Attempt to chain back restarts, returning a list of
+        MDU objects in chronological order ending with self.mdu
+        """
+        # eventually support criteria on how far back
+        # returns a list of MDU objects (with .filename set),
+        # including self.mdu
+        mdus=[self.mdu]
+
+        mdu=self.mdu
+
+        while 1:
+            if not mdu['restart','RestartFile']:
+                break
+            restart=mdu['restart','RestartFile']
+            # '../data_2016long_3d_asbuilt_impaired_scen2_l100-v007/DFM_OUTPUT_flowfm/flowfm_20160711_000000_rst.nc'
+            # For now, this only works if the paths are 'normal'
+            restart_mdu=os.path.dirname(restart).replace('DFM_OUTPUT_','')+".mdu"
+            restart_mdu=os.path.normpath( os.path.join(os.path.dirname(mdu.filename),restart_mdu) )
+            if not os.path.exists(restart_mdu):
+                self.log.warning("Expected preceding restart at %s, but not there"%restart_mdu)
+                break
+            mdu=dio.MDUFile(restart_mdu)
+            mdus.insert(0,mdu)
+        return mdus
+        
     @property
     def restart_deep(self):
         """
@@ -633,10 +740,15 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                     name="obs_pnt_%03d"%i
                 xy=np.array(mon_feat['geom'].coords[0]) # shapely api update
                 fp.write("%.3f %.3f '%s'\n"%(xy[0],xy[1],name))
-    def write_monitor_sections(self):
+    def write_monitor_sections(self,append=True):
         fn=self.mdu.filepath( ('output','CrsFile') )
         if fn is None: return
-        with open(fn,'at') as fp:
+        if append:
+            mode='at'
+        else:
+            mode='wt'
+            
+        with open(fn,mode) as fp:
             for i,mon_feat in enumerate(self.mon_sections):
                 try:
                     name=mon_feat['name']
@@ -1096,7 +1208,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         return fns
 
     _mu=None
-    def map_dataset(self,force_multi=False,grid=None):
+    def map_dataset(self,force_multi=False,grid=None,chain=False,xr_kwargs={}):
         """
         Return map dataset. For MPI runs, this will emulate a single, merged
         global dataset via multi_ugrid. For serial runs it directly opens
@@ -1105,18 +1217,68 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         grid: if given, the subdomains will be mapped to the given grid, instead
         of constructing a grid.
 
-        Does not chain in time.
+        xr_kwargs: options to pass to xarray, whether multi or single.
+
+        chain: if True, attempt to chain in time. Experimental!
         """
-        if self.num_procs<=1 and not force_multi:
-            # xarray caches this.
-            return xr.open_dataset(self.map_outputs()[0])
+        if not chain:
+            if self.num_procs<=1 and not force_multi:
+                # xarray caches this.
+                return xr.open_dataset(self.map_outputs()[0],**xr_kwargs)
+            else:
+                from ...grid import multi_ugrid
+                # This is slow so cache the result
+                if self._mu is None:
+                    self._mu=multi_ugrid.MultiUgrid(self.map_outputs(),grid=grid,xr_kwargs=xr_kwargs)
+                return self._mu
         else:
-            from stompy.grid import multi_ugrid
-            # This is slow so cache the result
+            # as with his_dataset(), caching is not aware of options like chain.
             if self._mu is None:
-                self._mu=multi_ugrid.MultiUgrid(self.map_outputs(),grid=grid)
+                mdus=self.chain_restarts()
+                # This gets complicated since we are chaining in time and dealing
+                # with potentially multiple subdomains.
+                # Since MultiUgrid is not a proper Dataset, have to chain in time
+                # at the processor level.
+
+                # Scan for filenames across restarts
+                map_fns=np.zeros( (len(mdus),self.num_procs), object)
+
+                for i_restart,mdu in enumerate(mdus):
+                    output_dir=mdu.output_dir()
+                    fns=glob.glob(os.path.join(output_dir,'*_map.nc'))
+                    fns.sort()
+                    assert len(fns) == self.num_procs
+                    map_fns[i_restart,:]=fns
+
+                # Create chained datasets per processor:
+                all_proc_dss=[] # chained dataset for each processor
+                for proc in range(self.num_procs):
+                    one_proc_dss=[xr.open_dataset(fn,**xr_kwargs)
+                                  for fn in map_fns[:,proc]]
+                    proc_dasks=[]
+                    for ds in one_proc_dss[::-1]:
+                        if len(proc_dasks)>0:
+                            cutoff=proc_dasks[0].time.values[0]
+                            tidx=np.searchsorted(ds.time.values, cutoff)
+                            if tidx==0:
+                                continue
+                            ds=ds.isel(time=slice(0,tidx))
+                        dask_ds=ds.chunk()
+                        proc_dasks.insert(0,dask_ds)
+                    # data_vars='minimal' is necessary otherwise things like
+                    # mesh topology will also get concatenated in time.
+                    # 'different' would probably also work.
+                    proc_ds=xr.concat(proc_dasks,dim='time',data_vars='minimal')
+                    all_proc_dss.append(proc_ds)
+                if len(all_proc_dss)==1 and not force_multi:
+                    self._mu=all_proc_dss[0]
+                else:
+                    from ...grid import multi_ugrid
+                    # multi_ugrid will take a list of datasets
+                    # and create a merged dataset
+                    self._mu=multi_ugrid.MultiUgrid(all_proc_dss,grid=grid,xr_kwargs=xr_kwargs)
             return self._mu
-    
+                    
     def his_output(self):
         """
         return path to history file output
@@ -1130,18 +1292,25 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         fns.sort()
         return fns[0]
 
-    def his_dataset(self,decode_geometry=True,set_coordinates=True):
+    @classmethod
+    def clean_his_dataset(cls, fn, decode_geometry=True,set_coordinates=True,refresh=False,
+                          **xr_kwargs):
         """
-        Return history dataset, with some minor additions to make
-        it friendly
+        The work of his_dataset. 
         """
-        his_ds=xr.open_dataset(self.his_output())
+        if refresh:
+            # might be able to make this call faster by turning off all decoding?
+            his_ds=xr.open_dataset(fn,**xr_kwargs) # is there a way to know if it's cached?
+            his_ds.close()
+
+        his_ds=xr.open_dataset(fn,**xr_kwargs)
+            
         if set_coordinates:
             # Doctor up the dimensions
             # Misconfigured runs may have duplicates here.
 
             for coord,names in [ ('cross_section','cross_section_name'),
-                                 ('weigens','weigen_id'),
+                                 ('weirgens','weirgen_id'),
                                  ('source_sink','source_sink_name'),
                                  ('stations','station_name'),
                                  ('general_structures','general_structure_id'),
@@ -1161,7 +1330,71 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
 
         if decode_geometry:
             xr_utils.decode_geometry(his_ds,'cross_section_geom',replace=True)
+        return his_ds
+    
+    _his_ds=None
+    def his_dataset(self,decode_geometry=True,set_coordinates=True,refresh=False,
+                    chain=False,prechain=None,**xr_kwargs):
+        """
+        Return history dataset, with some minor additions to make
+        it friendly.
+        If chain is True, chain back through restarts, concatenate (slicing out
+        duplicate time stamps from earlier runs), and return. Note that this will
+        result in a xr.Dataset with dask array entries. That may result in poor
+        performance, in which case ds=ds.compute() might help (but only after the
+        dataset has been subsetted enough to fit in memory).
+
+        prechain: when chaining, the list of un-merged datasets will be passed
+        to this function before attempting to concatenate, and will proceed with
+        whatever datasets are returned from this function.
+        """
+        # Caveat: caching and chain are not really aware of each other.
+        # as is, if the first call uses chain, then later calls will get
+        # the chained dataset even if they have chain=False.
+        # or vice versa.
+        if (self._his_ds is not None) and (not refresh):
+            return self._his_ds
+
+        clean_kwargs=dict(decode_geometry=decode_geometry,
+                          set_coordinates=set_coordinates,refresh=refresh)
+        clean_kwargs.update(xr_kwargs)
         
+        # for chaining: aside from the path what is needed from self?
+        # basically nothing.
+        if chain:
+            mdus=self.chain_restarts()
+            his_fns=[]
+            for mdu in mdus:
+                output_dir=mdu.output_dir()
+                fns=glob.glob(os.path.join(output_dir,'*_his.nc'))
+                fns.sort()
+                his_fns.append(fns[0])
+            his_dss=[self.clean_his_dataset(fn,**clean_kwargs)
+                     for fn in his_fns]
+            #if prechain:
+            #    his_dss=prechain(his_dss)
+            his_dasks=[]
+            for ds in his_dss[::-1]:
+                if len(his_dasks)>0:
+                    cutoff=his_dasks[0].time.values[0]
+                    tidx=np.searchsorted( ds.time.values, cutoff)
+                    if tidx==0:
+                        continue
+                    ds=ds.isel(time=slice(0,tidx))
+                dask_ds=ds.chunk()
+                his_dasks.insert(0,dask_ds)
+            print(f"{len(his_dasks)} chained datasets")
+            if prechain: # can i do this here?
+                his_dasks=prechain(his_dasks)
+            # data_vars='minimal' should avoid adding time dimension to static things like
+            # geometry. 'different' also worth trying, though currently there are kludges
+            # in client code for flipped sections, and they would have to be more complete
+            # to avoid issues with using 'different'
+            his_ds=xr.concat(his_dasks,dim='time',data_vars='minimal')
+        else:
+            his_ds=self.clean_his_dataset(self.his_output(),**clean_kwargs)
+
+        self._his_ds=his_ds
         return his_ds
 
     def hyd_output(self):
@@ -1186,9 +1419,12 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         last_rst.close()
         return rst_time
     
-    def create_restart(self,**restart_args):
-        new_model=self.__class__() # in case of subclassing, rather than DFlowModel()
-        new_model.set_restart_from(self,**restart_args)
+    def create_restart(self,deep=True,mdu_suffix="",**kwargs):
+        # Consider skipping configure as we want to preserve as much of the original
+        # run as possible.
+        # 2022-08-10: trying that, fingers crossed
+        new_model=self.__class__(configure=False,**kwargs) # in case of subclassing, rather than DFlowModel()
+        new_model.set_restart_from(self,deep=deep,mdu_suffix=mdu_suffix)
         return new_model
 
     def set_restart_from(self,model,deep=True,mdu_suffix=""):
@@ -1596,3 +1832,68 @@ def dem_to_cell_node_bathy(dem,g,cell_z=None):
     
     
 
+def rst_mappers(rst,g,signed=True):
+    """
+    Create a sparse matrix that maps a per-flowlink, signed quantity (i.e. flow)
+    or unsigned (salinity?)
+    ported from waq_scenario.py
+    rst: an xr.Dataset from a DFM restart file
+    """
+    M=sparse.dok_matrix( (g.Nedges(),rst.dims['nFlowLink']), np.float64)
+    Melem=sparse.dok_matrix( (g.Ncells(),rst.dims['nFlowElem']), np.float64)
+    e2c=g.edge_to_cells(recalc=True)
+    cc=g.cells_center()
+    elem_xy=np.c_[ rst.FlowElem_xzw.values,
+                   rst.FlowElem_yzw.values ]
+
+    def elt_to_cell(elt):
+        # in general elts are preserved as the same cell index,
+        # and this is actually more robust than the geometry
+        # check because of some non-orthogonal cells that have
+        # a circumcenter outside the corresponding cell.
+        if utils.dist(elem_xy[elt] - cc[elt])<2.0:
+            Melem[elt,elt]=1
+            return elt
+        # in a few cases the circumcenter is not inside the cell,
+        # so better to select the nearest circumcenter than the
+        # cell containing it.
+        c=g.select_cells_nearest(elem_xy[elt],inside=False)
+        assert c is not None
+        Melem[c,elt]=1
+        return c
+
+    flow_links0=rst.FlowLink.values-1
+    for link,(eltA,eltB) in utils.progress(enumerate(flow_links0)):
+        assert eltB>=0
+        cB=elt_to_cell(eltB)
+
+        if (eltA<0) or (eltA>=rst.dims['nFlowElem']): # it's a boundary.
+            # so find a boundary edge for that cell
+            for j in g.cell_to_edges(cB):
+                if e2c[j,0]<0:
+                    sgn=1
+                    break
+                elif e2c[j,1]<0:
+                    sgn=-1
+                    break
+            else:
+                print("Link %d -- %d does not map to a grid boundary, likely a discharge, and will be ignored."%(eltA,eltB))
+                # This is probably a discharge. Ignore it.
+                continue
+        else:
+            cA=elt_to_cell(eltA)
+            j=g.cells_to_edge(cA,cB)
+            if j is None:
+                raise Exception("%d to %d was not an edge in the grid"%(eltA,eltB))
+            if (e2c[j,0]==cA) and (e2c[j,1]==cB):
+                # positive DWAQ flow is A->B
+                # positive edge normal for grid is the same
+                sgn=1
+            elif (e2c[j,1]==cA) and (e2c[j,0]==cB):
+                sgn=-1
+            else:
+                raise Exception("Bad match on link->edge")
+        if not signed: 
+            sgn=1
+        M[j,link]=sgn
+    return M,Melem

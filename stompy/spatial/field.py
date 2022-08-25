@@ -2628,14 +2628,17 @@ class SimpleGrid(QuadrilateralGrid):
         return self.warp(target.projection(),
                          extra=te + ts)
 
-    def warp(self,t_srs,s_srs=None,fn=None,extra=""):
+    def warp(self,t_srs,s_srs=None,fn=None,extra=[]):
         """ interface to gdalwarp
         t_srs: string giving the target projection
         s_srs: override current projection of the dataset, defaults to self._projection
         fn: if set, the result will retained, written to the given file.  Otherwise
           the transformation will use temporary files.        opts: other
-        extra: other options to pass to gdalwarp
+        extra: other options to pass to gdalwarp. That used to be specified as
+          a string, but now it should be a list of per-separated arguments.
         """
+        # 2022-06-03: don't recall the reason for doing it this way.
+        # but have to tell write_gdal to overwrite...
         tmp_src = tempfile.NamedTemporaryFile(suffix='.tif',delete=False)
         tmp_src_fn = tmp_src.name ; tmp_src.close()
 
@@ -2646,18 +2649,31 @@ class SimpleGrid(QuadrilateralGrid):
             tmp_dest_fn = tmp_dest.name
             tmp_dest.close()
 
+        if isinstance(extra,str):
+            print("'extra' argument for warp should be a list now")
+            extra=extra.split()
+            
         s_srs = s_srs or self.projection()
-        self.write_gdal(tmp_src_fn)
-        output=subprocess.check_output("%s -s_srs '%s' -t_srs '%s' -dstnodata 'nan' %s %s %s"%(self.gdalwarp,s_srs,t_srs,
-                                                                                               extra,
-                                                                                               tmp_src_fn,tmp_dest_fn),
-                                       shell=True)
+        self.write_gdal(tmp_src_fn,overwrite=True)
+        # Seems that windows does not like the quoting if it's all shoved into
+        # a single string, with shell=True
+        cmd=[self.gdalwarp,
+             "-s_srs",s_srs,"-t_srs",t_srs,
+             "-dstnodata","nan"] + extra +[tmp_src_fn,tmp_dest_fn]
+                                       
+        output=subprocess.check_output(cmd)
         self.last_warp_output=output # dirty, but maybe helpful
 
         result = GdalGrid(tmp_dest_fn)
         os.unlink(tmp_src_fn)
         if fn is None:
-            os.unlink(tmp_dest_fn)
+            try:
+                os.unlink(tmp_dest_fn)
+            except PermissionError:
+                # appears to be a problem with running on Windows
+                # file is in use by another process?
+                print("Unable to delete temp file")
+                print(tmp_dest_fn)
         return result
 
     def write_gdal(self,output_file,nodata=None,overwrite=False,options=None):
@@ -2973,7 +2989,7 @@ class GdalGrid(SimpleGrid):
         (x0, dx, r1, y0, r2, dy ) = gds.GetGeoTransform()
         nx = gds.RasterXSize
         ny = gds.RasterYSize
-
+        
         # As usual, this may be off by a half pixel...
         x1 = x0 + nx*dx
         y1 = y0 + ny*dy
@@ -3006,10 +3022,10 @@ class GdalGrid(SimpleGrid):
 
         tgt_geo_bounds=None
 
+        if source_projection is None:
+            source_projection=self.gds.GetProjection()        
+
         if (target_projection is not None):
-            if source_projection is None:
-                source_projection=self.gds.GetProjection()
-            
             if (source_projection is None) or (source_projection==""):
                 raise Exception("Target projection was given, but there is no source projection for %s"%filename)
 
@@ -3109,8 +3125,13 @@ class GdalGrid(SimpleGrid):
                                        y0+0.5*dy,
                                        y0+0.5*dy + dy*(Nrows-1)],
                             F=A,
-                            projection=self.gds.GetProjection() )
+                            projection=source_projection )
 
+        # most callers have no need to the GDAL dataset object,
+        # and holding a reference here can get in the way of being able
+        # to delete files when on windows.
+        self.gds=None # effectively close the dataset
+        
         if target_projection is not None:
             transformed=self.warp(target_projection)
             
@@ -3119,6 +3140,7 @@ class GdalGrid(SimpleGrid):
             self.extents=transformed.extents
             self.F=transformed.F
             self._projection=transformed.projection()
+            self.dx,self.dy = transformed.delta()
 
 def rasterize_grid_cells(g,values,dx=None,dy=None,stretch=True,
                          cell_mask=slice(None),match=None):
@@ -3598,7 +3620,6 @@ class CompositeField(Field):
         # This appears to give equivalent results (at least for binary-valued
         # inputs), and runs about 80x faster on a small-ish input.
         dist_xform=ndimage.distance_transform_edt
-        
         for src_i in ordered_srcs:
             log.info(self.sources['src_name'][src_i])
             log.info("   data mode: %s  alpha mode: %s"%(self.data_mode[src_i],
@@ -3611,6 +3632,8 @@ class CompositeField(Field):
                 log.info("Source %s came up empty after cropping. Check projection, and whether polygon intersects data"
                          %(self.sources['src_name'][src_i]))
                 continue
+            # could consider adding a to_grid to simple grid, as this
+            # currently goes through the generic interpolate interface.
             src_data = source.to_grid(bounds=bounds,dx=dx,dy=dy)
             src_alpha= SimpleGrid(extents=src_data.extents,
                                   F=np.ones(src_data.F.shape,'f8'))
@@ -3744,8 +3767,8 @@ class CompositeField(Field):
             total_alpha=result_alpha.F*(1-src_alpha.F) + src_alpha.F
             result_data.F   = result_data.F * result_alpha.F *(1-src_alpha.F) + cleaned*src_alpha.F
             # to avoid contracting data towards zero, have to normalize data by the total alpha.
-            valid=total_alpha>1e-10 # avoid #DIVZERO
-            result_data.F[valid] /= total_alpha[valid]
+            valid_alpha=total_alpha>1e-10 # avoid #DIVZERO
+            result_data.F[valid_alpha] /= total_alpha[valid_alpha]
             result_alpha.F  = total_alpha
 
             if stackup:
