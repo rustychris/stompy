@@ -179,6 +179,11 @@ def nwis_dataset(station,start_date,end_date,products,
         log.warning("   no data for station %s for any periods!"%station)
         return None 
 
+    # occasional errors with repeated timestamps. Not sure how this comes about,
+    # but it frustrates combine_first
+    datasets=[ds.isel(time=np.r_[True, ds.time.values[1:]>ds.time.values[:-1]])
+              for ds in datasets]
+    
     if len(datasets)>1:
         # it's possible that not all variables appear in all datasets
         # dataset=xr.concat( datasets, dim='time')
