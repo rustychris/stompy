@@ -75,7 +75,9 @@ class Rdb(object):
         self.parse_source_file()
 
     def float_or_nan(self,s):
-        if s in (None,'','Eqp','***'):
+        # Not sure what Eqp or Mnt mean, but will assume that's
+        # missing data.
+        if s in (None,'','Eqp','Mnt','***'):
             return np.nan
         else:
             return float(s)

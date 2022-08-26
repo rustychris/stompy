@@ -838,7 +838,7 @@ def signed_area(points):
 def find_slack(jd,u,leave_mean=False,which='both'):
     # returns ([jd, ...], 'high'|'low')
     dt=jd[1]-jd[0]
-
+    # ~1 hour lowpass
     u=filters.lowpass_fir(u,
                           winsize=1+np.round(2./(dt*24)))
     if not leave_mean:
@@ -2448,7 +2448,7 @@ def partition(items, predicate=bool):
     return ((item for pred, item in a if not pred),
             (item for pred, item in b if pred))
 
-def distinct_substrings(strs,split_on='_.- '):
+def distinct_substrings(strs,split_on=r'_.- \/'):
     """
     strs: list of str
     returns a list of strs, with the longest common prefix and suffix removed
@@ -2497,3 +2497,49 @@ def combinations(values,k):
         for rest in combinations(values[i+1:],k-1):
             res=(values[i],) + rest
             yield res
+            
+def subsets(values,k_min=1,k_max=None):
+    """
+    Similar to combinations, but across a range of k.
+    k_min: smallest set size to return
+    k_max: largest set size to return (inclusive)
+    """
+    if k_max is None:
+        k_max=len(values)
+    for k in range(k_min,k_max+1):
+        yield from combinations(values,k)
+            
+            
+def dominant_period(h,t,uniform=True,guess=None):
+    """
+    for a time series h(t), return the dominant period
+    of variation.
+    uniform: must be True for now. May be relaxed in the future
+      to allow less structured data. But then the FFT step must
+      be omitted.
+    """
+    h=np.asarray(h)
+    h=h-h.mean()
+    t=np.asarray(t,np.float64)
+    if guess is None:
+        assert uniform
+        assert len(np.unique(t))==len(h)
+        from scipy.signal import welch
+        dt_s=np.median( np.diff(np.unique(t)) )
+        freqs,psd=welch(h,fs=1./dt_s,nperseg=min(len(h),1024))
+        f_peak=freqs[np.argmax(psd)]
+        #delta_f=np.median(np.diff(freqs))
+        #delta_period=(1./(f_peak - delta_f) - 1./(f_peak+delta_f))/2.0
+        guess=1.0/f_peak
+    
+    from scipy.optimize import fmin
+    def cost(period):
+        # breakpoint()    
+        wt=2*np.pi*t/period[0]
+        cos=np.cos(wt)
+        sin=np.sin(wt)
+        cov=np.mean(cos*h)**2 + np.mean(sin*h)**2
+        return -cov*1e6
+    #breakpoint()
+    result = fmin(cost,[float(guess)])
+    return result[0]

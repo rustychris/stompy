@@ -160,7 +160,7 @@ class DFlowToPTMHydro(object):
         self.g=unstructured_grid.UnstructuredGrid.from_ugrid(self.map_ds)
         # copy depth into a field where it is expected by the code that
         # writes a ptm grid.  note this is a positive:up quantity
-        self.g.add_cell_field('depth',self.g.cells['mesh2d_flowelem_bl'])
+        self.g.add_cell_field('cell_depth',self.g.cells['mesh2d_flowelem_bl'])
 
         # set markers as ptm expects:
         # 0: internal, 1 external, 2 flow, 3 open
@@ -178,15 +178,15 @@ class DFlowToPTMHydro(object):
 
         # regardless of the how DFM was configured, we will set edge
         # depths to the shallower of the cells
-        e2c=self.g.edge_to_cells()
+        e2c=self.g.edge_to_cells(recalc=True)
         n1=e2c[:,0] ; n2=e2c[:,1]
 
         # but no info right here on flow/open boundaries.
         n1=np.where(n1>=0,n1,n2)
         n2=np.where(n2>=0,n2,n1)
-        edge_depths=np.maximum( self.g.cells['depth'][n1],
-                                self.g.cells['depth'][n2] )
-        self.g.add_edge_field('depth',edge_depths)
+        edge_depths=np.maximum( self.g.cells['cell_depth'][n1],
+                                self.g.cells['cell_depth'][n2] )
+        self.g.add_edge_field('edge_depth',edge_depths)
 
         # flip edges to keep invariant that external cells are always
         # second.
@@ -224,11 +224,11 @@ class DFlowToPTMHydro(object):
 
         # Additional grid information:
         # xarray wants the dimension made explicit here -- don't know why.
-        out_ds['Mesh2_face_x']=('nMesh2_face',),self.mod_map_ds['Mesh2_face_x']
-        out_ds['Mesh2_face_y']=('nMesh2_face',),self.mod_map_ds['Mesh2_face_y']
+        out_ds['Mesh2_face_x']=('nMesh2_face',),self.mod_map_ds['Mesh2_face_x'].values
+        out_ds['Mesh2_face_y']=('nMesh2_face',),self.mod_map_ds['Mesh2_face_y'].values
 
-        out_ds['Mesh2_edge_x']=('nMesh2_edge',),self.mod_map_ds['Mesh2_edge_x']
-        out_ds['Mesh2_edge_y']=('nMesh2_edge',),self.mod_map_ds['Mesh2_edge_y']
+        out_ds['Mesh2_edge_x']=('nMesh2_edge',),self.mod_map_ds['Mesh2_edge_x'].values
+        out_ds['Mesh2_edge_y']=('nMesh2_edge',),self.mod_map_ds['Mesh2_edge_y'].values
 
         e2c=self.g.edge_to_cells()
         out_ds['Mesh2_edge_faces']=('nMesh2_edge','Two'),e2c
@@ -250,6 +250,11 @@ class DFlowToPTMHydro(object):
             edge_z=self.map_ds.mesh2d_node_z.values[self.g.edges['nodes']].mean(axis=1)
         elif bedlevtype==4:
             edge_z=self.map_ds.mesh2d_node_z.values[self.g.edges['nodes']].min(axis=1)
+        elif bedlevtype==6:
+            c1 = e2c[:,0]
+            c2 = e2c[:,1].copy()
+            c2[c2<0] = c1[c2<0]
+            edge_z=self.map_ds.mesh2d_flowelem_bl.values[np.c_[c1,c2]].max(axis=1)
         else:
             raise Exception("Only know how to deal with bed level type 3,4 not %d"%bedlevtype)
         # mindful of positive-down sign convention needed by PTM
@@ -269,7 +274,7 @@ class DFlowToPTMHydro(object):
             # also, writing anything time-varying beyond the time stamps themselves
             # should probably be handled in the time loop [TODO]
             s1=np.maximum( self.mod_map_ds.mesh2d_s1, -out_ds['Mesh2_face_depth'])
-            out_ds['Mesh2_sea_surface_elevation']=('nMesh2_face','nMesh2_data_time'),s1.T
+            out_ds['Mesh2_sea_surface_elevation']=('nMesh2_face','nMesh2_data_time'),s1.T.values
 
         if 1: # edge and cell marks
             edge_marks=self.g.edges['mark']
@@ -294,7 +299,14 @@ class DFlowToPTMHydro(object):
             # based on sample output, the last of these is not used,
             # so this would be interfaces, starting with the top of the lowest layer.
             # fabricate something in sigma coordinates for now.
-            sigma_layers=np.linspace(-1,0,self.nkmax+1)[1:]
+            #sigma_layers=np.linspace(-1,0,self.nkmax+1)[1:]
+            #sigma_layers=self.mod_map_ds['mesh2d_interface_sigma'][1:]
+            if 'mesh2d_interface_sigma' in self.mod_map_ds.keys():
+                sigma_layers=self.mod_map_ds['mesh2d_interface_sigma'][1:]
+            else:
+                # 2022-06-10 RH: I think this change came in during the SFEI work
+                # going to 3D. Not entirely clear what's going on here.
+                sigma_layers=[1.0]
             out_ds['Mesh2_layer_3d']=('nMesh2_layer_3d',),sigma_layers
             attrs=dict(standard_name="ocean_sigma_coordinate",
                        dz_min=0.001, # not real, but ptm tries to read this.
@@ -465,7 +477,7 @@ class DFlowToPTMHydro(object):
                 if len(potential_edges)==1:
                     j=potential_edges[0]
                 elif len(potential_edges)==0:
-                    print("No boundary edge for link %d->%d to an edge"%(l_from,l_to))
+                    print("No boundary edge for link %d->%d. Likely src/sink"%(l_from,l_to))
                     link_to_edge_sign[link_idx,:]=[9999999,0] # may be able to relax this
                     continue
                 else:
@@ -562,7 +574,22 @@ class DFlowToPTMHydro(object):
                 self.salt_var[:,:,ti]=0.0
 
             if self.nkmax>1:
-                copy_3d_cell('mesh2d_viw',self.nut_var)
+                # 2022-06-10 RH: I think this is more SFEI 3D code, and
+                # is handling moving viscosity from edges to cells.
+                # not sure that mesh2d_viw is even a real variable.
+                # also note that the WAQ output may have diffusivity
+                # information.
+                # Not digging into this right now, but it may need
+                # some TLC.
+                #copy_3d_cell('mesh2d_viw',self.nut_var)
+                src = 'mesh2d_vicwwu'
+                vicwwu = self.mod_map_ds[src].isel(nMesh2_data_time=ti).values
+                for i in range(self.g.Ncells()):
+                    edges = self.g.cells[i]['edges']
+                    valid_edges = edges[edges>=0]
+                    for k in range(self.nkmax): 
+                        # add one to k index of vicwwu to get interface above layer
+                        self.nut_var[i,k,ti] = np.nanmean(vicwwu[valid_edges,k+1])
             else:
                 # punt - would be nice to calculate something based on
                 # velocity, roughness, etc.
@@ -606,8 +633,20 @@ class DFlowToPTMHydro(object):
                 # so far this is k in the DWAQ world, surface to bed.
                 # but now we assign in the untrim sense, bed to surface.
                 ptm_ks=self.nkmax-ks-1
-                h_flow_avg[js,ptm_ks]=Qs*sgns
-                h_area_avg[js,ptm_ks]=np.where(js>=0,areas[exchs],0.0)
+                # Assume that unmapped links are source/sinks and can
+                # be ignored.
+                valid=(js!=9999999)
+                if np.any(~valid):
+                    absQlost=np.abs(Qs[~valid]).sum()
+                    # for plotting after the fact
+                    self.unmapped_faces=np.nonzero(~valid)[0]
+                    self.unmapped_fluxes=Qs[~valid]
+                    print("Ignoring fluxes from %d faces, sum(abs(Q))=%.3f m3/s"%
+                          ((~valid).sum(),absQlost))
+                h_flow_avg[js[valid],ptm_ks[valid]]=(Qs*sgns)[valid]
+                
+                h_area_avg[js[valid],ptm_ks[valid]]=np.where(js[valid]>=0,
+                                                             areas[exchs[valid]],0.0)
 
                 self.h_flow_var[:,:,ti+1]=h_flow_avg
                 self.A_edge_var[:,:,ti+1]=h_area_avg
@@ -630,7 +669,7 @@ class DFlowToPTMHydro(object):
                         # which is top-segment to next segment down.
                         Q=-flows[exch]
                         assert self.poi0[exch][0] >=0,"Wasn't expecting BC exchanges in the vertical"
-                        seg_up,seg_down=self.poi0[exch][0,:2]
+                        seg_up,seg_down=self.poi0[exch][:2] # used to have an extra 0, -- not sure why
                         k_upper=self.hyd.seg_k[seg_up]
                         k_lower=self.hyd.seg_k[seg_down]
                         elt=self.hyd.seg_to_2d_element[seg_up]
@@ -642,6 +681,11 @@ class DFlowToPTMHydro(object):
                         # no longer assume that dwaq cells are numbered the same as dfm cells.
                         cell=self.element_to_cell[elt]
                         v_flow_avg[cell,nkmax-k_lower-1]=Q
+                        if cell_water_depth[elt] > 0:
+                            v_area_avg[cell,self.nkmax-k_lower-1] = Ac[cell]
+                        else:
+                            v_area_avg[cell,self.nkmax-k_lower-1] = 0.0
+                        
                         if k_upper==0: # repeat top flux
                             v_flow_avg[cell,nkmax-k_upper-1]=Q
                 else:
@@ -679,12 +723,7 @@ class DFlowToPTMHydro(object):
 # [Qa, Qb, Qc, Qd, Qd].  I don't understand what that's about.
 # look at cell 18, around time index 200, 201
 
-if 0:
-    # Testing
-    mdu_path="/home/rusty/src/csc/dflowfm/runs/20180807_grid98_17/flowfm.mdu"
-    converter=DFlowToPTMHydro(mdu_path,'test_hydro.nc',time_slice=slice(0,2),
-                              grd_fn='test_sub.grd',overwrite=True)
-elif __name__=='__main__':
+if __name__=='__main__':
     # Command line use:
     import argparse
     parser = argparse.ArgumentParser()

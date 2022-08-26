@@ -119,9 +119,7 @@ def config_logging(args):
 
 ##
 
-    
-def main(argv=None):
-    global dataset
+def parse_args(argv):
     import argparse
 
     parser=argparse.ArgumentParser(description='Generate DEM from multiple sources.')
@@ -141,8 +139,12 @@ def main(argv=None):
     parser.add_argument("-g", "--grid",help="Mask region by grid outline",default=None)
     parser.add_argument("--buffer",help="Buffer distance beyond grid",default=100.0)
 
-    args=parser.parse_args(args=argv)
-
+    return parser.parse_args(args=argv)
+    
+def main(argv=None):
+    global dataset
+    args=parse_args(argv)
+    
     config_logging(args)
     
     dataset=create_dataset(args)
