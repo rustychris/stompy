@@ -6334,7 +6334,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             cc=self.cells_center()
 
         gd.add_node_field('dual_cell',np.zeros(0,np.int32))
-        if expand_boundary:
+        if extend_to_boundary: # expand_boundary:
             gd.add_node_field('dual_edge',np.zeros(0,np.int32))
         gd.add_edge_field('dual_edge',np.zeros(0,np.int32))
 
@@ -6360,13 +6360,13 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         e2c=self.edge_to_cells()
 
-        if expand_to_boundary:
+        if extend_to_boundary:
             boundary_edge_to_dual_node=-np.ones(self.Nedges(),np.int64)
             edge_center=self.edges_center()
         
         for j in self.valid_edge_iter():
             if e2c[j].min() < 0:
-                if expand_to_boundary:
+                if extend_to_boundary:
                     # Boundary edges *also* get nodes at their midpoints
                     boundary_edge_to_dual_node[j] = dnj = gd.add_node(x=edge_center[j],
                                                                       dual_edge=j)
@@ -6387,7 +6387,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 if dj_exist is None:
                     dj=gd.add_edge(nodes=[dn1,dn2],dual_edge=j)
 
-        if expand_to_boundary:
+        if extend_to_boundary:
             # Nodes also imply an edge in the dual -- and maybe even two
             # edges if we want this edge to go through the node
             for n in np.nonzero(boundary_node_mask)[0]:
