@@ -838,14 +838,21 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             return idxs
 
         faces = process_as_index(mesh.face_node_connectivity)
+
+        # remember the cell dimension from that:
+        cell_dimension=nc[mesh.face_node_connectivity].dims[0]
+
+        
         # suntans has a nonstandard, but not always specified, fill value.
         faces[faces>=len(node_x)]=UnstructuredGrid.UNDEFINED
         if 'edge_node_connectivity' in mesh.attrs:
             edges = process_as_index(mesh.edge_node_connectivity) # [N,2]
+            edge_dimension=nc[mesh.edge_node_connectivity].dims[0]
             ug=UnstructuredGrid(points=node_xy,cells=faces,edges=edges)
         else:
             ug=UnstructuredGrid(points=node_xy,cells=faces)
             ug.make_edges_from_cells()
+            edge_dimension=None
 
         # When the incoming netcdf supplies additional topology, use it
         if 'face_edge_connectivity' in mesh.attrs:
@@ -929,6 +936,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         # node_dimension is often omitted, but easy to figure out
         if ug.nc_meta['node_dimension'] is None:
             ug.nc_meta['node_dimension']=node_dimension
+        if ug.nc_meta['face_dimension'] is None:
+            ug.nc_meta['face_dimension']=cell_dimension
+        if ug.nc_meta['edge_dimension'] is None:
+            ug.nc_meta['edge_dimension']=edge_dimension
         
         ug.filename=filename
         return ug

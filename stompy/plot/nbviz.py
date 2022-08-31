@@ -5,6 +5,7 @@ Created on Thu Aug  4 05:00:18 2022
 @author: rusty
 """
 import os
+import time
 import matplotlib.pyplot as plt
 import numpy as np
 from . import plot_utils
@@ -12,6 +13,7 @@ from .. import utils
 from ..grid import unstructured_grid, multi_ugrid
 
 from ipywidgets import Button, Layout, jslink, IntText, IntSlider, AppLayout, Output
+import traitlets as tl
 import ipywidgets as widgets
 
 # NBViz: top level. holds a list of datasets, list of layers
@@ -169,7 +171,11 @@ class UGDataset(Dataset):
     #     #         del self.dim_selectors[k]
         
 
-class Layer:
+class Layer(tl.HasTraits):
+    # dimensions that this layer would accept from global dimensions.
+    # maps dimension name (only guaranteed unique to this layer), to xr.DataArray
+    # coordinate. 
+    free_dims = tl.Dict()
     @property
     def label(self):
         return str(id(self))
@@ -181,7 +187,8 @@ class UGLayer(Layer):
     def __init__(self,ds,variable):
         self.ds=ds
         self.variable=variable
-        self.dims=None # uninitialized.
+        self.global_dims=None # uninitialized.
+        self.local_dims=None # uninitialized.
     @property
     def label(self):
         return self.variable
@@ -193,10 +200,42 @@ class UGCellLayer(UGLayer):
     """
     ccoll=None
     update_clims=True # autoscale colorbar when coordinates change
-    
+
+    def __init__(self,*a,**k):
+        super().__init__(*a,**k)
+        # local_dims will have all of the dimensions that have to be constrained
+        # in order for the plot to render. when global dim updates come in, the layer
+        # can choose to let those override local_dims.
+
+        self.init_local_dims()
+        
+    def init_local_dims(self,defaults={}):
+        self.local_dims={} # NB: possible that defaults==self.local_dims.
+        ds=self.ds.ds # get the actual xarray dataset
+        grid=self.ds.grid
+        for dim in ds[self.variable].dims:
+            if dim!=grid.nc_meta['face_dimension']:
+                # use a default dim if given, otherwise punt with 0.
+                self.local_dims[dim]=defaults.get(dim,0)
+        # Update the advertised list of dimensions
+        self.update_free_dims()
+
+    def update_free_dims(self):
+        changed=False
+        for dim in self.local_dims:
+            if dim not in self.free_dims:
+                self.free_dims[dim] = self.ds.ds[dim] # can we just publish these as xr data arrays?
+                changed=True
+        for dim in self.free_dims:
+            if dim not in self.local_dims:
+                del self.free_dims[dim]
+                changed=True
+        #if changed:
+        #    print("UGCellLayer: free dims changed")
+        
     def init_plot(self,Fig):
         # okay if it is an empty dict, just not None
-        assert self.dims is not None
+        assert self.local_dims is not None
         
         self.Fig=Fig
         self.ccoll=self.ds.grid.plot_cells(values=self.get_data(),
@@ -204,29 +243,24 @@ class UGCellLayer(UGLayer):
         self.cax=self.Fig.get_cax()
         self.ccbar=plot_utils.cbar(self.ccoll,cax=self.cax)
         self.Fig.ax.axis('equal') # somehow lost the auto zooming. try here.
+        
     def get_data(self):
-        return self.ds.select_cell_data(self.variable,self.dims)
+        return self.ds.select_cell_data(self.variable,self.local_dims)
     
-    def update_dims(self,dims):
+    def update_global_dims(self,dims):
+        # This part needs some help. signalling
+        # that a global dimension has changed.
+        # It's up to the layer to decide whether it cares, handle local dim changes, etc.
+        
         # dims: dim => index
         # If any of the dims that control this layer have changed,
         # fetch new data and update the plot.
         update_plot=False
-        if self.dims is None:
-            #Copy, as dims may get updated later.
-            self.dims=dict(dims) # really this should be slimmed down to the active dims for the layer
-            update_plot=True
-            return
-        for k in self.dims:
-            if k not in dims: 
-                # generally will want to get all dimensions passed in, but
-                # open to the idea that, aside from initialization, we'd only
-                # get updated dims.
-                continue
-            if self.dims[k]==dims[k]:
-                continue
-            update_plot=True
-            self.dims[k]=dims[k]
+        self.global_dims=dims # may not need to keep this
+        for k in self.local_dims:
+            if k in dims and self.local_dims[k]!=dims[k]:
+                update_plot=True
+                self.local_dims[k]=dims[k]
         if update_plot:
             self.update_arrays()
             self.redraw() # maybe too proactive
@@ -264,6 +298,9 @@ class UGCellLayer(UGLayer):
         if v==self.variable: return
         print("set_variable: ",v)
         self.variable=v
+
+        # May need to adjust dimensions
+        self.init_local_dims(defaults=self.local_dims)
         
         # This feels a bit too early. Would be nice to be more JIT.
         if self.ccoll is not None:
@@ -310,7 +347,14 @@ class NBViz(widgets.AppLayout):
         # datasets and layers within datasets.
         # show sliders for active dimensions.
         # and dynamically update min/max for dimensions.
-        self.active_dims={'time':0}
+        # For now, this is implicitly just globally shared dimensions, and is hardwired
+        # just to time. I think the goal is for each layer to (a) figure out what dimensions
+        # it needs, (b) select those for itself in its layer_edit_pane(), and (c) opt in
+        # to have that dimension driven by a global dimension.
+        # so this would be better named active_global_dims
+        self.active_dims={'time':0} # might need to be secondary to global_dims now.
+        # But I'm using global_dims to track the coordinates
+        self.global_dims={}
         
         # create widgets and call super().__init__
         self.init_layout()
@@ -322,33 +366,7 @@ class NBViz(widgets.AppLayout):
     def init_layout(self):
         ds=self.datasets[0] # DEV
 
-        # hard coded time dimension handling
-        time_min=0
-        time_max=ds.ds.dims['time']-1
-        
-        self.play = widgets.Play(
-            value=time_min,
-            min=time_min,
-            max=time_max,
-            step=1,
-            interval=50,
-            description="Press play",
-            disabled=False
-        )
-        self.time_slider = widgets.IntSlider(min=time_min,max=time_max) 
-        widgets.jslink((self.play, 'value'), (self.time_slider, 'value'))
-        time_control=widgets.HBox([self.play, self.time_slider])
-        
-        def on_time_change(change):
-            # Currently all layers will get update_dim for all dimensions.
-            self.active_dims['time']=change['new']
-            for layer in self.layers:
-                layer.update_dims(self.active_dims)
-            self.Fig.redraw()
-            if self.save_enabled.value:
-                self.save_frame()
-                
-        self.time_slider.observe(on_time_change, names='value')
+        self.coordinate_pane=self.create_coordinate_pane()
         
         self.layer_selector = widgets.Select(options=[self.new_layer],
                                              description="Layer:")
@@ -357,7 +375,7 @@ class NBViz(widgets.AppLayout):
         global_controls=self.global_controls_widget()
         
         # so far have failed to use MPL figure as a widget.
-        super().__init__(header=time_control,
+        super().__init__(header=self.coordinate_pane,
                          left_sidebar=self.layer_selector,
                          center=self.new_layer_pane(), # create_expanded_button('Center', 'warning'),
                          right_sidebar=global_controls,
@@ -365,6 +383,60 @@ class NBViz(widgets.AppLayout):
                          footer=None)
         # displaying the viz object in the notebook then displays the 
         # widgets.
+
+    def create_coordinate_pane(self):
+        """
+        Also update active_dims
+        """
+        coord_widgets=[widgets.Label(f'Coordinates')]
+
+        def on_coord_change(change,dim):
+            # Currently all layers will get update_dim for all dimensions.
+            self.active_dims[dim]=change['new']
+            for layer in self.layers:
+                layer.update_global_dims(self.active_dims)
+            self.Fig.redraw()
+            
+        def on_time_change(change):
+            # Time also hooks into saving frames
+            on_coord_change(change,'time')
+            if self.save_enabled.value:
+                self.save_frame()
+
+        old_dims=self.active_dims
+        self.active_dims={}
+        
+        for dim in self.global_dims:
+            coord=self.global_dims[dim]
+            value = self.active_dims[dim] = old_dims.get(dim,0) # default to 0
+            vmin=0
+            vmax=len(coord)-1 # inclusive
+            
+            if dim=='time':
+                # special handling for 'time'
+                self.time_slider = widgets.IntSlider(min=vmin,max=vmax,value=value)
+                self.play = widgets.Play(
+                    value=value,
+                    min=vmin,
+                    max=vmax,
+                    step=1,
+                    interval=50,
+                    description="Press play",
+                    disabled=False
+                )
+                
+                widgets.jslink((self.play, 'value'), (self.time_slider, 'value'))
+                time_control=widgets.HBox([widgets.Label('Time:'),self.play, self.time_slider])
+                coord_widgets.append(time_control)
+                self.time_slider.observe(on_time_change, names='value')
+            else:
+                slider=widgets.IntSlider(min=vmin,max=vmax,value=value)
+                row=widgets.HBox([widgets.Label(dim),slider])
+                slider.observe(lambda change: on_coord_change(change,dim),'value')
+                coord_widgets.append(row)
+
+        return widgets.VBox(coord_widgets)
+        
     def global_controls_widget(self):
         # buttons, toggles, etc. that control the global state of the figure
         # so far I'm striking out on getting this layout to work better...
@@ -373,27 +445,34 @@ class NBViz(widgets.AppLayout):
             flex_flow='row',
             justify_content='space-between'
         )
+
+        # Somehow CheckBoxes have a bunch of leading white space...
+        # ToggleButtons seem okay, though UX is not quite as good.
+        # Might be due to fixed length of descriptions, which can be overridden by
+        # using a widget.Label instead.
+        style = {'description_width': 'initial'}
         
-        show_axes=widgets.Checkbox(value=True,
-                                   description='Show axes')
+        show_axes=widgets.Checkbox(value=True,description='Show axes',style=style,
+                                   layout=Layout(width="40%"))
         show_axes.observe(self.on_show_axes_change,names='value')
         tight_layout=widgets.Button(description="Tight layout")
         tight_layout.on_click(self.do_tight_layout)
-        self.save_enabled=widgets.Checkbox(value=False,
-                                           description="",
-                                           layout=Layout(width='auto'))
+        self.save_enabled=widgets.Checkbox(value=False,description="Save images",
+                                           style=style)
+                                               
         self.save_path=widgets.Text(value='image-%04d.png',
                                     placeholder='path for saved plots',
-                                    description='Save image:',
-                                    disabled=True,
-                                    layout=Layout(width='auto'))
+                                    disabled=True, layout=Layout(width='60%')
+        )
         # might not work - may need to do it python side.
         def cb(change,save_path=self.save_path):
             save_path.disabled=not change['new']
         self.save_enabled.observe(cb,names='value')
         
-        vbox=widgets.VBox([widgets.Box([show_axes,tight_layout],layout=row_layout),
-                           widgets.Box([self.save_enabled,self.save_path],
+        vbox=widgets.VBox([widgets.Box([show_axes,
+                                        tight_layout],layout=row_layout),
+                           widgets.Box([self.save_enabled,
+                                        self.save_path],
                                         layout=row_layout)])
         return vbox
 
@@ -424,6 +503,7 @@ class NBViz(widgets.AppLayout):
             self.Fig.ax.axis(change['new'])
     def do_tight_layout(self,b):
         self.Fig.do_tight_layout()
+        
     def add_layer(self,variable,ds=None):
         if ds is None: ds=self.active_dataset()
         
@@ -436,13 +516,49 @@ class NBViz(widgets.AppLayout):
         # dimensions, but we'll show sliders only for the ones for the
         # active layer.
         self.layers.append(layer)
-        layer.update_dims(self.active_dims)
+        layer.observe(self.on_free_dims_change,names=['free_dims'])
+        self.on_free_dims_change(None) # 
+        layer.update_global_dims(self.active_dims)
         layer.init_plot(self.Fig)
         self.activate_layer(layer)
         self.update_layer_selector()
-        
+
+    def on_free_dims_change(self,change):
+        # can extend to be smarter later...
+        # For now this is a full update to the dimension widgets
+        # Update global_dims, then recreate the coordinate pane
+        # also makes sure that active_dims has the right entries
+        has_changed=False
+
+        new_global_dims={}
+
+        # Get the full collection across layers
+        for layer in self.layers:
+            for dim in layer.free_dims:
+                # could test for collisions here.
+                new_global_dims[dim] = layer.free_dims[dim]
+        # Check for updates to existing
+        for dim in list(self.global_dims.keys()): # safe for deleting on-the-fly
+            if dim not in new_global_dims:
+                del self.global_dims[dim] 
+                has_changed=True
+            elif new_global_dims[dim] != self.global_dims[dim]:
+                self.global_dims[dim] = new_global_dims[dim]
+                has_changed=True
+        # And newly added dims
+        for dim in new_global_dims:
+            if dim not in self.global_dims:
+                self.global_dims[dim] = new_global_dims[dim]
+                has_changed=True
+                
+        if has_changed:
+            print("Will update/create coordinate pane")
+            # This part would be nicer if it just updated widgets as needed
+            # instead of rebuilding the whole thing.
+            self.coordinate_pane=self.create_coordinate_pane()
+            self.header = self.coordinate_pane
+                
     def on_layer_change(self,change):
-        print("Got layer change")
         if change['new']==self.new_layer:
             self.center = self.new_layer_pane()
         else:
@@ -467,12 +583,6 @@ class NBViz(widgets.AppLayout):
         else:
             self.layer_selector.value=self.active_layer.label
 
-    def on_var_change(self,change):
-        if self.active_layer is None: 
-            print("var change but no active layer")
-            return
-        self.active_layer.set_variable(change['new'])
-
     def activate_layer(self,layer):
         if self.active_layer == layer: return
         self.deactivate_layer()
@@ -493,6 +603,3 @@ class NBViz(widgets.AppLayout):
     def deactivate_layer(self):
         self.active_layer=None
         
-        
-# NEXT -
-#   Add edge layer class, create one manually.
