@@ -1333,6 +1333,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         return his_ds
     
     _his_ds=None
+    _his_ds_chain=None
     def his_dataset(self,decode_geometry=True,set_coordinates=True,refresh=False,
                     chain=False,prechain=None,**xr_kwargs):
         """
@@ -1348,12 +1349,13 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         to this function before attempting to concatenate, and will proceed with
         whatever datasets are returned from this function.
         """
-        # Caveat: caching and chain are not really aware of each other.
-        # as is, if the first call uses chain, then later calls will get
-        # the chained dataset even if they have chain=False.
-        # or vice versa.
-        if (self._his_ds is not None) and (not refresh):
-            return self._his_ds
+        if not refresh:
+            if chain:
+                if self._his_ds_chain is not None:
+                    return self._his_ds_chain
+            else:
+                if self._his_ds is not None:
+                    return self._his_ds
 
         clean_kwargs=dict(decode_geometry=decode_geometry,
                           set_coordinates=set_coordinates,refresh=refresh)
@@ -1394,7 +1396,11 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         else:
             his_ds=self.clean_his_dataset(self.his_output(),**clean_kwargs)
 
-        self._his_ds=his_ds
+        if chain:
+            self._his_ds_chain=his_ds
+        else:
+            self._his_ds=his_ds
+            
         return his_ds
 
     def hyd_output(self):

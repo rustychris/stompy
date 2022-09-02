@@ -180,7 +180,7 @@ class MultiVar(object):
         return shape,left_idx,right_idx
     @property
     def shape(self):
-        return self.shape_and_indices()[0]
+        return self.shape_and_indexes()[0]
     
     @property
     def values(self):
@@ -477,6 +477,20 @@ class MultiUgrid(object):
         varnames=list(self.dss[0].variables.keys())
         if k in varnames:
             valid=True
+        elif k in self.dims:
+            if k in self.rev_meta:
+                meta=self.rev_meta[k]
+                if meta=='face_dimension':
+                    return np.arange(self.cell_g2l.shape[0])
+                elif meta=='edge_dimension':
+                    return np.arange(self.edge_g2l.shape[0])
+                elif meta=='node_dimension':
+                    return np.arange(self.node_g2l.shape[0])
+                else:
+                    raise KeyError("Not ready for on-the-fly coordinate for partitioned dimension...")
+            else:
+                return np.arange(self.dss[0].dims[k])
+            
         elif isinstance(k,list):
             valid=np.all( [kk in varnames for kk in k] )
             

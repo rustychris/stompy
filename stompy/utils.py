@@ -2387,12 +2387,15 @@ def progress(a,interval_s=5.0,msg="%s",func=log.info,count=0):
             t0=t
         yield elt
 
-def is_stale(target,srcs,ignore_missing=False):
+def is_stale(target,srcs,ignore_missing=False,tol_s=0):
     """
     Makefile-esque checker --
     if target does not exist or is older than any of srcs,
     return true (i.e. stale).
     if a src does not exist, raise an Exception, unless ignore_missing=True.
+    tol_s: allow a source to be up to tol_s newer than target. Useful if 
+    sources are constantly updating but you only want to recompute
+    when something is really old.
     """
     if not os.path.exists(target): return True
     for src in srcs:
@@ -2401,7 +2404,7 @@ def is_stale(target,srcs,ignore_missing=False):
                 continue
             else:
                 raise Exception("Dependency %s does not exist"%src)
-        if os.stat(src).st_mtime > os.stat(target).st_mtime:
+        if os.stat(src).st_mtime > os.stat(target).st_mtime + tol_s:
             return True
     return False
 
