@@ -66,6 +66,9 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
 
         super(DFlowModel,self).__init__(*a,**kw)
 
+    def __repr__(self):
+        return '<DFlowModel: %s>'%self.run_dir
+
     def configure(self):
         super(DFlowModel,self).configure()
 
