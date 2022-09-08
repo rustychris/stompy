@@ -1951,10 +1951,10 @@ class HydroFiles(Hydro):
         if ti<ti_req:
             self.log.warning("Area data ends early by %d steps. Use previous"%(ti_req-ti))
 
-        tstamp=np.fromstring(tstamp_data,'i4')[0]
+        tstamp=np.frombuffer(tstamp_data,np.int32)[0]
         if (ti==ti_req) and (tstamp!=t):
             self.log.warning("WARNING: time stamp mismatch: %d [file] != %d [requested]"%(tstamp,t))
-        return np.fromstring(raw,'f4')
+        return np.frombuffer(raw,np.float32)
 
     def write_vol(self):
         if not self.enable_write_symlink:
@@ -2113,10 +2113,10 @@ class HydroFiles(Hydro):
                     self.log.warning("Flow data ends early by %d steps"%(len(self.t_secs)-1-ti))
                 return np.zeros(self.n_exch,'f4')
             else:
-                tstamp=np.fromstring(tstamp_data,'i4')[0]
+                tstamp=np.frombuffer(tstamp_data,'i4')[0]
                 if tstamp!=t:
                     self.log.warning("flows: time stamp mismatch: %d != %d"%(tstamp,t))
-                data=np.fromstring(fp.read(self.n_exch*4),'f4')
+                data=np.fromfile(fp, np.float32, self.n_exch)
                 if len(data)!=self.n_exch:
                     self.log.warning("flow: incomplete frame, %d items < %d exchanges"%(len(data),self.n_exch))
                     return np.zeros(self.n_exch,'f4')
@@ -2142,7 +2142,7 @@ class HydroFiles(Hydro):
                 self.log.info("update_flows: File is too short")
                 return False
             else:
-                tstamp=np.fromstring(tstamp_data,'i4')[0]
+                tstamp=np.frombuffer(tstamp_data,'i4')[0]
                 if tstamp!=t:
                     self.log.warning("update_flows: time stamp mismatch: %d != %d"%(tstamp,t))
                 fp.write(new_flows.astype('f4'))
@@ -2182,7 +2182,8 @@ class HydroFiles(Hydro):
     def pointers(self):
         poi_fn=self.get_path('pointers-file')
         with open(poi_fn,'rb') as fp:
-            return np.fromstring( fp.read(), 'i4').reshape( (self.n_exch,4) )
+            #return np.fromstring( fp.read(), 'i4').reshape( (self.n_exch,4) )
+            return np.fromfile(fp, np.int32).reshape( (self.n_exch,4) )
 
     def bottom_depths_2d(self):
         """ 

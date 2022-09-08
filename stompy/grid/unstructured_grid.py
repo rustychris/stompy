@@ -781,6 +781,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         ignore_fields.extend([node_x_name,node_y_name])
         node_x=nc[node_x_name]
+        node_dimension=node_x.dims[0] # save for tracking metadata
         node_y=nc[node_y_name]
         try:
             # xarray access is slow - pull complete arrays beforehand
@@ -837,14 +838,21 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             return idxs
 
         faces = process_as_index(mesh.face_node_connectivity)
+
+        # remember the cell dimension from that:
+        cell_dimension=nc[mesh.face_node_connectivity].dims[0]
+
+        
         # suntans has a nonstandard, but not always specified, fill value.
         faces[faces>=len(node_x)]=UnstructuredGrid.UNDEFINED
         if 'edge_node_connectivity' in mesh.attrs:
             edges = process_as_index(mesh.edge_node_connectivity) # [N,2]
+            edge_dimension=nc[mesh.edge_node_connectivity].dims[0]
             ug=UnstructuredGrid(points=node_xy,cells=faces,edges=edges)
         else:
             ug=UnstructuredGrid(points=node_xy,cells=faces)
             ug.make_edges_from_cells()
+            edge_dimension=None
 
         # When the incoming netcdf supplies additional topology, use it
         if 'face_edge_connectivity' in mesh.attrs:
@@ -925,6 +933,13 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                               'face_node_connectivity','edge_node_connectivity',
                               'face_edge_connectivity','edge_face_connectivity',
                               'node_coordinates','face_coordinates','edge_coordinates']}
+        # node_dimension is often omitted, but easy to figure out
+        if ug.nc_meta['node_dimension'] is None:
+            ug.nc_meta['node_dimension']=node_dimension
+        if ug.nc_meta['face_dimension'] is None:
+            ug.nc_meta['face_dimension']=cell_dimension
+        if ug.nc_meta['edge_dimension'] is None:
+            ug.nc_meta['edge_dimension']=edge_dimension
         
         ug.filename=filename
         return ug
@@ -1019,7 +1034,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
             grd = UnstructuredGrid(edges=edges, points=points,
                                    cells=cells, max_sides=max_cell_faces)
-
+            grd.twod_area_name = twod_area_name
+            
             if elevations:
                 cell_key='Geometry/2D Flow Areas/' + twod_area_name + '/Cells Minimum Elevation'
                 edge_key='Geometry/2D Flow Areas/' + twod_area_name + '/Faces Minimum Elevation'
@@ -5350,7 +5366,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             # force to a bitmask, even though could be inefficient
             mask=np.asarray(mask)
             if np.issubdtype(mask.dtype,np.integer):
-                bitmask=np.zeros(self.Ncells(),np.bool)
+                bitmask=np.zeros(self.Ncells(),bool) # np.bool deprecated
                 bitmask[mask]=True
                 if masked_values is not None:
                     masked_values=masked_values[ np.argsort(mask) ]
@@ -6507,7 +6523,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             cc=self.cells_center()
 
         gd.add_node_field('dual_cell',np.zeros(0,np.int32))
-        if expand_boundary:
+        if extend_to_boundary: # expand_boundary:
             gd.add_node_field('dual_edge',np.zeros(0,np.int32))
         gd.add_edge_field('dual_edge',np.zeros(0,np.int32))
 
@@ -6533,13 +6549,13 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         e2c=self.edge_to_cells()
 
-        if expand_to_boundary:
+        if extend_to_boundary:
             boundary_edge_to_dual_node=-np.ones(self.Nedges(),np.int64)
             edge_center=self.edges_center()
         
         for j in self.valid_edge_iter():
             if e2c[j].min() < 0:
-                if expand_to_boundary:
+                if extend_to_boundary:
                     # Boundary edges *also* get nodes at their midpoints
                     boundary_edge_to_dual_node[j] = dnj = gd.add_node(x=edge_center[j],
                                                                       dual_edge=j)
@@ -6560,7 +6576,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 if dj_exist is None:
                     dj=gd.add_edge(nodes=[dn1,dn2],dual_edge=j)
 
-        if expand_to_boundary:
+        if extend_to_boundary:
             # Nodes also imply an edge in the dual -- and maybe even two
             # edges if we want this edge to go through the node
             for n in np.nonzero(boundary_node_mask)[0]:

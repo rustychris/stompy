@@ -2387,12 +2387,15 @@ def progress(a,interval_s=5.0,msg="%s",func=log.info,count=0):
             t0=t
         yield elt
 
-def is_stale(target,srcs,ignore_missing=False):
+def is_stale(target,srcs,ignore_missing=False,tol_s=0):
     """
     Makefile-esque checker --
     if target does not exist or is older than any of srcs,
     return true (i.e. stale).
     if a src does not exist, raise an Exception, unless ignore_missing=True.
+    tol_s: allow a source to be up to tol_s newer than target. Useful if 
+    sources are constantly updating but you only want to recompute
+    when something is really old.
     """
     if not os.path.exists(target): return True
     for src in srcs:
@@ -2401,7 +2404,7 @@ def is_stale(target,srcs,ignore_missing=False):
                 continue
             else:
                 raise Exception("Dependency %s does not exist"%src)
-        if os.stat(src).st_mtime > os.stat(target).st_mtime:
+        if os.stat(src).st_mtime > os.stat(target).st_mtime + tol_s:
             return True
     return False
 
@@ -2448,7 +2451,7 @@ def partition(items, predicate=bool):
     return ((item for pred, item in a if not pred),
             (item for pred, item in b if pred))
 
-def distinct_substrings(strs,split_on='_.- '):
+def distinct_substrings(strs,split_on=r'_.- \/'):
     """
     strs: list of str
     returns a list of strs, with the longest common prefix and suffix removed
@@ -2497,6 +2500,18 @@ def combinations(values,k):
         for rest in combinations(values[i+1:],k-1):
             res=(values[i],) + rest
             yield res
+            
+def subsets(values,k_min=1,k_max=None):
+    """
+    Similar to combinations, but across a range of k.
+    k_min: smallest set size to return
+    k_max: largest set size to return (inclusive)
+    """
+    if k_max is None:
+        k_max=len(values)
+    for k in range(k_min,k_max+1):
+        yield from combinations(values,k)
+            
             
 def dominant_period(h,t,uniform=True,guess=None):
     """

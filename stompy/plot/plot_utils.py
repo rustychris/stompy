@@ -908,8 +908,10 @@ def cbar_interactive(cbar,extras=[],symmetric=False):
     original_clim=[cbar.mappable.norm.vmin,cbar.mappable.norm.vmax]
     def mod_norm(rel_min=0,rel_max=0,reset=False):
         nrm=cbar.mappable.norm
-        if reset:
-            nrm.vmin,nrm.vmax = original_clim
+        if reset=='autoscale':
+            cbar.mappable.autoscale()
+        elif reset=='original':
+            nrm.vmin,nrm.vmax = original_clim            
         else:
             rang=nrm.vmax - nrm.vmin
             nrm.vmax += rel_max*rang
@@ -940,15 +942,25 @@ def cbar_interactive(cbar,extras=[],symmetric=False):
                 rel=0.1
             elif event.button==3:
                 rel=-0.1
-            if symmetric:
-                mod_norm(rel_min=rel,rel_max=-rel)
+            if coord<0.33:
+                edit='min'
+            elif coord>0.67:
+                edit='max'
             else:
-                if coord<0.4:
-                    mod_norm(rel_min=rel)
-                elif coord>0.6:
-                    mod_norm(rel_max=rel)
+                edit='reset'
+               
+            if edit=='reset':
+                if event.button==1:
+                    mod_norm(reset='original')
                 else:
-                    mod_norm(reset=True)
+                    mod_norm(reset='autoscale')
+            elif symmetric:
+                mod_norm(rel_min=rel,rel_max=-rel)
+            elif edit=='min':
+                mod_norm(rel_min=rel)
+            elif edit=='max':
+                mod_norm(rel_max=rel)
+
     fig=cbar.ax.figure
     cid=fig.canvas.mpl_connect('button_press_event',cb_u_cbar)
     return cb_u_cbar
