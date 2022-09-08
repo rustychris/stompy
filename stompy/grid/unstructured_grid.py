@@ -1619,14 +1619,36 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         fp.close()
         return g
+
+    def write_cells_geopandas(self,crs="+proj=utm +zone=10 +datum=WGS84 +units=m +no_defs"):
+        """
+        Copy cell geometry to a geopandas dataframe.
+        Original code credit to Zhenlin Zhang.
+
+        crs: specify a proj projection string.
+        """
+        # stompy generally does not depend on geopandas,        
+        # so use local import
+        import pandas as pd
+        import geopandas as gpd
+        polys=[self.cell_polygon(c) for c in range(self.Ncells())]
             
-    def write_to_xarray(self,ds=None,mesh_name='mesh',
-                        node_coordinates='node_x node_y',
-                        face_node_connectivity='face_node',
-                        edge_node_connectivity='edge_node',
-                        face_dimension='face',
-                        edge_dimension='edge',
-                        node_dimension='node'):
+        df = pd.DataFrame()
+        df['geometry'] = polys
+        gdf = gpd.GeoDataFrame(df,geometry='geometry')
+        gdf.crs = crs
+        return gdf
+
+    def write_to_xarray(self,*a,**kw):
+        return self.write_xarray(*a,**kw)
+    
+    def write_xarray(self,ds=None,mesh_name='mesh',
+                     node_coordinates='node_x node_y',
+                     face_node_connectivity='face_node',
+                     edge_node_connectivity='edge_node',
+                     face_dimension='face',
+                     edge_dimension='edge',
+                     node_dimension='node'):
         """ write grid definition, ugrid-ish, to a new xarray dataset
         """
         import xarray as xr
