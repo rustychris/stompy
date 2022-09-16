@@ -491,7 +491,7 @@ class XYZField(Field):
         else:
             # print "bad - no index"
             dsqr = ((self.X-p)**2).sum(axis=1)
-            return where(dsqr<=r**2)[0]
+            return np.where(dsqr<=r**2)[0]
 
     def inv_dist_interp(self,p,
                         min_radius=None,min_n_closest=None,
@@ -1458,7 +1458,7 @@ class ConstrainedScaleField(XYZField):
         slopes = abs(dys / Ls)
 
         if any(slopes > self.r-1.0):
-            bad_edges = where(slopes > self.r-1.0)[0]
+            bad_edges = np.where(slopes > self.r-1.0)[0]
             
             print("Bad edges: ")
             for e in bad_edges:
@@ -1545,7 +1545,7 @@ class ConstrainedScaleField(XYZField):
         
         # First, make sure that we are not too large for any neighbors:
         t = self.tri()
-        edges = where( t.edge_db == i )[0]
+        edges = np.where( t.edge_db == i )[0]
         for e in edges:
             a,b = t.edge_db[e]
             # enforce that a is the smaller of the two
@@ -1580,7 +1580,7 @@ class ConstrainedScaleField(XYZField):
             i,old_value = to_visit.pop(0)
 
             t = self.tri()
-            edges = where( t.edge_db == i )[0]
+            edges = np.where( t.edge_db == i )[0]
 
             for e in edges:
                 a,b = t.edge_db[e]
