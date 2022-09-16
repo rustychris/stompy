@@ -43,7 +43,12 @@ try:
 except ImportError:
     cascaded_union = None
 
-from collections import defaultdict, OrderedDict, Iterable
+from collections import defaultdict, OrderedDict
+try:
+    from collections.abc import Iterable
+except ImportError:
+    from collections import Iterable
+
 import scipy.spatial
 
 from  ... import scriptable
@@ -147,7 +152,7 @@ class MonTail(object):
         self.thr.join()
 
     def msg(self, s):
-        if self.log is None:
+        if self.log == None:
             print(s)
         else:
             # can be annoying to get info to print, but less alarming than constantly
@@ -1910,11 +1915,22 @@ class HydroFiles(Hydro):
             rel_symlink(self.get_path('areas-file'),
                         self.are_filename,overwrite=self.overwrite)
 
-    def areas(self,t):
+    _areas_mmap=None
+    def areas(self,t,memmap=False):
         ti_req=ti=self.t_sec_to_index(t)
 
         stride=4+self.n_exch*4
         area_fn=self.get_path('areas-file')
+
+        if memmap:
+            if self._areas_mmap is None:
+                self._areas_mmap=np.memmap(area_fn,self.are_dtype())
+                if (ti>=self._areas_mmap.shape[0]) or ( self._areas_mmap['tstamp'][ti] !=t ):
+                    self.log.warning("area memmap failed -- too short or mismatched timestamp")
+                    self._areas_mmap=False
+            if self._areas_mmap is not False:
+                return self._areas_mmap['area'][ti]
+        
         with open(area_fn,'rb') as fp:
             while 1: # in case we have to scan backwards to find real data
                 fp.seek(stride*ti)
@@ -1935,10 +1951,10 @@ class HydroFiles(Hydro):
         if ti<ti_req:
             self.log.warning("Area data ends early by %d steps. Use previous"%(ti_req-ti))
 
-        tstamp=np.fromstring(tstamp_data,'i4')[0]
+        tstamp=np.frombuffer(tstamp_data,np.int32)[0]
         if (ti==ti_req) and (tstamp!=t):
             self.log.warning("WARNING: time stamp mismatch: %d [file] != %d [requested]"%(tstamp,t))
-        return np.fromstring(raw,'f4')
+        return np.frombuffer(raw,np.float32)
 
     def write_vol(self):
         if not self.enable_write_symlink:
@@ -1948,10 +1964,12 @@ class HydroFiles(Hydro):
                         self.vol_filename,
                         overwrite=self.overwrite)
 
-    def volumes(self,t):
-        return self.seg_func(t,label='volumes-file')
+    def volumes(self,t,**kw):
+        return self.seg_func(t,label='volumes-file',**kw)
 
-    def seg_func(self,t_sec=None,fn=None,label=None):
+    _seg_mmap=None # dict of fn => memmap'd data
+    
+    def seg_func(self,t_sec=None,fn=None,label=None,memmap=False):
         """ 
         Get segment function data at a given timestamp (must match a timestamp
         - no interpolation).
@@ -1961,7 +1979,7 @@ class HydroFiles(Hydro):
         
         if t_sec is not specified, returns a callable which takes t_sec
         """
-        def f(t_sec,closest=False):
+        def f(t_sec,closest=False,memmap=memmap):
             if isinstance(t_sec,datetime.datetime):
                 t_sec = int( (t_sec - self.time0).total_seconds() )
             
@@ -1971,6 +1989,26 @@ class HydroFiles(Hydro):
             ti=self.t_sec_to_index(t_sec) 
 
             stride=4+self.n_seg*4
+
+            if memmap:
+                if self._seg_mmap is None: self._seg_mmap={} # jit init
+                if self._seg_mmap.get(filename,None) is False:
+                    memmap=False # tried and failed, revert to file access
+                else:
+                    if filename not in self._seg_mmap:
+                        # TODO: catch errors, e.g. network filesystem
+                        self._seg_mmap[filename] = np.memmap(filename, self.vol_dtype(),mode='r')
+                    data=self._seg_mmap[filename]
+                    # confirm time stamp
+                    if (ti>=data.shape[0]) or (data['tstamp'][ti]!=t_sec):
+                        # could add scanning to the memmap code path, or factor it out.
+                        # another day.  for now fall through to file-based.
+                        self.log.warning("Tried to memmap but time stamps don't align")
+                        self._seg_mmap[filename].close()
+                        self._seg_mmap[filename]=False
+                        memmap=False
+                    else:
+                        return data['volume'][ti]
             
             with open(filename,'rb') as fp:
                 fp.seek(stride*ti)
@@ -2075,10 +2113,10 @@ class HydroFiles(Hydro):
                     self.log.warning("Flow data ends early by %d steps"%(len(self.t_secs)-1-ti))
                 return np.zeros(self.n_exch,'f4')
             else:
-                tstamp=np.fromstring(tstamp_data,'i4')[0]
+                tstamp=np.frombuffer(tstamp_data,'i4')[0]
                 if tstamp!=t:
                     self.log.warning("flows: time stamp mismatch: %d != %d"%(tstamp,t))
-                data=np.fromstring(fp.read(self.n_exch*4),'f4')
+                data=np.fromfile(fp, np.float32, self.n_exch)
                 if len(data)!=self.n_exch:
                     self.log.warning("flow: incomplete frame, %d items < %d exchanges"%(len(data),self.n_exch))
                     return np.zeros(self.n_exch,'f4')
@@ -2104,7 +2142,7 @@ class HydroFiles(Hydro):
                 self.log.info("update_flows: File is too short")
                 return False
             else:
-                tstamp=np.fromstring(tstamp_data,'i4')[0]
+                tstamp=np.frombuffer(tstamp_data,'i4')[0]
                 if tstamp!=t:
                     self.log.warning("update_flows: time stamp mismatch: %d != %d"%(tstamp,t))
                 fp.write(new_flows.astype('f4'))
@@ -2144,7 +2182,8 @@ class HydroFiles(Hydro):
     def pointers(self):
         poi_fn=self.get_path('pointers-file')
         with open(poi_fn,'rb') as fp:
-            return np.fromstring( fp.read(), 'i4').reshape( (self.n_exch,4) )
+            #return np.fromstring( fp.read(), 'i4').reshape( (self.n_exch,4) )
+            return np.fromfile(fp, np.int32).reshape( (self.n_exch,4) )
 
     def bottom_depths_2d(self):
         """ 
@@ -3362,7 +3401,7 @@ class DwaqAggregator(Hydro):
                     raise Exception("Failed assumption that boundary exchange is always first")
                 elif local_from<0:
                     # it's a true boundary in the original grid
-                    assert direc is 'x' # really hope that it's horizontal
+                    assert direc=='x' # really hope that it's horizontal
 
                     # is it a ghost?  Check based on locality of the internal segment:
                     internal_is_local=(elem_dom_id[to_2d-1]==p)
@@ -3383,7 +3422,7 @@ class DwaqAggregator(Hydro):
                     continue
                 else:
                     # it's a real exchange, but might be a ghost.
-                    if direc is 'x': # horizontal - could be a ghost
+                    if direc=='x': # horizontal - could be a ghost
                         assert from_2d!=to_2d
                         # quick check - if both elements are local, then the
                         # link is local (true for the files I have)
@@ -3426,7 +3465,7 @@ class DwaqAggregator(Hydro):
                                 else:
                                     # We lost - ghost link, move on
                                     continue
-                    elif direc is 'z':
+                    elif direc=='z':
                         # it's vertical - check if the elt is a ghost
                         if elem_dom_id[from_2d-1]!=p:
                             #print "ghost vertical - skip"
@@ -4354,7 +4393,7 @@ class DwaqAggregator(Hydro):
 
         min_planform_area=1.0
 
-        if mode is 'constant':
+        if mode=='constant':
             #switching to the code below coincided with this setup breaking
             # This is the old code - just maps maximum area from the grid
             map2d3d=self.infer_2d_elements() # agg_seg_to_agg_elt_2d()
@@ -4373,7 +4412,7 @@ class DwaqAggregator(Hydro):
             else:
                 constant_areas=None
 
-            if mode is 'lazy':
+            if mode=='lazy':
                 def planform_area_func(t_sec):
                     A=np.zeros(self.n_seg,'f4')
                     areas=self.areas(t_sec)
@@ -4438,7 +4477,7 @@ class DwaqAggregator(Hydro):
             # seems that this is necessary.  ran okay with 0.01m
             data[ data<min_depth ] = min_depth
 
-        if mode is 'lazy':
+        if mode=='lazy':
             def depth_func(t_sec):
                 # a little unsure on the .data part
                 D=self.volumes(t_sec) / plan_areas.evaluate(t=t_sec).data
@@ -4446,7 +4485,7 @@ class DwaqAggregator(Hydro):
                 return D.astype('f4')
             return ParameterSpatioTemporal(times=self.t_secs,func_t=depth_func,hydro=self)
                 
-        if mode is 'explicit':
+        if mode=='explicit':
             D=np.zeros( (len(self.t_secs),self.n_seg) )
             for ti,t_sec in enumerate(self.t_secs):
                 areas=self.areas(t_sec)
@@ -8047,9 +8086,9 @@ END_MULTIGRID"""%num_layers
             output_settings=self.default_ugrid_output_settings
 
         if nef is None:
-            if mode is 'map':
+            if mode=='map':
                 nef=self.nef_map()
-            elif mode is 'history':
+            elif mode=='history':
                 nef=self.nef_history()
             close_nef=True
         else:
@@ -8070,11 +8109,11 @@ END_MULTIGRID"""%num_layers
         self.hydro.infer_2d_elements()
 
         try:
-            if mode is 'map':
+            if mode=='map':
                 seg_k = self.hydro.seg_k
                 seg_elt = self.hydro.seg_to_2d_element
                 n_locations=len(seg_elt)
-            elif mode is 'history':
+            elif mode=='history':
                 # do we go through the location names, trying to pull out elt_k? no - as needed,
                 # use self.monitor_areas.
 
@@ -8370,7 +8409,7 @@ END_MULTIGRID"""%num_layers
         # options
 
         if 1:
-            if mode is 'map':
+            if mode=='map':
                 etavar=nc.createVariable('eta',np.float32,['time','nFlowElem'],
                                          zlib=True)
                 etavar.standard_name='sea_surface_height_above_geoid'
@@ -8391,7 +8430,7 @@ END_MULTIGRID"""%num_layers
 
                     z_surf=z_bed + depth
                     etavar[ti,:]=z_surf
-            elif mode is 'history':
+            elif mode=='history':
                 # tread carefully in case there is nothing useful in the history file.
                 if 'totaldepth' in nc.variables and 'nSegment' in nc.dimensions:
                     etavar=nc.createVariable('eta',np.float32,['time',"nSegment"],
@@ -8412,7 +8451,7 @@ END_MULTIGRID"""%num_layers
 
         if 1: # extra mapping info for history files
             pad=-1*np.ones( n_locations-len(seg_elt),'i4')
-            if mode is 'history':
+            if mode=='history':
                 nc['element']['nSegment']=np.concatenate( (seg_elt,pad) )
                 nc['layer']['nSegment']=np.concatenate( (seg_k,pad) )
                 if flowgeom:
@@ -8422,7 +8461,7 @@ END_MULTIGRID"""%num_layers
                     nc['element_y']['nSegment']=np.concatenate( (ycc[seg_elt],np.nan*pad) )
 
         # extra work to make quickplot happy
-        if mode is 'map' and 'quickplot_compat' in output_settings:
+        if (mode=='map') and ('quickplot_compat' in output_settings):
             # add in some attributes and fields which might make quickplot happier
             # Add in node depths
             
@@ -9514,7 +9553,7 @@ INCLUDE '{self.atr_filename}'  ; attributes file
     
 ##
 
-class WaqModel(scriptable.Scriptable):
+class WaqModelBase(scriptable.Scriptable):
     """
     New-style
     rather than requiring all information to be provided up front,
@@ -9523,9 +9562,258 @@ class WaqModel(scriptable.Scriptable):
     as needed, loaded, written, etc.
 
     Also transitions to broader usage of np.datetime64 instead of python datetime.
+
+    WaqModelBase is for code common to both offline and online D-WAQ runs.
+    WaqModel is the subclass for offline-specific code, and WaqOnlineModel
+    handles specifics of running online under a DFlowModel instance.
     """
     
     name="waqmodel" # this is used for the basename of the various files.
+
+    # simplify imports
+    Sub=Substance
+    
+    def __init__(self,**kw):
+        self.log=logging.getLogger(self.__class__.__name__)
+
+        # list of dicts.  moving towards standard setting of loads via src_tags
+        # should be populated in init_substances(), gets used 
+        self.src_tags=[]
+        # Not sure whether dispersions and velocities can be utilized in
+        # online simulations at this time (2021-06-21)
+        self.dispersions=NamedObjects(scenario=self)
+        self.velocities=NamedObjects(scenario=self)
+        self.parameters=self.init_parameters()
+        self.substances=self.init_substances()
+        assert self.substances is not None, "init_substances() did not return anything."
+        
+        utils.set_keywords(self,kw)
+
+        self.init_bcs()
+        self.init_loads()
+
+    # scriptable interface settings:
+    cli_options="hp:"
+    def cli_handle_option(self,opt,val):
+        if opt=='-p':
+            print("Setting base_path to '%s'"%val)
+            self.base_path=val
+        else:
+            super(Scenario,self).cli_handle_option(opt,val)
+        
+    @property
+    def n_substances(self):
+        return len(self.substances)
+    @property
+    def n_active_substances(self):
+        return len( [sub for sub in self.substances.values() if sub.active] )
+    @property
+    def n_inactive_substances(self):
+        return len( [sub for sub in self.substances.values() if not sub.active] )
+    
+    def init_parameters(self):
+        params=NamedObjects(scenario=self,cast_value=cast_to_parameter)
+        params['ONLY_ACTIVE']=1 # almost always a good idea.
+        params['ACTIVE_DYNDEPTH']=1 # these make the outputs much easier to visualize,
+        params['ACTIVE_TOTDEPTH']=1 # and some tools depend on these.
+        
+        return params
+    def init_hydro_parameters(self):
+        """ parameters which come directly from the hydro, and are
+        written out in the same way that process parameters are 
+        written.
+        """
+        if self.hydro:
+            # in case hydro is re-used, make sure that this call gets a fresh
+            # set of parameters.  some leaky abstraction going on...
+            return self.hydro.parameters(force=True)
+        else:
+            self.log.warning("Why requesting hydro parameters with no hydro?")
+            raise Exception("Tried to initialize hydro parameters without a hydro instance")
+
+    def init_substances(self):
+        # sorts active substances first.
+        return NamedObjects(scenario=self,sort_key=lambda s: not s.active)
+
+    def init_bcs(self):
+        self.bcs=[]
+
+        # RH 2019-09-09: moving to more procedural approach, unsure of whether this
+        # should be included.
+        if 0:
+            # 2017-03-17: moved this bit of boiler plate from a bunch of subclasses
+            # to here in a step towards standardizing the BC settings.
+            boundaries=self.hydro.boundary_defs()
+            ids=[b['id'] for b in boundaries]
+
+            for src_tag in self.src_tags:
+                # conc. defaults to 1.0
+                self.add_bc(src_tag['items'],src_tag['tracer'],src_tag.get('value',1.0))
+
+    def add_bc(self,*args,**kws):
+        bc=BoundaryCondition(*args,**kws)
+        bc.scenario=self
+        self.bcs.append(bc)
+        return bc
+
+    def init_loads(self):
+        """
+        Set up discharges (locations of point sources/sinks), and
+        corresponding loads (e.g. mass/time for a substance at a source)
+        """
+        self.discharges=[]
+        self.loads=[]
+
+    def add_discharge(self,on_exists='exception',*arg,**kws):
+        disch=Discharge(*arg,**kws)
+        disch.scenario=self
+        disch.update_fields()
+        exists=False
+        for other in self.discharges:
+            if other.load_id==disch.load_id:
+                if on_exists=='exception':
+                    raise Exception("Discharge with id='%s' already exists"%other.load_id)
+                elif on_exists=='ignore':
+                    self.log.info("Discharge id='%s' exists - skipping duplicate"%other.load_id)
+                    return other
+                else:
+                    assert False 
+        self.discharges.append(disch)
+        return disch
+
+    def add_load(self,*args,**kws):
+        load=Load(*args,**kws)
+        load.scenario=self
+        self.loads.append(load)
+        return load
+
+    # Requires further refactoring to separate online/offline specific
+    # code
+    def add_monitor_from_shp(self,shp_fn,naming='elt_layer',point_layers=True):
+        raise Exception("add_monitor_from_shp is sub-class dependent, and apparently not implemented")
+
+    def add_transect(self,name,exchanges):
+        raise Exception("add_transect is sub-class dependent, and apparently not implemented")
+
+    def add_area_boundary_transects(self,exclude='dummy'):
+        raise Exception("add_are_boundary_transects is sub-class dependent, and apparently not implemented")
+
+    def add_transects_from_shp(self,shp_fn,naming='count',clip_to_poly=True,
+                               on_boundary='warn_and_skip',on_edge=False):
+        raise Exception("add_transects_from_shp is sub-class dependent, and apparently not implemented")
+
+    def add_monitor_for_geometry(self,name,geom):
+        raise Exception("add_monitor_for_geometry is sub-class dependent, and apparently not implemented")
+
+    _pdb=None
+    @property
+    def process_db(self):
+        if self._pdb is None:
+            self._pdb = waq_process.ProcessDB(scenario=self)
+        return self._pdb
+    def lookup_item(self,name):
+        return self.process_db.substance_by_id(name)
+
+    def as_datetime(self,t):
+        """
+        t can be a datetime object, an integer number of seconds since time0,
+        or a floating point datenum
+        """
+        if np.issubdtype(type(t),np.integer):
+            return self.time0 + t*self.scu
+        else:
+            return utils.to_datetime(t)
+
+    def fmt_datetime(self,t):
+        """ 
+        return datetime formatted as text.
+        format is part of input file configuration, but 
+        for now, stick with 1990/08/15-12:30:00
+
+        t is specified as in as_datetime() above.
+        """
+        return self.as_datetime(t).strftime('%Y/%m/%d-%H:%M:%S')
+
+    def flowgeom_ds(self):
+        # Unclear whether we really need flowgeom_ds, or if a grid
+        # is sufficient.  For online simulations, would rather just
+        # reference self.model.grid, but it's not quite the same as flowgeom_ds
+        raise Exception("flowgeom_ds not implemented in base class")
+
+    def cmd_write_bloominp(self):
+        """
+        Copy supporting bloominp file for runs using BLOOM algae
+        """
+        dst=os.path.join(self.base_path,'bloominp.d09')
+        if os.path.exists(dst) and not self.overwrite:
+            raise Exception("%s exists, but overwrite is False"%dst)
+        
+        shutil.copyfile(self.original_bloominp_path,dst)
+
+    # Paths for Delft tools:
+    @property
+    def delft_path(self):
+        # on linux probably one directory above bin directory
+        if 'DELFT_SRC' not in os.environ:
+            raise WaqException("Environment variable DELFT_SRC not defined")
+        return os.environ['DELFT_SRC']
+    @delft_path.setter
+    def delft_path(self,p):
+        os.environ['DELFT_SRC']=p
+    @property
+    def delft_bin(self):
+        if 'DELFT_BIN' in os.environ:
+            return os.environ['DELFT_BIN']
+        return os.path.join(self.delft_path,'bin')
+    @delft_bin.setter
+    def delft_bin(self,p):
+        os.environ['DELFT_BIN']=p
+
+    _share_path=None
+    @property
+    def share_path(self):
+        
+        if self._share_path is not None:
+            return self._share_path
+        elif 'DELFT_SHARE' in os.environ:
+            return os.environ['DELFT_SHARE']
+        else:
+            # this is where it would live for a freshly compiled, not installed
+            # delft3d:
+            return os.path.join(self.delft_path,'engines_gpl/waq/default')
+
+    @share_path.setter
+    def share_path(self,p):
+        self._share_path=p
+    @property
+    def bloom_path(self):
+        return os.path.join(self.share_path,'bloom.spe')
+    @property
+    def original_bloominp_path(self):
+        # this gets copied into the model run directory
+        return os.path.join(self.share_path,'bloominp.d09')
+    @property
+    def proc_path(self):
+        return os.path.join(self.share_path,'proc_def')
+
+    # plot process diagrams
+    def cmd_plot_process(self,run_name='dwaq'):
+        """ Build a process diagram and save to file.  Sorry, you have no voice 
+        in choosing the filename
+        """
+        pd = process_diagram.ProcDiagram(waq_dir=self.base_path)
+        pd.render_dot()
+    def cmd_view_process(self,run_name='dwaq'):
+        """ Build a process diagram and display
+        """
+        pd = process_diagram.ProcDiagram(waq_dir=self.base_path)
+        pd.view_dot()
+
+
+class WaqModel(WaqModelBase):
+    """
+    code for D-WAQ setup specific to running offline
+    """
     desc=('DWAQ','n/a','n/a') # 3 arbitrary lines of text for description
 
     time0=None
@@ -9618,32 +9906,6 @@ class WaqModel(scriptable.Scriptable):
     # set
     _hydro=None
 
-    def __init__(self,**kw):
-        self.log=logging.getLogger(self.__class__.__name__)
-
-        # list of dicts.  moving towards standard setting of loads via src_tags
-        # should be populated in init_substances(), gets used 
-        self.src_tags=[]
-        self.dispersions=NamedObjects(scenario=self)
-        self.velocities=NamedObjects(scenario=self)
-        self.parameters=self.init_parameters()
-        self.substances=self.init_substances()
-        assert self.substances is not None, "init_substances() did not return anything."
-        
-        utils.set_keywords(self,kw)
-
-        self.init_bcs()
-        self.init_loads()
-
-    # scriptable interface settings:
-    cli_options="hp:"
-    def cli_handle_option(self,opt,val):
-        if opt=='-p':
-            print("Setting base_path to '%s'"%val)
-            self.base_path=val
-        else:
-            super(Scenario,self).cli_handle_option(opt,val)
-        
     def auto_base_path(self):
         ymd=datetime.datetime.now().strftime('%Y%m%d')        
         prefix='dwaq%s'%ymd
@@ -9654,16 +9916,6 @@ class WaqModel(scriptable.Scriptable):
         else:
             raise Exception("Possible run-away directory naming")
         
-    @property
-    def n_substances(self):
-        return len(self.substances)
-    @property
-    def n_active_substances(self):
-        return len( [sub for sub in self.substances.values() if sub.active] )
-    @property
-    def n_inactive_substances(self):
-        return len( [sub for sub in self.substances.values() if not sub.active] )
-    
     @property
     def multigrid_block(self):
         """ 
@@ -9752,89 +10004,12 @@ END_MULTIGRID"""%num_layers
         self.hydro_parameters=self.init_hydro_parameters()
         self.log.info("Parameters gleaned from hydro: %s"%self.hydro_parameters)
 
-            
-    def init_parameters(self):
-        params=NamedObjects(scenario=self,cast_value=cast_to_parameter)
-        params['ONLY_ACTIVE']=1 # almost always a good idea.
-        params['ACTIVE_DYNDEPTH']=1 # these make the outputs much easier to visualize,
-        params['ACTIVE_TOTDEPTH']=1 # and some tools depend on these.
-        
-        return params
-    def init_hydro_parameters(self):
-        """ parameters which come directly from the hydro, and are
-        written out in the same way that process parameters are 
-        written.
-        """
-        if self.hydro:
-            # in case hydro is re-used, make sure that this call gets a fresh
-            # set of parameters.  some leaky abstraction going on...
-            return self.hydro.parameters(force=True)
-        else:
-            self.log.warning("Why requesting hydro parameters with no hydro?")
-            raise Exception("Tried to initialize hydro parameters without a hydro instance")
-
-    def init_substances(self):
-        # sorts active substances first.
-        return NamedObjects(scenario=self,sort_key=lambda s: not s.active)
-
     def text_thatcher_harleman_lags(self):
         return """;
 ; Thatcher-Harleman timelags
 0 ; no lags
         """
 
-    def init_bcs(self):
-        self.bcs=[]
-
-        # RH 2019-09-09: moving to more procedural approach, unsure of whether this
-        # should be included.
-        if 0:
-            # 2017-03-17: moved this bit of boiler plate from a bunch of subclasses
-            # to here in a step towards standardizing the BC settings.
-            boundaries=self.hydro.boundary_defs()
-            ids=[b['id'] for b in boundaries]
-
-            for src_tag in self.src_tags:
-                # conc. defaults to 1.0
-                self.add_bc(src_tag['items'],src_tag['tracer'],src_tag.get('value',1.0))
-
-    def add_bc(self,*args,**kws):
-        bc=BoundaryCondition(*args,**kws)
-        bc.scenario=self
-        self.bcs.append(bc)
-        return bc
-
-    def init_loads(self):
-        """
-        Set up discharges (locations of point sources/sinks), and
-        corresponding loads (e.g. mass/time for a substance at a source)
-        """
-        self.discharges=[]
-        self.loads=[]
-
-    def add_discharge(self,on_exists='exception',*arg,**kws):
-        disch=Discharge(*arg,**kws)
-        disch.scenario=self
-        disch.update_fields()
-        exists=False
-        for other in self.discharges:
-            if other.load_id==disch.load_id:
-                if on_exists=='exception':
-                    raise Exception("Discharge with id='%s' already exists"%other.load_id)
-                elif on_exists=='ignore':
-                    self.log.info("Discharge id='%s' exists - skipping duplicate"%other.load_id)
-                    return other
-                else:
-                    assert False 
-        self.discharges.append(disch)
-        return disch
-
-    def add_load(self,*args,**kws):
-        load=Load(*args,**kws)
-        load.scenario=self
-        self.loads.append(load)
-        return load
-    
     def add_monitor_from_shp(self,shp_fn,naming='elt_layer',point_layers=True):
         """
         For each feature in the shapefile, add a monitor area.
@@ -10059,36 +10234,7 @@ END_MULTIGRID"""%num_layers
         self.ensure_base_path()
         self.hydro.overwrite=self.overwrite
         self.hydro.write()
-
-    _pdb=None
-    @property
-    def process_db(self):
-        if self._pdb is None:
-            self._pdb = waq_process.ProcessDB(scenario=self)
-        return self._pdb
-    def lookup_item(self,name):
-        return self.process_db.substance_by_id(name)
-
-    def as_datetime(self,t):
-        """
-        t can be a datetime object, an integer number of seconds since time0,
-        or a floating point datenum
-        """
-        if np.issubdtype(type(t),np.integer):
-            return self.time0 + t*self.scu
-        else:
-            return utils.to_datetime(t)
-
-    def fmt_datetime(self,t):
-        """ 
-        return datetime formatted as text.
-        format is part of input file configuration, but 
-        for now, stick with 1990/08/15-12:30:00
-
-        t is specified as in as_datetime() above.
-        """
-        return self.as_datetime(t).strftime('%Y/%m/%d-%H:%M:%S')
-
+    
     #-- Access to output files
     def nef_history(self):
         hda=os.path.join( self.base_path,self.name+".hda")
@@ -10177,9 +10323,9 @@ END_MULTIGRID"""%num_layers
             output_settings=self.default_ugrid_output_settings
 
         if nef is None:
-            if mode is 'map':
+            if mode=='map':
                 nef=self.nef_map()
-            elif mode is 'history':
+            elif mode=='history':
                 nef=self.nef_history()
             close_nef=True
         else:
@@ -10200,11 +10346,11 @@ END_MULTIGRID"""%num_layers
         self.hydro.infer_2d_elements()
 
         try:
-            if mode is 'map':
+            if mode=='map':
                 seg_k = self.hydro.seg_k
                 seg_elt = self.hydro.seg_to_2d_element
                 n_locations=len(seg_elt)
-            elif mode is 'history':
+            elif mode=='history':
                 # do we go through the location names, trying to pull out elt_k? no - as needed,
                 # use self.monitor_areas.
 
@@ -10500,7 +10646,7 @@ END_MULTIGRID"""%num_layers
         # options
 
         if 1:
-            if mode is 'map':
+            if mode=='map':
                 etavar=nc.createVariable('eta',np.float32,['time','nFlowElem'],
                                          zlib=True)
                 etavar.standard_name='sea_surface_height_above_geoid'
@@ -10521,9 +10667,9 @@ END_MULTIGRID"""%num_layers
 
                     z_surf=z_bed + depth
                     etavar[ti,:]=z_surf
-            elif mode is 'history':
+            elif mode=='history':
                 # tread carefully in case there is nothing useful in the history file.
-                if 'totaldepth' in nc.variables and 'nSegment' in nc.dimensions:
+                if ('totaldepth' in nc.variables) and ('nSegment' in nc.dimensions):
                     etavar=nc.createVariable('eta',np.float32,['time',"nSegment"],
                                              zlib=True)
                     etavar.standard_name='sea_surface_height_above_geoid'
@@ -10542,7 +10688,7 @@ END_MULTIGRID"""%num_layers
 
         if 1: # extra mapping info for history files
             pad=-1*np.ones( n_locations-len(seg_elt),'i4')
-            if mode is 'history':
+            if mode=='history':
                 nc['element']['nSegment']=np.concatenate( (seg_elt,pad) )
                 nc['layer']['nSegment']=np.concatenate( (seg_k,pad) )
                 if flowgeom:
@@ -10552,7 +10698,7 @@ END_MULTIGRID"""%num_layers
                     nc['element_y']['nSegment']=np.concatenate( (ycc[seg_elt],np.nan*pad) )
 
         # extra work to make quickplot happy
-        if mode is 'map' and 'quickplot_compat' in output_settings:
+        if (mode=='map') and ('quickplot_compat' in output_settings):
             # add in some attributes and fields which might make quickplot happier
             # Add in node depths
             
@@ -10625,17 +10771,6 @@ END_MULTIGRID"""%num_layers
         with open(fn,'wt') as fp:
             fp.write("%s\n"%self.name)
             fp.write("y\n")
-
-    def cmd_write_bloominp(self):
-        """
-        Copy supporting bloominp file for runs using BLOOM algae
-        """
-        dst=os.path.join(self.base_path,'bloominp.d09')
-        if os.path.exists(dst) and not self.overwrite:
-            raise Exception("%s exists, but overwrite is False"%dst)
-        
-        shutil.copyfile(self.original_bloominp_path,dst)
-
     def cmd_write_inp(self):
         """
         Write inp file and supporting files (runid, bloominp.d09) for
@@ -10814,69 +10949,192 @@ END_MULTIGRID"""%num_layers
                 if 'Stopping the program' in line:
                     raise WaqException("Delwaq2 stopped early - check %s"%output_filename)
         self.log.info("Done")
-            
-    # Paths for Delft tools:
-    @property
-    def delft_path(self):
-        # on linux probably one directory above bin directory
-        if 'DELFT_SRC' not in os.environ:
-            raise WaqException("Environment variable DELFT_SRC not defined")
-        return os.environ['DELFT_SRC']
-    @delft_path.setter
-    def delft_path(self,p):
-        os.environ['DELFT_SRC']=p
-    @property
-    def delft_bin(self):
-        if 'DELFT_BIN' in os.environ:
-            return os.environ['DELFT_BIN']
-        return os.path.join(self.delft_path,'bin')
-    @delft_bin.setter
-    def delft_bin(self,p):
-        os.environ['DELFT_BIN']=p
     @property
     def delwaq1_path(self):
         return os.path.join(self.delft_bin,'delwaq1')
     @property
     def delwaq2_path(self):
         return os.path.join(self.delft_bin,'delwaq2')
-
-    _share_path=None
-    @property
-    def share_path(self):
+    
+class WaqOnlineModel(WaqModelBase):
+    """
+    code for D-WAQ setup specific to running online, under a
+    D-Flow hydro model
+    """
+    # Kenny's code used 
+    # waq_proc_def="" # proc_def.def file for delwaq process library
+    # new code should use pre-existing self.proc_path
+    
+    def __init__(self,model,**k):
+        self.model=model
+        super(WaqOnlineModel,self).__init__(**k)
         
-        if self._share_path is not None:
-            return self._share_path
-        elif 'DELFT_SHARE' in os.environ:
-            return os.environ['DELFT_SHARE']
-        else:
-            # this is where it would live for a freshly compiled, not installed
-            # delft3d:
-            return os.path.join(self.delft_path,'engines_gpl/waq/default')
+        self.sub_file = 'sources.sub'
+        self.sub_path = os.path.join(self.model.run_dir, self.sub_file)
+        self.processes=[]
 
-    @share_path.setter
-    def share_path(self,p):
-        self._share_path=p
-    @property
-    def bloom_path(self):
-        return os.path.join(self.share_path,'bloom.spe')
-    @property
-    def original_bloominp_path(self):
-        # this gets copied into the model run directory
-        return os.path.join(self.share_path,'bloominp.d09')
     @property
     def proc_path(self):
-        return os.path.join(self.share_path,'proc_def')
+        if self.model.waq_proc_def:
+            # DFlowModel has been assuming that we provide
+            # the full proc_def.def, but waq_scenario code
+            # assume no extension.
+            proc_def=self.model.waq_proc_def
+            if proc_def.endswith('.def'):
+                proc_def=proc_def[:-4]
+            return proc_def
+        else:
+            return os.path.join(self.share_path,'proc_def')
+        
+    # considering as properties that pull from self.model:
+    # time0
+    # start_time
+    # stop_time
 
-    # plot process diagrams
-    def cmd_plot_process(self,run_name='dwaq'):
-        """ Build a process diagram and save to file.  Sorry, you have no voice 
-        in choosing the filename
+    def write_waq(self):
         """
-        pd = process_diagram.ProcDiagram(waq_dir=self.base_path)
-        pd.render_dot()
-    def cmd_view_process(self,run_name='dwaq'):
-        """ Build a process diagram and display
+        Writes .sub file for Delwaq model, and adds Delwaq params to Dflow .mdu file
         """
-        pd = process_diagram.ProcDiagram(waq_dir=self.base_path)
-        pd.view_dot()
+        self.log.info('Updating mdu with Delwaq settings...')
+        # add reference to sub-file in .mdu
+        self.model.mdu['processes', 'SubstanceFile'] = self.sub_file
+        self.model.mdu['processes', 'DtProcesses'] = 300  # hard-coded to match DtUser in template .mdu
+        self.model.mdu['processes', 'ProcessFluxIntegration'] = 1  # 1 = Delwaq, 2 = Dflow
 
+        # this should be handled by the caller.
+        # self.model.set_run_dir(self.model.run_dir, mode='create')
+
+        self.fix_substance_order()
+
+        self.log.info('Writing Delwaq model files...')
+        with open(self.sub_path, 'wt') as f:
+            for s in self.substances:
+                self.write_substance(f, self.substances[s])
+
+            for name in self.parameters:
+                # The offline model enables processes by setting parameters
+                # with names ACTIVE_<process>
+                # here we change those to processes
+                if name.upper().startswith("ACTIVE_"):
+                    if name.upper()!="ACTIVE_ONLY":
+                        self.log.info("Translating parameter %s to process"%name)
+                        self.add_process(name.upper().replace('ACTIVE_',''))
+                    continue
+                self.write_param(f, self.parameters[name])
+
+            self.write_processes(f)
+
+    def fix_substance_order(self):
+        # A bit tricky: we need to know the order of WAQ substances before source/sink
+        # BCs can be written, and that order is some unknown function of the order
+        # of substances in the substance file, initial conditions, and other BCs.
+        # So here we force the order of all these things to be the same
+        # Note that this gets sub names in lower case
+        subs=[sub for sub in self.substances]
+        
+        # Modify model.bcs to put these last
+        # This is annoying... No guarantee that there *are* BCs for all scalars. So
+        # if there is only a BC for one sub, then that sub may get placed first even
+        # if canon_order has it later.
+        waq_bcs=   [bc for bc in self.model.bcs if getattr(bc,'scalar','_dummy_').lower() in subs]
+        nonwaq_bcs=[bc for bc in self.model.bcs if getattr(bc,'scalar','_dummy_').lower() not in subs]
+        bc_subs=[bc.scalar.lower() for bc in waq_bcs]
+
+        subs.sort()  # Sort the substances alphabetically
+        # sub order is then bc subs first, alphabetically, then non-bc subs, then inactive subs,
+        # each in alphabetic order.  only active subs will have bcs, so no conflict there.
+        sub_ordered=[s for s in subs if s in bc_subs]
+        sub_ordered+=[s for s in subs if (s not in bc_subs) and self.substances[s].active]
+        sub_ordered+=[s for s in subs if (s not in bc_subs) and not self.substances[s].active]
+
+        for s in sub_ordered:
+            self.substances.move_to_end(s)
+        
+        # Now reorder the bcs to follow:
+        # Reorder the waq_bcs to follow alphabetic order
+        waq_bc_order=np.argsort([sub_ordered.index(bc.scalar.lower()) for bc in waq_bcs])
+        waq_bcs=[waq_bcs[i] for i in waq_bc_order]
+        
+        new_bcs=nonwaq_bcs + waq_bcs
+        assert len(new_bcs)==len(self.model.bcs),"Sanity lost"
+        self.model.bcs=new_bcs
+            
+    def write_substance(self, f, substance):
+        """Writes to opened .sub file f for a particular substance"""
+        item=self.process_db.substance_by_id(substance.name)
+        if item is None:
+            description="N/A"
+            conc_unit="N/A"
+        else:
+            description=item.item_nm
+            conc_unit=item.unit
+
+        waste_unit="N/A"
+        
+        s = f"substance '{substance.name}' {'in' * (not substance.active)}active\n" \
+            f"  description        '{description}'\n" \
+            f"  concentration-unit '{conc_unit}'\n" \
+            f"  waste-load-unit    '{waste_unit}'\n" \
+            f"end-substance\n"
+        f.writelines(s)
+        return 0
+
+    def write_param(self, f, param):
+        """Writes to opened .sub file f for a particular parameter"""
+        if param.name.lower()=='only_active':
+            self.log.info("Ignoring only_active for online WAQ configuration")
+            return
+        item=self.process_db.substance_by_id(param.name)
+
+        if item is None:
+            item_nm=param.name
+            unit="n/a"
+        else:
+            item_nm=item.item_nm
+            unit=item.unit
+        # Need to query database to find the description and unit
+        s = f"parameter '{param.name}'\n" \
+            f"  description '{item_nm}'\n" \
+            f"  unit '{unit}'\n" \
+            f"  value {param.value}\n" \
+            f"end-parameter\n"
+        f.writelines(s)
+        return 0
+
+    def write_processes(self, f):
+        """Writes all active processes to .sub file"""
+        s=["active-processes"]
+        for proc_name in self.processes:
+            if proc_name.lower() in ['totdepth','dyndepth']:
+                self.log.info("Ignoring process %s for online WAQ configuration (right?)"%proc_name)
+                continue
+            proc=self.process_db.process_by_id(proc_name)
+            if proc is None:
+                desc=proc_name
+            else:
+                # proc_name from the database is really a descriptive phrase
+                desc=proc.proc_name
+            s.append( f"\tname '{proc_name}'  '{desc}'" )
+        s.append("end-active-processes")
+        f.writelines("\n".join(s))
+        return 0
+
+    def add_bcs(self, bc):
+        """Add bcs to DelwaqModel object (currently not used, can just add to DFlowModel)"""
+        if isinstance(bc, list):
+            [self.add_bcs(b) for b in bc]
+        else:
+            assert isinstance(bc, DelwaqScalarBC), f"BC type {type(bc)} cannot be handled by Delwaq model."
+            self.bcs.append(bc)
+
+    def add_process(self,name):
+        self.processes.append(name)
+        
+    def update_command(self,cmd):
+        """
+        Let the WAQ setup alter and extend command line arguments for
+        invoking dflowfm. This is also where a custom dll would be 
+        specified
+        """
+        return cmd+["--processlibrary",self.proc_path+".def"]
+        

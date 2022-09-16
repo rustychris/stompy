@@ -421,15 +421,27 @@ def read_pli(fn,one_per_line=True):
                     node_labels.append("") 
                 features.append( (label, np.array(geometry), node_labels) )
         else: # line-oriented approach which can handle unannounced node labels
+            def getline():
+                while True:
+                    l=fp.readline()
+                    if l=="": return l # EOF
+                    # lazy comment handling
+                    l=l.split('#')[0]
+                    l=l.split('*')[0]
+                    l=l.strip()
+                    if l!="":
+                        return l
+                
             while True:
-                label=fp.readline().strip()
+                label=getline()
                 if label=="":
                     break
-                nrows,ncols = [int(s) for s in fp.readline().split()]
+
+                nrows,ncols = [int(s) for s in getline().split()]
                 geometry=[]
                 node_labels=[]
                 for row in range(nrows):
-                    values=fp.readline().strip().split(None,ncols+1)
+                    values=getline().split(None,ncols+1)
                     geometry.append( [float(s) for s in values[:ncols]] )
                     if len(values)>ncols:
                         node_labels.append(values[ncols])
@@ -468,7 +480,8 @@ def write_pli(file_like,pli_data):
             if len(data) != len(node_labels):
                 raise Exception("%d nodes, but there are %d node labels"%(len(data),
                                                                           len(node_labels)))
-            block="\n".join( [ "  ".join(["%15s"%d for d in row]) + "   " + node_label
+            # .strip to trim leading white space
+            block="\n".join( [ "  ".join(["%15s"%d for d in row]).strip() + "   " + node_label
                                for row,node_label in zip(data,node_labels)] )
             fp.write(block)
             fp.write("\n")
@@ -1258,41 +1271,82 @@ class SectionedConfig(object):
             if parsed[0] is None: # blank line
                 continue # don't send back blank rows
 
-            if parsed[0][0]=='[':
+            if self.is_section(parsed[0]):
                 section=parsed[0]
 
             yield [idx,section] + list(parsed)
 
-    def parse_row(self,row):
-        section_patt=r'^(\[[A-Za-z0-9 ]+\])([#;].*)?$'
-        value_patt = r'^([A-Za-z0-9_ ]+)\s*=([^#;]*)([#;].*)?$'
-        # 2019-12-31: appears that some mdu's written by delta shell have
-        # lines near the top that are just an asterisk.  Assume
-        # those are comments
-        blank_patt = r'^\s*([\*#;].*)?$'
+    def is_section(self,s):
+        """
+        Test whether the first item in the tuple returned by parse_row is the
+        start of a section.
+        """
+        return s[0]=='['
+        
+    # experimental interface for files with duplicate sections
+    def section_dicts(self):
+        """
+        Iterator over sections, returning a dictionary over each
+        """
+        sec=None
+        for idx,section,key,value,comment in self.entries():
+            if key==section: # new section
+                if sec is not None:
+                    yield sec
+                # TODO: Make this a case-insensitive dict
+                sec={'_section':section}
+            else:
+                sec[key]=value
+        if sec is not None:
+            yield sec
 
-        m_sec = re.match(section_patt, row)
+    # Start of section lines are assumed to have two groups:
+    #  section name and option comment
+    section_patt=r'^(\[[A-Za-z0-9 ]+\])([#;].*)?$'
+    # value lines have key, value, and optional comment
+    value_patt = r'^([A-Za-z0-9_ ]+)\s*=([^#;]*)([#;].*)?$'
+    
+    # 2019-12-31: appears that some mdu's written by delta shell have
+    # lines near the top that are just an asterisk.  Assume
+    # those are comments
+    # blank lines can have a comment
+    blank_patt = r'^\s*([\*#;].*)?$'
+    # End of section lines may not exist, or subclasses may define
+    # with an option comment.
+    end_section_patt=None
+    
+    def parse_row(self,row):
+        m_sec = re.match(self.section_patt, row)
         if m_sec is not None:
             return m_sec.group(1), None, m_sec.group(2)
 
-        m_val = re.match(value_patt, row)
+        m_val = re.match(self.value_patt, row)
         if m_val is not None:
             return m_val.group(1).strip(), m_val.group(2).strip(), m_val.group(3)
 
-        m_cmt = re.match(blank_patt, row)
+        m_cmt = re.match(self.blank_patt, row)
         if m_cmt is not None:
             return None,None,m_cmt.group(1)
+
+        if self.end_section_patt is not None:
+            m_end_sec = re.match(self.end_section_patt, row)
+            if m_end_sec is not None:
+                # Gets return same as a comment
+                return None,None,m_end_sec.group(1)
 
         print("Failed to parse row:")
         print(row)
 
+    def format_section(self,s):
+        return '[%s]'%s.lower()
+    
     def get_value(self,sec_key):
         """
         return the string-valued settings for a given key.
         if they key is not found, returns None.
         If the key is present but with no value, returns the empty string
         """
-        section='[%s]'%sec_key[0].lower()
+        section=self.format_section(sec_key[0])
         key = sec_key[1].lower()
 
         for row_idx,row_sec,row_key,row_value,row_comment in self.entries():
@@ -1306,14 +1360,14 @@ class SectionedConfig(object):
         # sec_key: tuple of section and key (section without brackets)
         # value: either the value (a string, or something that can be converted via str())
         #   or a tuple of value and comment, without the leading comment character
-        section='[%s]'%sec_key[0].lower()
+        section=self.format_section(sec_key[0])
         key=sec_key[1]
 
         last_row_of_section={} # map [lower_section] to the index of the last entry in that section
 
         if isinstance(value,tuple):
             value,comment=value
-            comment='# ' + comment
+            comment=self.inline_comment_prefixes[0] + ' ' + comment
         else:
             comment=None
 
@@ -1350,10 +1404,10 @@ class SectionedConfig(object):
         empty, this still returns True.
         """
         if isinstance(sec_key,tuple):
-            section='[%s]'%sec_key[0].lower()
+            section=self.format_section(sec_key[0])
             key = sec_key[1].lower()
         else:
-            section='[%s]'%sec_key.lower()
+            section=self.format_section(sec_key)
             key=None
             
         for row_idx,row_sec,row_key,row_value,row_comment in self.entries():
@@ -1365,10 +1419,10 @@ class SectionedConfig(object):
 
     def __delitem__(self,sec_key):
         if isinstance(sec_key,tuple):
-            section='[%s]'%sec_key[0].lower()
+            section=self.format_section(sec_key[0])
             key = sec_key[1].lower()
         else:
-            section='[%s]'%sec_key.lower()
+            section=self.format_section(sec_key)
             key=None
 
         new_rows=[]
@@ -1382,7 +1436,7 @@ class SectionedConfig(object):
                 new_rows.append(row)
                 continue # don't send back blank rows
 
-            if parsed[0][0]=='[':
+            if self.is_section(parsed[0]):
                 row_sec=parsed[0]
 
                 if (row_sec == section) and (key is None):
@@ -1452,7 +1506,9 @@ class MDUFile(SectionedConfig):
         """
         base name of mdu filename, w/o extension, which is used in various other filenames.
         """
-        return os.path.basename(self.filename).split('.')[0]
+        base=os.path.basename(self.filename)
+        assert base.endswith('.mdu'),"Not sure what dfm does in this case"
+        return base[:-4]
     def output_dir(self):
         """
         path to the folder holding DFM output based on MDU filename
@@ -1471,8 +1527,10 @@ class MDUFile(SectionedConfig):
         """
         t_ref=utils.to_dt64( datetime.datetime.strptime(self['time','RefDate'],'%Y%m%d') )
         dt=self.t_unit_td64()
-        t_start = t_ref+int(self['time','tstart'])*dt
-        t_stop = t_ref+int(self['time','tstop'])*dt
+        # float() is a bit dicey. Some older np doesn't like mixing floats
+        # and datetimes.
+        t_start = t_ref+float(self['time','tstart'])*dt
+        t_stop = t_ref+float(self['time','tstop'])*dt
         return t_ref,t_start,t_stop
 
     def t_unit_td64(self,default='S'):
@@ -1486,6 +1544,8 @@ class MDUFile(SectionedConfig):
             dt=np.timedelta64(60,'s')
         elif t_unit.lower() == 's':
             dt=np.timedelta64(1,'s')
+        elif t_unit.lower() == 'h':
+            dt=np.timedelta64(3600,'s')
         else:
             raise Exception("Bad time unit %s"%t_unit)
 

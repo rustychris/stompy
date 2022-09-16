@@ -20,6 +20,7 @@ from stompy import utils, filters, memoize
 from stompy.spatial import wkb2shp, proj_utils
 #from stompy.model.delft import dfm_grid
 import stompy.grid.unstructured_grid as ugrid
+import re
 
 #from . import io as dio
 
@@ -32,8 +33,10 @@ class BC(object):
     _geom=None
     # set geom_type in subclasses to limit the matching geometries
     # to just 'Point', 'LineString', etc.   Avoids conflicts if
-    # there are multiple features with the same name
-    geom_type=None
+    # there are multiple features with the same name. Should be a list
+    # since some BCs (source/sink) can be defined with either a Point
+    # or a LineString
+    geom_type=[]
 
     # not sure if I'll keep these -- may be better to query at time of use
     grid_edge=None
@@ -45,6 +48,8 @@ class BC(object):
     # some BCs allow 'add', which just applies a delta to a previously
     # set BC.
     mode='overwrite'
+
+    on_insufficient_data='exception'
 
     # extend the data before/after the model period by this much
     pad=np.timedelta64(24,'h')
@@ -104,8 +109,9 @@ class BC(object):
     def get_depth(self,grid_edge=None):
         """
         Estimate the water column depth associated with this BC.
-        This is currently limited to a constant value, calculated for
-        self.grid_edge.
+        This is currently limited to a constant value, 
+        by default calculated for self.grid_edge. 
+        
         For the purposes here, this is a strictly positive quantity.
         """
         if grid_edge is None:
@@ -354,13 +360,21 @@ class BC(object):
         Apply filter stack to da, including model-based time zone
         correction of model is set.
         """
-        for filt in self.filters[::-1]:
-            da=filt.transform_output(da)
+        if len(self.filters):
+            da=da.copy(deep=True) # deep=True is default, here just as peace of mind
+            for filt in self.filters[::-1]:
+                da=filt.transform_output(da)
         da=self.to_model_timezone(da)
         return da
     def to_model_timezone(self,da):
         if 'time' in da.dims and self.model is not None:
-            da.time.values[:]=self.model.utc_to_native(da.time.values)
+            # da.time.values[:]=self.model.utc_to_native(da.time.values)
+            # Create new da and replace time data instead of mutating data.
+            # da.time may be shared by multiple instances. This way the
+            # call is idempotent and avoids nasty bugs
+            da_new=da.copy()
+            da_new['time']=('time',), self.model.utc_to_native(da.time.values)
+            return da_new
         return da
 
     def src_data(self):
@@ -369,6 +383,29 @@ class BC(object):
     def data(self):
         da=self.src_data()
         da=self.as_data_array(da)
+        if 'time' in da.dims:
+            #on_insufficient_data='exception'
+            data_start=da.time.values.min()
+            data_stop=da.time.values.max()
+            
+            if ( (data_start > self.model.run_start) or
+                 (data_stop < self.model.run_stop) ):
+                msg="Run: %s -- %s, but BC data for %s is %s -- %s"%(
+                    self.model.run_start,self.model.run_stop,self.name,
+                    data_start,data_stop)
+                
+                if self.on_insufficient_data=='exception':
+                    # raise Exception(msg)
+                    log.warning(msg)
+                    pass
+                elif self.on_insufficient_data=='log':
+                    log.warning(msg)
+                elif self.on_insufficient_data=='ignore':
+                    pass
+                else:
+                    raise Exception("Bad setting for on_insufficient_data='%s'"%
+                                    self.on_insufficient_dat)
+                    
         da=self.transform_output(da)
         return da
 
@@ -519,6 +556,10 @@ class Lowpass(BCFilter):
                                                  len(da.values) ))
         return da
 
+class FillTidal(BCFilter):
+    def transform_output(self,da):
+        return utils.fill_tidal_data(da)
+
 class Lag(BCFilter):
     def __init__(self,lag):
         self.lag=lag
@@ -611,7 +652,8 @@ class RoughnessBC(BC):
     def src_data(self):
         if self.shapefile is not None:
             shp_data=wkb2shp.shp2geom(self.shapefile)
-            coords=np.array( [np.array(pnt) for pnt in shp_data['geom'] ] )
+            # shapely api update
+            coords=np.array( [np.array(pnt.coords[0]) for pnt in shp_data['geom'] ] )
             n=shp_data['n']
             da=xr.DataArray(n,dims=['location'],name='n')
             da=da.assign_coords(x=xr.DataArray(coords[:,0],dims='location'))
@@ -636,8 +678,12 @@ class RoughnessBC(BC):
         mode: this is passed to bokeh, 'cdn' yields small files but requires an internet
          connection to view them.  'inline' yields self-contained, larger (~800k) files.
         """
-        import bokeh.io as bio # output_notebook, show, output_file
-        import bokeh.plotting as bplt
+        try:
+            import bokeh.io as bio # output_notebook, show, output_file
+            import bokeh.plotting as bplt
+        except ImportError:
+            self.log.info('Bokeh not found, will skip bokeh output')
+            return
 
         bplt.reset_output()
 
@@ -689,7 +735,9 @@ class StageBC(BC):
     # If other than None, can compare to make sure it's the same as the model
     # datum.
     datum=None
-    geom_type='LineString'
+    dredge_depth=None # DFM doesn't need this, but SCHISM might
+    
+    geom_type=['LineString']
     standard_name='sea_surface_height'
     water_level=None
 
@@ -726,6 +774,71 @@ class StageBC(BC):
         # just write a single node
         self.write_tim(self.data())
 
+    def evaluate(self,t):
+        """
+        Return the water level at the given time (np.datetime64).
+        Useful for setting initial water level.
+        """
+        water_level=self.data()
+        if 'time' in water_level.dims:
+            water_level=np.interp( utils.to_dnum(t),
+                                   utils.to_dnum(water_level.time), water_level.values )
+        return water_level
+
+class HarmonicStageBC(StageBC):
+    msl=0.0
+    # constituents are
+    constituents=None
+    dt=np.timedelta64(360,'s')
+
+    def __init__(self,**kw):
+        """
+        Set stage based on harmonic constituents.  This is not a full astronomical tides
+        BC -- it does not account for equilibrium phase, nodal variations, etc.
+        
+        Usage: 
+        HarmonicStageBC(name,..., msl=0.25, M2=(2.0,0.1), S2=(0.5,0.5))
+        msl: set mean sea level
+        constituents are named by upper case standard abbreviations (see 
+        ../tide_consts.txt), and values are amplitude and phase
+        """
+        # Pull out any constituent names from keywords before super()
+        from .. import tide_consts
+        self.constituents={}
+
+        consts=[ k
+                 for k in kw
+                 if k in tide_consts.const_names]
+        for k in consts:
+            self.set_constituent(k,kw.pop(k))
+
+        super(StageBC,self).__init__(**kw)
+
+    def set_constituent(self,name,amp_phase):
+        self.constituents[name]=amp_phase
+        
+    def src_data(self):
+        t=np.arange(self.data_start,self.data_stop,self.dt)
+        t_dnum=utils.to_dnum(t) # decimal days
+        
+        eta=self.msl*np.ones(len(t),np.float64)
+        from .. import tide_consts
+
+        for k in self.constituents:
+            const_idx=tide_consts.const_names.index(k)
+            amp,phase = self.constituents[k]
+            # degrees per hour, converted to rads/day
+            speed=np.pi/180 * 24 * tide_consts.speeds[const_idx]
+            
+            # This isn't a proper construction. Should invoke the
+            # real deal tidal code, with equilibrium arguments and
+            # all.
+            eta += amp*np.cos(speed*t_dnum+phase*np.pi/180)
+        ds=xr.Dataset()
+        ds['time']=('time',),t
+        ds['water_level']=('time',),eta
+        return ds['water_level']
+    
 class CommonFlowBC(BC):
     flow=None
 
@@ -736,7 +849,7 @@ class FlowBC(CommonFlowBC):
     dredge_depth=-1.0
     standard_name='ocean_volume_transport_across_line'
     flow=None
-    geom_type='LineString'
+    geom_type=['LineString']
 
     def __init__(self,flow=None,**kw):
         super(FlowBC,self).__init__(**kw)
@@ -764,29 +877,12 @@ class SourceSinkBC(CommonFlowBC):
     # The grid, at the entry point, will be taken down to this elevation
     # to ensure that prescribed flows are not prevented due to a dry cell.
 
-    geom_type='Point'
-    z='bed'
-
+    # Note that only DFM supports LineString here.
+    geom_type=['Point','LineString']
+    z='bed' # elevation of the mass source
+    z_src='bed' # elevation of mass sink, if two-ended
     dredge_depth=-1.0
     
-    # def filename_base(self):
-    #     return super(SourceSinkBC,self).filename_base()+"_flow"
-    # 
-    # def write_config(self):
-    #     assert self.flow is not None
-    # 
-    #     old_bc_fn=self.model.ext_force_file()
-    # 
-    #     with open(old_bc_fn,'at') as fp:
-    #         lines=["QUANTITY=discharge_salinity_temperature_sorsin",
-    #                "FILENAME=%s"%self.pli_filename(),
-    #                "FILETYPE=9",
-    #                "METHOD=1", # how is this different than method=3?
-    #                "OPERAND=O",
-    #                "\n"]
-    #         fp.write("\n".join(lines))
-    # def write_data(self):
-    #     self.write_tim(self.data())
 
 class WindBC(BC):
     """
@@ -798,27 +894,31 @@ class WindBC(BC):
             # commonly applied globally, so may not have a geographic name
             kw['name']='wind'
         super(WindBC,self).__init__(**kw)
-    def write_pli(self):
-        assert self.geom is None,"Spatially limited wind not yet supported"
-        return # nothing to do
 
-    def default_tim_fn(self):
-        # different than super class because typically no nodes
-        return os.path.join(self.model.run_dir,self.filename_base() + ".tim")
+    # Old DFM specific code:
+    # def write_pli(self):
+    #     assert self.geom is None,"Spatially limited wind not yet supported"
+    #     return # nothing to do
+    # 
+    # def default_tim_fn(self):
+    #     # different than super class because typically no nodes
+    #     return os.path.join(self.model.run_dir,self.filename_base() + ".tim")
 
-    def write_config(self):
-        old_bc_fn=self.model.ext_force_file()
-
-        with open(old_bc_fn,'at') as fp:
-            lines=["QUANTITY=windxy",
-                   "FILENAME=%s.tim"%self.filename_base(),
-                   "FILETYPE=2",
-                   "METHOD=1",
-                   "OPERAND=O",
-                   "\n"]
-            fp.write("\n".join(lines))
-    def write_data(self):
-        self.write_tim(self.data())
+    # def write_config(self):
+    #     old_bc_fn=self.model.ext_force_file()
+    # 
+    #     with open(old_bc_fn,'at') as fp:
+    #         lines=["QUANTITY=windxy",
+    #                "FILENAME=%s.tim"%self.filename_base(),
+    #                "FILETYPE=2",
+    #                "METHOD=1",
+    #                "OPERAND=O",
+    #                "\n"]
+    #         fp.write("\n".join(lines))
+    
+    #def write_data(self):
+    #    self.write_tim(self.data())
+    
     def src_data(self):
         assert self.wind is not None
         return self.wind
@@ -834,6 +934,36 @@ class WindBC(BC):
                        legend_label=label+"-"+"xy"[xy],
                        color=self.get_color())
 
+
+class RainfallRateBC(BC):
+    """
+    WIP.
+    Adopt same naming convention as DFM. Rainfall*Rate*. Data for now
+    are in mm/day, again following DFM convention.
+    """
+    rainfall_rate=None
+    def __init__(self,**kw):
+        if 'name' not in kw:
+            # commonly applied globally, so may not have a geographic name
+            kw['name']='rainfall'
+        super(RainfallRateBC,self).__init__(**kw)
+        
+    def src_data(self):
+        assert self.rainfall_rate is not None
+        return self.rainfall_rate
+    def plot_bokeh(self,da,plot,label=None):
+        # this will have to get smarter time...
+        # da will almost certainly have an xy dimension for the two components.
+        # for now, we assume no spatial variation, and plot two time series
+        if label is None:
+            label=self.name
+        plot.line( da.time.values.copy(),
+                   da.values.copy(),
+                   legend_label=label,
+                   color=self.get_color())
+
+
+            
 class ScalarBC(BC):
     scalar=None
     value=None
@@ -879,6 +1009,12 @@ class MpiModel(object):
     mpi_args=() # tuple to avoid mutation
     num_procs=1 # might be useful outside of MPI, but keep it here for now.
 
+    mpi_flavor='mpiexec' # 'mpiexec' or 'slurm'
+
+    # For mpi_flavor=='slurm':
+    #   path to slurm's srun command.
+    slurm_srun="srun"
+    
     _mpiexec=None 
     @property
     def mpiexec(self):
@@ -887,8 +1023,102 @@ class MpiModel(object):
         else:
             return self._mpiexec
     @mpiexec.setter
-    def set_mpiexec(self,m):
+    def mpiexec(self,m):
         self._mpiexec=m
+
+    def mpirun(self,cmd,num_procs=None,working_dir=".",wait=True):
+        """
+        Run a command via MPI.
+        cmd: list of command components (e.g. ['ls','-l','/home/stuff'])
+        working_dir: if specified, arrange to start the process in the given
+          directory.
+        
+        wait: True: if possible, wait for the command to complete.
+          False: if possible, return immediately.
+        This is very limited! When directly using mpi or using 
+        srun while already in the allocation, only wait=True
+        is supported, and wait=False will register a log.Warning.
+        When running with slurm but outside of a job, only wait=False is
+        supported. wait=True will start the job, but then raise an Exception
+        saying that it cannot wait.
+        """
+        if num_procs is None:
+            num_procs=self.num_procs
+
+        # TODO: mpi_flavor is currently handling multiple roles: how to start
+        # a job, and to some degree the machinery that is running behind the scenes.
+        if self.mpi_flavor=='mpiexec':
+            self.mpirun_mpiexec(cmd,num_procs,working_dir,wait=wait)
+        elif self.mpi_flavor=='slurm':
+            self.mpirun_slurm(cmd,num_procs,working_dir,wait=wait)
+        else:
+            raise Exception('Unknown MPI flavor %s'%self.mpi_flavor)
+    def mpirun_mpiexec(self,cmd,num_procs,working_dir,wait):
+        """
+        Direct invocation of mpiexec. 
+        """
+        real_cmd=( [self.mpiexec,"-n","%d"%num_procs]
+                    +list(self.mpi_args)
+                    +cmd )
+        if not wait:
+            raise Exception( ("Request to start MPI process "
+                              "(flavor=%s) without waiting not supported")%self.mpi_flavor)
+        self.log.info("Running command: %s"%(" ".join(real_cmd)))
+        return utils.call_with_path(real_cmd,working_dir)
+
+    # slurm helpers:
+    def slurm_jobid(self):
+        """
+        slurm job id as a string, or None if not in a slurm job
+        """
+        return os.environ.get('SLURM_JOBID',None)
+
+    def slurm_ntasks(self):
+        return int(os.environ.get('SLURM_NTASKS',0))
+
+    def slurm_check_mpi_ntasks(self,n):
+        """
+        Check to make sure it's possible to run n tasks under the
+        current slurm environment.
+        """
+        n_global=self.slurm_ntasks()
+        if n>n_global:
+            print("In SLURM task, but ntasks(%d) != local_config num_procs(%d)"%( n_global,n),
+                  flush=True)
+            raise Exception("Mismatch in number of processes")
+
+    def slurm_srun_options(self,n):
+        """
+        Return options to pass to srun to invoke an mpi task
+        with n cpus.
+        """
+        n_tasks=self.slurm_ntasks()
+        if n_tasks==n:
+            print(f"Homogeneous job, and n==NTASKS")
+            return []
+        elif n_tasks<n:
+            raise Exception(f"MPI job size {n} > SLURM ntasks {n_tasks}")
+        else:
+            options=['-n',str(n)]
+            print(f"Homogeneous oversized job.  Add {' '.join(options)}",
+                  flush=True)
+            return options
+    def mpirun_slurm(self,cmd,num_procs,working_dir,wait):
+        """
+        Start an MPI process via slurm's srun. Assumes that 
+        script is already in an allocated job.
+        """
+        real_cmd=( [self.slurm_srun]
+                   +self.slurm_srun_options(num_procs)
+                   +list(self.srun_args)
+                   +cmd )
+
+
+        if not wait:
+            raise Exception( ("Request to start MPI process "
+                              "(flavor=%s) without waiting not supported")%self.mpi_flavor)
+        self.log.info("Running command: %s"%(" ".join(real_cmd)))
+        return utils.call_with_path(real_cmd,working_dir)
     
     
 class HydroModel(object):
@@ -909,16 +1139,33 @@ class HydroModel(object):
     # this is only used for setting utc_to_native, and native_to_utc
     utc_offset=np.timedelta64(0,'h') # -8 for PST
 
-    def __init__(self,**kw):
+    def __init__(self,configure=True,**kw):
+        """
+        configure: if True, will call self.configure().
+        This is an attempt to make instantiation cleaner, where __init__ may
+        be called during a load() (so don't configure the model, read the configuration
+        from disk), or regular construction (where the past usage has been that 
+        the model is automatically configured in the constructor).
+
+        tricky, though. e.g. gazetteers. Choice of gazetteer is tied to choice
+        of grid, yet it is handy to have when loading a model.
+        """
         self.log=log
         self.bcs=[]
         self.extra_files=[]
         self.gazetteers=[]
+        self.structures=[] # note that what goes in this list is model-dependent
 
         self.mon_sections=[]
         self.mon_points=[]
 
         utils.set_keywords(self,kw)
+        if configure:
+            self.configure()
+            
+    def configure(self):
+        # subclasses should put grid, BC, IC, monitoring, etc. here.
+        pass
 
     def add_extra_file(self,path,copy=True):
         self.extra_files.append( (path,copy) )
@@ -1034,8 +1281,15 @@ class HydroModel(object):
 
     def set_grid(self,grid):
         if isinstance(grid,six.string_types):
-            grid=dfm_grid.DFMGrid(grid)
+            if grid.endswith('_net.nc'):
+                grid=ugrid.UnstructuredGrid.read_dfm(grid)
+            else: # if grid.endswith('.nc'):
+                grid=ugrid.UnstructuredGrid.read_ugrid(grid)
+                
         self.grid=grid
+        # To be safe, make sure grid has edges['cells'] calculated, as
+        # later parts of the model setup avoid rechecking this.
+        self.grid.edge_to_cells() 
 
     default_grid_target_filename='grid_net.nc'
     def grid_target_filename(self):
@@ -1084,14 +1338,18 @@ class HydroModel(object):
 
         if edge_field:
             if edge_field in g.edges.dtype.names:
+                assert np.all(feat_edges>=0)
                 g.edges[edge_field][feat_edges] = np.minimum(g.edges[edge_field][feat_edges],
                                                              dredge_depth)
             else:
                 log.warning('No edge bathymetry (%s) to dredge.  Ignoring'%edge_field)
         if node_field:
+            assert np.all(cells_to_dredge>=0)
+            assert np.all(nodes_to_dredge>=0)
             g.nodes[node_field][nodes_to_dredge] = np.minimum(g.nodes[node_field][nodes_to_dredge],
                                                               dredge_depth)
         if cell_field:
+            assert np.all(cells_to_dredge>=0)
             g.cells[cell_field][cells_to_dredge] = np.minimum(g.cells[cell_field][cells_to_dredge],
                                                               dredge_depth)
 
@@ -1168,6 +1426,23 @@ class HydroModel(object):
         else:
             raise Exception("BC type %s not handled by class %s"%(bc.__class__,self.__class__))
 
+    def infer_initial_water_level(self):
+        """
+        Pull an initial water level based on the first
+        StageBC. If no stage BC is found, return None.
+        No handling of MultiBCs, and does not check whether
+        an initial water level has already been set.
+        """
+        for bc in self.bcs:
+            if isinstance(bc,StageBC):
+                wl=bc.evaluate(t=self.run_start)
+                return float(wl)
+        self.log.info("Could not find BC to get initial water level")
+        return None
+
+    def update_initial_water_level(self):
+        pass # override in subclass
+    
     def partition(self,partition_grid=None):
         """
         For multidomain runs, partition the grid. Overload in subclass
@@ -1176,10 +1451,10 @@ class HydroModel(object):
         """
         pass
     
-    def run_model(self):
+    def run_model(self, *args, **kwargs):
         """ Alias for run_simulation
         """
-        return self.run_simulation()
+        return self.run_simulation(*args, **kwargs)
 
     def run_simulation(self,extra_args=[]):
         """
@@ -1212,7 +1487,6 @@ class HydroModel(object):
             return hits[0]['geom']
         else:
             return None
-        
     def match_gazetteer(self,**kws):
         """
         search all gazetteers with criteria specified in keyword arguments,
@@ -1220,6 +1494,8 @@ class HydroModel(object):
         list of numpy records, not a numpy array, since shapefiles may not
         have the same fields).
         return empty list if not hits
+
+        see match_feature() for details on criteria
         """
         hits=[]
         for gaz in self.gazetteers:
@@ -1234,11 +1510,24 @@ class HydroModel(object):
         returned by shp2geom.
         there is special handling for several values:
           'geom_type' is the geom_type attribute of the geometry itself,
-          e.g. 'LineString' or 'Point'
+          e.g. 'LineString' or 'Point'. feat can specify a list of geom_type
+        values
+
+        pattern matching will be used when a criterion has a re.Pattern
+        value, i.e. kws={'name':re.compile('south.*')} would match features
+        that start with 'south'.
         """
         for k in kws:
             if k=='geom_type':
                 feat_val=feat['geom'].geom_type
+                if isinstance(kws[k],list):
+                    if feat_val in kws[k]: continue
+                    else:
+                        return False
+                else:
+                    if feat_val==kws[k]: continue
+                    else:
+                        return False
             else:
                 try:
                     feat_val=feat[k]
@@ -1246,10 +1535,14 @@ class HydroModel(object):
                     return False
                 except ValueError: # depending on type of feat can get either
                     return False
-            if feat_val==kws[k]:
-                continue
-            else:
-                return False
+                if isinstance(kws[k],re.Pattern):
+                    tst=kws[k].match(feat_val)
+                else:
+                    tst=feat_val==kws[k]
+                if tst:
+                    continue
+                else:
+                    return False
         return True
 
     # having these classes as attributes reduces headaches in importing,
@@ -1347,7 +1640,11 @@ class HydroModel(object):
 # Functions for manipulating DFM input/output
 
 def extract_transect(ds,line,grid=None,dx=None,cell_dim='nFlowElem',
-                     include=None,rename=True,add_z=True,name=None):
+                     include=None,rename=True,add_z=True,name=None,
+                     to_keep_dims=set(['wdim','laydim','two','three','time','sample']),
+                     bundle_components=[['U',('ucx','ucy')],
+                                        ['Uavg',('ucxz','ucyz')]],
+):
     """
     Extract a transect from map output.
 
@@ -1386,6 +1683,9 @@ def extract_transect(ds,line,grid=None,dx=None,cell_dim='nFlowElem',
 
     new_ds=ds.isel(**{cell_dim:cell_map_safe})
 
+    #print("Post-ds:")
+    #print(new_ds)
+
     # Record the intended sampling location:
     new_ds['x_sample']=(cell_dim,),line_sampled[:,0]
     new_ds['y_sample']=(cell_dim,),line_sampled[:,1]
@@ -1399,11 +1699,12 @@ def extract_transect(ds,line,grid=None,dx=None,cell_dim='nFlowElem',
                                                         distance+dx_sample/2]).T
     new_ds=new_ds.rename({cell_dim:'sample'})
 
+    new_ds=new_ds.set_coords(['x_sample','y_sample','d_sample'])
+
     if add_z:
         new_ds.update( xr_utils.z_from_sigma(new_ds,'ucx',interfaces=True,dz=True) )
 
     # need to drop variables with dimensions like nFlowLink
-    to_keep_dims=set(['wdim','laydim','two','three','time','sample'])
     to_drop=[]
     for v in new_ds.variables:
         if (set(new_ds[v].dims) - to_keep_dims):
@@ -1411,8 +1712,8 @@ def extract_transect(ds,line,grid=None,dx=None,cell_dim='nFlowElem',
 
     new_ds=new_ds.drop(to_drop)
 
-    xr_utils.bundle_components(new_ds,'U',['ucx','ucy'],'xy',['N','E'])
-    xr_utils.bundle_components(new_ds,'U_avg',['ucxa','ucya'],'xy',['N','E'])
+    for vec,comps in bundle_components:
+        xr_utils.bundle_components(new_ds,vec,comps,'xy',['N','E'])
 
     if rename:
         new_ds=new_ds.rename( {'ucx':'Ve',
@@ -1791,7 +2092,8 @@ class HycomMultiScalarBC(HycomMultiBC):
         hy_wet=np.isfinite(hy_ds0[hy_scalar].isel(depth=0).values)
 
         for i,sub_bc in enumerate(self.sub_bcs):
-            sub_bc.edge_center=np.array(sub_bc.geom.centroid)
+            # shapely api update
+            sub_bc.edge_center=np.array(sub_bc.geom.centroid.coords[0])
             hyc_dists=utils.dist( sub_bc.edge_center, hy_xy )
             # lazy way to skip over dry cells.  Note that velocity differs
             # here, since it's safe to just use 0 velocity, but a zero
@@ -1959,7 +2261,8 @@ class HycomMultiVelocityBC(HycomMultiBC):
         for i,sub_bc in enumerate(self.sub_bcs):
             sub_bc.inward_normal=sub_bc.get_inward_normal()
             sub_bc.edge_length=sub_bc.geom.length
-            sub_bc.edge_center=np.array(sub_bc.geom.centroid)
+            # shapely api update
+            sub_bc.edge_center=np.array(sub_bc.geom.centroid.coords[0])
 
             # skip the transforms...
             hyc_dists=utils.dist( sub_bc.edge_center, hy_xy )
@@ -2212,13 +2515,12 @@ class NwisStageBC(NwisBC,StageBC):
                                   products=[self.product_id],
                                   cache_dir=self.cache_dir)
         if ds is not None:
-            ds['water_level']=('time',), 0.3048*ds['height_gage']
+            ds['water_level']=('time',), 0.3048*ds['height_gage'].values
             ds['water_level'].attrs['units']='m'
             ds['water_level'].attrs['standard_name']=self.standard_name
         return ds
 
 class NwisScalarBC(NwisBC,ScalarBC):
-    product_id=63680 # 63680: turbidity, FNU
     
     def src_data(self):
         ds=self.fetch_for_period(self.data_start,self.data_stop)
@@ -2234,6 +2536,18 @@ class NwisScalarBC(NwisBC,ScalarBC):
         Download or load from cache, take care of any filtering, unit conversion, etc.
         Returns a dataset with a 'z' variable, and with time as UTC
         """
+        if self.scalar == 'turbidity':
+            self.product_id=63680 # 63680: turbidity, FNU
+        elif self.scalar == 'salinity':
+            self.product_id=480 # 00480: salinity, ppt
+        elif self.scalar == 'NO3+NO2':
+            self.product_id=99133  # 99311: nitrate + nitrite, mg/l as nitrogen
+        elif self.scalar == 'temperature':
+            self.product_id=10  # 00010: temperature, degrees C
+        elif self.scalar == 'pH':
+            self.product_id=400  # 00400: pH
+        elif self.scalar == 'fDOM':
+            self.product_id=32295  # 32295: fDOM, ug/l QSE
         from ..io.local import usgs_nwis
         ds=usgs_nwis.nwis_dataset(station=self.station,start_date=period_start,
                                   end_date=period_stop,
@@ -2266,598 +2580,8 @@ class NwisFlowBC(NwisBC,FlowBC):
                                   products=[self.product_id],
                                   cache_dir=self.cache_dir)
         if ds is not None:
-            ds['flow']=('time',), 0.028316847*ds['stream_flow_mean_daily']
+            ds['flow']=('time',), 0.028316847*ds['stream_flow_mean_daily'].values
             ds['flow'].attrs['units']='m3 s-1'
             ds['flow'].attrs['standard_name']=self.standard_name
         return ds
 
-class DFlowModel(HydroModel):
-    # If these are the empty string, then assumes that the executables are
-    # found in existing $PATH
-    dfm_bin_dir="" # .../bin  giving directory containing dflowfm
-    dfm_bin_exe='dflowfm'
-    
-    ref_date=None
-    restart=None
-    restart_model=None # reference to DFlowModel instance that we are continuing
-
-    # flow and source/sink BCs will get the adjacent nodes dredged
-    # down to this depth in order to ensure the impose flow doesn't
-    # get blocked by a dry edge. Set to None to disable.
-    # This has moved to just the BC objects, and removed here to avoid
-    # confusion.
-    # dredge_depth=-1.0
-
-    def __init__(self,*a,**kw):
-        super(DFlowModel,self).__init__(*a,**kw)
-        self.structures=[]
-        self.load_default_mdu()
-        
-    def load_default_mdu(self):
-        """
-        Load a default set of config values from data/defaults-r53925.mdu
-        """
-        # This is copied straight from the source distribution
-        fn=os.path.join(os.path.dirname(__file__),"data","defaults-r53925.mdu")
-        self.load_mdu(fn)
-        
-        # And some extra settings to make it compatible with this script
-        self.mdu['external forcing','ExtForceFile']='FlowFM.ext'
-        
-    def write_forcing(self,overwrite=True):
-        bc_fn=self.ext_force_file()
-        assert bc_fn,"DFM script requires old-style BC file.  Set [external forcing] ExtForceFile"
-        if overwrite and os.path.exists(bc_fn):
-            os.unlink(bc_fn)
-        utils.touch(bc_fn)
-        super(DFlowModel,self).write_forcing()
-
-    def set_grid(self,grid):
-        super(DFlowModel,self).set_grid(grid)
-
-        # Specific to d-flow -- see if it's necessary to copy node-based depth
-        # to node_z_bed.
-        # Used to be that 'depth' was used as a node field, and it was implicitly
-        # positive-up.  trying to shift away from 'depth' being a positive-up
-        # quantity, and instead use 'z_bed' and specifically 'node_z_bed'
-        # for a node-centered, positive-up bathymetry value.
-        node_fields=self.grid.nodes.dtype.names
-        
-        if 'node_z_bed' not in node_fields:
-            if 'z_bed' in node_fields:
-                self.grid.add_node_field('node_z_bed',self.grid.nodes['z_bed'])
-                self.log.info("Duplicating z_bed to node_z_bed for less ambiguous naming")
-            elif 'depth' in node_fields:
-                self.grid.add_node_field('node_z_bed',self.grid.nodes['depth'])
-                self.log.info("Duplicating depth to node_z_bed for less ambiguous naming, and assuming it was already positive-up")
-        
-    default_grid_target_filename='grid_net.nc'
-    def grid_target_filename(self):
-        """
-        The filename, relative to self.run_dir, of the grid.  Not guaranteed
-        to exist, and if no grid has been set, or the grid has no filename information,
-        this will default to self.default_grid_target_filename
-        """
-        if self.grid is None or self.grid.filename is None:
-            return self.default_grid_target_filename
-        else:
-            grid_fn=self.grid.filename
-            if not grid_fn.endswith('_net.nc'):
-                if grid_fn.endswith('.nc'):
-                    grid_fn=grid_fn.replace('.nc','_net.nc')
-                else:
-                    grid_fn=grid_fn+"_net.nc"
-            return os.path.basename(grid_fn)
-        
-    def dredge_boundary(self,linestring,dredge_depth):
-        super(DFlowModel,self).dredge_boundary(linestring,dredge_depth,node_field='node_z_bed',
-                                               edge_field=None,cell_field=None)
-        
-    def dredge_discharge(self,point,dredge_depth):
-        super(DFlowModel,self).dredge_discharge(point,dredge_depth,node_field='node_z_bed',
-                                                edge_field=None,cell_field=None)
-        
-    def write_grid(self):
-        """
-        Write self.grid to the run directory.
-        Must be called after MDU is updated.  Should also be called
-        after write_forcing(), since some types of BCs can update
-        the grid (dredging boundaries)
-        """
-        dest=os.path.join(self.run_dir, self.mdu['geometry','NetFile'])
-        self.grid.write_dfm(dest,overwrite=True,)
-
-    def subdomain_grid(self,proc):
-        """
-        For a run that has been partitioned, load the grid for a specific
-        subdomain.
-        """
-        base_grid_name=self.mdu.filepath(('geometry','NetFile'))
-        proc_grid_name=base_grid_name.replace('_net.nc','_%04d_net.nc'%proc)
-        g=ugrid.UnstructuredGrid.read_dfm(proc_grid_name)
-        return g
-        
-    def ext_force_file(self):
-        return self.mdu.filepath(('external forcing','ExtForceFile'))
-
-    def load_template(self,fn):
-        """ more generic name for load_mdu """
-        return self.load_mdu(fn) 
-    def load_mdu(self,fn):
-        self.mdu=dio.MDUFile(fn)
-
-    @classmethod
-    def load(cls,fn):
-        """
-        Populate Model instance from an existing run
-        """
-        fn=cls.to_mdu_fn(fn) # in case fn was a directory
-        if fn is None:
-            # no mdu was found
-            return None
-        model=DFlowModel()
-        model.load_mdu(fn)
-        try:
-            model.grid = ugrid.UnstructuredGrid.read_dfm(model.mdu.filepath( ('geometry','NetFile') ))
-        except FileNotFoundError:
-            log.warning("Loading model from %s, no grid could be loaded"%fn)
-            model.grid=None
-        d=os.path.dirname(fn) or "."
-        model.set_run_dir(d,mode='existing')
-        # infer number of processors based on mdu files
-        # Not terribly robust if there are other files around..
-        sub_mdu=glob.glob( fn.replace('.mdu','_[0-9][0-9][0-9][0-9].mdu') )
-        if len(sub_mdu)>0:
-            model.num_procs=len(sub_mdu)
-        else:
-            # probably better to test whether it has even been processed
-            model.num_procs=1
-
-        ref,start,stop=model.mdu.time_range()
-        model.ref_date=ref
-        model.run_start=start
-        model.run_stop=stop
-        return model
-
-    @classmethod
-    def to_mdu_fn(cls,path):
-        """
-        coerce path that is possibly a directory to a best guess
-        of the MDU path.  file paths are left unchanged. returns None
-        if path is a directory but no mdu files is there.
-        """
-        # all mdu files, regardless of case
-        if not os.path.isdir(path):
-            return path
-        fns=[os.path.join(path,f) for f in os.listdir(path) if f.lower().endswith('.mdu')]
-        # assume shortest is the one that hasn't been partitioned
-        if len(fns)==0:
-            return None
-
-        unpartitioned=np.argmin([len(f) for f in fns])
-        return fns[unpartitioned]
-
-    def close(self):
-        """
-        Close open file handles -- this can help on windows where
-        having a file open prevents it from being deleted.
-        """
-        # nothing right now
-        pass
-    @classmethod
-    def run_completed(cls,fn):
-        """
-        fn: path to mdu file.  will attempt to guess the right mdu if a directory
-        is provided, but no guarantees.
-
-        returns: True if the file exists and the folder contains a run which
-          ran to completion. Otherwise False.
-        """
-        if not os.path.exists(fn):
-            return False
-        model=cls.load(fn)
-        if model is not None:
-            result=model.is_completed()
-            model.close()
-        else:
-            result=False
-        return result
-    def is_completed(self):
-        """
-        return true if the model has been run.
-        this can be tricky to define -- here completed is based on
-        a report in a diagnostic that the run finished.
-        this doesn't mean that all output files are present.
-        """
-        root_fn=self.mdu.filename[:-4] # drop .mdu suffix
-        if self.num_procs>1:
-            dia_fn=root_fn+'_0000.dia'
-        else:
-            # for serial runs, the dia file ends up in the DFM output folder
-            dia_fn=os.path.join(self.run_dir,
-                                "DFM_OUTPUT_%s"%self.mdu.name,
-                                "%s.dia"%self.mdu.name)
-
-        assert dia_fn!=self.mdu.filename,"Probably case issues with %s"%dia_fn
-
-        if not os.path.exists(dia_fn):
-            return False
-        # Read the last 1000 bytes
-        with open(dia_fn,'rb') as fp:
-            fp.seek(0,os.SEEK_END)
-            tail_size=min(fp.tell(),1000)
-            fp.seek(-tail_size,os.SEEK_CUR)
-            # This may not be py2 compatible!
-            tail=fp.read().decode(errors='ignore')
-        return "Computation finished" in tail
-
-    def update_config(self):
-        """
-        Update fields in the mdu object with data from self.
-        """
-        if self.mdu is None:
-            self.mdu=dio.MDUFile()
-
-        self.mdu.set_time_range(start=self.run_start,stop=self.run_stop,
-                                ref_date=self.ref_date)
-        self.mdu.set_filename(os.path.join(self.run_dir,self.mdu_basename))
-
-        self.mdu['geometry','NetFile'] = self.grid_target_filename()
-
-        # Try to allow for the caller handling observation and cross-section
-        # files externally or through the interface -- to that end, don't
-        # overwrite ObsFile or CrsFile, but if internally there are point/
-        # line observations set, make sure that there is a filename there.
-        if len(self.mon_points)>0 and not self.mdu['output','ObsFile']:
-            self.mdu['output','ObsFile']="obs_points.xyn"
-        if len(self.mon_sections)>0 and not self.mdu['output','CrsFile']:
-            self.mdu['output','CrsFile']="obs_sections.pli"
-
-    def write_config(self):
-        # Assumes update_config() already called
-        self.write_structures() # updates mdu
-        self.write_monitors()
-        self.mdu.write()
-
-    def write_monitors(self):
-        self.write_monitor_points()
-        self.write_monitor_sections()
-
-    def write_monitor_points(self):
-        fn=self.mdu.filepath( ('output','ObsFile') )
-        if fn is None: return
-        with open(fn,'at') as fp:
-            for i,mon_feat in enumerate(self.mon_points):
-                try:
-                    name=mon_feat['name']
-                except KeyError:
-                    name="obs_pnt_%03d"%i
-                xy=np.array(mon_feat['geom'])
-                fp.write("%.3f %.3f '%s'\n"%(xy[0],xy[1],name))
-    def write_monitor_sections(self):
-        fn=self.mdu.filepath( ('output','CrsFile') )
-        if fn is None: return
-        with open(fn,'at') as fp:
-            for i,mon_feat in enumerate(self.mon_sections):
-                try:
-                    name=mon_feat['name']
-                except KeyError:
-                    name="obs_sec_%03d"%i
-                xy=np.array(mon_feat['geom'])
-                dio.write_pli(fp,[ (name,xy) ])
-
-    def add_Structure(self,**kw):
-        self.structures.append(kw)
-
-    def write_structures(self):
-        structure_file='structures.ini'
-        if len(self.structures)==0:
-            return
-
-        self.mdu['geometry','StructureFile']=structure_file
-
-        with open( self.mdu.filepath(('geometry','StructureFile')),'wt') as fp:
-            for s in self.structures:
-                lines=[
-                    "[structure]",
-                    "type         = %s"%s['type'],
-                    "id           = %s"%s['name'],
-                    "polylinefile = %s.pli"%s['name'],
-                    "door_height  = %.3f"%s['door_height'],
-                    "lower_edge_level = %.3f"%s['lower_edge_level'],
-                    "opening_width = %.3f"%s['opening_width'],
-                    "sill_level     = %.3f"%s['sill_level'],
-                    "horizontal_opening_direction = %s"%s['horizontal_opening_direction'],
-                    "\n"
-                ]
-                fp.write("\n".join(lines))
-                pli_fn=os.path.join(self.run_dir,s['name']+'.pli')
-                if 'geom' in s:
-                    geom=s['geom']
-                    if isinstance(geom,np.ndarray):
-                        geom=geometry.LineString(geom)
-                else:
-                    geom=self.get_geometry(name=s['name'])
-                    
-                assert geom.type=='LineString'
-                pli_data=[ (s['name'], np.array(geom.coords)) ]
-                dio.write_pli(pli_fn,pli_data)
-
-    def write_bc(self,bc):
-        if isinstance(bc,StageBC):
-            self.write_stage_bc(bc)
-        elif isinstance(bc,FlowBC):
-            self.write_flow_bc(bc)
-        elif isinstance(bc,SourceSinkBC):
-            self.write_source_bc(bc)
-        elif isinstance(bc,WindBC):
-            self.write_wind_bc(bc)
-        elif isinstance(bc,RoughnessBC):
-            self.write_roughness_bc(bc)
-        else:
-            super(DFlowModel,self).write_bc(bc)
-
-    def write_tim(self,da,file_path):
-        """
-        Write a DFM tim file based on the timeseries in the DataArray.
-        da must have a time dimension.  No support yet for vector-values here.
-        file_path is relative to the working directory of the script, not
-        the run_dir.
-        """
-        ref_date,start,stop = self.mdu.time_range()
-        dt=np.timedelta64(60,'s') # always minutes
-
-        if len(da.dims)==0:
-            # raise Exception("Not implemented for constant waterlevel...")
-            pad=np.timedelta64(86400,'s')
-            times=np.array([start-pad,stop+pad])
-            values=np.array([da.values.item(),da.values.item()])
-        else:
-            times=da.time.values
-            values=da.values
-        elapsed_time=(times - ref_date)/dt
-        data=np.c_[elapsed_time,values]
-
-        np.savetxt(file_path,data)
-
-    def write_stage_bc(self,bc):
-        self.write_gen_bc(bc,quantity='stage')
-
-    def write_flow_bc(self,bc):
-        self.write_gen_bc(bc,quantity='flow')
-
-        if bc.dredge_depth is not None:
-            # Additionally modify the grid to make sure there is a place for inflow to
-            # come in.
-            log.info("Dredging grid for source/sink BC %s"%bc.name)
-            self.dredge_boundary(np.array(bc.geom.coords),bc.dredge_depth)
-        else:
-            log.info("dredging disabled")
-
-    def write_source_bc(self,bc):
-        self.write_gen_bc(bc,quantity='source')
-
-        if bc.dredge_depth is not None:
-            # Additionally modify the grid to make sure there is a place for inflow to
-            # come in.
-            log.info("Dredging grid for source/sink BC %s"%bc.name)
-            # These are now class methods using a generic implementation in HydroModel
-            # may need some tlc
-            self.dredge_discharge(np.array(bc.geom.coords),bc.dredge_depth)
-        else:
-            log.info("dredging disabled")
-
-    def write_gen_bc(self,bc,quantity):
-        """
-        handle the actual work of writing flow and stage BCs.
-        quantity: 'stage','flow','source'
-        """
-        # 2019-09-09 RH: the automatic suffix is a bit annoying. it is necessary
-        # when adding scalars, but for any one BC, only one of stage, flow or source
-        # would be present.  Try dropping the suffix here.
-        bc_id=bc.name # +"_" + quantity
-
-        #self.write_pli()
-        assert bc.geom.type=='LineString'
-        pli_data=[ (bc_id, np.array(bc.geom.coords)) ]
-        pli_fn=bc_id+'.pli'
-        dio.write_pli(os.path.join(self.run_dir,pli_fn),pli_data)
-
-        #self.write_config()
-        with open(self.ext_force_file(),'at') as fp:
-            lines=[]
-            method=3 # default
-            if quantity=='stage':
-                lines.append("QUANTITY=waterlevelbnd")
-            elif quantity=='flow':
-                lines.append("QUANTITY=dischargebnd")
-            elif quantity=='source':
-                lines.append("QUANTITY=discharge_salinity_temperature_sorsin")
-                method=1 # not sure how this is different
-            else:
-                assert False
-            lines+=["FILENAME=%s"%pli_fn,
-                    "FILETYPE=9",
-                    "METHOD=%d"%method,
-                    "OPERAND=O",
-                    ""]
-            fp.write("\n".join(lines))
-
-        #self.write_data()
-        da=bc.data()
-        assert len(da.dims)<=1,"Only ready for dimensions of time or none"
-        tim_path=os.path.join(self.run_dir,bc_id+"_0001.tim")
-        self.write_tim(da,tim_path)
-
-    def write_wind_bc(self,bc):
-        assert bc.geom is None,"Spatially limited wind not yet supported"
-
-        tim_fn=bc.name+".tim"
-        tim_path=os.path.join(self.run_dir,tim_fn)
-
-        # write_config()
-        with open(self.ext_force_file(),'at') as fp:
-            lines=["QUANTITY=windxy",
-                   "FILENAME=%s"%tim_fn,
-                   "FILETYPE=2",
-                   "METHOD=1",
-                   "OPERAND=O",
-                   "\n"]
-            fp.write("\n".join(lines))
-
-        self.write_tim(bc.data(),tim_path)
-
-    def write_roughness_bc(self,bc):
-        # write_config()
-        xyz_fn=bc.name+".xyz"
-        xyz_path=os.path.join(self.run_dir,xyz_fn)
-
-        with open(self.ext_force_file(),'at') as fp:
-            lines=["QUANTITY=frictioncoefficient",
-                   "FILENAME=%s"%xyz_fn,
-                   "FILETYPE=7",
-                   "METHOD=4",
-                   "OPERAND=O",
-                   "\n"
-                   ]
-            fp.write("\n".join(lines))
-
-        # write_data()
-        da=bc.data()
-        xyz=np.c_[ da.x.values,
-                   da.y.values,
-                   da.values ]
-        np.savetxt(xyz_path,xyz)
-
-    def initial_water_level(self):
-        """
-        some BC methods which want a depth need an estimate of the water surface
-        elevation, and the initial water level is as good a guess as any.
-        """
-        return float(self.mdu['geometry','WaterLevIni'])
-
-    def map_outputs(self):
-        """
-        return a list of map output files
-        """
-        output_dir=self.mdu.output_dir()
-        fns=glob.glob(os.path.join(output_dir,'*_map.nc'))
-        fns.sort()
-        return fns
-    def his_output(self):
-        """
-        return path to history file output
-        """
-        output_dir=self.mdu.output_dir()
-        fns=glob.glob(os.path.join(output_dir,'*_his.nc'))
-        assert len(fns)==1
-        return fns[0]
-
-    def hyd_output(self):
-        """ Path to DWAQ-format hyd file """
-        return os.path.join( self.run_dir,
-                             "DFM_DELWAQ_%s"%self.mdu.name,
-                             "%s.hyd"%self.mdu.name )
-
-    def restartable_time(self):
-        fns=glob.glob(os.path.join(self.mdu.output_dir(),'*_rst.nc'))
-        fns.sort() # sorts both processors and restart times    
-        last_rst=xr.open_dataset(fns[-1])
-        rst_time=last_rst.time.values[0]
-        last_rst.close()
-        return rst_time
-    
-    def create_restart(self,name):
-        new_model=DFlowModel()
-        new_model.mdu=self.mdu.copy()
-        new_model.mdu.set_filename( os.path.join( os.path.dirname(self.mdu.filename),
-                                                  name) )
-        new_model.mdu_basename=name
-        new_model.restart=True # ?
-        new_model.restart_model=self
-        new_model.ref_date=self.ref_date
-        new_model.run_start=self.restartable_time()
-        new_model.num_procs=self.num_procs
-        new_model.grid=self.grid
-        # DFM will create a new output directory under the run directory,
-        # so we reuse the run directory.
-        # if there were some reason to modify files from the old run that are not
-        # in the output folder, will have to extend this method.
-        new_model.run_dir=self.run_dir
-        
-        rst_base=os.path.join(self.mdu.output_dir(),
-                              (self.mdu.name
-                               +'_'+utils.to_datetime(new_model.run_start).strftime('%Y%m%d_%H%M%S')
-                               +'_rst.nc'))
-        new_model.mdu['restart','RestartFile']=rst_base
-        return new_model
-
-    def restart_inputs(self):
-        """
-        Return a list of paths to restart data that will be used as the 
-        initial condition for this run. Assumes nonmerged style of restart data.
-        """
-        rst_base=self.mdu['restart','RestartFile']
-        path=os.path.dirname(rst_base)
-        base=os.path.basename(rst_base)
-        # Assume that it has the standard naming
-        suffix=base[-23:] # just the date-time portion
-        rsts=[ (rst_base[:-23] + '_%04d'%p + rst_base[-23:])
-               for p in range(self.num_procs)]
-        return rsts
-    
-    def modify_restart_data(self,modify_ic):
-        """
-        Apply the given function to restart data, and copy the restart
-        files at the same time.
-        Updates self.mdu['restart','RestartFile'] to point to the new
-        location, which will be the output folder for this run.
-
-        modify_ic: fn(xr.Dataset, **kw) => None or xr.Dataset
-
-        it should take **kw, to flexibly allow more information to be passed in
-         in the future.
-        """
-        for proc,rst in enumerate(self.restart_inputs()):
-            old_dir=os.path.dirname(rst)
-            new_rst=os.path.join(self.mdu.output_dir(),os.path.basename(rst))
-            assert rst!=new_rst
-            ds=xr.open_dataset(rst)
-            new_ds=modify_ic(ds,proc=proc,model=self)
-            if new_ds is None:
-                new_ds=ds # assume modified in place
-
-            dest_dir=os.path.dirname(new_rst)
-            if not os.path.exists(dest_dir):
-                os.makedirs(dest_dir)
-            new_ds.to_netcdf(new_rst)
-        old_rst_base=self.mdu['restart','RestartFile']
-        new_rst_base=os.path.join( self.mdu.output_dir(), os.path.basename(old_rst_base))
-        self.mdu['restart','RestartFile']=new_rst_base
-        
-    def extract_section(self,name=None,chain_count=1,refresh=False,
-                        xy=None,ll=None,data_vars=None):
-        """
-        Return xr.Dataset for monitored cross section.
-        currently only supports selection by name.  may allow for 
-        xy, ll in the future.
-
-        refresh: force a close/open on the netcdf.
-        """
-        raise Exception("extract_section has not been implemented in subclass")
-    
-    def extract_station(self,xy=None,ll=None,name=None,refresh=False,
-                        data_vars=None):
-        """
-        From a model that has been run, extract output from a location
-        defined by one of xy,ll or name.
-        data_vars: optional list of the subset of variables to extract.
-          may be ignored if the particular driver does not support it.
-        """
-        raise Exception("extract_section has not been implemented in subclass")
-
-import sys
-if sys.platform=='win32':
-    cls=DFlowModel
-    cls.dfm_bin_exe="dflowfm-cli.exe"
-    cls.mpi_bin_exe="mpiexec.exe"

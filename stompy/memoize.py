@@ -58,6 +58,10 @@ def memoize_key(*args,**kwargs):
 def memoize_key_str(*args,**kwargs):
     return str(args) + str(kwargs)
 
+def memoize_key_repr(*args,**kwargs):
+    # repr is probably more appropriate than str
+    return repr(args) + repr(kwargs)
+
 def memoize(lru=None,cache_dir=None,key_method='pickle'):
     """
     add as a decorator to classes, instance methods, regular methods
@@ -92,6 +96,8 @@ def memoize(lru=None,cache_dir=None,key_method='pickle'):
                 key = memoize_key(args,**kwargs)
             elif key_method=='str':
                 key = memoize_key_str(args,**kwargs)
+            elif key_method=='repr':
+                key = memoize_key_repr(args,**kwargs)
             else:
                 key=key_method(args,**kwargs)
             value_src=None
@@ -100,7 +106,7 @@ def memoize(lru=None,cache_dir=None,key_method='pickle'):
                 cache_fn=os.path.join(cache_dir,key)
             else:
                 cache_fn=None
-
+            # TODO: If pickling fails on read or write, regroup
             if memoize.disabled or recalc or (key not in cache):
                 if cache_fn and not (memoize.disabled or recalc):
                     if os.path.exists(cache_fn):
@@ -114,7 +120,7 @@ def memoize(lru=None,cache_dir=None,key_method='pickle'):
 
                 if not memoize.disabled:
                     cache[key]=value
-                    if value_src is 'calculated' and cache_fn:
+                    if value_src=='calculated' and cache_fn:
                         with open(cache_fn,'wb') as fp:
                             pickle.dump(value,fp,-1)
                             # print "Wrote cache to file"

@@ -6,6 +6,7 @@ from builtins import range
 from builtins import object
 
 import time
+import matplotlib
 from matplotlib.collections import LineCollection
 from matplotlib.transforms import Transform,Affine2D
 import matplotlib.transforms as transforms
@@ -313,8 +314,7 @@ def scalebar(xy,L=None,aspect=0.05,unit_factor=1,fmt="%.0f",label_txt=None,fract
         txts.append( ax.text(xmin+div,baseline,
                              div_txt,
                              ha='center',
-                             transform=txt_trans)
-                 )
+                             transform=txt_trans) )
 
     # Really would like for the label to be on the same baseline
     # as the fraction texts, and typeset along with the last
@@ -776,8 +776,9 @@ def annotate_line(l,s,norm_position=0.5,offset_points=10,ax=None,
     perp = offset_points * perp / utils.mag(perp)
     
     settings=dict(xytext=perp, textcoords='offset points',
-                  rotation=angle,
+                  rotation=angle,xycoords=l.get_transform(),
                   ha='center',va='center')
+    
     settings.update(kwargs)
 
     if buff is not None:
@@ -907,8 +908,10 @@ def cbar_interactive(cbar,extras=[],symmetric=False):
     original_clim=[cbar.mappable.norm.vmin,cbar.mappable.norm.vmax]
     def mod_norm(rel_min=0,rel_max=0,reset=False):
         nrm=cbar.mappable.norm
-        if reset:
-            nrm.vmin,nrm.vmax = original_clim
+        if reset=='autoscale':
+            cbar.mappable.autoscale()
+        elif reset=='original':
+            nrm.vmin,nrm.vmax = original_clim            
         else:
             rang=nrm.vmax - nrm.vmin
             nrm.vmax += rel_max*rang
@@ -928,22 +931,36 @@ def cbar_interactive(cbar,extras=[],symmetric=False):
         if event.inaxes is cbar.ax:
             if cbar.orientation=='vertical':
                 coord=event.ydata
+                _,_,cmin,cmax = cbar.ax.axis()
             else:
                 coord=event.xdata
+                cmin,cmax,_,_ = cbar.ax.axis()
+            # Recent MPL appears to leave ax dimensional
+            coord=(coord-cmin)/(cmax-cmin)
 
             if event.button==1:
                 rel=0.1
             elif event.button==3:
                 rel=-0.1
-            if symmetric:
-                mod_norm(rel_min=rel,rel_max=-rel)
+            if coord<0.33:
+                edit='min'
+            elif coord>0.67:
+                edit='max'
             else:
-                if coord<0.4:
-                    mod_norm(rel_min=rel)
-                elif coord>0.6:
-                    mod_norm(rel_max=rel)
+                edit='reset'
+               
+            if edit=='reset':
+                if event.button==1:
+                    mod_norm(reset='original')
                 else:
-                    mod_norm(reset=True)
+                    mod_norm(reset='autoscale')
+            elif symmetric:
+                mod_norm(rel_min=rel,rel_max=-rel)
+            elif edit=='min':
+                mod_norm(rel_min=rel)
+            elif edit=='max':
+                mod_norm(rel_max=rel)
+
     fig=cbar.ax.figure
     cid=fig.canvas.mpl_connect('button_press_event',cb_u_cbar)
     return cb_u_cbar
@@ -1418,3 +1435,15 @@ def reduce_text_overlap(ax,max_iter=200):
         txt.set_position( np.array(txt.get_position()) + delta)
     return deltas
 
+def mypause(interval):
+    # https://stackoverflow.com/questions/45729092/make-interactive-matplotlib
+    # -window-not-pop-to-front-on-each-update-windows-7/45734500#45734500
+    backend = plt.rcParams['backend']
+    if backend in matplotlib.rcsetup.interactive_bk:
+        figManager = matplotlib._pylab_helpers.Gcf.get_active()
+        if figManager is not None:
+            canvas = figManager.canvas
+            if canvas.figure.stale:
+                canvas.draw()
+            canvas.start_event_loop(interval)
+            return        

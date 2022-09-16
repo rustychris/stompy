@@ -152,7 +152,9 @@ def nwis_dataset(station,start_date,end_date,products,
             continue
         else:
             log.info("Fetching %s"%(base_fn))
-            req=requests.get(base_url,params=params)
+            sesh = requests.Session()
+            sesh.mount('https://', requests.adapters.HTTPAdapter(max_retries=3))
+            req=sesh.get(base_url,params=params)
             data=req.text
             ds=rdb.rdb_to_dataset(text=data)
             if ds is None: # There was no data there HERE - would like to have an option to record no data
@@ -177,12 +179,26 @@ def nwis_dataset(station,start_date,end_date,products,
         log.warning("   no data for station %s for any periods!"%station)
         return None 
 
+    # occasional errors with repeated timestamps. Not sure how this comes about,
+    # but it frustrates combine_first
+    datasets=[ds.isel(time=np.r_[True, ds.time.values[1:]>ds.time.values[:-1]])
+              for ds in datasets]
+    
     if len(datasets)>1:
-        # it's possible that not all variables appear in all datasets
-        # dataset=xr.concat( datasets, dim='time')
-        dataset=datasets[0]
-        for other in datasets[1:]:
-            dataset=dataset.combine_first(other)
+        # occasionally dataset have repeat timestamps. why? who knows.
+        for i,ds in enumerate(datasets):
+            monotonic=np.r_[True,np.diff(ds.time.values)>np.timedelta64(0,'s')]
+            if np.any(~monotonic):
+                datasets[i]=ds.isel(time=monotonic)
+        
+        try:
+            dataset=xr.concat( datasets, dim='time')
+        except ValueError:
+            # in case not all variables appear in all datasets
+            # but this is much slower.
+            dataset=datasets[0]
+            for other in datasets[1:]:
+                dataset=dataset.combine_first(other)
         for stale in datasets:
             stale.close() # maybe free up FDs?
     else:

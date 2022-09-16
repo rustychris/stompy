@@ -26,7 +26,14 @@ except ImportError:
     log.warning("xarray unavailable")
     xr=None
 
-from collections import OrderedDict,Iterable
+try:
+    # Moved around python 3.3
+    from collections.abc import Iterable
+except ImportError:
+    # Will error around 3.9
+    from collections import Iterable
+    
+from collections import OrderedDict
 import sys
 from scipy.interpolate import RectBivariateSpline,interp1d,LinearNDInterpolator
 from scipy import optimize
@@ -357,7 +364,7 @@ def fill_invalid(A,axis=0,ends='constant'):
     Atrans=A.transpose(new_order)
     i=np.arange(Atrans.shape[0])
 
-    if ends is 'constant':
+    if ends=='constant':
         kwargs={}
     else:
         kwargs=dict(left=np.nan,right=np.nan)
@@ -368,7 +375,7 @@ def fill_invalid(A,axis=0,ends='constant'):
         valid=np.isfinite(Aslice)
         if any(valid):
             Aslice[~valid]=np.interp(i[~valid],i[valid],Aslice[valid],**kwargs)
-        if ends is 'linear':
+        if ends=='linear':
             if np.isnan(Aslice[0]) or np.isnan(Aslice[-1]):
                 mb = np.polyfit( i[valid][ [0,-1] ],
                                  Aslice[valid][ [0,-1] ], 1)
@@ -571,6 +578,18 @@ def LinearNDExtrapolator(points,values,eps=None):
     return int_ij_extra
 
 def interp_near(x,sx,sy,max_dx=None):
+    x=np.asarray(x)
+    sx=np.asarray(sx)
+    
+    if ( np.issubdtype(x.dtype,np.datetime64)
+         and np.issubdtype(sx.dtype,np.datetime64)
+         and ( isinstance(max_dx,np.timedelta64) or (max_dx is None)) ):
+        # Convert them epoch seconds
+        x=to_unix(x)
+        sx=to_unix(sx)
+        if max_dx is not None:
+            max_dx=max_dx/np.timedelta64(1,'s')
+            
     src_idx=np.searchsorted(sx,x) # gives the index for the element *after* x
     right_idx=src_idx.clip(0,len(sx)-1)
     left_idx=(src_idx-1).clip(0,len(sx)-1)
@@ -583,7 +602,7 @@ def interp_near(x,sx,sy,max_dx=None):
     try:
         y_at_x[ (dx>max_dx) | (dx<0) ] = np.nan
     except TypeError: # so it was a scalar...
-        if (dx>max_dx) | (dx<0):
+        if (max_dx is not None) and ((dx>max_dx) or (dx<0)):
             y_at_x=np.nan
     return y_at_x
 
@@ -731,19 +750,62 @@ def point_segments_distance(point,segs,return_alpha=False):
     else:
         return D
 
+# superceded, for the time being, by direct implementation below
+# def segment_segment_intersection(segA,segB):
+#     """
+#     segA: [2,{x,y}] segment
+#     segB: [2,{x,y}] segment
+#     returns [2] point intersection
+#     """
+#     lA=geometry.LineString(segA)
+#     lB=geometry.LineString(segB)
+#     AB=lA.intersection(lB)
+#     assert AB.type=='Point',"Need to handle non-intersecting case"
+#     return np.array([AB.x,AB.y])
+
+def segment_segment_alphas(segA,segB):
+    """
+    Solve for the two alpha values for an intersection
+
+    (1-a) * segAB[0,0] + a*segAB[1,0] =  (1-b) * seg[0,0] + b*seg[1,0]
+    
+    Return [a,b], unless lines are parallel, then [nan,nan]
+    """
+    # a * segAB[0,1] + (1-a)*segAB[1,1] - b * seg[0,1] - (1-b)*seg[1,1] = 0
+    # a * segAB[0,0] + segAB[1,0] - a*segAB[1,0],  -b * seg[0,0] - seg[1,0] + b*seg[1,0] = 0
+    # a * segAB[0,0] - a*segAB[1,0],  -b * seg[0,0] + b*seg[1,0] = -segAB[1,0] + seg[1,0]
+
+    mat=np.array( [ [segA[1,0]-segA[0,0], -segB[1,0]+segB[0,0]],
+                    [segA[1,1]-segA[0,1], -segB[1,1]+segB[0,1]]],
+                  np.float64)
+    b=np.array( [ -segA[0,0] + segB[0,0],
+                  -segA[0,1] + segB[0,1] ],
+                np.float64 )
+    try:
+        x=np.linalg.solve(mat,b)
+    except np.linalg.LinAlgError:
+        # Don't get into the details, just bail
+        # collinear or parallel
+        return np.array( [np.nan,np.nan] )
+    return x
 
 def segment_segment_intersection(segA,segB):
     """
-    segA: [2,{x,y}] segment
-    segB: [2,{x,y}] segment
-    returns [2] point intersection
+    If segA and segB intersect, return a 
     """
-    lA=geometry.LineString(segA)
-    lB=geometry.LineString(segB)
-    AB=lA.intersection(lB)
-    assert AB.type=='Point',"Need to handle non-intersecting case"
-    return np.array([AB.x,AB.y])
-    
+    segA=np.asarray(segA)
+    segB=np.asarray(segB)
+    alphas=segment_segment_alphas(segA,segB)
+    if np.isnan(alphas[0]):
+        # collinear or parallel. may not overlap at all
+        return None,alphas
+    if ((alphas[0]>=0) and (alphas[1]>=0) and
+        (alphas[0]<=1) and (alphas[1]<=1) ):
+        a=alphas[0]
+        return (1-a)*segA[0]+a*segA[1], alphas
+    return None,alphas
+
+
 # rotate the given vectors/points through the CCW angle in radians
 def rot_fn(angle):
     R = np.array( [[np.cos(angle),-np.sin(angle)],
@@ -776,7 +838,7 @@ def signed_area(points):
 def find_slack(jd,u,leave_mean=False,which='both'):
     # returns ([jd, ...], 'high'|'low')
     dt=jd[1]-jd[0]
-
+    # ~1 hour lowpass
     u=filters.lowpass_fir(u,
                           winsize=1+np.round(2./(dt*24)))
     if not leave_mean:
@@ -859,7 +921,7 @@ def hour_tide_fn(jd,u,leave_mean=False):
     if start=='flood':
         hr_tide += 6 # starting on an ebb
 
-    print("start is",start)
+    # print("start is",start)
     hr_tide %= 12
 
     # angular interpolation - have to use scipy interp1d for complex values
@@ -1113,14 +1175,24 @@ def murphy_skill(xmodel,xobs,xref=None,ignore_nan=True):
 def find_lag_xr(data,ref):
     """ Report lag in time of data (xr.DataArray) with respect
     to reference (xr.DataArray).  Requires that data and ref
-    are xr.DataArray, with coordinate values.
+    are xr.DataArray, with coordinate values. A coordinate named
+    'time' is given preference, otherwise the first coordinate.
     """
     for arg in [data,ref]:
         if not isinstance(arg,xr.DataArray):
             raise Exception("Arguments to find_lag_xr must be DataArrays")
 
-    return find_lag( data[data.dims[0]].values, data.values,
-                     ref[ref.dims[0]].values, ref.values )
+    try:
+        t_data=data['time'].values
+    except KeyError:
+        t_data=data[data.dims[0]].values
+    try:
+        t_ref=ref['time'].values
+    except KeyError:
+        t_ref=ref[ref.dims[0]].values
+        
+    return find_lag( t_data, data.values,
+                     t_ref, ref.values )
 
 def find_lag(t,x,t_ref,x_ref):
     """
@@ -1323,6 +1395,7 @@ def to_dt64(x):
     elif isinstance(x,pd.Timestamp):
         return x.to_datetime64()
     else:
+        # 2022-02: This has gotten problematic, as MPL has changed their standard.
         if np.issubdtype(x.dtype, np.floating):
             x=num2date(x)
 
@@ -1334,6 +1407,9 @@ def to_dt64(x):
             return x
 
         assert False
+
+def matlab_to_dt64(x):
+    return (x-1)*86400*np.timedelta64(1,'s') + np.datetime64('0000-01-01 00:00')
 
 def to_unix(t):
     """
@@ -1371,20 +1447,34 @@ def to_jdate(t):
     doy=dt.toordinal() - dt0.toordinal()
     return dt0.year * 1000 + doy
 
+def clamp_dt64_helper(func,t,dt,t0=np.datetime64("1970-01-01 00:00:00")):
+    """
+    Common code for ceil/floor/round datetime64
+    """
+    decimal=np.asarray( (t-t0) / dt )
+    clamped=func(decimal).astype(np.int64)
+    return t0+dt*clamped
+    
 def floor_dt64(t,dt,t0=np.datetime64("1970-01-01 00:00:00")):    
     """
     Round the given t down to an integer number of dt from
     a reference time (defaults to unix epoch)
     """
-    return t0+dt*(np.floor( (t-t0) / dt )).astype(np.int64)
+    return clamp_dt64_helper(np.floor,t,dt,t0)
 
 def ceil_dt64(t,dt,t0=np.datetime64("1970-01-01 00:00:00")):
     """
     Round the given t up to an integer number of dt from
     a reference time (defaults to unix epoch)
     """
-    return t0+dt*int(np.ceil( (t-t0) / dt ))
+    return clamp_dt64_helper(np.ceil,t,dt,t0)
 
+def round_dt64(t,dt,t0=np.datetime64("1970-01-01 00:00:00")):
+    """
+    Round the given t to the nearest integer number of dt
+    from a reference time (defaults to unix epoch)
+    """
+    return clamp_dt64_helper(np.round,t,dt,t0)
 
 def unix_to_dt64(t):
     """
@@ -1490,6 +1580,12 @@ def strftime(d,fmt="%Y-%m-%d %H:%M"):
 # pandas includes some of this functionality, but trying to
 # keep utils.py pandas-free (no offense, pandas)
 
+def dnum_mat_to_py(x):
+    return np.asarray(x)-366
+def dnum_py_to_mat(x):
+    return np.asarray(x)+366
+
+    
 def dt64_to_dnum(dt64):
     # get some reference points:
 
@@ -1931,7 +2027,11 @@ def isnat(x):
     doesn't yet exist in numpy - other ways give warnings
     and are likely to change.
     """
-    return x.astype('i8') == np.datetime64('NaT').astype('i8')
+    if np.__version__ >= '1.13':
+        return np.isnat(x)
+    else:
+        # This will fail on more recent numpy, and
+        return x.astype('i8') == np.datetime64('NaT').astype('i8')
 
 def isnant(x):
     """
@@ -2259,7 +2359,7 @@ def call_with_path(cmd,path):
     finally:
         os.chdir(pwd)
 
-def progress(a,interval_s=5.0,msg="%s",func=log.info):
+def progress(a,interval_s=5.0,msg="%s",func=log.info,count=0):
     """
     Print progress messages while iterating over a sequence a.
 
@@ -2268,8 +2368,10 @@ def progress(a,interval_s=5.0,msg="%s",func=log.info):
     msg: message format, with %s format string 
     func: alternate display mechanism.  defaults log.info
     """
+    L=count
     try:
-        L=len(a) # may fail?
+        if not L:
+            L=len(a) # may fail?
     except TypeError: # may be a generated
         L=0
 
@@ -2285,12 +2387,15 @@ def progress(a,interval_s=5.0,msg="%s",func=log.info):
             t0=t
         yield elt
 
-def is_stale(target,srcs,ignore_missing=False):
+def is_stale(target,srcs,ignore_missing=False,tol_s=0):
     """
     Makefile-esque checker --
     if target does not exist or is older than any of srcs,
     return true (i.e. stale).
     if a src does not exist, raise an Exception, unless ignore_missing=True.
+    tol_s: allow a source to be up to tol_s newer than target. Useful if 
+    sources are constantly updating but you only want to recompute
+    when something is really old.
     """
     if not os.path.exists(target): return True
     for src in srcs:
@@ -2299,7 +2404,7 @@ def is_stale(target,srcs,ignore_missing=False):
                 continue
             else:
                 raise Exception("Dependency %s does not exist"%src)
-        if os.stat(src).st_mtime > os.stat(target).st_mtime:
+        if os.stat(src).st_mtime > os.stat(target).st_mtime + tol_s:
             return True
     return False
 
@@ -2335,3 +2440,109 @@ def deriv(c,x):
     right=(i+1).clip(0,N-1)
     return (c[right]-c[left])/(x[right]-x[left])
 
+
+def partition(items, predicate=bool):
+    """
+    Iterate over a list and partition it into two lists based on the predicate
+    """
+    # Credit to Peter Otten, as posted here:
+    # https://nedbatchelder.com/blog/201306/filter_a_list_into_two_parts.html
+    a, b = itertools.tee((predicate(item), item) for item in items)
+    return ((item for pred, item in a if not pred),
+            (item for pred, item in b if pred))
+
+def distinct_substrings(strs,split_on=r'_.- \/'):
+    """
+    strs: list of str
+    returns a list of strs, with the longest common prefix and suffix removed
+    """
+    for i in range(0,len(strs[0])):
+        for s in strs[1:]:
+            if s[i] != strs[0][i]:
+                break
+        else:
+            continue
+        break
+    for j in range(1,len(strs[0])):
+        for s in strs[1:]:
+            if s[-j]!=strs[0][-j]:
+                break
+        else:
+            continue
+        break
+    j-=1
+    while (i>0) and (strs[0][i-1] not in split_on):
+        i-=1
+    while (j>0) and (strs[0][-j] not in split_on):
+        j-=1
+    j=-j
+
+    if j==0: j=None
+    return [s[i:j] for s in strs]
+
+def combinations(values,k):
+    """
+    Return all combinations of choosing k elements from the 
+    sequence values. Returns a generator.
+    """
+    # iterate over starting value, 
+    # recursive call to get remainder of sequence
+    # if we want to choose 3, then the first of those
+    # if k=2, then I want to omit the last item
+    if k==0:
+        yield ()
+        return
+    N=len(values)
+    assert k<=N
+    # if k==N, this is range(1)=[0], exactly one choice.
+    # if k==1, this is range(N)=all elements.
+    for i in range(N-k+1):
+        for rest in combinations(values[i+1:],k-1):
+            res=(values[i],) + rest
+            yield res
+            
+def subsets(values,k_min=1,k_max=None):
+    """
+    Similar to combinations, but across a range of k.
+    k_min: smallest set size to return
+    k_max: largest set size to return (inclusive)
+    """
+    if k_max is None:
+        k_max=len(values)
+    for k in range(k_min,k_max+1):
+        yield from combinations(values,k)
+            
+            
+def dominant_period(h,t,uniform=True,guess=None):
+    """
+    for a time series h(t), return the dominant period
+    of variation.
+    uniform: must be True for now. May be relaxed in the future
+      to allow less structured data. But then the FFT step must
+      be omitted.
+    """
+    h=np.asarray(h)
+    h=h-h.mean()
+    t=np.asarray(t,np.float64)
+    if guess is None:
+        assert uniform
+        assert len(np.unique(t))==len(h)
+        from scipy.signal import welch
+        dt_s=np.median( np.diff(np.unique(t)) )
+        freqs,psd=welch(h,fs=1./dt_s,nperseg=min(len(h),1024))
+        f_peak=freqs[np.argmax(psd)]
+        #delta_f=np.median(np.diff(freqs))
+        #delta_period=(1./(f_peak - delta_f) - 1./(f_peak+delta_f))/2.0
+        guess=1.0/f_peak
+    
+    from scipy.optimize import fmin
+    def cost(period):
+        # breakpoint()    
+        wt=2*np.pi*t/period[0]
+        cos=np.cos(wt)
+        sin=np.sin(wt)
+        cov=np.mean(cos*h)**2 + np.mean(sin*h)**2
+        return -cov*1e6
+    #breakpoint()
+    result = fmin(cost,[float(guess)])
+    return result[0]

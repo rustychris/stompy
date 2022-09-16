@@ -5,6 +5,9 @@ from ..spatial import field
 from . import unstructured_grid, front, rebay
 import pickle
 
+import logging
+logger=logging.getLogger(__name__)
+
 class Gmsher(object):
     scale_file='scale.pkl'
     geo_file='tmp.geo'
@@ -57,9 +60,9 @@ class Gmsher(object):
             if n_new is not None:
                 self.grid.nodes['x'][n_new] = x_in
 
-def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=5000,hole_rigidity='cells',
+def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=-1,hole_rigidity='cells',
                      splice=True,return_value='grid',dry_run=False,apollo_rate=1.1,
-                     method='front',method_kwargs={}):
+                     density=None,method='front',method_kwargs={}):
     """
     Specify one of
       seed_point: find node string surrounding this point
@@ -82,6 +85,10 @@ def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=5000,hole_rigidit
     splice: if true, the new grid is spliced into grid. if false, just returns
      the grid covering the hole.
 
+    density: By default an Apollonius scale field is generated from the rigid
+     edges of the hole and apollo_rate. Use this argument to provide a non-default
+     density field.
+
     return_value: grid: return the resulting grid
     front: advancing front instance
     dry_run: if True, get everything set up but don't triangulate
@@ -90,7 +97,7 @@ def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=5000,hole_rigidit
         raise Exception("Currently rebay can only handle fully rigid hole (hole_rigidity='all')")
     
     # manually tell it where the region to be filled is.
-    # 5000 ought to be plenty of nodes to get around this loop
+    # max_nodes defaults to -1 which implies Nnodes.
     if nodes is None:
         nodes=grid.enclosing_nodestring(seed_point,max_nodes)
 
@@ -107,25 +114,38 @@ def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=5000,hole_rigidit
     ec=grid.edges_center()
     el=grid.edges_length()
 
+    src_hint_edges=[]
+
+    # Scan the node string to both (a) find hint edges that
+    # can be removed before merging, and (b) select length scales
+    # for the density field.
     for na,nb in utils.circular_pairs(nodes):
         j=grid.nodes_to_edge([na,nb])
         assert j is not None
-        if hole_rigidity=='cells':
-            if np.all( grid.edges['cells'][j] < 0):
-                continue
-        elif hole_rigidity in ['all','all-nodes']:
-            pass 
+        has_no_cells=np.all( grid.edges['cells'][j] < 0)
+        if has_no_cells:
+            # if hole_rigidity is 'all', the edge will exactly exist
+            # in both the new and original grids. Not a problem to delete
+            # it, though might lose some edge-data.
+            src_hint_edges.append(j)
+
+        if hole_rigidity=='cells' and has_no_cells:
+            # This edge doesn't impart any scale constraints
+            continue
+        # elif hole_rigidity in ['all','all-nodes']: pass
         sample_xy.append(ec[j])
         sample_scale.append(el[j])
 
-    assert len(sample_xy)
-    sample_xy=np.array(sample_xy)
-    sample_scale=np.array(sample_scale)
-
-    apollo=field.PyApolloniusField(X=sample_xy,F=sample_scale,r=apollo_rate)
+    if density is not None:
+        scale=density
+    else:
+        assert len(sample_xy)
+        sample_xy=np.array(sample_xy)
+        sample_scale=np.array(sample_scale)
+        scale=field.PyApolloniusField(X=sample_xy,F=sample_scale,r=apollo_rate)
 
     # For hole_rigidity=='all', there are no hints, and this stays
-    # empty.  Only for method=='front' or gmsh can there be other values of
+    # empty.  Only for method=='front' or 'gmsh' can there be other values of
     # hole_rigidity.
     src_hints=[]
 
@@ -136,10 +156,12 @@ def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=5000,hole_rigidit
         AT=front.AdvancingTriangles(grid=grid_to_pave,**method_kwargs)
 
         AT.add_curve(xy_shore)
+        
         # This should be safe about not resampling existing edges
-        AT.scale=field.ConstantField(50000)
+        # HERE: that's a problem. it defeats non-local strategy.
+        AT.scale=scale # field.ConstantField(50000)
 
-        AT.initialize_boundaries()
+        AT.initialize_boundaries(upsample=False)
 
         AT.grid.nodes['fixed'][:]=AT.RIGID
         AT.grid.edges['fixed'][:]=AT.RIGID
@@ -178,8 +200,9 @@ def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=5000,hole_rigidit
                 if (cells[0]<0) and (cells[1]<0):
                     AT.grid.edges['fixed'][j]=AT.UNSET
 
-        AT.scale=apollo
-
+        # resample edges that are not fixed
+        AT.resample_cycles()
+        
         if dry_run:
             if return_value=='grid':
                 return AT.grid
@@ -193,9 +216,9 @@ def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=5000,hole_rigidit
             return AT # for debugging -- need to keep a handle on this to see what's up.
     elif method=='rebay':
         grid_to_pave=unstructured_grid.UnstructuredGrid(max_sides=len(xy_shore))
-        nodes=[grid_to_pave.add_node(x=xy) for xy in xy_shore]
-        c=grid_to_pave.add_cell_and_edges(nodes)
-        rad=rebay.RebayAdvancingDelaunay(grid=grid_to_pave,scale=apollo,
+        pave_nodes=[grid_to_pave.add_node(x=xy) for xy in xy_shore]
+        c=grid_to_pave.add_cell_and_edges(pave_nodes)
+        rad=rebay.RebayAdvancingDelaunay(grid=grid_to_pave,scale=scale,
                                          heap_sign=1,**method_kwargs)
         if dry_run:
             if return_value=='grid':
@@ -211,7 +234,8 @@ def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=5000,hole_rigidit
         g_in=unstructured_grid.UnstructuredGrid()
         g_in.add_linestring(xy_shore,closed=True)
 
-        # refactor!
+        # refactor!  a little tricky, as the three methods all have slightly
+        # different capacities to deal with hint edges/nodes in the input.
         for n in g_in.valid_node_iter():
             n_src=grid.select_nodes_nearest(g_in.nodes['x'][n],max_dist=0.0)
             assert n_src is not None,"How are we not finding the original src node?"
@@ -220,7 +244,7 @@ def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=5000,hole_rigidit
                 if hole_rigidity=='cells':
                     src_hints.append(n_src)
         
-        AT=Gmsher(g_in=g_in,scale=apollo)
+        AT=Gmsher(g_in=g_in,scale=scale)
         AT.gmsh=method_kwargs.pop('gmsh','gmsh')
         AT.output=method_kwargs.pop('output','capture')
         AT.execute()
@@ -233,12 +257,67 @@ def triangulate_hole(grid,seed_point=None,nodes=None,max_nodes=5000,hole_rigidit
             return AT.grid
         else:
             return AT
-    else:    
+    else:
+        # Scan src_hints once to find edges that need to be replaced after the merge.
+        # These are edges that aren't involved in cells, but also not part of the
+        # boundary linestring.
+        edges_to_replace=[] # node in AT.grid and node in grid that should get an edge after merge
+        for n in src_hints:
+            n_nbrs=grid.node_to_nodes(n)
+            if len(n_nbrs)<=2: continue # can't have any extra edges
+
+            n_idx=nodes.index(n)
+            
+            # Not quite good enough to just check neighbors against
+            # n_nbrs, since the fixed nodes will be neighbors of n
+            # but not in src_hints.
+            for nbr in n_nbrs:
+                # This is an older check:
+                #if nbr in src_hints: continue
+                #if len(grid.node_to_cells(nbr))>0: continue
+                if nbr not in nodes:
+                    n_new=AT.grid.select_nodes_nearest( grid.nodes['x'][n] )
+                    # so there is an edge in the original grid n--nbr and I want
+                    # that to become n_new--nbr in the merge. 
+                    # tempting to pass these as merge_nodes to add_grid, but then I
+                    # have to clean up the edges, and I would get the old location of
+                    # the node.
+                    # Have to annotate the nodes with which grid they refer to, since
+                    # new nodes are going to get remapped
+                    edges_to_replace.append( [('new',n_new),('old',nbr)] )
+                else:
+                    nbr_idx=nodes.index(nbr)
+                    N=len(nodes)
+                    if nbr_idx in [ (n_idx+1)%N, (n_idx-1)%N]:
+                        # Just a hint edge 
+                        continue
+                    else:
+                        # A special case, untested at this point.
+                        logger.warning("Untested territory -- a non-hint edge joining two hint nodes")
+                        n_new=AT.grid.select_nodes_nearest( grid.nodes['x'][n] )
+                        nbr_new=AT.grid.select_nodes_nearest( grid.nodes['x'][nbr] )
+                        edges_to_replace.append( [('new',n_new), ('new',nbr_new)] )
+
+        if hole_rigidity!='all':
+            # if hole_rigidity were 'all', then prefer to keep these
+            # edges since they may have some data on them.
+            for j in src_hint_edges:
+                grid.delete_edge(j)
+        # Scan nodes again, this time deleting
         for n in src_hints:
             grid.delete_node_cascade(n)
 
-        grid.add_grid(AT.grid)
+        # Merge, then add those edges back in
+        node_map,edge_map,cell_map = grid.add_grid(AT.grid)
+        for (new_src,n_new),(nbr_src,nbr) in edges_to_replace:
+            if new_src=='new':
+                n_new=node_map[n_new]
+            if nbr_src=='new':
+                nbr=node_map[nbr]
+                
+            grid.add_edge( nodes=[n_new,nbr] )
 
+        # Constrained nodes match exactly and get merged here
         # Surprisingly, this works!  Usually.
         grid.merge_duplicate_nodes()
 

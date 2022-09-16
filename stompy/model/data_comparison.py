@@ -11,9 +11,9 @@ from stompy import filters
 from matplotlib import dates
 from scipy.stats import spearmanr
 
-from . import hydro_model as hm
+from stompy.model import hydro_model as hm
 
-from .. import (xr_utils, utils)
+from stompy import (xr_utils, utils)
 
 def period_union(sources):
     t_min=t_max=None
@@ -77,7 +77,6 @@ def combine_sources(all_sources,dt=np.timedelta64(900,'s'),min_period=True):
             return None
         t_min,t_max=period_union(all_sources)
         
-    dt=np.timedelta64(900,"s")  # compare at 15 minute intervals.
     resample_bins=np.arange(utils.floor_dt64(t_min,dt),
                             utils.ceil_dt64(t_max,dt)+dt,
                             dt)
@@ -101,11 +100,10 @@ def combine_sources(all_sources,dt=np.timedelta64(900,'s'),min_period=True):
         # dim='time' is needed for vector-valued data to indicate not to
         # take the mean across vector components, just within bins on the
         # time axis
-        da_r=(# ada.groupby_bins(da.time,resample_bins,labels=bin_labels)
-            da.groupby_bins('dnum',bins,labels=bin_labels)
+        # This is slow, but more general than a hand-rolled numpy solution
+        da_r=(da.groupby_bins('dnum',bins,labels=bin_labels)
               .mean(dim='time')
-              #.rename(time_bins='time')
-            .rename(dnum_bins='time')
+              .rename(dnum_bins='time')
               .to_dataset())
         return da_r
 
@@ -202,6 +200,10 @@ def assemble_comparison_data(models,observations,model_labels=None,
     elif base_var=='flow':
         loc_extract_opts['data_vars']=['cross_section_discharge']
         # Not that many people use this...  but it's the correct one.
+    elif base_var=='salinity':
+        loc_extract_opts['data_vars']=['salinity']
+    elif base_var=='inorganic_nitrogen_(nitrate_and_nitrite)':
+        loc_extract_opts['data_vars']=['ZNit','NO3']  # want to extract both to calculate age and compare with nitrogen
     else:
         raise Exception("Not ready to extract variable %s"%base_var)
     
@@ -218,23 +220,24 @@ def assemble_comparison_data(models,observations,model_labels=None,
             print("No data extracted from model.  omitting")
             continue
             
-        assert len(loc_extract_opts['data_vars'])==1,"otherwise missing some data"
-        tgt_var=loc_extract_opts['data_vars'][0]
-        try:
-            da=ds[tgt_var]
-        except KeyError:
-            # see if the variable can be found based on standard-name
-            for dv in ds.data_vars:
-                if ds[dv].attrs.get('standard_name','')==tgt_var:
-                    da=ds[dv]
-                    da.name=tgt_var
-                    break
-            else:
-                raise Exception("Could not find %s by name or standard_name"%(tgt_var))
+        assert len(loc_extract_opts['data_vars'])>=1,"otherwise missing some data"
+        tgt_vars=loc_extract_opts['data_vars']
+        for tgt_var in tgt_vars:
+            try:
+                da=ds[tgt_var]
+            except KeyError:
+                # see if the variable can be found based on standard-name
+                for dv in ds.data_vars:
+                    if ds[dv].attrs.get('standard_name','')==tgt_var:
+                        da=ds[dv]
+                        da.name=tgt_var
+                        break
+                else:
+                    raise Exception("Could not find %s by name or standard_name"%(tgt_var))
 
-        da.name=base_var # having the same name helps later
-        da=da.assign_coords(label=label)
-        model_data.append(da)
+            da.name=base_var # having the same name helps later
+            da=da.assign_coords(label=label)
+            model_data.append(da)
         
     # Annotate the sources with labels
     for i,da in enumerate(observations):
@@ -299,16 +302,19 @@ def fix_date_labels(ax,nticks=3):
     
 def calibration_figure_3panel(all_sources,combined=None,
                               metric_x=1,metric_ref=0,
-                              offset_source=0,scatter_x_source=0,
+                              offset_source=None,scatter_x_source=0,
                               num=None,trim_time=False,
                               lowpass=True,
-                              styles=None):
+                              styles=None,
+                              offset_method='mean'):
     """
     all_sources: list of DataArrays to compare.
     combined: those same dataarrays interpolated to common time, or none to automatically
       do this.
     metric_x: index of the 'model' data in combined.
     metric_ref: index of the 'observed' data in combined.
+    offset_source: if not None, specify the index of the source to which other
+      sources will be shifted to
     scatter_x_ref: which item in combined to use for the x axis of the scatter.
 
     lowpass: if True, the lower left panel is a lowpass of the data, otherwise
@@ -318,6 +324,11 @@ def calibration_figure_3panel(all_sources,combined=None,
     primary model output second.
 
     trim_time: truncate all sources to the shortest common time period
+
+    
+    offset_method: 'mean' calculates offsets between stations by mean.  'median'
+     by median, which can be better when a source has noise or model crashes and
+     corrupts values at the end.
     """
     N=np.arange(len(all_sources))
     if metric_ref<0:
@@ -343,12 +354,22 @@ def calibration_figure_3panel(all_sources,combined=None,
 
     gs = gridspec.GridSpec(5, 3)
     fig=plt.figure(figsize=(9,7),num=num)
+    plt.tight_layout()
     ts_ax = fig.add_subplot(gs[:-3, :])
     lp_ax = fig.add_subplot(gs[-3:-1, :-1])
     scat_ax=fig.add_subplot(gs[-3:-1, 2])
-    txt_ax= fig.add_subplot(gs[-1,:])
+    if lowpass:
+        txt_ax= fig.add_subplot(gs[-1,:])
+    else:
+        txt_ax=lp_ax
 
-    offsets=combined.mean(dim='time').values
+    if offset_method=='mean':
+        offsets=combined.mean(dim='time').values
+    elif offset_method=='median':
+        offsets=combined.median(dim='time').values
+    else:
+        raise Exception("offset_method=%s is not understood"%offset_method)
+    
     if offset_source is not None:
         offsets-=offsets[offset_source]
     else:
@@ -361,8 +382,15 @@ def calibration_figure_3panel(all_sources,combined=None,
     if 1: # Tidal time scale plot:
         ax=ts_ax
         for src_i,src in enumerate(all_sources):
-            ax.plot(src.time,src.values-offsets[src_i],
-                    label=labels[src_i],
+            # When reading live output, it's possible for the length of
+            # the time dimension and the data to get out of sync.  slc
+            # clips to the shorter of the two.
+            label=labels[src_i]
+            if offsets[src_i]!=0.0:
+                label="%s %+.2f"%(label,-offsets[src_i])
+            slc=slice(None,min(src.time.shape[0],src.values.shape[0]))
+            ax.plot(src.time.values[slc],src.values[slc]-offsets[src_i],
+                    label=label,
                     **styles[src_i])
         ax.legend(fontsize=8,loc='upper left')
 
@@ -408,9 +436,16 @@ def calibration_figure_3panel(all_sources,combined=None,
         plt.setp(list(ax.spines.values()),visible=0)
         ax.xaxis.set_visible(0)
         ax.yaxis.set_visible(0)
-        
-        ax.text(0.05,0.95,tbl,va='top',transform=ax.transAxes,
-                family='monospace',fontsize=8)
+
+        if lowpass:
+            fontsize=8
+            x=0.05
+        else:
+            # less horizontal space
+            fontsize=6.5
+            x=-0.05
+        ax.text(x,0.95,tbl,va='top',transform=ax.transAxes,
+                family='monospace',fontsize=fontsize,zorder=3)
 
     # Lowpass:
     has_lp_data=False
@@ -421,6 +456,7 @@ def calibration_figure_3panel(all_sources,combined=None,
         def lp(x): 
             x=utils.fill_invalid(x)
             dn=utils.to_dnum(t)
+            # cutoff for low pass filtering, must be 2 * cutoff days after start or before end of datenums
             cutoff=36/24.
             x_lp=filters.lowpass(x,dn,cutoff=cutoff)
             mask= (dn<dn[0]+2*cutoff) | (dn>dn[-1]-2*cutoff)

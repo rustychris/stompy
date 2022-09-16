@@ -19,7 +19,8 @@ import pandas as pd
 class PtmBin(object):
     # when True, load particle data as memory map rather than np.fromstring.
     use_memmap=True
-    def __init__(self,fn,release_name=None):
+    fp=None
+    def __init__(self,fn,release_name=None,idx_fn='auto'):
         self.fn = fn
 
         if release_name is None:
@@ -43,11 +44,30 @@ class PtmBin(object):
         self.offsets = {} # map timestep => start of date header for that timestep
         self.offsets[0] = self.fp.tell()
 
-        # Get the time information
-        self.getTime()
+        if idx_fn=='auto':
+            idx_fn=fn.replace('_bin.out','_bin.idx')
+        if os.path.exists(idx_fn):
+            self.idx_fn=idx_fn
+            self.read_index()
+        else:
+            # Get the time information
+            self.getTime()
 
+    def __del__(self):
+        if self.fp is not None:
+            self.fp.close()
+            self.fp=None
+
+    def read_index(self):
+        # 20x faster
+        df=pd.read_csv(self.idx_fn,sep='\s+',
+                       names=['year','month','day','hour','minute','offset','count']) # 5ms
+        df['time']=pd.to_datetime(df[['year','month','day','hour','minute']])
+        # mimic what getTime and scan would have done:
+        self.time=df.time.dt.to_pydatetime()
+        self.offsets=dict(zip(df.index.values,df.offset.values))
+                          
     def read_bin_header(self):
-
         self.Nattr = int( np.fromstring(self.fp.read(4),np.int32) )
 
         # print "Nattr: ",self.Nattr
@@ -255,22 +275,30 @@ class PtmBin(object):
 
         return cell_cache_fn
 
+def release_log_dataframe(fn):
+    """
+    Parse release_log into pandas DataFrame
+    """
+    # for short releases, infer_datetime_format slows it down.
+    # Might be faster if there are many releases.
+    return pd.read_csv(fn,sep='\s+',
+                       names=['id','gid','x','y','z','k','cell','date','time'],
+                       parse_dates=[ ['date','time'] ],
+                       infer_datetime_format=False)
+    
 class ReleaseLog(object):
     def __init__(self,fn):
-        self.data=pd.read_csv(fn,sep='\s+',
-                              names=['id','gid','x','y','z','k','cell','date','time'],
-                              parse_dates=[ ['date','time'] ])
+        self.data=release_log_dataframe(fn)
         self.intervals=self.to_intervals(self.data)
     def to_intervals(self,data):
         # group by interval
         grped=data.groupby('date_time')
-        intervals=pd.DataFrame()
-        intervals['time']=grped['date_time'].first()
-        intervals['id_min']=grped['id'].min()
-        intervals['id_max']=grped['id'].max()
-        intervals['gid_min']=grped['gid'].min()
-        intervals['gid_max']=grped['gid'].max()
-        intervals['count']=grped['id'].size()
+        intervals=pd.DataFrame(dict(time=grped['date_time'].first(),
+                                    id_min=grped['id'].min(),
+                                    id_max=grped['id'].max(),
+                                    gid_min=grped['gid'].min(),
+                                    gid_max=grped['gid'].max(),
+                                    count=grped['id'].size()))
         return intervals
     
 class PtmState(object):
@@ -478,6 +506,29 @@ def calc_agebin(binfile,ncfile,polyfile,ntout):
 
     print('Done.')
 
+def parse_line_out(fn):
+    nvariables=np.fromfile(fn,np.int32,1)[0]
+    if nvariables>0:
+        raise Exception("Haven't added code to parse variable names")
+    crossings=np.fromfile(fn, [ ('year',np.int32),
+                      ('month',np.int32),
+                      ('day',np.int32),
+                      ('hour',np.int32),
+                      ('minute',np.int32),
+                      ('second',np.int32),
+                      ('nline',np.int16),
+                      ('np',np.int16),
+                      ('xi',np.float64),
+                      ('yi',np.float64),
+                      ('z', np.float64),
+                      ('status',np.int32),
+                      ('variables',np.float64,nvariables)
+                      ], offset=4)
+    return crossings
+
+
+
+    
 #hydrofile = '../InputFiles/untrim_hydro.nc'
 #ptmfile = '../InputFiles/line_specify_bin.out'
 #outfile = '../InputFiles/FISH_PTM.mov'

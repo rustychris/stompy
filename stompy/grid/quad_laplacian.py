@@ -39,20 +39,41 @@ TODO:
 import numpy as np
 from collections import defaultdict
 from shapely import geometry, ops
-from scipy import sparse
+from scipy import sparse, signal
 
 import matplotlib.pyplot as plt
+from matplotlib.tri import LinearTriInterpolator,TriFinder,TrapezoidMapTriFinder
+
 from matplotlib import colors
 import itertools
 
 from . import unstructured_grid, exact_delaunay,orthogonalize, triangulate_hole
 from .. import utils, filters
-from ..spatial import field
+from ..spatial import field, linestring_utils
 from . import front
+
+import logging
+
+log=logging.getLogger('quad_laplacian')
 
 import six
 
 ##
+
+# A hack for linear interpolation on g_int. Nodes outside the triangulation
+# take their value from the nearest cell.
+class PermissiveFinder(TrapezoidMapTriFinder):
+    def __init__(self,grid):
+        self.grid=grid
+        self.mp_tri=grid.mpl_triangulation()
+        super(PermissiveFinder,self).__init__(self.mp_tri)
+    def __call__(self, x, y):
+        base=super(PermissiveFinder,self).__call__(x,y)
+        missing=np.nonzero(base==-1)[0]
+        for i in missing:
+            base[i]=self.grid.select_cells_nearest( [x[i],y[i]] )
+        return base
+
 
 # borrow codes as in front.py
 RIGID=front.AdvancingFront.RIGID
@@ -108,10 +129,10 @@ class NodeDiscretization(object):
 
         nrows=nlaplace_rows + ndirichlet_nodes + ntangential_nodes + ngradient_nodes
 
-        print(f"row breakdown:  Lap: {nlaplace_rows}  "
-              f"Dir: {ndirichlet_nodes}  Tan: {ntangential_nodes} "
-              f"({len(zero_tangential_nodes)} grps)  Grad: {ngradient_nodes}")
-        print(f"nrows={nrows} N={g.Nnodes()}")
+        log.info(f"row breakdown:  Lap: {nlaplace_rows}  "
+                 f"Dir: {ndirichlet_nodes}  Tan: {ntangential_nodes} "
+                 f"({len(zero_tangential_nodes)} grps)  Grad: {ngradient_nodes}")
+        log.info(f"nrows={nrows} N={g.Nnodes()}")
 
         B=np.zeros(nrows,np.float64)
         M=sparse.dok_matrix( (nrows,g.Nnodes()),np.float64)
@@ -200,6 +221,7 @@ class NodeDiscretization(object):
         for m in range(M):
             tri=[n0,N[m],N[(m+1)%P]]
             Am=utils.signed_area( self.g.nodes['x'][tri] )
+            assert Am!=0.0
             A.append(Am)
         AT=np.sum(A)
 
@@ -259,6 +281,66 @@ class NodeDiscretization(object):
                 [alpha0]+list(alphas),
                 -gamma)
 
+def classify_nodes(g,gen):
+    """
+    Find fixed vs. free nodes in g by matching up with gen.nodes['fixed']
+    """
+    n_fixed=[]
+    for gen_n in np.nonzero( gen.nodes['fixed'] )[0]:
+        n=g.select_nodes_nearest( gen.nodes['x'][gen_n], max_dist=0.001)
+        if n is not None:
+            n_fixed.append(n)
+
+    n_free=[n for n in g.valid_node_iter() if n not in n_fixed]
+    return n_fixed, n_free
+
+
+def snap_angles(gen):
+    """
+    gen: unstructured grid
+    will populate turn_fwd/turn_rev fields on the edges, by iterating over
+    cells and setting the smallest 4 internal angles in each cell to 90, and the
+    rest to 180.  Internal angles not associated with cells are set to 0
+    """
+    gen.add_edge_field('turn_fwd',np.zeros(gen.Nedges(),np.float64),on_exists='overwrite')
+    gen.add_edge_field('turn_rev',np.zeros(gen.Nedges(),np.float64),on_exists='overwrite')
+                       
+    def he_angle(he):
+        # Calculate absolute angle of the half edge
+        xy=he.grid.nodes['x']
+        seg=xy[ [he.node_rev(), he.node_fwd()] ]
+        dxy=seg[1] - seg[0]
+        return np.arctan2(dxy[1],dxy[0])
+    def set_angle(he,angle):
+        # set turn_fwd/rev for the half edge
+        if he.orient==0:
+            gen.edges['turn_fwd'][he.j]=angle
+        else:
+            gen.edges['turn_rev'][he.j]=angle
+    
+    for c in gen.valid_cell_iter():
+        angle_and_he=[]
+        he0=he=gen.cell_to_halfedge(c,0)
+        while 1:
+            he_nxt=he.fwd()
+
+            angle0=he_angle(he)
+            angle1=he_angle(he_nxt)
+            turn=(angle1-angle0)*180/np.pi
+            turn_d=(turn + 180) % 360 - 180
+            # Now turn is 0 for straight ahead, 90 for a left
+            angle=180-turn_d
+            angle_and_he.append( [angle,he] )
+            if he_nxt==he0:
+                break
+            else:
+                he=he_nxt
+                
+        order=np.argsort( [angle for angle,he in angle_and_he] )
+        for idx in order[:4]:
+            set_angle(angle_and_he[idx][1],90)
+        for idx in order[4:]:
+            set_angle(angle_and_he[idx][1],180)
 
 def prepare_angles_halfedge(gen):
     """
@@ -269,13 +351,10 @@ def prepare_angles_halfedge(gen):
     # at this stage, angles are absolute, and reflect the natural direction
     # of the edge
     edge_angles=np.nan*np.zeros(gen.Nedges(),np.float32)
-
-    # Graph traversal to set edge angles:
-    c0=next(gen.valid_cell_iter())
-
-    he0=gen.cell_to_halfedge(c0,0)
-
-    stack=[ (he0,0.0) ]
+    def he_angle(he,val=None):
+        if val is not None:
+            edge_angles[he.j] = (val + 180*he.orient) % 360
+        return (edge_angles[he.j] + 180 * he.orient) % 360
 
     j_turns=np.c_[ gen.edges['turn_fwd'],
                    gen.edges['turn_rev'] ]
@@ -284,58 +363,86 @@ def prepare_angles_halfedge(gen):
     # And convert all to delta angle, not internal angle
     j_turns=180-j_turns
 
-    def he_angle(he,val=None):
-        if val is not None:
-            edge_angles[he.j] = (val + 180*he.orient) % 360
-        return (edge_angles[he.j] + 180 * he.orient) % 360
-
-    while stack:
-        he,angle=stack.pop()
-        if he.cell()<0: continue
-
-        # print(f"Setting angle={angle} for {he}")
-
-        existing_angle=he_angle(he)
-        if np.isfinite(existing_angle):
-            if existing_angle!=angle:
-                plt.figure(2).clf()
-                gen.plot_edges(labeler=lambda j,r: ["",edge_angles[j]][int(np.isfinite(edge_angles[j]))])
-                gen.plot_nodes(labeler='id')
-                edge_tans=utils.to_unit( np.diff(gen.nodes['x'][gen.edges['nodes']],axis=1)[:,0,:] )
-                ecs=gen.edges_center()
-                plt.quiver(ecs[:,0],ecs[:,1],edge_tans[:,0],edge_tans[:,1],
-                           color='red',scale=20,width=0.01)
-                plt.axis('tight')
-                plt.axis('equal')
-                # plt.axis((552491.7439203339, 552769.9733637376, 4124312.4010451823, 4124500.4431583737))
-                gen.plot_edges(mask=[he.j],color='r',lw=3)
-                raise Exception("Angle mismatch")
+    # Have to loop over all cells in case there are disconnected areas.
+    for c0 in gen.valid_cell_iter():
+        # Graph traversal to set edge angles:
+        he0=gen.cell_to_halfedge(c0,0)
+        if np.isfinite(he_angle(he0)):
             continue
-        else:
-            # Set it
-            he_angle(he,angle)
+        stack=[ (he0,0.0) ]
 
-        he_fwd=he.fwd()
-        angle_fwd=(angle+j_turns[he.j,he.orient])%360
-        # print(f"  fwd: he={he_fwd}  angle_fwd={angle_fwd}")
-        stack.append( (he_fwd,angle_fwd) )
+        while stack:
+            he,angle=stack.pop()
+            if he.cell()<0: continue
 
-        he_opp=he.opposite()
-        if he_opp.cell()<0: continue
-        he_rev=he_opp.fwd()
-        angle_rev=(angle+180+j_turns[he.j,1-he.orient])%360
-        # print(f"  rev: he={he_rev}  angle_fwd={angle_rev}")
+            existing_angle=he_angle(he)
+            if np.isfinite(existing_angle):
+                if existing_angle!=angle:
+                    plt.figure(2).clf()
+                    gen.plot_edges(labeler=lambda j,r: ["",edge_angles[j]][int(np.isfinite(edge_angles[j]))])
+                    gen.plot_nodes(labeler='id')
+                    edge_tans=utils.to_unit( np.diff(gen.nodes['x'][gen.edges['nodes']],axis=1)[:,0,:] )
+                    ecs=gen.edges_center()
+                    plt.quiver(ecs[:,0],ecs[:,1],edge_tans[:,0],edge_tans[:,1],
+                               color='red',scale=20,width=0.01)
+                    plt.axis('tight')
+                    plt.axis('equal')
+                    gen.plot_edges(mask=[he.j],color='r',lw=3)
+                    raise Exception("Angle mismatch")
+                continue
+            else:
+                # Set it
+                he_angle(he,angle)
 
-        stack.append( (he_rev,angle_rev) )
+            he_fwd=he.fwd()
+            angle_fwd=(angle+j_turns[he.j,he.orient])%360
+            # print(f"  fwd: he={he_fwd}  angle_fwd={angle_fwd}")
+            stack.append( (he_fwd,angle_fwd) )
+
+            he_opp=he.opposite()
+            if he_opp.cell()<0: continue
+            he_rev=he_opp.fwd()
+            angle_rev=(angle+180+j_turns[he.j,1-he.orient])%360
+            # print(f"  rev: he={he_rev}  angle_fwd={angle_rev}")
+
+            stack.append( (he_rev,angle_rev) )
 
     gen.add_edge_field('angle',edge_angles,on_exists='overwrite')
 
-def linear_scales(gen):
+def adjusted_scale(gen, scale, nom_res=None):
+    """
+    Replace positive scale values on shared edges with negative counts
+    """
+    scale=scale.copy()
+    e2c=gen.edge_to_cells()
+    for j in np.nonzero( (e2c.min(axis=1)>=0) )[0]:
+        if scale[j]<0: continue # already good
+        L=gen.edges_length(j)
+        if scale[j]==0.0:
+            if nom_res is not None:
+                res=nom_res
+            else:
+                continue
+        else:
+            res=scale[j]
+        scale[j]=-max(1,np.round(L/res))
+        print("Mapped edge scale %g to %g"%(res,scale[j]))
+    return scale
+
+def linear_scales(gen,method='adhoc'):
+    """
+    Infer scales from the edges of the generating grid
+    Create a scale field for the two canonical coordinates.
+
+    method: 'adhoc' reverts to a simple extrapolation approach, rather 
+    than solving a proper laplacian.  The Laplacian code turned out be
+    brittle on the very coarse triangulation of gen.
+    """
     scales=gen.edges['scale']
     scales=np.where( np.isfinite(scales), scales, 0.0)
 
-    i_edges=np.nonzero( (scales>0) & (gen.edges['angle']%180== 0) )[0]
-    j_edges=np.nonzero( (scales>0) & (gen.edges['angle']%180==90) )[0]
+    i_edges=np.nonzero( (scales!=0) & (gen.edges['angle']%180== 0) )[0]
+    j_edges=np.nonzero( (scales!=0) & (gen.edges['angle']%180==90) )[0]
 
     gen_tri=exact_delaunay.Triangulation()
     gen_tmp=gen.copy()
@@ -353,10 +460,14 @@ def linear_scales(gen):
 
     # First, the i scale:
     extraps=[]
+    el=gen.edges_length()
     for edge_list in [i_edges,j_edges]:
-        dirich={}
+        dirich={} # nodes of gen => dirichlet BC
         for j in edge_list:
             scale=scales[j]
+            if scale<0:
+                scale=el[j]/(-scale)
+                
             for n in gen.edges['nodes'][j]:
                 if n in dirich:
                     dirich[n] = 0.5*(scale+dirich[n])
@@ -369,45 +480,158 @@ def linear_scales(gen):
             assert n_tri is not None
             mapped_dirich[n_tri]=dirich[n]
 
-        nd=NodeDiscretization(gen_tri)
-        M,b=nd.construct_matrix(op='laplacian',dirichlet_nodes=mapped_dirich)
-        extraps.append( sparse.linalg.spsolve(M.tocsr(),b) )
+        if method=='adhoc':
+            # This really shouldn't be necessary, but I'm having issues with
+            # negative results coming out of NodeDiscretization.
+            # This is at least positive definite (right?)
+            N=gen_tri.Nnodes()
+            M=sparse.dok_matrix((N,N))
+            b=np.zeros( gen_tri.Nnodes())
+            for n in range(gen_tri.Nnodes()):
+                if n in mapped_dirich:
+                    M[n,n]=1
+                    b[n]=mapped_dirich[n]
+                else:
+                    nbrs=gen_tri.node_to_nodes(n)
+                    f=1./len(nbrs)
+                    M[n,n]=1
+                    for nbr in nbrs:
+                        M[n,nbr]=-f
+            soln=sparse.linalg.spsolve(M.tocsr(),b)
+        else:
+            nd=NodeDiscretization(gen_tri)
+            M,b=nd.construct_matrix(op='laplacian',dirichlet_nodes=mapped_dirich)
+            soln=sparse.linalg.spsolve(M.tocsr(),b)
+        extraps.append(soln)
 
     mp_tri=gen_tri.mpl_triangulation()
     i_field=field.XYZField(X=gen_tri.nodes['x'],F=extraps[0])
     i_field._tri = mp_tri
     j_field=field.XYZField(X=gen_tri.nodes['x'],F=extraps[1])
     j_field._tri = mp_tri
-    return i_field, j_field
-    
-class QuadGen(object):
-    
-    # default behavior computes a nominal, isotropic grid for the calculation
-    #  of the orthogonal mapping, and then a separate anisotropic grid for the
-    #  final result. If anisotropic is False, the isotropic grid is kept, 
-    #  and its ij indices will be updated to reflect the anisotropic inputs.
-    final='anisotropic' # 'isotropic', 'triangle'
 
-    patchwise=True # use patch-by-patch method for constructing quad grid from psi/phi field.
-    
+    # As it stands, it's possible for the input grid to have disconnected
+    # sets of cells, such that the node discretization yields 0 in the
+    # disconnected areas (unless they have their own scale data).
+    bad=(extraps[0]<=0) | (extraps[1]<=0)
+    if np.any(bad):
+        idxs=np.nonzero(bad)[0]
+        log.error("Bad nodes: %s"%str(gen_tri.nodes['x'][idxs]))
+        raise Exception("Probably disconnected cells with no scale")
+    return i_field, j_field
+
+
+def add_bezier(gen):
+    """
+    Generate bezier control points for each edge.  Uses angles (in ij
+    space) in the generating grid to calculate angles at each vertex, and then
+    choose bezier control points to achieve that angle.
+
+    This version is standalone, and can handle nodes with degree>2.
+    """
+    # Need to force the internal angles at nodes to match xy space
+    # angles and ij space angles.
+
+    order=3 # cubic bezier curves
+    bez=np.nan*np.zeros( (gen.Nedges(),order+1,2) )
+    bez[:,0,:] = gen.nodes['x'][gen.edges['nodes'][:,0]]
+    bez[:,order,:] = gen.nodes['x'][gen.edges['nodes'][:,1]]
+
+    gen.add_edge_field('bez', bez, on_exists='overwrite')
+
+    for n in gen.valid_node_iter():
+        nbrs=gen.angle_sort_adjacent_nodes(n)
+        if len(nbrs)==0:
+            continue
+        hes=[gen.nodes_to_halfedge(n,nbr) for nbr in nbrs]
+
+        # Filter out non-quad grid edges in there, which will have angle=nan
+        hes=[he for he in hes if np.isfinite(gen.edges['angle'][he.j])]
+
+        if len(hes)==0:
+            continue
+        
+        # Each of those half-edges has an angle in ij space, relative
+        # to natural edge direction.
+        def he_ij_angle(he):
+            return (gen.edges['angle'][he.j]+(he.orient*180.))%360.
+        def he_xy_angle(he):
+            A=gen.nodes['x'][he.node_rev()]
+            B=gen.nodes['x'][he.node_fwd()]
+            delta=B-A
+            return 180/np.pi * np.arctan2(delta[1],delta[0])
+
+        ij_angles=np.array( [he_ij_angle(he) for he in hes] )
+        xy_angles=np.array( [he_xy_angle(he) for he in hes] )
+        
+        # overall rotation -
+        # 0 degress in xy space is rot degrees from 0 degrees in
+        # ij space.
+        xy_to_ij=np.pi/180 * (ij_angles-xy_angles)
+
+        # when a node is part of multple cells, but those
+        # cells have no edges in common, treat it as two separate
+        # groups of angles
+        
+        # label nodes:
+        node_groups=np.arange(len(hes))
+        for a in range(len(hes)):
+            b=(a+1)%len(hes)
+            he_a=hes[a]
+            he_b=hes[b]
+            if he_a.cell()>=0 and he_a.cell()==he_b.cell_opp():
+                node_groups[ node_groups==node_groups[b] ] = node_groups[a]
+
+        xy_tgts=0*ij_angles
+        for grp in np.arange(len(hes)):
+            sel=node_groups==grp
+            if np.all(~sel): continue
+            
+            rot=180/np.pi * np.arctan2( np.sin(xy_to_ij[sel]).mean(),
+                                        np.cos(xy_to_ij[sel]).mean())
+            xy_tgts[sel]=ij_angles[sel] - rot
+            
+        xy_errs=xy_angles - xy_tgts
+
+        for he,xy_err in zip(hes,xy_errs):
+            vec=gen.nodes['x'][he.node_fwd()] - gen.nodes['x'][he.node_rev()]
+            cp=gen.nodes['x'][n] + utils.rot(-xy_err*np.pi/180., 1./3 * vec)
+            gen.edges['bez'][he.j,1+he.orient]=cp
+
+
+def plot_gen_bezier(gen,num=10):
+    fig=plt.figure(num)
+    fig.clf()
+    ax=fig.add_subplot(1,1,1)
+    gen.plot_edges(lw=0.3,color='k',alpha=0.5,ax=ax)
+    gen.plot_nodes(alpha=0.5,ax=ax,zorder=3,color='orange')
+
+    for j in gen.valid_edge_iter():
+        n0=gen.edges['nodes'][j,0]
+        nN=gen.edges['nodes'][j,1]
+        bez=gen.edges['bez'][j]
+
+        t=np.linspace(0,1,21)
+
+        B0=(1-t)**3
+        B1=3*(1-t)**2 * t
+        B2=3*(1-t)*t**2
+        B3=t**3
+        points = B0[:,None]*bez[0] + B1[:,None]*bez[1] + B2[:,None]*bez[2] + B3[:,None]*bez[3]
+
+        ax.plot(points[:,0],points[:,1],'b-',zorder=2,lw=1.5)
+        ax.plot(bez[:,0],bez[:,1],'r-o',zorder=1,alpha=0.5,lw=1.5)
+    return fig,ax
+
+class QuadGen(object):
     # The cell spacing in geographic coordinates for the nominal, isotropic grid
     nom_res=4.0
-
+    gmsh_path="gmsh"
+    
     scales=None
     
     # Minimum number of edges along a boundary segment in the nominal isotropic grid
     min_steps=2
-
-    # How many iterations to execute during the smoothing of the solution grid
-    # (smooth_interior_quads)
-    smooth_iterations=3
-
-    # When assigning boundary nodes to edges of the generating grid, how tolerant
-    # can we be?  This is a distance in ij space.  For cartesian boundaries can
-    # be small, and is hardcoded at 0.1. For ragged boundaries, compare against
-    # this value.  Seems like the max ought to be a little over 1. This is
-    # probably too generous
-    max_ragged_node_offset=2.0
 
     # The additional constraints that link psi and phi create an over-determined
     # system.  Still trying to understand when this is a problem.  The solution
@@ -418,10 +642,6 @@ class QuadGen(object):
     # really a bug elsewhere, and that 1.0 is the best choice
     gradient_scale=1.0
 
-    # 'tri' or 'quad' -- whether the intermediate grid is a quad grid or triangle
-    # grid.
-    intermediate='tri' # 'quad'
-
     # 'rebay', 'front', 'gmsh'.  When intermediate is 'tri', this chooses the method for
     # generating the intermediate triangular grid
     triangle_method='rebay'
@@ -429,6 +649,9 @@ class QuadGen(object):
     # How internal angles are specified.  'node' is only valid when a single cell
     # is selected in gen.
     angle_source='halfedge' # 'halfedge' or 'node'
+
+    # Whether to smooth and relax the resulting grid
+    smooth=True
     
     def __init__(self,gen,execute=True,cells=None,**kw):
         """
@@ -447,7 +670,13 @@ class QuadGen(object):
 
         # Process angles on the whole quad grid, so we can also get
         # scales
-        prepare_angles_halfedge(gen)
+        if self.angle_source=='halfedge':
+            prepare_angles_halfedge(gen)
+        elif self.angle_source=='existing':
+            pass
+        else:
+            raise Exception("bad angle source: %s"%self.angle_source)
+        add_bezier(gen)
         
         if self.scales is None:
             if 'scale' in gen.edges.dtype.names:
@@ -455,7 +684,7 @@ class QuadGen(object):
             else:
                 self.scales=[field.ConstantField(self.nom_res),
                              field.ConstantField(self.nom_res)]
-            
+        
         if cells is not None:
             for c in range(gen.Ncells()):
                 if (c not in cells) and (not gen.cells['deleted'][c]):
@@ -478,11 +707,13 @@ class QuadGen(object):
         
     def execute(self):
         self.process_internal_edges(self.gen)
-        self.add_bezier(self.gen)
         self.g_int=self.create_intermediate_grid_tri()
         self.calc_psi_phi()
         self.g_final=self.create_final_by_patches()
-        
+        if self.smooth:
+            self.smooth_to_scale(self.g_final)
+        return self.g_final
+    
     def set_scales_diffusion(self):
         # Probably not what I'll end up with, but try a diffusion approach
         i_scale_dir={}
@@ -539,6 +770,8 @@ class QuadGen(object):
             points=self.gen_bezier_linestring(j=j,samples_per_edge=10,span_fixed=False)
             dist=utils.dist_along(points)[-1]
             local_res=scale(points).min(axis=0) # min=>conservative
+            assert local_res>0
+            assert np.isfinite(dist)
             N=max( self.min_steps, int(dist/local_res))
             points=self.gen_bezier_linestring(j=j,samples_per_edge=N,span_fixed=False)
             nodes=[g.add_or_find_node(x=p,tolerance=0.1)
@@ -575,8 +808,12 @@ class QuadGen(object):
             fn='tmp.geo'
             g.write_gmsh_geo(fn)
             import subprocess
-            subprocess.run(["gmsh",fn,'-2'])
-            g_gmsh=unstructured_grid.UnstructuredGrid.read_gmsh('tmp.msh')
+            subprocess.run([self.gmsh_path,fn,'-2'])
+            try:
+                g_gmsh=unstructured_grid.UnstructuredGrid.read_gmsh('tmp.msh')
+            except:
+                log.error("Intermediate grid generation failed. Check for self-intersection in bezier grid")
+                raise
             g.add_grid(g_gmsh,merge_nodes='auto',tol=1e-3)
             gnew=g
         else:    
@@ -601,92 +838,14 @@ class QuadGen(object):
         ax.axis('tight')
         ax.axis('equal')
 
-    def add_bezier(self,gen):
-        """
-        Generate bezier control points for each edge.  Uses ij in
-        the generating grid to calculate angles at each vertex, and then
-        choose bezier control points to achieve that angle.
-        """
-        # Need to force the corners to be 90deg angles, otherwise
-        # there's no hope of getting orthogonal cells in the interior.
-        
-        order=3 # cubic bezier curves
-        bez=np.zeros( (gen.Nedges(),order+1,2) )
-        bez[:,0,:] = gen.nodes['x'][gen.edges['nodes'][:,0]]
-        bez[:,order,:] = gen.nodes['x'][gen.edges['nodes'][:,1]]
-
-        gen.add_edge_field('bez', bez, on_exists='overwrite')
-
-        cycles=gen.find_cycles(max_cycle_len=1000)
-        assert len(cycles)==1
-        cycle=cycles[0]
-        
-        for a,b,c in zip( np.roll(cycle,1),
-                          cycle,
-                          np.roll(cycle,-1) ):
-            ab=gen.nodes['x'][b] - gen.nodes['x'][a]
-            bc=gen.nodes['x'][c] - gen.nodes['x'][b]
-            
-            j_ab=gen.nodes_to_edge(a,b)
-            j_bc=gen.nodes_to_edge(b,c)
-
-            # This makes use of angle being defined relative to a CCW
-            # cycle, not the order of edge['nodes']
-            dtheta_ij=(gen.edges['angle'][j_bc] - gen.edges['angle'][j_ab])*np.pi/180.
-            dtheta_ij=(dtheta_ij+np.pi)%(2*np.pi) - np.pi
-            
-            # Angle of A->B
-            theta0=np.arctan2(ab[1],ab[0])
-            theta1=np.arctan2(bc[1],bc[0])
-            dtheta=(theta1 - theta0 + np.pi) % (2*np.pi) - np.pi
-
-            theta_err=dtheta-dtheta_ij
-            # Make sure we're calculating error in the shorter direction
-            theta_err=(theta_err+np.pi)%(2*np.pi) - np.pi
-            
-            cp0 = gen.nodes['x'][b] + utils.rot(  theta_err/2, 1./3 * -ab )
-            if gen.edges['nodes'][j_ab,0]==b:
-                cp_i=1
-            else:
-                cp_i=2
-            gen.edges['bez'][j_ab,cp_i] = cp0
-            
-            cp1 = gen.nodes['x'][b] + utils.rot( -theta_err/2, 1./3 * bc )
-            if gen.edges['nodes'][j_bc,0]==b:
-                cp_i=1
-            else:
-                cp_i=2
-            gen.edges['bez'][j_bc,cp_i] = cp1
-
     def plot_gen_bezier(self,num=10):
-        gen=self.gen
-        fig=plt.figure(num)
-        fig.clf()
-        ax=fig.add_subplot(1,1,1)
-        gen.plot_edges(lw=0.3,color='k',alpha=0.5,ax=ax)
-        gen.plot_nodes(alpha=0.5,ax=ax,zorder=3,color='orange')
+        fig,ax=plot_gen_bezier(self.gen)
         
-        for j in self.gen.valid_edge_iter():
-            n0=gen.edges['nodes'][j,0]
-            nN=gen.edges['nodes'][j,1]
-            bez=gen.edges['bez'][j]
-            
-            t=np.linspace(0,1,21)
-
-            B0=(1-t)**3
-            B1=3*(1-t)**2 * t
-            B2=3*(1-t)*t**2
-            B3=t**3
-            points = B0[:,None]*bez[0] + B1[:,None]*bez[1] + B2[:,None]*bez[2] + B3[:,None]*bez[3]
-
-            ax.plot(points[:,0],points[:,1],'b-',zorder=2,lw=1.5)
-            ax.plot(bez[:,0],bez[:,1],'r-o',zorder=1,alpha=0.5,lw=1.5)
-
         for n12 in self.internal_edges:
-            ax.plot( gen.nodes['x'][n12[:2],0],
-                     gen.nodes['x'][n12[:2],1], 'g-')
+            ax.plot( self.gen.nodes['x'][n12[:2],0],
+                     self.gen.nodes['x'][n12[:2],1], 'g-')
             i_angle=self.internal_edge_angle(n12)
-            mid=gen.nodes['x'][n12[:2],:].mean(axis=0)
+            mid=self.gen.nodes['x'][n12[:2],:].mean(axis=0)
             ax.text( mid[0],mid[1], str(i_angle),color='g')
 
     def gen_bezier_curve(self,j=None,samples_per_edge=10,span_fixed=True):
@@ -855,7 +1014,7 @@ class QuadGen(object):
                         parallel_count+=1
                         break # parallel. good
             if parallel_count<2:
-                print(f"Will skip potential internal edge {j}")
+                log.info(f"Will skip potential internal edge {j}")
             else:
                 self.add_internal_edge(gen.edges['nodes'][j],
                                        gen.edges['angle'][j])
@@ -878,6 +1037,8 @@ class QuadGen(object):
                 assert np.all(gen.edges['nodes'][j]==[b,a])
                 gen.edges['angle'][j]=(gen.edges['angle'][j]+180)%360
 
+        gen.add_node_field('turn',np.zeros(gen.Nnodes(),np.float64), on_exists='overwrite')
+        
         for prv,n,nxt in zip( cycle, np.roll(cycle,-1),np.roll(cycle,-2) ):
             jprv=gen.nodes_to_edge(prv,n)
             jnxt=gen.nodes_to_edge(n,nxt)
@@ -976,15 +1137,15 @@ class QuadGen(object):
                     # here
                     if n in grad_nodes:
                         # This is maybe causing a problem with phi in cell 1.
-                        print(f"n {n}: angle={gen_turn} Dropping gradient BC")
+                        log.info(f"n {n}: angle={gen_turn} Dropping gradient BC")
                         del grad_nodes[n]
                     continue
 
                 if gen_turn not in [270,360]: continue
                 if gen_turn==270:
-                    print(f"n {n}: turn=270")
+                    log.info(f"n {n}: turn=270")
                 elif gen_turn==360:
-                    print(f"n {n}: turn=360")
+                    log.info(f"n {n}: turn=360")
 
                 js=self.g_int.node_to_edges(n)
                 e2c=self.g_int.edge_to_cells()
@@ -997,10 +1158,10 @@ class QuadGen(object):
                         nbr=self.g_int.edges['nodes'][j,1]
                     else:
                         nbr=self.g_int.edges['nodes'][j,0]
-                    print(f"j={j}  {n} -- {nbr}  angle={angle} coord={coord}")
+                    log.info(f"j={j}  {n} -- {nbr}  angle={angle} coord={coord}")
                     # Does the angle 
                     if (angle + 90*coord)%180. == 90.:
-                        print("  YES")
+                        log.info("  YES")
                         c=e2c[j,:].max()
                         tri=self.g_int.cells['nodes'][c]
                         nf_cells.append(c)
@@ -1008,7 +1169,7 @@ class QuadGen(object):
                             tri=np.roll(tri,1)
                         noflux_tris.append( (n,tri) )
                     else:
-                        print("  NO")
+                        log.info("  NO")
 
             if coord==0:
                 self.i_nf_cells=nf_cells
@@ -1018,20 +1179,20 @@ class QuadGen(object):
                 joins=self.j_tan_joins
 
             # Drop an nf_cell constraint for every internal edge
-            print(f"About to process joins, starting with {len(noflux_tris)} nf tris")
+            log.info(f"About to process joins, starting with {len(noflux_tris)} nf tris")
             for join in joins:
                 found=False
                 slim_noflux_tris=[]
-                print(f"Looking for an nf_tri to drop for join {join[0]}--{join[1]}")
+                log.info(f"Looking for an nf_tri to drop for join {join[0]}--{join[1]}")
                 for idx,(n,tri) in enumerate(noflux_tris):
                     if (not found) and (n in join):
-                        print(f"  will drop {n}")
+                        log.info(f"  will drop {n}")
                         # Skip this, and copy the rest
                         found=True
                     else:
                         slim_noflux_tris.append( (n,tri) )
                 if not found:
-                    print(f"  Uh-oh! couldn't find a no-flux tri to drop for this internal edge")
+                    log.warning(f"  Uh-oh! couldn't find a no-flux tri to drop for this internal edge")
                 noflux_tris=slim_noflux_tris
                 
             nf_block=sparse.dok_matrix( (len(noflux_tris),self.g_int.Nnodes()), np.float64)
@@ -1060,7 +1221,7 @@ class QuadGen(object):
             B=np.concatenate( [B_Lap,nf_rhs] )
 
             if M.shape[0] != M.shape[1]:
-                print(f"M.shape: {M.shape}")
+                log.error(f"M.shape: {M.shape}")
                 self.M_Lap=M_Lap
                 self.B_Lap=B_Lap
                 self.nf_block=nf_block
@@ -1180,8 +1341,7 @@ class QuadGen(object):
                 j_tan_groups.append([n])
                 psi_gradient_nodes[n]=psi_gradients[n]
             else:
-                print('Yikes - turn is 360, but not axis-aligned')
-
+                log.error('Yikes - turn is 360, but not axis-aligned')
             
         # Use the internal_edges to combine tangential groups
         def join_groups(groups,nA,nB):
@@ -1214,21 +1374,21 @@ class QuadGen(object):
                 # nodes of gen_edge[:2] have adjacent edges parallel to
                 # the internal edge, such that they both have existing groups
                 # that can be joined.
-                print("Internal edge connects straight boundaries. No join")
+                log.info("Internal edge connects straight boundaries. No join")
                 continue
                 
             if internal_angle%180==0: # join on i
-                print("Joining two i_tan_groups")
+                log.info("Joining two i_tan_groups")
                 i_tan_groups=join_groups(i_tan_groups,edge[0],edge[1])
                 self.i_tan_joins.append( edge )
             elif internal_angle%180==90: # join on j
-                print("Joining two j_tan_groups")
+                log.info("Joining two j_tan_groups")
                 j_tan_groups=join_groups(j_tan_groups,edge[0],edge[1])
                 self.j_tan_joins.append( edge )
             else:
-                import pdb
-                pdb.set_trace()
-                print("Internal edge doesn't appear to join same-valued contours")
+                #import pdb
+                #pdb.set_trace()
+                raise Exception("Internal edge doesn't appear to join same-valued contours")
 
         # find longest consecutive stretch of the target_angle,
         # bounded by edges that are perpendicular to the target_angle
@@ -1614,8 +1774,6 @@ class QuadGen(object):
 
         # misnomer.  Not final.  Just for finding exact intersections
         g_final=exact_delaunay.Triangulation(extra_edge_fields=[
-            #('dij',np.float64,2),
-            #('ij',np.float64,2),
             ('angle',np.float64),
             ('psiphi',np.float64,2)])
 
@@ -1675,7 +1833,7 @@ class QuadGen(object):
                     j_gen=g_int.edges['gen_j'][j_int] # from this original edge
                     angle_gen=self.gen.edges['angle'][j_gen]
                     if angle_gen%90 != 0:
-                        print("Not worrying about contour hitting diagonal")
+                        log.info("Not worrying about contour hitting diagonal")
                         continue
 
                     # Force that point into an existing constrained edge of g_final
@@ -1713,7 +1871,7 @@ class QuadGen(object):
         def trace_and_insert_contour(b,angle):
             # does dij_angle fall between the angles formed by the boundary, including
             # a little slop.
-            print(f"{angle} looks good")
+            log.info(f"{angle} looks good")
             gn=fixed_int_to_gen[b] # below we already check to see that b is in there.
 
             # ij0=self.gen.nodes['ij'][gn].copy()
@@ -1758,16 +1916,16 @@ class QuadGen(object):
         # Add boundaries when they coincide with contours
         cycle=g_int.boundary_cycle() # could be multiple eventually...
 
-        print("Bulk init with boundaries")
+        log.info("Bulk init with boundaries")
         # Bulk init with the points, then come back to fix metadata
         # Don't add the constraints, since that would mean adding
         # ragged edges potentially too early. This saves a huge amount
         # of time in building the DT, and the constraint handling is
         # relatively fast.
         g_final.bulk_init(g_int.nodes['x'][cycle])
-        print("Tracing boundaries...",end="")
+        log.info("Tracing boundaries...")
         trace_and_insert_boundaries(cycle)
-        print("done")
+        log.info("done")
 
         # Add internal contours
         # return with internal.
@@ -1813,7 +1971,7 @@ class QuadGen(object):
                     for exit_angle,exit_type in node_exits[b_final]:
                         if exit_angle==angle:
                             dupe=True
-                            print("Duplicate exit for internal trace from %d. Skip"%b)
+                            log.info("Duplicate exit for internal trace from %d. Skip"%b)
                             break
                     if not dupe:
                         trace_and_insert_contour(b,angle)
@@ -1892,7 +2050,7 @@ class QuadGen(object):
             elif g_final2.edges['angle'][j] % 180==90:
                 j_adj[c1,c2]=j_adj[c2,c1]=True
             else:
-                print("What? Ragged edge okay, but it shouldn't have both cell neighbors")
+                log.warning("What? Ragged edge okay, but it shouldn't have both cell neighbors")
 
         n_comp_i,labels_i=sparse.csgraph.connected_components(i_adj.astype(np.int32),directed=False)
         n_comp_j,labels_j=sparse.csgraph.connected_components(j_adj,directed=False)
@@ -1916,6 +2074,7 @@ class QuadGen(object):
 
         # Just figures out the contour values and sets them on the patches.
         patch_to_contour=[{},{}] # coord, cell index=>array of contour values
+        self.patch_to_contour=patch_to_contour
 
         def add_swath_contours_new(comp_cells,node_field,coord,scale):
             if len(comp_cells)==1 and comp_cells[0] in c_ragged:
@@ -1948,6 +2107,15 @@ class QuadGen(object):
             o_dval_ds=swath_grad[order]
             o_ds_dval=1./o_dval_ds
 
+            uniform_scale=False
+
+            if not uniform_scale:
+                # Rather than using s as a distance in geographic space, which
+                # scaled by a single value of local_scale, here normalize
+                # ds by variable scale in o_scales, and consider s a distance in grid space
+                o_scales=scale( g_int.nodes['x'][swath_nodes])[order]
+                o_ds_dval /= o_scales
+
             # trapezoid rule integration
             d_vals=np.diff(o_vals)
             # Particularly near the ends there are a lot of
@@ -1962,13 +2130,23 @@ class QuadGen(object):
             s=np.r_[0,s]
 
             # HERE -- calculate this from resolution
-            # might have i/j swapped.  range of s is 77m, and field
-            # is 1. to 1.08.  better now..
-            local_scale=scale( g_int.nodes['x'][swath_nodes] ).mean(axis=0)
+            # Scale is under-utilized here.
+            
+            # This is just calculating a mean scale over the whole swath
+            if uniform_scale:
+                local_scale=scale( g_int.nodes['x'][swath_nodes] ).mean(axis=0)
+            else:
+                local_scale=1.0
+                
+            # s gives the average geographic distance along the swath.
+            # this takes the average geographic length of the swath,
+            # and divides by local scale to get the number of cells
             n_swath_cells=int(np.round( (s.max() - s.min())/local_scale))
             n_swath_cells=max(1,n_swath_cells)
 
+            # Evenly divide up geographic space into the desired number of cells
             s_contours=np.linspace(s[0],s[-1],1+n_swath_cells)
+            # Then map back to the node field values.
             adj_contours=np.interp( s_contours,
                                     s,o_vals)
             adj_contours[0]=field_min
@@ -1980,7 +2158,7 @@ class QuadGen(object):
 
         if 1: # Swath processing
             for coord in [0,1]: # i/j
-                print("Coord: ",coord)
+                log.info("Coord: %s"%coord)
                 if coord==0:
                     labels=labels_i
                     n_comp=n_comp_i
@@ -1991,7 +2169,7 @@ class QuadGen(object):
                     node_field=self.psi
 
                 for comp in range(n_comp):
-                    print("Swath: ",comp)
+                    log.info("Swath: %s"%comp)
                     comp_cells=np.nonzero(labels==comp)[0]
                     add_swath_contours_new(comp_cells,node_field,coord,self.scales[coord])
 
@@ -2010,7 +2188,7 @@ class QuadGen(object):
                         raise Exception("Sanity lost")
 
                     if c_nbr in c_ragged:
-                        print("Brave! Two ragged cells adjacent to each other")
+                        log.info("Brave! Two ragged cells adjacent to each other")
                         continue
                     # similar logic as above
                     orient=g_final2.edges['angle'][j] % 180
@@ -2025,7 +2203,7 @@ class QuadGen(object):
                 patch_to_contour[1][c]=np.unique(np.concatenate(c_contours[1]))
                     
         # Direct grid gen from contour specifications:
-        patch_grids=[]
+        self.patch_grids=patch_grids=[]
 
         g_int.edge_to_cells()
 
@@ -2051,11 +2229,11 @@ class QuadGen(object):
                     edge_angles=g_final2.edges['angle'][ g_final2.cell_to_edges(c) ]
                     ragged_js=(edge_angles%90!=0.0)
                     if np.any(ragged_js):
-                        print("fields_to_xy() failed, but cell is ragged.")
+                        log.info("fields_to_xy() failed, but cell is ragged.")
                         g_patch.delete_node_cascade(n)
                         continue 
                     else:
-                        print("ERROR: fields_to_xy() failed. Cell not ragged.")
+                        log.error("ERROR: fields_to_xy() failed. Cell not ragged.")
                 g_patch.nodes['x'][n]=x
                 # Hmm -
                 # When it works, this probably reduces the search time considerably,
@@ -2064,15 +2242,838 @@ class QuadGen(object):
                 # the corner, and then we get stuck.
                 # Even the centroid isn't great since it might not even fall inside
                 # the cell.
-                # x0=x 
+                # x0=x
+
+            # Cells are coming out CW, probably because phi has the opposite sign
+            # relative j.
+            # Maybe a better fix is to transpose the grid above.
+            g_patch.orient_cells()
             patch_grids.append(g_patch)
 
-        g=patch_grids[0]
+        g=patch_grids[0].copy()
         for g_next in patch_grids[1:]:
             g.add_grid(g_next,merge_nodes='auto',tol=1e-6)
 
-        # seem to be making a lot of CW cells
-        g.orient_cells()
-
         return g
+
+    def label_edge_orientation_and_scale(self,g):
+        """
+        Expects a 'pp' node field on g, uses that to 
+        add an 'orient' field {0,90} to edges.  Then
+        add target_l to each edge based on orientation and
+        self.scales
+        """
+        j_orients=np.zeros( g.Nedges(), np.int32) - 1
+        jns=g.edges['nodes']
+
+        psi_match=(g.nodes['pp'][jns[:,0],0]==g.nodes['pp'][jns[:,1],0])
+        phi_match=(g.nodes['pp'][jns[:,0],1]==g.nodes['pp'][jns[:,1],1])
+        assert np.all( psi_match | phi_match )
+
+        j_orients[psi_match]=0
+        j_orients[phi_match]=90
+
+        g.add_edge_field('orient',j_orients,on_exists='overwrite')
+
+        ec=g.edges_center()
+        target_scales=np.zeros(g.Nedges(),np.float64)
+        target_scales[psi_match]=self.scales[0]( ec[psi_match] )
+        target_scales[phi_match]=self.scales[1]( ec[phi_match] )
+        assert np.all(target_scales>0)
+        
+        g.add_edge_field('target_l',target_scales,on_exists='overwrite')
+        return target_scales
+
+    def smooth_to_scale(self,g=None,smooth_iters=3,nudge_iters=2):
+        """
+        Wrapper for orthogonalize.Tweaker.smooth_to_scale
+        """
+        from . import orthogonalize
+        if g is None:
+            g=self.g_final
+        target_scales=self.label_edge_orientation_and_scale(g)
+        n_fixed,n_free=classify_nodes(g,self.gen)
+        tweaker=orthogonalize.Tweaker(g)
+        tweaker.smooth_to_scale(n_free,target_scales,
+                                smooth_iters=smooth_iters,
+                                nudge_iters=nudge_iters)
+
+
+        
+class SimpleQuadGen(object):
+    """
+    A streamline quad generator that is more usable.
+    - each cell must map to a rectangle, and the smallest 4 internal angles
+      will be automatically labeled as 90-degree turns, the rest 180.
+    - all edges shared by two cells must have a specific count of nodes, given
+      by a negative scale value.
+    """
+    nom_res=3.5 # needs to be adaptive..
+    triangle_method='gmsh'
+    gmsh_path='gmsh'
+    merge_tol=0.01
+    
+    def __init__(self,gen,cells=None,execute=True,adjust_scale=True,**kw):
+        """
+        adjust_scale: make a copy of the edge array and update scale to be sure that 
+        shared edges always have a given edge count
+        """
+        utils.set_keywords(self,kw)
+        self.gen=gen
+        self.cells=cells
+        if adjust_scale:
+            self.gen.edges=self.gen.edges.copy()
+            self.gen.edges['scale']=adjusted_scale(self.gen,self.gen.edges['scale'],self.nom_res)
+        if execute:
+            self.execute()
+            
+    def execute(self):
+        snap_angles(self.gen)
+        prepare_angles_halfedge(self.gen)
+        add_bezier(self.gen)
+
+        self.grids=[]
+        self.qgs=[]
+        
+        for c in self.cells:
+            qg=self.process_one_cell(c)
+            self.grids.append(qg.g_final)
+
+        if self.grids:
+            self.g_final=self.merge_grids()
+            return self.g_final
+    
+    def merge_grids(self):
+        g=unstructured_grid.UnstructuredGrid(max_sides=4)
+        for sub_g in self.grids:
+            g.add_grid(sub_g,merge_nodes='auto',tol=self.merge_tol)
+        return g
+            
+    def process_one_cell(self,c,**kw):
+        kwargs=dict(cell=c,
+                    triangle_method=self.triangle_method,
+                    gmsh_path=self.gmsh_path,
+                    nom_res=self.nom_res)
+        kwargs.update(kw)
+        qg=SimpleSingleQuadGen(self.gen,**kwargs)
+        self.qgs.append(qg)
+        qg.execute()
+        return qg
+
+def patch_contours(g_int,node_field,scale,count=None,Mdx=None,Mdy=None,
+                   lowpass_ds_dval=True):
+    """
+    Given g_int, a node field (psi/phi) defined on g_int, a scale field, and 
+    a count of edges, return the contour values of the node field which
+    would best approximate the requested scale.
+    
+    g_int: UnstructuredGrid
+    node_field: a psi or phi field defined on the nodes of g_int
+    scale: length scale Field with domain include g_int
+    count: if specified, the number of nodes in the resulting discretization
+    
+    Mdx,Mdy: matrix operators to calculate derivatives of the node field. 
+      by default create from scratch
+
+    returns the contour values (one more than the number of edges)
+    """
+    field_min=node_field.min()
+    field_max=node_field.max()
+
+    # original swath code had to pull out a subset of node in the node
+    # field, but now we can assume that g_int is congruent to the target
+    # patch.
+    swath_nodes=np.arange(g_int.Nnodes())
+    swath_vals=node_field[swath_nodes]
+
+    # preprocessing for contour placement
+    nd=NodeDiscretization(g_int)
+    if Mdx is None:
+        Mdx,_=nd.construct_matrix(op='dx') 
+    if Mdy is None:
+        Mdy,_=nd.construct_matrix(op='dy') 
+        
+    field_dx=Mdx.dot(node_field)
+    field_dy=Mdy.dot(node_field)
+    field_grad=np.sqrt( field_dx**2 + field_dy**2 )
+    swath_grad=field_grad
+
+    order=np.argsort(swath_vals)
+    o_vals=swath_vals[order]
+    o_dval_ds=swath_grad[order] # s: coordinate perpendicular to contours
+    local_scale=scale( g_int.nodes['x'][swath_nodes[order]] )
+
+    # local_scale is ds/di or ds/dj, so now s is approx. grid index
+    o_ds_dval=1./(o_dval_ds*local_scale)
+
+    # trapezoid rule integration
+    d_vals=np.diff(o_vals)
+    # Particularly near the ends there are a lot of
+    # duplicate swath_vals.
+    # Try a bit of lowpass to even things out.
+    if lowpass_ds_dval:
+        # HERE this needs to be scale-aware!!
+        # could use count, but we may not have it, and
+        # it ends up being evenly spread out, which isn't
+        # ideal.
+        # How bad is it to just drop this? Does have an effect,
+        # particularly in the lateral
+        if count is None:
+            # There is probably something more clever to do using the actual
+            # swath vals.
+            winsize=int(len(o_vals)/10)
+        else:
+            winsize=int(len(o_vals)/count)
+        if winsize>1:
+            o_ds_dval=filters.lowpass_fir(o_ds_dval,winsize)
+    else:
+        print("No lowpass on ds_dval")
+
+    s=np.cumsum(d_vals*0.5*(o_ds_dval[:-1]+o_ds_dval[1:]))
+    s=np.r_[0,s]
+
+    # calculate this from resolution
+    # might have i/j swapped.  range of s is 77m, and field
+    # is 1. to 1.08.  better now..
+    if count is None:
+        count=max(2,int(np.round(s.max())))
+
+    s_contours=np.linspace(s[0],s[-1],count)
+    adj_contours=np.interp( s_contours,
+                            s,o_vals)
+    
+    adj_contours[0]=field_min
+    adj_contours[-1]=field_max
+
+    assert np.all(np.diff(adj_contours)>0),"should be monotonic, right?"
+
+    return adj_contours
+
+
+class SimpleSingleQuadGen(QuadGen):
+    """
+    Rewrite of portions of QuadGen to handle the local single-cell portion.
+    """
+    triangle_method='gmsh'
+    angle_source='existing'
+    # The lowpass seems like it would defeat some of the scale handling.
+    lowpass_ds_dval=True
+    smooth_patch=True
+    
+    def __init__(self,gen,cell,**kw):
+        super(SimpleSingleQuadGen,self).__init__(gen,execute=False,cells=[cell],
+                                                 **kw)
+
+    def discretize_perimeter(self):
+        """
+        up-sample the bezier curves of the generating grid, 
+        populating 
+         self.perimeter: [N,{x,y}]
+         self.node_to_idx: node index of self.gen mapped to index into perimeter
+         self.angle_to_segments: map each of the 4 cardinal angles to a list of segments,
+           proceeding CCW around the cell. each segment is a start node end node, and a count
+             if count was specified in the input (i.e. gen.edges['scale'] has negative value)
+         self.perimeter_scale: [N] - linearly interpolated scale along the perimeter nodes
+        """
+        def he_angle(he):
+            # return (he.grid.edges['angle'][he.j] + 180*he.orient)%360.0
+            # Since this is being used after the internal edges handling,
+            # angles are oriented to the cycle of the cell, not the natural
+            # edge orientation.
+            return he.grid.edges['angle'][he.j]
+
+        # Start at a corner
+        he=self.gen.cell_to_halfedge(0,0)
+        while 1:
+            he_fwd=he.fwd()
+            corner= he_angle(he) != he_angle(he_fwd)
+            he=he_fwd
+            if corner:
+                break
+
+        he0=he
+        idx=0 # current location into list of perimeter samples
+        perimeter=[]
+        perimeter_scales=[] # [N,2] scale interpolated along boundary
+        
+        node_to_idx={}
+        angle_to_segments={0:[],
+                           90:[],
+                           180:[],
+                           270:[]}
+
+        last_fixed_node=he.node_rev()
+
+        # scale here is just for edges with exact number of
+        # cells (negative).
+        if 'scale' in self.gen.edges.dtype.names:
+            edge_scale=self.gen.edges['scale']
+        else:
+            edge_scale=np.zeros(self.gen.Nedges())
+        
+        while 1:
+            pnts=self.gen_bezier_linestring(he.j,span_fixed=False)
+            
+            if he.orient:
+                pnts=pnts[::-1]
+            perimeter.append(pnts[:-1])
+
+            nA=he.node_rev()
+            nB=he.node_fwd()
+
+            # It's possible to trace the nodes here back to nodes of the original
+            # gen, and then query the scale values directly.  But note that
+            # these are not the same node indices, since gen has been renumbered
+            # after selecting a single cell. For now, just interpolate:
+            scales0=np.linspace( self.scales[0](pnts[0]), self.scales[0](pnts[-1]), len(pnts))
+            scales1=np.linspace( self.scales[1](pnts[0]), self.scales[1](pnts[-1]), len(pnts))
+            
+            scales=np.c_[scales0,scales1]
+            perimeter_scales.append(scales[:-1])
+            
+            node_to_idx[nA]=idx
+            idx+=len(pnts)-1
+            he_fwd=he.fwd()
+            angle=he_angle(he)
+            angle_fwd=he_angle(he_fwd)
+                
+            if  ( (angle!=angle_fwd) # a corner
+                  or (edge_scale[he.j]<0)
+                  or (edge_scale[he_fwd.j]<0) ):
+                if edge_scale[he.j]<0:
+                    count=-int( edge_scale[he.j] )
+                else:
+                    count=0
+                angle_to_segments[angle].append( [last_fixed_node,he.node_fwd(),count] )
+                last_fixed_node=he.node_fwd()
+
+            he=he_fwd
+            if he==he0:
+                break
+        self.perimeter=np.concatenate(perimeter)
+        self.perimeter_scales=np.concatenate(perimeter_scales)
+        self.angle_to_segments=angle_to_segments
+        self.node_to_idx=node_to_idx
+
+    def discretize_string(self,string,density):
+        """
+        string: a node string with counts, 
+           [ (start node, end node, count), ... ]
+           where a count of 0 means use the provided density
+        density: NEW: density evaluated at perimeter points. (old: a density field)
+        returns: (N,2) discretized linestring and (N,) bool array of
+         rigid-ness.
+        """
+        result=[]
+        rigids=[]
+
+        for a,b,count in string:
+            if count==0:
+                idx_a=self.node_to_idx[a]
+                idx_b=self.node_to_idx[b]
+                if idx_a<idx_b:
+                    pnts=self.perimeter[idx_a:idx_b+1]
+                    dens_pc=density[idx_a:idx_b+1]
+                else:
+                    pnts=np.concatenate( [self.perimeter[idx_a:],
+                                          self.perimeter[:idx_b+1]] )
+                    dens_pc=np.concatenate( [density[idx_a:],
+                                             density[:idx_b+1]] )
+                assert len(pnts)>0
+                # To defend against discontinuity in the density field,
+                # use a precalculated density continuous along the linestring,
+                # dens_pc=density(pnts) # old usage
+                seg=linestring_utils.resample_linearring(pnts,dens_pc,closed_ring=0)
+                rigid=np.zeros(len(seg),np.bool8)
+                rigid[0]=rigid[-1]=True
+            else:
+                pnt_a=self.gen.nodes['x'][a]
+                pnt_b=self.gen.nodes['x'][b]
+                j=self.gen.nodes_to_edge(a,b)
+                
+                if j is None:
+                    log.warning("Rigid segment doesn't match a single edge in gen?")
+                    seg=np.c_[ np.linspace(pnt_a[0], pnt_b[0], count+1),
+                               np.linspace(pnt_a[1], pnt_b[1], count+1) ]
+                else:
+                    # Try using bezier:
+                    # need to be sure that the result doesn't have any dependence on which of the
+                    # two cells we're processing, so that each patch will get the same
+                    # nodes here (bit-equal not necessary since the grids will be merged
+                    # with some small tolerance, but we should be talking machine-precision)
+                    # Should be okay.
+                    # count is correct, shouldn't have +1 here.
+                    seg=self.gen_bezier_linestring(j=j,samples_per_edge=count,span_fixed=False)
+                    if self.gen.edges['nodes'][j,1]==a:
+                        seg=seg[::-1]
+
+                rigid=np.ones(len(seg),np.bool8)
+            result.append(seg[:-1])
+            rigids.append(rigid[:-1])
+        result.append( seg[-1:] )
+        rigids.append( rigid[-1:] )
+        result=np.concatenate(result)
+        rigids=np.concatenate(rigids)
+        return result,rigids
+
+    def calculate_coord_count(self,left,right,density):
+        """
+        Shift node densities to get the count on opposite sides to match up.
+        left,right: lists of segments as in self.angle_to_segments (node start, stop, count)
+        density: the coordinate-specific density field, already evaluated at perimeter points.
+
+        returns: (points along left, rigid markers for left), (points along right, rigid markers for right)
+        NB: the assumption is that left and right have opposite orientations (i.e. both are CCW, so anti-parallel)
+        the right sequences are reversed to make them parallel.
+        """
+        af_low=-5
+        af_high=5
+        while 1:
+            af=(af_low+af_high)/2
+            assert abs(af)<4.9
+            if not af_high-af_low>1e-8:
+                raise Exception("Calculate coord count failed to converge")
+                #import pdb
+                #pdb.set_trace()
+            pnts0,rigid0=self.discretize_string(left,(2**af)*density)
+            pnts1,rigid1=self.discretize_string(right,(0.5**af)*density)
+            c0=len(pnts0)
+            c1=len(pnts1)
+            if c0==c1:
+                break
+            # 0,180: positive af makes c1 larger
+            if c0>c1: #  af should be larger
+                af_low=af
+                continue
+            if c0<c1:
+                af_high=af
+                continue
+        return (pnts0,rigid0),(pnts1[::-1],rigid1[::-1])
+
+    def select_node_counts(self):
+        """
+        Solve for the count of nodes
+        First get the full perimeter at 10 point per bezier segment
+        Group edges by angle.
+        Within each group, consecutive edges with non-negative scale
+        are treated as a unit.
+        af is an asymmetry factor.
+        It starts at 0.  We go through the grouped edges, count up
+        the number of nodes, and see if opposite edges agree.  If they
+        don't agree, af is adjusted.
+
+        Sets (left_i,left_i_rigid),(right_i,right_i_rigid) and 
+        (left_j,left_j_rigid),(right_j,right_j_rigid)
+        """
+        self.discretize_perimeter()
+
+        # Precalculate density fields along perimeter:
+
+        (left_i,left_i_rigid),(right_i,right_i_rigid)=self.calculate_coord_count(self.angle_to_segments[0],
+                                                                                 self.angle_to_segments[180],
+                                                                                 self.perimeter_scales[:,0])
+        (left_j,left_j_rigid),(right_j,right_j_rigid)=self.calculate_coord_count(self.angle_to_segments[90],
+                                                                                 self.angle_to_segments[270],
+                                                                                 self.perimeter_scales[:,1])
+
+        # Necessary to have order match grid order below
+        left_i=left_i[::-1]
+        left_i_rigid=left_i_rigid[::-1]
+        right_i=right_i[::-1]
+        right_i_rigid=right_i_rigid[::-1]
+
+        self.left_i=left_i
+        self.left_i_rigid=left_i_rigid
+        self.left_j=left_j
+        self.left_j_rigid=left_j_rigid
+        
+        self.right_i=right_i
+        self.right_i_rigid=right_i_rigid
+        self.right_j=right_j
+        self.right_j_rigid=right_j_rigid
+
+    def create_patch(self):
+        """
+        Using the count information in self.left_{i,j}, create the rectilinear patch,
+        and return the cell/node map, too.
+        """
+        patch=unstructured_grid.UnstructuredGrid(max_sides=4,
+                                                 extra_node_fields=[('rigid',np.bool8),
+                                                                    ('pp',np.float64,2)],
+                                                 extra_edge_fields=[('orient',np.float32)])
+        elts=patch.add_rectilinear( [0,0],
+                                    [len(self.left_i)-1, len(self.left_j)-1],
+                                    len(self.left_i), len(self.left_j),
+                                    reverse_cells=True)
+        
+        # Fill in orientation
+        segs=patch.nodes['x'][ patch.edges['nodes'] ]
+        deltas=segs[:,1,:] - segs[:,0,:]
+
+        patch.edges['orient'][deltas[:,0]==0]=90 # should be consistent with gen.edges['angle']
+        patch.edges['orient'][deltas[:,1]==0]=0
+
+        return patch,elts
+
+    def field_interpolators(self):
+        """
+        Return two interpolating function that map X=>psi/phi.
+        Some care is taken to return reasonable values when X is slightly outside
+        self.g_int.
+        """
+        finder=PermissiveFinder(self.g_int)
+        psi_interp=LinearTriInterpolator(finder.mp_tri,self.psi,finder)
+        phi_interp=LinearTriInterpolator(finder.mp_tri,self.phi,finder)
+        psi_field=lambda x: psi_interp(x[...,0],x[...,1]).filled(np.nan)
+        phi_field=lambda x: phi_interp(x[...,0],x[...,1]).filled(np.nan)
+        return psi_field,phi_field
+    
+    def execute(self):
+        # Note that self.gen is *not* the same grid as gen that is passed in.
+        # self.gen has a single cell, while gen is the original input with potentially
+        # many cells
+        self.process_internal_edges(self.gen) # N.B. this flips angles
+        self.g_int=self.create_intermediate_grid_tri()
+        self.calc_psi_phi()
+
+        # got a nice psi/phi field.
+        # I have some edges with negative scale.  Other edges
+        # will get just the ambient scale.
+
+        self.select_node_counts()
+
+        # The target contour values, if there weren't any fixed nodes aside from corners:
+        nd=NodeDiscretization(self.g_int)
+        Mdx,_=nd.construct_matrix(op='dx') # discard rhs, it's all 0.
+        Mdy,_=nd.construct_matrix(op='dy') # discard rhs
+        self.i_contours=patch_contours(self.g_int,self.phi,self.scales[0], len(self.left_i),
+                                       Mdx=Mdx,Mdy=Mdy,lowpass_ds_dval=self.lowpass_ds_dval)
+        self.j_contours=patch_contours(self.g_int,self.psi,self.scales[1], len(self.left_j),
+                                       Mdx=Mdx,Mdy=Mdy,lowpass_ds_dval=self.lowpass_ds_dval)
+
+        # Now I have the target psi/phi contours
+        # I know which nodes should be rigid, and their locations.
+
+        self.patch,self.patch_elts=self.create_patch()
+        self.g_final=self.patch
+
+        self.psi_field,self.phi_field=self.field_interpolators()
+
+        self.position_patch_nodes()
+        self.patch.cells['_center']=np.nan # otherwise all 0...
+        
+        if self.smooth_patch:
+            self.smooth_patch_psiphi_implicit()
+        
+        self.patch.cells['_area']=np.nan # force recalculation
+        # heavy handed -- could be done more gracefully during construction
+        # in fact, this shouldn't be necessary at all anymore.
+        self.patch.orient_cells() 
+        return self.patch
+
+    def position_patch_nodes(self):
+        """
+        Use i_contours,j_contours to set psi/phi for non-rigid nodes.
+        Use left_i/right_i/left_j/right_j to set x for rigid nodes.
+
+        Fill in nodes['pp'] and ['x']. Non-rigid nodes get a target pp, from which
+        we calculate x.  Rigid nodes get a prescribed x, from which we calculate pp.
+        """
+
+        for i in range(len(self.left_i)):
+            for j in range(len(self.left_j)):
+                n=self.patch_elts['nodes'][i,j]
+                rigid=True
+
+                if i==0 and self.left_j_rigid[j]:
+                    x=self.left_j[j]
+                elif i+1==len(self.left_i) and self.right_j_rigid[j]:
+                    x=self.right_j[j]
+                elif j==0 and self.left_i_rigid[i]:
+                    x=self.left_i[i]
+                elif j+1==len(self.left_j) and self.right_i_rigid[i]:
+                    x=self.right_i[i]
+                else:
+                    rigid=False
+                    pp=[self.j_contours[j],
+                        self.i_contours[-i-1]] # I think I have to reverse i
+
+                    x=self.g_int.fields_to_xy(pp,[self.psi,self.phi],x)
+
+                if rigid:
+                    pp=[min(1,max(-1,self.psi_field(x))),
+                        min(1,max(-1,self.phi_field(x)))]
+
+                self.patch.nodes['x'][n]=x
+                self.patch.nodes['pp'][n]=pp
+                self.patch.nodes['rigid'][n]=rigid
+
+    def smooth_patch_psiphi_implicit(self,aniso=0.02,monotonify=True):
+        """
+        Anisotropic, implicit smoothing of psi/phi values.
+        Using the target contours in self.{i,j}_contours
+        and the existing values in patch.nodes['pp'], adjust
+        patch.nodes['pp'] to smoothly transition between the
+        rigid and non-rigid areas. 
+        aniso controls how much smaller the off-axis smoothing
+        is.  "On-axis" means how much each grid line follows a
+        contour, and "off-axis" means how much the spacing between
+        grid lines is evened out.
+
+        monotonify: if True, then check for monotonicity of coordinates
+        and iteratively decrease anisotropy until monotonic. 
+        This is a hack fallback for boundary spacing that's not even,
+        when the default anisotropy would cause self-intersections.
+        There might be a better solution where the requested resolution
+        information could be incorporated into the psiphi setup. The
+        goal of this hack is to make sure the generation step completes.
+
+        """
+        patch=self.patch
+        patch_nodes=self.patch_elts['nodes']
+
+        target_pp=np.zeros( (patch.Nnodes(),2),np.float64)
+        target_pp[patch_nodes,0]=self.j_contours[None,:]
+        target_pp[patch_nodes,1]=self.i_contours[::-1,None]
+        dpp=patch.nodes['pp']-target_pp
+
+        rigid_r=patch.nodes['rigid'][patch_nodes]
+        rigid_r0=rigid_r.copy() # coordinate 0
+        rigid_r1=rigid_r.copy()
+        rigid_r0[:,0]=True
+        rigid_r0[:,-1]=True
+        rigid_r1[0,:]=True
+        rigid_r1[-1,:]=True
+
+        N=patch.Nnodes()
+
+        dpp_smooths=[None,None]
+        nrows,ncols=patch_nodes.shape
+
+        # dc/dt= d/dx Kx dc/dx + d/dy Ky dc/dy
+        # steady state, uniform K, dx=dy=1
+        #  0 = Kx c[-1,0] + Kx c[1,0] + Ky c[0,-1] + Ky c[0,1] - (2Kx+2Ky) c[0,0]
+        for coord in [0,1]:
+            adj_aniso=aniso
+            while 1: # monotonify loop
+
+                M=sparse.dok_matrix( (N,N), np.float64)
+                b=np.zeros(N,np.float64)
+                K=[1,1]
+                K[1-coord]*=adj_aniso
+                rigid_this_coord=[rigid_r0,rigid_r1][coord]
+                dirich=dpp[:,coord]
+
+                for row in range(nrows):
+                    for col in range(ncols):
+                        n=patch_nodes[row,col]
+                        if rigid_this_coord[row,col]:
+                            M[n,n]=1
+                            b[n]=dirich[n]
+                        else:
+                            b[n]=0.0
+                            M[n,n]=-2*(K[0]+K[1])
+                            if row==0:
+                                M[n,patch_nodes[row+1,col]]=2*K[0]
+                            elif row==nrows-1:
+                                M[n,patch_nodes[row-1,col]]=2*K[0]
+                            else:
+                                M[n,patch_nodes[row-1,col]]=K[0]
+                                M[n,patch_nodes[row+1,col]]=K[0]
+                            if col==0:
+                                M[n,patch_nodes[row,col+1]]=2*K[1]
+                            elif col==ncols-1:
+                                M[n,patch_nodes[row,col-1]]=2*K[1]
+                            else:
+                                M[n,patch_nodes[row,col-1]]=K[1]
+                                M[n,patch_nodes[row,col+1]]=K[1]
+
+                dpp_smooths[coord]=sparse.linalg.spsolve(M.tocsr(),b)
+                if monotonify:
+                    # Check for monotonicity
+                    result=target_pp[...,coord] + dpp_smooths[coord]
+                    result_r=result[patch_nodes]
+                    if coord==0:
+                        if np.all(np.diff(result_r,axis=1-coord)>0):
+                            break
+                    else: # coord==1
+                        if np.all(np.diff(result_r,axis=1-coord)<0):
+                            break
+                    adj_aniso*=2
+                    if adj_aniso>=1:
+                        log.warning("Could not adjust anisotropy enough to regain monotonicity")
+                        break
+                    else:
+                        log.warning("Will smooth with decreased anisotropy (%g)"%adj_aniso)
+                else:
+                    break
+                
+        dpp_smooth=np.c_[dpp_smooths[0],dpp_smooths[1]]
+        
+        # Copy back to pp
+        sel=~patch.nodes['rigid']
+        patch.nodes['pp'][sel] = target_pp[sel] + dpp_smooth[sel]
+
+        # And remap those nodes:
+        for n in np.nonzero(~patch.nodes['rigid'])[0]:
+            x_orig=patch.nodes['x'][n]
+            patch.nodes['x'][n]=self.g_int.fields_to_xy(patch.nodes['pp'][n],
+                                                        [self.psi,self.phi],
+                                                        x_orig)
+
+    def nudge_boundaries_monotonic(self):
+        """
+        Check that boundary nodes have monotonic psi/phi, and 
+        nudge any violating nodes to be linearly interpolated between
+        the okay nodes.
+
+        Updates pp and x for offending nodes.
+        This was a halfway solution for non-monotonic nodes before
+        the smoothing code above was adapted to adjust for non-monotonicity.
+        Currently nothing uses this method.
+        """
+        nodes_r=self.patch_elts['nodes']
+
+        for nlist,coord,sign in [ (nodes_r[:,0],1,-1),
+                                  (nodes_r[:,-1],1,-1),
+                                  (nodes_r[0,:],0,1),
+                                  (nodes_r[-1,:],0,1)]:
+            # nlist: node indices into patch
+            # coord: which coordinate of pp to adjust
+            # sign: +1 for increasing, -1 for decreasing
+            vals=self.patch.nodes['pp'][nlist,coord]
+            if np.all(sign*np.diff(vals)>0): continue
+
+            rigid=self.patch.nodes['rigid'][nlist]
+            # At least the rigid ones better be monotonic.
+            assert np.all(sign*np.diff(vals[rigid]))>0
+
+            i=np.arange(len(vals))
+            # each entry is the index of the next rigid node, self included.
+            i_next=i[rigid][ np.searchsorted(i[rigid],i) ]
+            # each entry is the index of the previous rigid node, self included
+            i_prev=i[rigid][::-1][ np.searchsorted(-i[rigid][::-1],-i) ]
+            assert np.all( i_prev[ i[rigid] ] == i[rigid] )
+            assert np.all( i_next[ i[rigid] ] == i[rigid] )
+
+            bad= (~rigid) & ( (sign*vals[i_prev] >= sign*vals) | (sign*vals[i_next]<=sign*vals))
+            print(bad.sum())
+            vals[bad] = np.interp(i[bad], i[~bad], vals[~bad] )
+            self.patch.nodes['pp'][nlist,coord]=vals
+            for n in nlist[bad]:
+                x=self.g_int.fields_to_xy(self.patch.nodes['pp'][n],[self.psi,self.phi],
+                                          self.patch.nodes['x'][n])
+                self.patch.nodes['x'][n]=x
+                
+    def smooth_patch_psiphi(self,n_iter=10):
+        """
+        Smooth out the deviations from target i_contour and j_contour, blending
+        from rigid nodes to the smooth interior
+        """
+        elts=self.patch_elts
+        patch=self.patch
+        
+        target_pp=np.zeros( (patch.Nnodes(),2),np.float64)
+        target_pp[elts['nodes'],0]=self.j_contours[None,:]
+        target_pp[elts['nodes'],1]=self.i_contours[::-1,None]
+        dpp=patch.nodes['pp']-target_pp
+
+        # Move to 2D array to streamline the smoothing
+        dpp_r=dpp[elts['nodes']].copy()
+        rigid_r=patch.nodes['rigid'][elts['nodes']]
+        rigid_r0=rigid_r.copy() # coordinate 0
+        rigid_r1=rigid_r.copy()
+        rigid_r0[:,0]=True # I think this is correct.
+        rigid_r0[:,-1]=True
+        rigid_r1[0,:]=True
+        rigid_r1[-1,:]=True
+
+        # could also use a larger window...
+        #win=np.array([0.5,0,0.5])
+        win=np.ones(3)/3.
+        
+        for it in range(n_iter):
+            smooth=0*dpp_r
+            # Smoothing is only along the respective coordinate. I.e. phi
+            # anomalies are smoothed along contours of phi, and psi anomalies
+            # are smoothed along contours of psi.
+            smooth[...,0]=signal.fftconvolve(dpp_r[...,0],win[:,None],mode='same')
+            smooth[...,1]=signal.fftconvolve(dpp_r[...,1],win[None,:],mode='same')
+            if 1: # well, in some cases might need this...
+                smooth[...,0]=signal.fftconvolve(smooth[...,0],win[None,:],mode='same')
+                smooth[...,1]=signal.fftconvolve(smooth[...,1],win[:,None],mode='same')
+
+            # Just update the non-rigid nodes:
+            dpp_r[~rigid_r0,0]=smooth[~rigid_r0,0]
+            dpp_r[~rigid_r1,1]=smooth[~rigid_r1,1]
+
+        dpp=0*patch.nodes['pp']
+        dpp[elts['nodes']] = dpp_r
+
+        # Copy back to pp
+        sel=~patch.nodes['rigid']
+        patch.nodes['pp'][sel] = target_pp[sel] + dpp[sel]
+
+        # And remap those nodes:
+        for n in np.nonzero(~patch.nodes['rigid'])[0]:
+            x_orig=patch.nodes['x'][n]
+            patch.nodes['x'][n]=self.g_int.fields_to_xy(patch.nodes['pp'][n],
+                                                        [self.psi,self.phi],
+                                                        x_orig)
+            
+        # Invalid circumcenters.  May need to invalidate other geometry, too.
+        patch.cells['_center']=np.nan
+##
+
+# # HERE: try some relaxation approaches.
+# #   First, pin the known fixed nodes, and don't worry about
+# #   trying to keep everybody on the bezier boundary.
+# 
+# # rigid-ness is carried through from the discretized nodestrings,
+# # with nodes with negative scale and corner nodes set as rigid
+# 
+# from stompy.grid import orthogonalize
+# tweaker=orthogonalize.Tweaker(patch)
+# 
+# # First, just nudge everybody towards orthogonal:
+# # BAD.  Too far out of orthogonal.
+# for n in patch.valid_node_iter():
+#     if patch.nodes['rigid'][n]: continue
+#     tweaker.nudge_node_orthogonal(n)
+# 
+# plt.figure(1)
+# plt.cla()
+# patch.plot_nodes(mask=patch.nodes['rigid'],color='r',sizes=30)
+# patch.plot_edges()
+# #plt.axis( (552066.9646997608, 552207.1805374735, 4124548.347825134, 4124660.504092434) )
+# plt.axis( (552447.0573990112, 552507.7547532236, 4124244.839335523, 4124293.3901183335) )
+# 
+# ## 
+# from stompy.grid import orthogonalize
+# tweaker=orthogonalize.Tweaker(patch)
+# 
+# n_free=np.nonzero(~patch.nodes['rigid'])[0]
+# edge_scales=np.zeros(patch.Nedges(),np.float64)
+# ec=patch.edges_center()
+# 
+# for orient,scale in zip( [0,90], qg.scales):
+#     sel=patch.edges['orient']==orient
+#     edge_scales[sel] = scale(ec[sel])
+# 
+# ##
+# 
+# # This produces okay results, but it's going to be super slow
+# # to converge.
+# tweaker.smooth_to_scale( n_free, edge_scales,
+#                          smooth_iters=1,nudge_iters=1)
+#     
+# plt.figure(1)
+# plt.cla()
+# patch.plot_nodes(mask=patch.nodes['rigid'],color='r',sizes=30)
+# patch.plot_edges()
+# plt.axis( (552066.9646997608, 552207.1805374735, 4124548.347825134, 4124660.504092434) )
+# 
+# ##
+
+            
 

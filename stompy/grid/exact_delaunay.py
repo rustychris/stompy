@@ -1901,7 +1901,7 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
                     
                     segA=self.nodes['x'][self.edges['nodes'][j_other]]
                     segB=self.nodes['x'][[nA,nB]]
-                    x_int=segment_segment_intersection(segA,segB)
+                    x_int,alphas=segment_segment_intersection(segA,segB)
                     # Getting an error where x_int is one of the endpoints of
                     # segA.  This is while inserting a contour that ends on
                     # the boundary.
@@ -2084,18 +2084,32 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
         else:
             loc_face,loc_type,loc_index=self.locate(x)
 
-        assert loc_type in (self.IN_VERTEX, self.IN_EDGE, self.IN_FACE)
-
-        face_nodes=self.cells['nodes'][loc_face]
-
-        min_clearance=dist( self.nodes['x'][face_nodes], x ).min()
-
-        for j in self.cell_to_edges(loc_face):
+        # I don't think it is strictly necessary to be one of these,
+        # but we have to check to know whether loc_face is valid.
+        if loc_type==self.OUTSIDE_CONVEX_HULL:
+            # loc_index is a half-edge
+            min_clearance=min( dist( self.nodes['x'][loc_index.node_fwd()], x ),
+                               dist( self.nodes['x'][loc_index.node_rev()], x ) )
+            j=loc_index.j
             if self.edges['constrained'][j]:
                 j_clearance=point_segment_distance(x, self.nodes['x'][self.edges['nodes'][j]] )
                 min_clearance=min(min_clearance,j_clearance)
+            # No update to hint
+        elif loc_type in (self.IN_VERTEX, self.IN_EDGE, self.IN_FACE):
+            face_nodes=self.cells['nodes'][loc_face]
+
+            min_clearance=dist( self.nodes['x'][face_nodes], x ).min()
+
+            for j in self.cell_to_edges(loc_face):
+                if self.edges['constrained'][j]:
+                    j_clearance=point_segment_distance(x, self.nodes['x'][self.edges['nodes'][j]] )
+                    min_clearance=min(min_clearance,j_clearance)
+            hint={'c':loc_face}
+        else:
+            raise Exception("Loc type OUTSIDE_AFFINE_HULL is not implemented for point_clearance")
+        
         if hint is not None:
-            return min_clearance,{'c':loc_face}
+            return min_clearance,hint
         else:
             return min_clearance
     

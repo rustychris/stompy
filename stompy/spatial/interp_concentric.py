@@ -93,6 +93,7 @@ class ConcentricInterpolator(object):
             nodes=[g.add_or_find_node(x=x)
                    for x in ring]
             for a,b in utils.circular_pairs(nodes):
+                if a==b: continue # probably repeated start/end node
                 try:
                     g.add_edge(nodes=[a,b])
                 except g.GridException:

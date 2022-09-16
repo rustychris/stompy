@@ -94,10 +94,8 @@ def coops_json_to_ds(json,params):
 def coops_dataset(station,start_date,end_date,products,
                   days_per_request=None,cache_dir=None):
     """
-    bare bones retrieval script for NOAA Tides and Currents data.
-    In particular, no error handling yet, doesn't batch requests, no caching,
-    can't support multiple parameters, no metadata, etc.
-
+    basic retrieval script for NOAA Tides and Currents data.
+    
     days_per_request: break up the request into chunks no larger than this many
     days.  for hourly data, this should be less than 365.  for six minute, I think
     the limit is 32 days.
@@ -120,6 +118,7 @@ def coops_dataset(station,start_date,end_date,products,
 def coops_dataset_product(station,product,
                           start_date,end_date,days_per_request='M',
                           cache_dir=None,refetch_incomplete=True,
+                          interval=None,datum=None,
                           clip=True):
     """
     Retrieve a single data product from a single station.
@@ -154,8 +153,12 @@ def coops_dataset_product(station,product,
     fmt_date=lambda d: utils.to_datetime(d).strftime("%Y%m%d %H:%M")
     base_url="https://tidesandcurrents.noaa.gov/api/datagetter"
 
-    # not supported by this script: bin
-    datums=['NAVD','MSL']
+    if datum is not None:
+        datums=[datum]
+    else:
+        # not supported by this script: bin
+        # Some predictions are only in MLLW
+        datums=['NAVD','MSL','MLLW']
 
     datasets=[]
 
@@ -196,11 +199,19 @@ def coops_dataset_product(station,product,
                         units='metric',
                         format='json',
                         product=product)
+            if interval is not None:
+                # Some predictions require interval='hilo'
+                params['interval']=interval
             if product in ['water_level','hourly_height',"one_minute_water_level","predictions"]:
                 while 1:
                     # not all stations have NAVD, so fall back to MSL
-                    params['datum']=datums[0] 
-                    req=requests.get(base_url,params=params)
+                    params['datum']=datums[0]
+                    try:
+                        req=requests.get(base_url,params=params)
+                    except requests.ConnectionError:
+                        log.warning("Unable to connect to tidesandcurrents.noaa.gov -- possibly on HPC node")
+                        data=dict(error=dict(message="Internet access error"))
+                        break
                     try:
                         data=req.json()
                     except ValueError: # thrown by json parsing
@@ -213,7 +224,7 @@ def coops_dataset_product(station,product,
                         # Actual message like 'The supported Datum values are: MHHW, MHW, MTL, MSL, MLW, MLLW, LWI, HWI'
                         # Predictions sometimes silently fail, as if there is no data, but really just need
                         # to try MSL.
-                        log.debug(data['error']['message'])
+                        log.warning(data['error']['message'])
                         datums.pop(0) # move on to next datum
                         continue # assume it's because the datum is missing
                     break
@@ -266,5 +277,7 @@ def coops_dataset_product(station,product,
     if clip:
         time_sel=(dataset.time.values>=start_date) & (dataset.time.values<end_date)
         dataset=dataset.isel(time=time_sel)
+
+    dataset['time'].attrs['timezone']='UTC'
         
     return dataset

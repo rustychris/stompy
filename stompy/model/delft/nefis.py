@@ -41,29 +41,44 @@ def load_nef_lib():
 
     return None if the DLL cannot be found
     """
+    if 'NEFIS_LIB' in os.environ:
+        try:
+            nefis_lib=os.environ['NEFIS_LIB']
+            return cdll.LoadLibrary(nefis_lib)
+        except OSError:
+            log.warning("Failed to load nefis DLL - read/write not enabled")
+            log.warning("Used env. var NEFIS_LIB='%s'"%nefis_lib)
+            return None
+    
     if sys.platform.startswith('linux'):
-        basename='libNefisSO.so'
+        basenames=['libNefisSO.so','libnefis.so']
     elif sys.platform=='darwin':
         # this is for OSX
-        basename='libNefisSO.dylib'
+        basenames=['libNefisSO.dylib']
     else:
         log.warning("Need to add support in nefis.nef_lib() for platform=%s"%sys.platform)
         return None
 
     fail='_fail_' # to test for missing environment variables
-    for prefix in [ os.path.join(os.environ.get('HOME',fail),
-                                 "code/delft/d3d/master/src/lib/"), # goofy local
-                    os.path.join(sys.prefix,"lib"),
-                    os.path.join(os.environ.get('D3D_HOME',fail),'lib') ]:
-        if fail in prefix:
-            continue
+    locations=[]
+    if 'D3D_HOME' in os.environ:
+        locations.append( os.path.join(os.environ['D3D_HOME'],'lib') )
+    if 'DELFT_HOME' in os.environ:
+        locations.append( os.path.join(os.environ['DELFT_HOME'],'lib') )
 
-        nefis_lib=os.path.join(prefix,basename)
-        try:
-            return cdll.LoadLibrary(nefis_lib)
-        except OSError:
-            continue
+    if (sys.platform=='linux') and ('LD_LIBRARY_PATH' in os.environ):
+        locations.extend( os.environ['LD_LIBRARY_PATH'].split(':') )
+
+    for prefix in locations:
+        for basename in basenames:
+            nefis_lib=os.path.join(prefix,basename)
+            try:
+                return cdll.LoadLibrary(nefis_lib)
+            except OSError:
+                continue
     log.warning("Failed to load nefis DLL - read/write not enabled")
+    log.warning("Tried to load from %s"%(locations))
+    log.warning("Tried basenames %s"%(basenames))
     return None
 
 _nef_lib=False # False=> uninitialized, None=> not found
@@ -353,10 +368,18 @@ class Nefis(object):
 
         # from nefis, oc.c, line 276 - looks like combined data/definition
         # files are loaded by specifying the same filename for both.
-        self.with_err(nef_lib().Crenef(byref(self.fd), 
-                                       self.dat_fn.encode(), 
-                                       (self.def_fn or self.dat_fn).encode(),
-                                       byref(endian), access))
+        nlib=nef_lib()
+        if nlib is None:
+            # This happens when either the library itself could not be found, or
+            # on Linux it can happen when the library is found, but LD_LIBRARY_PATH
+            # was not set *before python started*, and the linker fails to load
+            # library dependencies.
+            raise NefisException(code=-999,msg="NEFIS library could not be loaded.")
+        else:
+            self.with_err(nef_lib().Crenef(byref(self.fd), 
+                                           self.dat_fn.encode(), 
+                                           (self.def_fn or self.dat_fn).encode(),
+                                           byref(endian), access))
     def close(self):
         self.with_err( nef_lib().Clsnef(byref(self.fd)) )
         self.fd=None

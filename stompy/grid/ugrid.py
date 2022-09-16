@@ -18,6 +18,7 @@ import pytz
 from ..io import qnc
 import xarray as xr
 from .. import utils
+from . import multi_ugrid as mu
 import time
 
 def ncslice(ncvar,**kwargs):
@@ -426,6 +427,8 @@ class UgridXr(object):
     face_v_vname=None
     face_eta_vname=None
     face_depth_vname=None
+    edge_normal_vnames=None # (x-normal,y-normal)
+    layer_vname=None
 
     def __init__(self,nc,mesh_name=None,**kw):
         """
@@ -456,6 +459,12 @@ class UgridXr(object):
         if self.layer_dim is None:
             # bit of a punt, makes assumptions
             self.layer_dim=self.nc[self.layer_var_name()].dims[0]
+
+        # Time is slightly different. defaults to 'time', but that may not exist.
+        if self.time_dim is not None:
+            if self.time_dim not in self.nc.dims:
+                self.time_dim=None
+                self.time_vname=None
 
     def find_var(self,**kwargs):
         """ find a variable name based on attributes (and other details, as
@@ -526,7 +535,11 @@ class UgridXr(object):
         # time_slice used to be time_step
         mesh_name = self.mesh_name
 
-        slices={self.time_dim:time_slice}
+        if self.time_dim is not None:
+            slices={self.time_dim:time_slice}
+        else:
+            slices={}
+            
         if face_slice is not None:
             slices[self.face_dim]=face_slice
 
@@ -568,6 +581,9 @@ class UgridXr(object):
     def layer_var_name(self):
         # this had been searching in dimensions, but that doesn't seem quite 
         # right
+        if self.layer_vname is not None:
+            return self.layer_vname
+        
         for name in self.nc.variables: # but also try looking for it.
             if self.nc[name].attrs.get('standard_name') in ['ocean_zlevel_coordinate',
                                                             'ocean_z_coordinate',
@@ -593,12 +609,21 @@ class UgridXr(object):
 
     def vertical_averaging_weights(self,time_slice=slice(None),
                                    ztop=None,zbottom=None,dz=None,
-                                   face_slice=slice(None)):
+                                   face_slice=slice(None),
+                                   query='weight'):
         """
         reimplementation of sunreader.Sunreader::averaging_weights
         
         returns: weights as array [faces,Nk] to average over a cell-centered quantity
         for the range specified by ztop,zbottom, and dz.
+
+        query: by default returns averaging weights, but can also specify
+          'dz': thickness of each 3D cell
+          'z_center': elevation of the middle of each 3D cell
+          'z_bottom': elevation of the bottom of each 3D cell
+          'z_top': elevation of the top of each 3D cell
+
+        can also be a list of the same
 
         range is specified by 2 of the 3 of ztop, zbottom, dz, all non-negative.
         ztop: dimensional distance from freesurface, 
@@ -619,14 +644,27 @@ class UgridXr(object):
 
         face_dim=self.face_dim
 
+        if self.time_dim is not None:
+            time_kw={self.time_dim:time_slice}
+        else:
+            time_kw={}
+            
         if self.face_eta_vname is None:
             self.face_eta_vname=self.find_var(standard_name='sea_surface_height_above_geoid')
             assert self.face_eta_vname is not None,"Failed to discern eta variable"
         surface=self.face_eta_vname
 
-        face_select={face_dim:face_slice}
-        h = self.nc[self.face_eta_vname].isel({self.time_dim:time_slice,
-                                               face_dim:face_slice})
+        face_select={}
+        hsel={}
+        
+        if face_slice!=slice(None):
+            face_select[face_dim]=face_slice
+            hsel[face_dim]=face_slice
+            
+        hsel.update(time_kw)
+        h=self.nc[self.face_eta_vname]
+        if len(hsel):
+            h = h.isel(**hsel)
 
         if self.face_depth_vname is None:
             self.face_depth_vname=self.find_var(standard_name=["sea_floor_depth_below_geoid",
@@ -637,17 +675,29 @@ class UgridXr(object):
             self.face_depth_vname=self.find_var(stanford_name=["sea_floor_depth_below_geoid",
                                                                "sea_floor_depth"],
                                                 location='face') # ala 'Mesh_depth'
-        
+        if self.face_depth_vname is None:
+            self.face_depth_vname=self.find_var(standard_name=['altitude'],
+                                                location='face')
+            
         depth=self.face_depth_vname
         assert depth is not None,"Failed to find depth variable"
         
-        bed = self.nc[depth].isel(**face_select)
+        bed = self.nc[depth]
+        if len(face_select):
+            bed=bed.isel(**face_select)
+            
         if self.nc[depth].attrs.get('positive')=='down':
             log.debug("Cell depth is positive-down")
             bed=-bed
         else:
             log.debug("Cell depth is positive-up, or at least that is the assumption")
 
+        # special handling for multi-ugrid
+        if isinstance(h,mu.MultiVar):
+            h=h.to_dataarray()
+        if isinstance(bed,mu.MultiVar):
+            bed=bed.to_dataarray()
+            
         h,bed=xr.broadcast(h,bed)
         
         # for now, can only handle an array of cells - i.e. if you want
@@ -697,6 +747,7 @@ class UgridXr(object):
         # this used to be called Nk, but that's misleading.  it's the k index
         # of the bed layer, not the number of layers per water column.
         kbed = np.searchsorted(k_sign*layer_interfaces,k_sign*bed)
+        # print("kbed: ",kbed)
 
         one_dz = k_sign*(layer_bounds[:,1]-layer_bounds[:,0])
         all_dz=np.ones(h.shape+one_dz.shape)*one_dz
@@ -724,11 +775,26 @@ class UgridXr(object):
         # with this min call it's only correct for k_sign==-1
         ctops = np.searchsorted(k_sign*(layer_interfaces + self.surface_dzmin), 
                                 k_sign*h)
-
+        # print("k_sign:",k_sign)
+        #print("k_sign*h", k_sign*h)
+        #print("k_sign*(layer_interfaces+self.surface_dzmin)\n",
+        #      k_sign*(layer_interfaces + self.surface_dzmin))
+        #print("surface_dzmin: ", self.surface_dzmin)
+        
         # default h_to_ctop will use the dzmin appropriate for the surface,
         # but at the bed, it goes the other way - safest just to say dzmin=0,
         # and also clamp to known Nk
-        cbeds = np.searchsorted(k_sign*layer_interfaces,k_sign*bed) 
+        cbeds = np.searchsorted(k_sign*layer_interfaces,k_sign*bed)
+
+        # 2022-08-01 RH: 
+        # pretty sure that ctops should never be below cbed. even for a dry
+        # water column?
+        if k_sign==1:
+            ctops=np.maximum(ctops,cbeds)
+        else:
+            ctops=np.minimum(ctops,cbeds)
+
+        # print("bed:",bed,"  h: ",h)
 
         # dimension problems here - Nk has dimensions like face_slice or face_slice,time_slice
         # cbeds has dimensions like face_slice,time_slice
@@ -750,22 +816,66 @@ class UgridXr(object):
             cbeds=np.maximum(cbeds,kbed) # maybe redundant now
             drymask = (all_k < cbeds[...,None]) | (all_k>ctops[...,None])
 
+        # print("cbeds:",cbeds)
+            
         all_dz[drymask] = 0.0
 
         ii = tuple(np.indices( h.shape ) )
         z = layer_bounds.min(axis=1) # bottom of each cell
-        all_dz[ii+(ctops[ii],)] = h-z[ctops]
-        all_dz[ii+(cbeds[ii],)] -= bed - z[cbeds]
-        
-        # make those weighted averages
-        # have to add extra axis to get broadcasting correct
-        all_dz = all_dz / np.sum(all_dz,axis=-1)[...,None]
 
-        if all_dz.ndim==3:
-            # we have both time and level
-            # transpose to match the shape of velocity data -
-            all_dz = all_dz.transpose([0,2,1])
-        return all_dz
+        # print("h",h)
+        # print("ii",ii)
+        # print("ctops[ii]",ctops[ii])
+        # print("z[ctop]",z[ctops])
+        
+        all_dz[ii+(ctops[ii],)] = h-z[ctops]
+        # isub doesn't play nicely with dask array, so write out the isub
+        all_dz[ii+(cbeds[ii],)] = all_dz[ii+(cbeds[ii],)] - (bed - z[cbeds])
+
+        # DBG
+        # print("all_dz",all_dz)
+        
+
+        # handle the various query options
+        if isinstance(query,str):
+            queries=[query]
+            singleton=True
+        else:
+            queries=query
+            singleton=False
+
+        results=[]
+        for query in queries:
+            if query in ['weight','dz']:
+                if query=='weight':
+                    # make those weighted averages
+                    # have to add extra axis to get broadcasting correct
+                    # avoid warnings.
+                    denom= np.sum(all_dz,axis=-1)[...,None]
+                    denom[denom==0.0]=np.nan
+                    result = all_dz/denom
+                else:
+                    result = all_dz
+            elif query=='z_bottom':
+                # Might need to be smarter if all_dz include time.
+                result=bed.values[:,None]+np.cumsum(all_dz,axis=-1) - all_dz
+            elif query=='z_top':
+                result=bed.values[:,None]+np.cumsum(all_dz,axis=-1)
+            elif query=='z_center':
+                result=bed.values[:,None]+np.cumsum(all_dz,axis=-1) - 0.5*all_dz
+            else:
+                raise Exception("Unknown query %s"%q)
+
+            if result.ndim==3:
+                # we have both time and level
+                # transpose to match the shape of velocity data -
+                result = result.transpose([0,2,1])
+                
+            results.append(result)
+        if singleton:
+            return results[0]
+        else:
+            return results
 
     def datenums(self):
         """ return datenums, referenced to UTC
@@ -776,3 +886,22 @@ class UgridXr(object):
         """
         return self.nc['time'].values
 
+    def interp_perot(self,edge_values):
+        """
+        Interpolate an edge-centered, normal vector component 
+        value to a cell centered vector value.
+        returns float64[Ncells,2]
+        """
+        # Originally borrowed model.stream_tracer.U_perot, but
+        # (a) that's a weird place for the code to live, and
+        # (b) that code seems to have a different sign convention, or
+        # at least it was giving bad results in some spot tests.
+        # And now it has moved again to unstructured grid...
+        return self.grid.interp_perot(edge_values,edge_normals=self.edge_normals)
+
+    def edge_normals(self):
+        if self.edge_normal_vnames is not None:
+            ex,ey=self.edge_normal_vnames
+            return np.c_[self.nc[ex].values, self.nc[ey].values]
+        else:
+            return self.grid.edges_normals()

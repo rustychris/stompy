@@ -47,15 +47,15 @@ def pathify(polygon):
         take an array-like [N,2] set of points defining a polygon,
         return an array which is ordered ccw (or cw is ccw=False)
         """
-        a=np.asarray(a)
+        a=np.asarray(a) # pre-shapely 2
         area=utils.signed_area(a)
         if ccw == (area<0):
             a=a[::-1]
         return a
 
     vertices = np.concatenate(
-        [ ensure_orientation(polygon.exterior,ccw=True)]
-        + [ ensure_orientation(r,ccw=False) for r in polygon.interiors])
+        [ ensure_orientation(polygon.exterior.coords,ccw=True)]
+        + [ ensure_orientation(r.coords,ccw=False) for r in polygon.interiors])
     codes = np.concatenate(
         [ring_coding(polygon.exterior)]
         + [ring_coding(r) for r in polygon.interiors])

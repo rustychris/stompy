@@ -245,6 +245,19 @@ def add_rozovski(tran,src='U',dst='Uroz',frame='roz',comp_names=['downstream','l
     add_rotated(tran,src=src,dst=dst,frame=frame,comp_names=comp_names,
                 angle_field='roz_angle')
 
+def add_normal_tangential(tran,src='U',dst='Utrn',frame='trn',comp_names=['downstream','left']):
+    """
+    Add velocity components normal and tangential to the section. Downstream/normal
+    component assumes the section is oriented left to right while looking downstream. 
+    Tangential component is positive to the left (to maintain right-handed coordinate
+    system).
+    """
+    xy=np.c_[ tran.x_sample.values, tran.y_sample.values]
+    dxy=np.vstack( [ xy[1]-xy[0], xy[2:]-xy[:-2], xy[-1]-xy[-2]] )
+    angle_fld=frame+'_angle'
+    tran[angle_fld]=('sample',),np.arctan2(dxy[:,0],-dxy[:,1]) # includes rotation to get normal
+    add_rotated(tran,src=src,dst=dst,frame=frame,angle_field=angle_fld)
+
 def add_rotated(tran,src='U',dst='Uroz',frame='roz',comp_names=['downstream','left'],
                 angle_field='roz_angle'):
     """
@@ -252,16 +265,17 @@ def add_rotated(tran,src='U',dst='Uroz',frame='roz',comp_names=['downstream','le
     'dst', and naming the new coordinate dimension 'frame', with component labels
     'comp_names'.
     Defaults are suitable for Rozovski rotation.
-    Modifies tran in place.
+    Modifies tran in place, with the new velocities in a new variable.
     """
-    vec_norm=xr.concat( [np.cos(tran.roz_angle),
-                         np.sin(tran.roz_angle)],
+    angle=tran[angle_field]
+    vec_norm=xr.concat( [np.cos(angle),
+                         np.sin(angle)],
                         dim=frame).transpose('sample',frame)
 
-    tran['roz_vec_norm']=vec_norm
+    tran[frame+'_vec_norm']=('sample','xy'),vec_norm.values
 
-    R = np.array( [[np.cos(tran.roz_angle),-np.sin(tran.roz_angle)],
-                   [np.sin(tran.roz_angle),np.cos(tran.roz_angle)]] ).transpose(2,0,1)
+    R = np.array( [[np.cos(angle),-np.sin(angle)],
+                   [np.sin(angle),np.cos(angle)]] ).transpose(2,0,1)
     src_frame=tran[src].dims[-1]
     transform=src_frame + '_to_' + frame
     tran[transform]=('sample',src_frame,frame),R
@@ -970,10 +984,10 @@ def plot_scalar_polys(tran,v,ax=None,xform=None,**kw):
 plot_scalar=plot_scalar_polys
 
 def contour(tran,v,*args,**kwargs):
-    contour_like(tran,v,'contour',*args,**kwargs)
+    return contour_like(tran,v,'contour',*args,**kwargs)
 
 def contourf(tran,v,*args,**kwargs):
-    contour_like(tran,v,'contourf',*args,**kwargs)
+    return contour_like(tran,v,'contourf',*args,**kwargs)
     
 def contour_like(tran,v,meth,*args,**kwargs):
     if isinstance(v,six.string_types):
@@ -996,13 +1010,18 @@ def contour_like(tran,v,meth,*args,**kwargs):
     return f(x.values,yvals,scal.values,*args,**kwargs)
 
 # Code related to averaging multiple transects
-def transects_to_segment(trans,unweight=True,ax=None):
+def transects_to_segment(trans,unweight=True,ax=None,n_nodes=2):
     """
     trans: list of transects per xr_transect
     unweight: if True, follow ADCPy and thin dense clumps of pointer.
 
     return a segment [ [x0,y0],[x1,y1] ] approximating the
     points
+    
+    n_nodes: if 2, just fit a line. if >2, fit a polyline with the given
+    number of nodes. Current algorithm smooths the curves and evenly
+    spaces the nodes. to capture a sharp turn you'll need a lot of nodes
+    (10 or more)
 
     if ax is supplied, it is a matplotlib Axes into which the steps
     of this method are plotted.
@@ -1046,6 +1065,18 @@ def transects_to_segment(trans,unweight=True,ax=None):
     if ax:
         ax.plot(seg[:,0],seg[:,1],'k-o',lw=5,alpha=0.5,label='Segment')
         ax.legend()
+        
+    if n_nodes>2:
+        from stompy import filters
+        xy_seq=all_xy[ np.argsort(dist_along) ]
+        # hanning filter -- twitchy at the ends but otherwise decent.
+        xy_lp=filters.lowpass_fir(xy_seq,len(xy_seq)//n_nodes,axis=0)
+        dists=utils.dist_along(xy_lp)
+        d_sampled=np.linspace(dists[0],dists[-1],n_nodes)
+        x_sampled=np.interp(d_sampled,dists,xy_lp[:,0])
+        y_sampled=np.interp(d_sampled,dists,xy_lp[:,1])
+        seg=np.c_[x_sampled, y_sampled]
+        
     return seg
 
 def resample_to_common_z(trans,dz=None,save_original=None):
@@ -1107,6 +1138,8 @@ def resample_to_common(trans,dz=None,dx=None,resample_x=True,resample_z=True,
     resample_z: can be set to false to skip vertical resampling if all transects
      already have the same vertical coordinates.
     seg: the linestring of the new transect.  defaults to fitting a line.
+      can also pass an integer>=2, which will fit a polyline with the given
+      number of nodes.
 
     save_original: if not None, a prefix for saving coordinates before resampling.
     """
@@ -1116,6 +1149,9 @@ def resample_to_common(trans,dz=None,dx=None,resample_x=True,resample_z=True,
     if resample_x:
         if seg is None:
             seg=transects_to_segment(trans)
+        elif np.isscalar(seg):
+            assert seg>=2
+            seg=transects_to_segment(trans,n_nodes=seg)
 
         if dx is None:
             # Define the target vertical and horizontal bins
