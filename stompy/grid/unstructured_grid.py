@@ -7025,6 +7025,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         d['_cell_center_index'] = None
         d['log']=None
 
+        if 'fp' in d:
+            # some readers hang on to a file point and that won't pickle.
+            d['fp']=None
+
         return d
     def __setstate__(self,state):
         self.__dict__.update(state)
