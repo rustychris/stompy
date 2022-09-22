@@ -2642,6 +2642,17 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         for n in range(self.Nnodes()):
             result[n]=cval[self.node_to_cells(n)].mean()
         return result
+
+    def interp_cell_to_node_matrix(self):
+        from scipy import sparse
+        M=sparse.dok_matrix( (self.Nnodes(),self.Ncells()), np.float64)
+        for n in range(self.Nnodes()):
+            cells=self.node_to_cells(n)
+            weight=1./len(cells)
+            for c in cells:
+                M[n,c]=weight
+        return M.tocsr()
+    
     def interp_node_to_cell(self,nval):
         """
         nval: scalar value for each node.
