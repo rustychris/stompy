@@ -9792,9 +9792,19 @@ class WaqModelBase(scriptable.Scriptable):
     def original_bloominp_path(self):
         # this gets copied into the model run directory
         return os.path.join(self.share_path,'bloominp.d09')
+
+    _proc_path=None
     @property
     def proc_path(self):
+        if self._proc_path is not None:
+            return self._proc_path
         return os.path.join(self.share_path,'proc_def')
+    
+    @proc_path.setter
+    def proc_path(self,value):
+        if value.endswith('.def') or value.endswith('.dat'):
+            raise ValueError("proc_path should not include the extension")
+        self._proc_path=value
 
     # plot process diagrams
     def cmd_plot_process(self,run_name='dwaq'):
