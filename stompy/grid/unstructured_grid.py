@@ -69,6 +69,11 @@ class GridException(Exception):
 class Missing(GridException):
     pass
 
+class AmbiguousMeshException(GridException):
+    def __init__(self,*a,meshes=[],**k):
+        super().__init__(*a,**k)
+        self.meshes=meshes
+
 def request_square(ax,max_bounds=None):
     """
     Attempt to set a square aspect ratio on matplotlib axes ax
@@ -772,7 +777,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 if nc[vname].attrs.get('cf_role',None) == 'mesh_topology':
                     meshes.append(vname)
             if len(meshes)!=1:
-                raise GridException("Could not uniquely determine mesh variable")
+                raise AmbiguousMeshException("Could not uniquely determine mesh variable",
+                                             meshes=meshes)
             mesh_name=meshes[0]
 
         mesh = nc[mesh_name]
@@ -856,9 +862,14 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         # When the incoming netcdf supplies additional topology, use it
         if 'face_edge_connectivity' in mesh.attrs:
-            ug.cells['edges'] = nc[mesh.attrs['face_edge_connectivity']].values
+            v=mesh.attrs['face_edge_connectivity']
+            if v in nc:
+                # Some files advertise variable they don't have. Trust no one.
+                ug.cells['edges'] = nc[mesh.attrs['face_edge_connectivity']].values
         if 'edge_face_connectivity' in mesh.attrs:
-            ug.edges['cells'] = nc[mesh.attrs['edge_face_connectivity']].values
+            v=mesh.attrs['edge_face_connectivity']
+            if v in nc:
+                ug.edges['cells'] = nc[mesh.attrs['edge_face_connectivity']].values
         
         if dialect=='fishptm':
             ug.cells_center()
