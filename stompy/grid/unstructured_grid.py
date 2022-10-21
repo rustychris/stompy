@@ -5966,7 +5966,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             sel=np.nonzero(sel)[0]
         return sel
 
-    def select_cells_intersecting(self,geom,invert=False,as_type="mask",by_center=False):
+    def select_cells_intersecting(self,geom,invert=False,as_type="mask",by_center=False,
+                                  order=False, return_distance=False):
         """
         geom: a shapely geometry
         invert: select cells which do not intersect.
@@ -5974,7 +5975,13 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         by_center: if True, test against the cell center.  By default, tests against the
         finite cell.
          if 'centroid', test against the centroid
-        """
+        order: if True and the input geometry is a linestring, order the cells
+         by distance along the linestring. force as_type='indices'
+        return_distance: with order -- return the distance along the transect too
+        """        
+        if geom.type=='LineString' and order:
+            as_type='indices'
+
         if isinstance(as_type,str) and as_type=='mask':
             sel = np.zeros(self.Ncells(),np.bool8) # initialized to False
         else:
@@ -6001,6 +6008,18 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             else:
                 if test:
                     sel.append(c)
+
+        if geom.type=='LineString' and order:                    
+            from shapely import geometry
+            sel=np.array(sel)
+            centers=self.cells_center()[sel]
+            dist_along=np.array( [geom.project(geometry.Point(center))
+                                  for center in centers] )
+            ordering=np.argsort(dist_along)
+            sel=sel[ordering]
+            if return_distance:
+                return sel, dist_along[ordering]
+
         return sel
 
     def points_to_cells(self,points,method='kdtree'):
