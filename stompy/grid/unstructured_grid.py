@@ -5384,7 +5384,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 mask=bitmask
 
         if clip is not None: # convert clip to mask
-            mask=mask & self.cell_clip_mask(clip)
+            mask=mask & self.cell_clip_mask(clip,by_center=False)
 
         if values is not None and len(values)==self.Ncells():
             values = values[mask]
