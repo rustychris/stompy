@@ -69,6 +69,11 @@ class GridException(Exception):
 class Missing(GridException):
     pass
 
+class AmbiguousMeshException(GridException):
+    def __init__(self,*a,meshes=[],**k):
+        super().__init__(*a,**k)
+        self.meshes=meshes
+
 def request_square(ax,max_bounds=None):
     """
     Attempt to set a square aspect ratio on matplotlib axes ax
@@ -772,7 +777,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 if nc[vname].attrs.get('cf_role',None) == 'mesh_topology':
                     meshes.append(vname)
             if len(meshes)!=1:
-                raise GridException("Could not uniquely determine mesh variable")
+                raise AmbiguousMeshException("Could not uniquely determine mesh variable",
+                                             meshes=meshes)
             mesh_name=meshes[0]
 
         mesh = nc[mesh_name]
@@ -856,9 +862,14 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         # When the incoming netcdf supplies additional topology, use it
         if 'face_edge_connectivity' in mesh.attrs:
-            ug.cells['edges'] = nc[mesh.attrs['face_edge_connectivity']].values
+            v=mesh.attrs['face_edge_connectivity']
+            if v in nc:
+                # Some files advertise variable they don't have. Trust no one.
+                ug.cells['edges'] = nc[mesh.attrs['face_edge_connectivity']].values
         if 'edge_face_connectivity' in mesh.attrs:
-            ug.edges['cells'] = nc[mesh.attrs['edge_face_connectivity']].values
+            v=mesh.attrs['edge_face_connectivity']
+            if v in nc:
+                ug.edges['cells'] = nc[mesh.attrs['edge_face_connectivity']].values
         
         if dialect=='fishptm':
             ug.cells_center()
@@ -5955,7 +5966,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             sel=np.nonzero(sel)[0]
         return sel
 
-    def select_cells_intersecting(self,geom,invert=False,as_type="mask",by_center=False):
+    def select_cells_intersecting(self,geom,invert=False,as_type="mask",by_center=False,
+                                  order=False, return_distance=False):
         """
         geom: a shapely geometry
         invert: select cells which do not intersect.
@@ -5963,7 +5975,13 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         by_center: if True, test against the cell center.  By default, tests against the
         finite cell.
          if 'centroid', test against the centroid
-        """
+        order: if True and the input geometry is a linestring, order the cells
+         by distance along the linestring. force as_type='indices'
+        return_distance: with order -- return the distance along the transect too
+        """        
+        if geom.type=='LineString' and order:
+            as_type='indices'
+
         if isinstance(as_type,str) and as_type=='mask':
             sel = np.zeros(self.Ncells(),np.bool8) # initialized to False
         else:
@@ -5990,6 +6008,18 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             else:
                 if test:
                     sel.append(c)
+
+        if geom.type=='LineString' and order:                    
+            from shapely import geometry
+            sel=np.array(sel)
+            centers=self.cells_center()[sel]
+            dist_along=np.array( [geom.project(geometry.Point(center))
+                                  for center in centers] )
+            ordering=np.argsort(dist_along)
+            sel=sel[ordering]
+            if return_distance:
+                return sel, dist_along[ordering]
+
         return sel
 
     def points_to_cells(self,points,method='kdtree'):
