@@ -350,11 +350,15 @@ def prepare_angles_halfedge(gen):
     """
     # at this stage, angles are absolute, and reflect the natural direction
     # of the edge
+    # breakpoint()
     edge_angles=np.nan*np.zeros(gen.Nedges(),np.float32)
     def he_angle(he,val=None):
         if val is not None:
             edge_angles[he.j] = (val + 180*he.orient) % 360
-        return (edge_angles[he.j] + 180 * he.orient) % 360
+        if not np.isfinite(edge_angles[he.j]):
+            return np.nan # avoid math warnings
+        angle=(edge_angles[he.j] + 180 * he.orient) % 360
+        return angle
 
     j_turns=np.c_[ gen.edges['turn_fwd'],
                    gen.edges['turn_rev'] ]
@@ -671,6 +675,7 @@ class QuadGen(object):
         # Process angles on the whole quad grid, so we can also get
         # scales
         if self.angle_source=='halfedge':
+            # HERE: does this need snap_angles first??
             prepare_angles_halfedge(gen)
         elif self.angle_source=='existing':
             pass
@@ -2630,7 +2635,7 @@ class SimpleSingleQuadGen(QuadGen):
         af_high=5
         while 1:
             af=(af_low+af_high)/2
-            assert abs(af)<4.9
+            assert abs(af)<4.9,"af=%s"%af
             if not af_high-af_low>1e-8:
                 raise Exception("Calculate coord count failed to converge")
                 #import pdb

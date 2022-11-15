@@ -2757,6 +2757,18 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 return j
         return None
 
+    def edge_to_cells_reflect(self,*a,**k):
+        """
+        Like edge_to_cells, but when a cell is missing (<0), replace
+        with the opposite cell. 
+        """
+        e2c=self.edge_to_cells(*a,**k).copy()
+        left_missing=e2c[:,0]<0
+        right_missing=e2c[:,1]<0
+        e2c[left_missing,0] = e2c[left_missing,1]
+        e2c[right_missing,1] = e2c[right_missing,0]
+        return e2c
+        
     def edge_to_cells(self,e=slice(None),recalc=False,
                       on_missing='error'):
         """
@@ -3142,7 +3154,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 else:
                     do_update=len(to_update)
         else:
-            to_update = np.isnan(self.cells['_center'][:,0])
+            to_update = np.isnan(self.cells['_center'][:,0]) & (~self.cells['deleted'])
             do_update=to_update.sum()
 
         # yeah, it's sort of awkward to handle the different ways that refresh
@@ -3844,11 +3856,14 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
           'cell': make the new cell orthogonal.  For a single new quad, this
            will give a perfectly orthogonal cell.
         """
+        assert orthogonal in ['edge','cell']
+        
         nodes=self.edges['nodes'][j]
         cells=self.edge_to_cells(j)
         if (cells<0).sum()!=1:
             raise self.GridException("Must have exactly one side edge unpaved")
 
+        # he gets the outward facing half-edge
         he=self.halfedge(j,0)
         if he.cell()>=0:
             he=he.opposite()
@@ -7226,7 +7241,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         # 2. build up cells, just using the nodes
         new_cells = np.zeros( (4*self.Ncells(),self.max_sides), np.int32) - 1
 
-        for c in range(self.Ncells()):
+        for c in self.valid_cell_iter():
             cn = self.cell_to_nodes(c)
 
             midpoints = []
