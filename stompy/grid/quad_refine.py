@@ -3,73 +3,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 import six
 
-
-# def trim_to_ij_convex(grid,sel):
-#     """
-#     Splicing is not smart enough to split up a coarse cell with two
-#     refined neighbors. This will trim the bool-mask cells to avoid
-#     a concave selection that would lead to that issue.
-# 
-#     
-#     This needs to be smarter.
-#     Probably something like searching for marked cells with two unmarked 
-#     neighbors. traverse down each side along the marked cells. If any of 
-#     those have a neighbor that "bumps out", unmark the original.
-#     probably do this with halfedges.
-#     """
-#     sel=sel.copy()
-#     e2c=grid.edge_to_cells_reflect()
-# 
-#     # Will start with a slow implementation
-#     nbrs=sel[e2c]
-#     straddle=(nbrs[:,0]!=nbrs[:,1]) # that would give edges
-#     j_straddle=np.nonzero(straddle)[0]
-#     # cells on the outside, adjacent to selected cells
-#     c_straddle=[c for c in e2c[straddle].ravel() if ~sel[c]]
-# 
-#     grid.plot_cells(mask=c_straddle,facecolor='orange',lw=0.6,zorder=1)
-# 
-#     cells_to_check=list(c_straddle)
-# 
-#     # Currently this can fail when there are multiple steps
-#     
-#     while cells_to_check:
-#         c=cells_to_check.pop(0)
-#         assert ~sel[c]
-#         sel_nbrs=[nbr for nbr in grid.cell_to_cells(c) if sel[nbr]]
-# 
-#         if len(sel_nbrs)<2:
-#             continue
-#         elif len(sel_nbrs)==2:
-#             # Want to unselect one of those neighbors. but which one?
-#             # the one with more unselected neighbors.
-#             # I think that is more robust than counting the least selected neighbors.
-#             # the latter gets confused at boundaries
-#             nbr_unsel_count = []
-#             for nbr in sel_nbrs:
-#                 # cell_to_cells will add a -1 for boundary, which we drop here
-#                 nbr_nbrs=[ nn for nn in grid.cell_to_cells(nbr) if nn>=0 ]
-#                 nbr_unsel_count.append( (~sel[nbr_nbrs]).sum() )
-# 
-#             if nbr_unsel_count[0]==nbr_unsel_count[1]:
-#                 grid.plot_cells(mask=[c],color='tab:red')
-#                 breakpoint()
-#             if nbr_unsel_count[0]>nbr_unsel_count[1]:
-#                 sel[sel_nbrs[0]]=False
-#                 cells_to_check.append(sel_nbrs[0])
-#             else:
-#                 sel[sel_nbrs[1]]=False
-#                 cells_to_check.append(sel_nbrs[1])
-#             continue
-#         elif len(sel_nbrs)>2:
-#             sel[c]=True
-#             # Who is the unselected neighbor? Make sure they will get checked again
-#             cells_to_check += [nbr for nbr in grid.cell_to_cells(c) if ~sel[nbr]]
-#             continue
-#     return sel
-
-##
-
+def to_bool_mask(grid,sel):
+    sel=np.asarray(sel)
+    if np.issubdtype(sel.dtype,np.int):
+        bool_sel=np.zeros(grid.Ncells(),bool)
+        bool_sel[sel]=True
+        sel=bool_sel
+    return sel
+            
 def trim_to_ij_convex_walk(grid,sel):
     """
     Probably something like searching for marked cells with two unmarked 
@@ -105,7 +46,7 @@ def trim_to_ij_convex_walk(grid,sel):
                 nbr_nbrs=[n for n in grid.cell_to_cells(nbr) if (n>=0) and sel[n]]
                 if len(nbr_nbrs)<2: continue
                 unmark=True
-                grid.plot_cells(mask=nbr_nbrs,color='g')
+                #grid.plot_cells(mask=nbr_nbrs,color='g')
                 break
             if unmark:
                 dirty=True
@@ -136,9 +77,6 @@ def trim_to_ij_convex_walk(grid,sel):
     #        unmark problem cell
     return sel
 
-
-## 
-    
 def partition(grid,cells):
     """
     delete cells from grid, and grid and a new grid with only 
@@ -235,6 +173,8 @@ def splice_with_doubling(grid,refined):
 
 class Refiner:
     def __init__(self,grid,cells,direction='both'):
+        cells=to_bool_mask(grid,cells)
+
         cells=trim_to_ij_convex_walk(grid,cells)
         
         grid,g_refine = partition(grid,cells)
@@ -313,6 +253,9 @@ class Refiner:
             
         for c in grid.valid_cell_iter():
             c_nodes=grid.cell_to_nodes(c)
+            if c==3734:
+                breakpoint()
+                
             grid.delete_cell(c)
 
             # Get the nodes in a canonical order
@@ -363,6 +306,8 @@ class Coarsener:
     def __init__(self,grid,cells,direction):
         self.grid=grid
         self.direction=direction
+
+        cells=to_bool_mask(grid,cells)
 
         orig_cells=cells
         # I *think* it's better to flip the flags here, but not sure.
@@ -549,100 +494,5 @@ class Coarsener:
                 
         return g_coarse
 
-
-
-##
-from stompy.grid import exact_delaunay
-six.moves.reload_module(unstructured_grid)
-six.moves.reload_module(exact_delaunay)
-six.moves.reload_module(quad_laplacian)
-
-gen=unstructured_grid.UnstructuredGrid.read_pickle("../quad_design-v03g.pkl")
-
-# is it something related to the extraneous fields?
-for fld in ['feat_id','turn_fwd','turn_rev', 'angle', 'bez']:
-    if fld in gen.edges.dtype.names:
-        gen.delete_edge_field(fld)
-
-# or deleted edges?
-gen.renumber_edges()
-
-#plt.figure(num=1,clear=1)
-#gen.plot_edges(labeler='scale')
-#gen.plot_cells(labeler='id',zorder=-1,color='0.9',centroid=True)
-
-
-seq_result={}
-
-##
-grid=unstructured_grid.UnstructuredGrid(max_sides=8)
-
-recalc_after=0
-
-#grid=unstructured_grid.UnstructuredGrid.read_ugrid('base_grid-v0.nc')
-ortho_count=20
-
-nom_res=5.0
-
-for seq in np.unique(gen.cells['seq']):
-    # only count positive seq. missing entries might get 0, so ignore
-    if seq<=0: continue
-    
-    # if (seq<=recalc_after) and seq in seq_result:
-    #     print(f"Will use existing result for seq={seq}")
-    #     grid=seq_result[seq].copy()
-    #     continue
-            
-    cells=np.nonzero( (gen.cells['seq']==seq) & (~gen.cells['deleted']) )[0]
-
-    for cell in cells:
-        op=gen.cells['op'][cell]
-        print(f"{seq} {cell} {op}")
-
-        def SimpleQuadGen():
-            # SimpleQuadGen looks at *all* cells to decide on angles,
-            # so limit that to quad patches 
-            gen_subset=gen.copy()
-            for c in gen_subset.valid_cell_iter():
-                if c not in cells:
-                    gen_subset.delete_cell(c)
-            gen_subset.delete_orphan_edges()
-            sqg=quad_laplacian.SimpleQuadGen(gen=gen_subset,cells=[cell],
-                                             execute=False,nom_res=nom_res,
-                                             gmsh_path='gmsh')
-            g=sqg.execute()
-            grid.add_grid(g,merge_nodes='auto',tol=0.01)
-        def Refine(direction):
-            poly=gen.cell_polygon(cell)
-            sel_cells=grid.select_cells_intersecting(poly)
-            result=Refiner(grid,sel_cells,direction)
-
-            tweaker = orthogonalize.Tweaker(grid)
-            for _ in range(ortho_count):
-                for n in result.new_nodes:
-                    tweaker.nudge_node_orthogonal(n)
-            
-        def Coarsen(direction):
-            poly=gen.cell_polygon(cell)
-            sel_cells=grid.select_cells_intersecting(poly)
-            result=Coarsener(grid,sel_cells,direction)
-            
-            tweaker = orthogonalize.Tweaker(grid)
-            for _ in range(ortho_count):
-                for n in result.new_nodes:
-                    tweaker.nudge_node_orthogonal(n)
-            
-        six.exec_(op)
-        seq_result[seq]=grid.copy()
-        print(f"Completed seq={seq}")
-        
-
-plt.clf()
-grid.plot_edges(zorder=2)
-grid.plot_cells(facecolor='0.9',lw=0.6,zorder=1)
-
-grid.renumber()
-grid.write_ugrid('gen_grid_out_v03.nc')
-        
 
 

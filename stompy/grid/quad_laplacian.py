@@ -538,8 +538,9 @@ def add_bezier(gen):
 
     order=3 # cubic bezier curves
     bez=np.nan*np.zeros( (gen.Nedges(),order+1,2) )
-    bez[:,0,:] = gen.nodes['x'][gen.edges['nodes'][:,0]]
-    bez[:,order,:] = gen.nodes['x'][gen.edges['nodes'][:,1]]
+    valid_edges=~gen.edges['deleted']
+    bez[valid_edges,0    ,:] = gen.nodes['x'][gen.edges['nodes'][valid_edges,0]]
+    bez[valid_edges,order,:] = gen.nodes['x'][gen.edges['nodes'][valid_edges,1]]
 
     gen.add_edge_field('bez', bez, on_exists='overwrite')
 
@@ -1005,6 +1006,8 @@ class QuadGen(object):
         internal=(e2c.min(axis=1)>=0)
 
         for j in np.nonzero(internal)[0]:
+            if gen.edges['deleted'][j]: continue
+            
             # Only when there are parallel edges on both
             # sides do we actually record the internal
             # edge
@@ -1023,7 +1026,13 @@ class QuadGen(object):
             else:
                 self.add_internal_edge(gen.edges['nodes'][j],
                                        gen.edges['angle'][j])
+            # DBG
+            # Tricky: if there are multiple segments, the first succeeds,
+            # and the second is degenerate (spike into the cell interior)
+            # this should be handled now down in delete_edge_cascade
             gen.merge_cells(j=j)
+        # A bit of insurance? Hopefully doesn't break things
+        gen.delete_orphan_edges()
             
         cycles=gen.find_cycles(max_cycle_len=1000)
         assert len(cycles)==1,"For now, cannot handle multiple cycles"
