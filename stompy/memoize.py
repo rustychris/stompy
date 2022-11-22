@@ -58,6 +58,10 @@ def memoize_key(*args,**kwargs):
 def memoize_key_str(*args,**kwargs):
     return str(args) + str(kwargs)
 
+def memoize_key_repr(*args,**kwargs):
+    # repr is probably more appropriate than str
+    return repr(args) + repr(kwargs)
+
 def memoize(lru=None,cache_dir=None,key_method='pickle'):
     """
     add as a decorator to classes, instance methods, regular methods
@@ -92,6 +96,8 @@ def memoize(lru=None,cache_dir=None,key_method='pickle'):
                 key = memoize_key(args,**kwargs)
             elif key_method=='str':
                 key = memoize_key_str(args,**kwargs)
+            elif key_method=='repr':
+                key = memoize_key_repr(args,**kwargs)
             else:
                 key=key_method(args,**kwargs)
             value_src=None
