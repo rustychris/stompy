@@ -1148,19 +1148,26 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         return fns[0]
 
     _his_ds=None
-    def his_dataset(self,decode_geometry=True,set_coordinates=True,refresh=False,
-                    **xr_kwargs):
+    def his_dataset(self,refresh=False,**kwargs):
         """
         Return history dataset, with some minor additions to make
         it friendly
         """
         if (self._his_ds is not None) and (not refresh):
             return self._his_ds
-        
+
+        fn=self.his_output()
+        his_ds=self.clean_his_dataset(fn,refresh=refresh,**kwargs)
+        self._his_ds=his_ds
+        return his_ds
+
+    @classmethod        
+    def clean_his_dataset(cls,fn,refresh=False,decode_geometry=True, 
+                            set_coordinates=True,**xr_kwargs):
         if refresh:
-            his_ds=xr.open_dataset(self.his_output()) # is there a way to know if it's cached?
+            his_ds=xr.open_dataset(fn) # is there a way to know if it's cached?
             his_ds.close()
-        his_ds=xr.open_dataset(self.his_output(),**xr_kwargs)
+        his_ds=xr.open_dataset(fn,**xr_kwargs)
             
         if set_coordinates:
             # Doctor up the dimensions
@@ -1186,9 +1193,21 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                 his_ds[coord]=(coord,),coord_vals
 
         if decode_geometry:
-            xr_utils.decode_geometry(his_ds,'cross_section_geom',replace=True)
+            if 'cross_section_geom' in his_ds:
+                xr_utils.decode_geometry(his_ds,'cross_section_geom',replace=True)
+            elif 'cross_section_x_coordinate' in his_ds:
+                from shapely import geometry
+                geoms=np.zeros(his_ds.dims['cross_section'],dtype=object)
+                # old-school.
+                for sec_idx in range(his_ds.dims['cross_section']):
+                    x=his_ds['cross_section_x_coordinate'].isel(cross_section=sec_idx)
+                    y=his_ds['cross_section_y_coordinate'].isel(cross_section=sec_idx)
+                    valid=x<1e35 # fill values are 9.9e36
+                    x=x[valid]
+                    y=y[valid]
+                    geoms[sec_idx]=geometry.LineString(np.c_[x,y])
+                his_ds['cross_section_geom']=('cross_section',),geoms
 
-        self._his_ds=his_ds
         return his_ds
 
     def hyd_output(self):
