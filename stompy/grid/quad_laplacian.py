@@ -628,6 +628,25 @@ def plot_gen_bezier(gen,num=10):
         ax.plot(bez[:,0],bez[:,1],'r-o',zorder=1,alpha=0.5,lw=1.5)
     return fig,ax
 
+def discretize_bezier_halfedge(gen,he,samples_per_edge=10):
+    j=he.j # gen.nodes_to_edge(a,b)
+
+    n0=gen.edges['nodes'][j,0]
+    nN=gen.edges['nodes'][j,1]
+    bez=gen.edges['bez'][j]
+
+    t=np.linspace(0,1,1+samples_per_edge)
+
+    if he.orient==1: # have to flip order
+        t=t[::-1]        
+
+    B0=(1-t)**3
+    B1=3*(1-t)**2 * t
+    B2=3*(1-t)*t**2
+    B3=t**3
+    edge_points = B0[:,None]*bez[0] + B1[:,None]*bez[1] + B2[:,None]*bez[2] + B3[:,None]*bez[3]
+    return edge_points
+
 class QuadGen(object):
     # The cell spacing in geographic coordinates for the nominal, isotropic grid
     nom_res=4.0
@@ -923,21 +942,8 @@ class QuadGen(object):
             
         points=[]
         for a,b in node_pairs:
-            j=gen.nodes_to_edge(a,b)
-            
-            n0=gen.edges['nodes'][j,0]
-            nN=gen.edges['nodes'][j,1]
-            bez=gen.edges['bez'][j]
-            
-            t=np.linspace(0,1,1+samples_per_edge)
-            if n0==b: # have to flip order
-                t=t[::-1]
-
-            B0=(1-t)**3
-            B1=3*(1-t)**2 * t
-            B2=3*(1-t)*t**2
-            B3=t**3
-            edge_points = B0[:,None]*bez[0] + B1[:,None]*bez[1] + B2[:,None]*bez[2] + B3[:,None]*bez[3]
+            he=gen.nodes_to_halfedge(a,b)
+            edge_points=discretize_bezier_halfedge(gen,he,samples_per_edge=samples_per_edge)
 
             points.append(edge_points[:-1])
         if j is not None:
