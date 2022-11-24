@@ -1295,6 +1295,8 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         fns.sort()
         return fns[0]
 
+<<<<<<< HEAD
+=======
     @classmethod
     def clean_his_dataset(cls, fn, decode_geometry=True,set_coordinates=True,refresh=False,
                           **xr_kwargs):
@@ -1332,9 +1334,22 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                 his_ds[coord]=(coord,),coord_vals
 
         if decode_geometry:
-            xr_utils.decode_geometry(his_ds,'cross_section_geom',replace=True)
+            if 'cross_section_geom' in his_ds:
+                xr_utils.decode_geometry(his_ds,'cross_section_geom',replace=True)
+            elif 'cross_section_x_coordinate' in his_ds:
+                from shapely import geometry
+                geoms=np.zeros(his_ds.dims['cross_section'],dtype=object)
+                # old-school.
+                for sec_idx in range(his_ds.dims['cross_section']):
+                    x=his_ds['cross_section_x_coordinate'].isel(cross_section=sec_idx)
+                    y=his_ds['cross_section_y_coordinate'].isel(cross_section=sec_idx)
+                    valid=x<1e35 # fill values are 9.9e36
+                    x=x[valid]
+                    y=y[valid]
+                    geoms[sec_idx]=geometry.LineString(np.c_[x,y])
+                his_ds['cross_section_geom']=('cross_section',),geoms
         return his_ds
-    
+
     _his_ds=None
     _his_ds_chain=None
     def his_dataset(self,decode_geometry=True,set_coordinates=True,refresh=False,
@@ -1376,8 +1391,6 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                 his_fns.append(fns[0])
             his_dss=[self.clean_his_dataset(fn,**clean_kwargs)
                      for fn in his_fns]
-            #if prechain:
-            #    his_dss=prechain(his_dss)
             his_dasks=[]
             for ds in his_dss[::-1]:
                 if len(his_dasks)>0:
