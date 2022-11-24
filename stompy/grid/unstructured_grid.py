@@ -6057,7 +6057,6 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     sel.append(c)
 
         if geom.type=='LineString' and order:                    
-            from shapely import geometry
             sel=np.array(sel)
             centers=self.cells_center()[sel]
             dist_along=np.array( [geom.project(geometry.Point(center))
@@ -7688,6 +7687,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             self.cells=np.zeros(len(cells),self.cell_dtype)
             self.cells[:]=self.cell_defaults
             self.cells['nodes'][:,:4]=cells
+            if self.max_sides>4:
+                self.cells['nodes'][:,4:]=-1
             self.make_edges_from_cells_fast()
             # May need to flip this:
             cell_ids=np.arange((nx-1)*(ny-1)).reshape( [nx-1,ny-1] )
