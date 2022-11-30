@@ -238,8 +238,13 @@ class UGCellLayer(UGLayer):
         assert self.local_dims is not None
         
         self.Fig=Fig
-        self.ccoll=self.ds.grid.plot_cells(values=self.get_data(),
+        #self.ccoll=self.ds.grid.plot_cells(values=self.get_data(),
+        #                                   cmap='turbo',ax=self.Fig.ax)
+        data=self.get_data()
+        self.ccoll=self.ds.grid.plot_cells(values=np.ones_like(data),
                                            cmap='turbo',ax=self.Fig.ax)
+        self.ccoll.set_array(data) # does this help?
+        
         self.cax=self.Fig.get_cax()
         self.ccbar=plot_utils.cbar(self.ccoll,cax=self.cax)
         self.Fig.ax.axis('equal') # somehow lost the auto zooming. try here.

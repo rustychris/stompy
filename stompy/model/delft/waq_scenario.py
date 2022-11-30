@@ -767,6 +767,22 @@ class Hydro(object):
         self.infer_2d_elements()
         return V[self.seg_to_2d_element]
 
+    def seg_z_range(self,t_secs):
+        """
+        Calculate seg_ztop, seg_zbot as depth from water surface to the
+        top and bottom of each segment.
+        """
+        vols=self.volumes(t_secs)
+        areas=self.planform_areas().data # a top-down area for each segment.
+        dzs=vols/areas
+
+        # depth below water surface of the bottom of the segment prism
+        self.infer_2d_elements()
+        n_layer = self.n_seg // self.n_2d_elements
+        dzs_2d=dzs.reshape((n_layer,-1))
+        seg_zbot=np.cumsum(dzs_2d,axis=0).ravel()
+        seg_ztop=seg_zbot-dzs
+        return seg_ztop,seg_zbot
 
     # hash of segment id (0-based) to list of exchanges
     # order by horizontal, decreasing z, then vertical, decreasing z.
@@ -9792,9 +9808,19 @@ class WaqModelBase(scriptable.Scriptable):
     def original_bloominp_path(self):
         # this gets copied into the model run directory
         return os.path.join(self.share_path,'bloominp.d09')
+
+    _proc_path=None
     @property
     def proc_path(self):
+        if self._proc_path is not None:
+            return self._proc_path
         return os.path.join(self.share_path,'proc_def')
+    
+    @proc_path.setter
+    def proc_path(self,value):
+        if value.endswith('.def') or value.endswith('.dat'):
+            raise ValueError("proc_path should not include the extension")
+        self._proc_path=value
 
     # plot process diagrams
     def cmd_plot_process(self,run_name='dwaq'):
