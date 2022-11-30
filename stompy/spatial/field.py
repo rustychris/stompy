@@ -3915,11 +3915,16 @@ class MultiRasterField(Field):
             if isinstance(patt,tuple):
                 patt,pri=patt
             else:
-                pri=0 # default priority 
-            matches=glob.glob(patt)
-            if len(matches)==0 and self.error_on_null_input=='any':
-                raise Exception("Pattern '%s' got no matches"%patt)
-            raster_files += [ (m,pri) for m in matches]
+                pri=0 # default priority
+            if isinstance(patt,str):
+                matches=glob.glob(patt)
+                if len(matches)==0 and self.error_on_null_input=='any':
+                    raise Exception("Pattern '%s' got no matches"%patt)
+                raster_files += [ (m,pri) for m in matches]
+            elif isinstance(patt,Field):
+                raster_files.append( (patt,pri) )
+            else:
+                raise Exception("Expected a string regexp or a Field instance. Got %s"%patt)
         if len(raster_files)==0 and self.error_on_null_input=='all':
             raise Exception("No patterns got matches")
 
@@ -3949,16 +3954,26 @@ class MultiRasterField(Field):
                                   ('last_used','i4') ] )
 
         for fi,(f,pri) in enumerate(self.raster_files):
-            extent,resolution = GdalGrid.metadata(f)
-            sources['extent'][fi] = extent
-            sources['resolution'][fi] = max(resolution[0],resolution[1])
-            sources['resx'][fi] = resolution[0]
-            sources['resy'][fi] = resolution[1]
-            # negate so that higher priority sorts to the beginning
-            sources['order'][fi] = -pri
-            sources['field'][fi]=None
-            sources['filename'][fi]=f
+            if isinstance(f,str):
+                extent,resolution = GdalGrid.metadata(f)
+                sources['extent'][fi] = extent
+                sources['resolution'][fi] = max(resolution[0],resolution[1])
+                sources['resx'][fi] = resolution[0]
+                sources['resy'][fi] = resolution[1]
+                # negate so that higher priority sorts to the beginning
+                sources['field'][fi]=None
+                sources['filename'][fi]=f
+            else:
+                sources['extent'][fi] = f.extents
+                sources['resolution'][fi] = max(f.dx, f.dy)
+                sources['resx'][fi] = f.dx
+                sources['resy'][fi] = f.dy
+                # negate so that higher priority sorts to the beginning
+                sources['field'][fi]=f
+                sources['filename'][fi]=None
+            # common
             sources['last_used'][fi]=-1
+            sources['order'][fi] = -pri
 
         self.sources = sources
         # -1 means the source isn't loaded.  non-negative means it was last used when serial
@@ -4026,9 +4041,10 @@ class MultiRasterField(Field):
         """
         if self.sources['field'][i] is None:
             if self.open_count >= self.max_count:
-                # Have to choose someone to close.
-                current = np.nonzero(self.sources['last_used']>=0)[0]
-
+                # Have to choose someone to close, ignoring entries with no filename (since 
+                # those represent entries supplied as Fields)
+                current = np.nonzero( (self.sources['last_used']>=0) & (self.sources['filename']!=None))[0]
+                #  - don't close fields that have no filename
                 victim = current[ np.argmin( self.sources['last_used'][current] ) ]
                 # print "Will evict source %d"%victim
                 self.sources['last_used'][victim] = -1
