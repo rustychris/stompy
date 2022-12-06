@@ -2022,7 +2022,7 @@ class SimpleGrid(QuadrilateralGrid):
             os.unlink(fname_shp)
             os.close(fd1)
             os.close(fd2)
-            self.write_gdal(fname_tif)
+            self.write_gdal(fname_tif,overwrite=True)
             res=subprocess.run([gdal_contour,"-fl",str(vmin),str(vmax),fname_tif,fname_shp],
                                 capture_output=True)
             print(res.stdout)
