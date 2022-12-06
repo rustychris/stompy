@@ -921,7 +921,7 @@ def hour_tide_fn(jd,u,leave_mean=False):
     if start=='flood':
         hr_tide += 6 # starting on an ebb
 
-    print("start is",start)
+    # print("start is",start)
     hr_tide %= 12
 
     # angular interpolation - have to use scipy interp1d for complex values

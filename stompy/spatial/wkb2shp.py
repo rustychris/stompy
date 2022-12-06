@@ -153,7 +153,8 @@ def wkb2shp(shp_name,
 
     for n in field_names:
         if len(n)>10:
-            raise Exception("Cannot have field names longer than 10 characters")
+            raise Exception("Cannot have field names longer than 10 characters: %s"%
+                            n)
 
     if geom_type is None:
         # find it by querying the features - minor bug - this only 
