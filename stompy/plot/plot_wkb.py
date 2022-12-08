@@ -6,9 +6,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 from .. import utils
 
-def plot_linestring(ls,**kwargs):
+def plot_linestring(linestring,**kwargs):
     ax=kwargs.pop('ax',plt.gca())
-    c = np.array(ls.coords)
+    c = np.array(linestring.coords)
     return ax.plot( c[:,0],c[:,1],**kwargs)[0]
 
 def plot_multilinestring(mls,**kwargs):
