@@ -2757,6 +2757,18 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 return j
         return None
 
+    def edge_to_cells_reflect(self,*a,**k):
+        """
+        Like edge_to_cells, but when a cell is missing (<0), replace
+        with the opposite cell. 
+        """
+        e2c=self.edge_to_cells(*a,**k).copy()
+        left_missing=e2c[:,0]<0
+        right_missing=e2c[:,1]<0
+        e2c[left_missing,0] = e2c[left_missing,1]
+        e2c[right_missing,1] = e2c[right_missing,0]
+        return e2c
+        
     def edge_to_cells(self,e=slice(None),recalc=False,
                       on_missing='error'):
         """
@@ -3142,7 +3154,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 else:
                     do_update=len(to_update)
         else:
-            to_update = np.isnan(self.cells['_center'][:,0])
+            to_update = np.isnan(self.cells['_center'][:,0]) & (~self.cells['deleted'])
             do_update=to_update.sum()
 
         # yeah, it's sort of awkward to handle the different ways that refresh
@@ -3583,9 +3595,13 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         # If that becomes a problem, need to root out where
         # edges['cells'] gets corrupted, and not just blindly
         # recalculated all the time.
-        for c in self.edge_to_cells(j):
-            if c>=0:
-                self.delete_cell(c)
+        c1,c2=self.edge_to_cells(j)
+        if c1>=0:
+            self.delete_cell(c1)
+        if c2>=0 and c1!=c2:
+            # rare -- but there can be a degenerate edge poking into a cell
+            # interior.
+            self.delete_cell(c2)
         self.delete_edge(j)
 
     def merge_edges(self,edges=None,node=None):
@@ -3844,11 +3860,14 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
           'cell': make the new cell orthogonal.  For a single new quad, this
            will give a perfectly orthogonal cell.
         """
+        assert orthogonal in ['edge','cell']
+        
         nodes=self.edges['nodes'][j]
         cells=self.edge_to_cells(j)
         if (cells<0).sum()!=1:
             raise self.GridException("Must have exactly one side edge unpaved")
 
+        # he gets the outward facing half-edge
         he=self.halfedge(j,0)
         if he.cell()>=0:
             he=he.opposite()
@@ -4163,7 +4182,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
     @listenable
     def delete_cell(self,i,check_active=True):
-        if check_active and self.cells['deleted'][i]!=False:
+        if check_active and (i>=self.Ncells() or self.cells['deleted'][i]!=False):
             raise Exception("delete_cell(%d) - appears already deleted"%(i))
 
         # better to go ahead and use the dynamic updates
@@ -5362,7 +5381,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             return cell_valid
 
     def plot_cells(self,ax=None,mask=None,values=None,clip=None,centers=False,labeler=None,
-                   masked_values=None,
+                   masked_values=None,ragged_edges=None,
                    centroid=False,**kwargs):
         """
         values: color cells based on the given values.  can also be
@@ -5372,6 +5391,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         labeler: f(cell_idx,cell_record) => string for labeling.
         centroid: if True, use centroids instead of centers.  if an array,
           use that as the center point rather than circumcenters or centroids
+        ragged_edges: controls how cells with fewer than max_sides edges are handled.
+          False: nan-mask extra edges (but edges won't plot correctly), True: pass
+          a ragged list of arrays. None: choose based on whether edgecolor is specified.
         """
         ax = ax or plt.gca()
 
@@ -5381,6 +5403,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             else:
                 # asanyarray allows for masked arrays to pass through unmolested.
                 values = np.asanyarray(values)
+
+        if ragged_edges is None:
+            ragged_edges='edgecolor' in kwargs
 
         if mask is None:
             mask=~self.cells['deleted']
@@ -5416,10 +5441,19 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             if values is not None:
                 kwargs['array'] = values
             cell_nodes = self.cells['nodes'][mask]
+
             polys = self.nodes['x'][cell_nodes]
             missing = cell_nodes<0
             polys[missing,:] = np.nan # seems to work okay for triangles
-            coll = PolyCollection(polys,**kwargs)
+
+            if ragged_edges:
+                # slower, but properly shows edges
+                plot_polys = [ self.nodes['x'][cn[ cn>=0 ]]
+                               for cn in cell_nodes]
+            else:
+                plot_polys=polys
+                
+            coll = PolyCollection(plot_polys,**kwargs)
             ax.add_collection(coll)
         else:
             args=[]
@@ -5451,10 +5485,18 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 
         return coll
 
-    def edges_length(self,sel=slice(None)):
-        p1 = self.nodes['x'][self.edges['nodes'][sel,0]]
-        p2 = self.nodes['x'][self.edges['nodes'][sel,1]]
-        return mag( p2-p1 )
+    def edges_length(self,sel=None):
+        if sel is None:
+            lengths=np.full(self.Nedges(),np.nan,np.float64)
+            sel=~self.edges['deleted']
+            p1 = self.nodes['x'][self.edges['nodes'][sel,0]]
+            p2 = self.nodes['x'][self.edges['nodes'][sel,1]]
+            lengths[sel]=mag( p2-p1 )
+        else:
+            p1 = self.nodes['x'][self.edges['nodes'][sel,0]]
+            p2 = self.nodes['x'][self.edges['nodes'][sel,1]]
+            lengths=mag( p2-p1 )
+        return lengths
 
     def cells_area(self,sel=None):
         """
@@ -5840,6 +5882,11 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                       and
                      (self.edges['nodes'][j,1] in node_set) ):
                     he=self.halfedge(j,0)
+                    if he.cell()<0:
+                        he=he.opposite()
+                    if he.cell()<0:
+                        he=None
+                        continue
                     break
             if he is None:
                 # could try harder with other nodes..
@@ -6010,7 +6057,6 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     sel.append(c)
 
         if geom.type=='LineString' and order:                    
-            from shapely import geometry
             sel=np.array(sel)
             centers=self.cells_center()[sel]
             dist_along=np.array( [geom.project(geometry.Point(center))
@@ -7226,7 +7272,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         # 2. build up cells, just using the nodes
         new_cells = np.zeros( (4*self.Ncells(),self.max_sides), np.int32) - 1
 
-        for c in range(self.Ncells()):
+        for c in self.valid_cell_iter():
             cn = self.cell_to_nodes(c)
 
             midpoints = []
@@ -7641,6 +7687,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             self.cells=np.zeros(len(cells),self.cell_dtype)
             self.cells[:]=self.cell_defaults
             self.cells['nodes'][:,:4]=cells
+            if self.max_sides>4:
+                self.cells['nodes'][:,4:]=-1
             self.make_edges_from_cells_fast()
             # May need to flip this:
             cell_ids=np.arange((nx-1)*(ny-1)).reshape( [nx-1,ny-1] )
