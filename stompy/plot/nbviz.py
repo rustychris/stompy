@@ -226,7 +226,7 @@ class UGCellLayer(UGLayer):
             if dim not in self.free_dims:
                 self.free_dims[dim] = self.ds.ds[dim] # can we just publish these as xr data arrays?
                 changed=True
-        for dim in self.free_dims:
+        for dim in list(self.free_dims):
             if dim not in self.local_dims:
                 del self.free_dims[dim]
                 changed=True
