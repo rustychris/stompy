@@ -9599,6 +9599,7 @@ class WaqModelBase(scriptable.Scriptable):
         # online simulations at this time (2021-06-21)
         self.dispersions=NamedObjects(scenario=self)
         self.velocities=NamedObjects(scenario=self)
+        self.processes=[]
         self.parameters=self.init_parameters()
         self.substances=self.init_substances()
         assert self.substances is not None, "init_substances() did not return anything."
@@ -9626,12 +9627,20 @@ class WaqModelBase(scriptable.Scriptable):
     @property
     def n_inactive_substances(self):
         return len( [sub for sub in self.substances.values() if not sub.active] )
+
+    def add_process(self,name):
+        self.processes.append(name)
     
     def init_parameters(self):
         params=NamedObjects(scenario=self,cast_value=cast_to_parameter)
         params['ONLY_ACTIVE']=1 # almost always a good idea.
-        params['ACTIVE_DYNDEPTH']=1 # these make the outputs much easier to visualize,
-        params['ACTIVE_TOTDEPTH']=1 # and some tools depend on these.
+        self.add_process("DYNDEPTH")
+        self.add_process("TOTDEPTH")
+
+        # pushing this to self.processes.
+        
+        #params['ACTIVE_DYNDEPTH']=1 # these make the outputs much easier to visualize,
+        #params['ACTIVE_TOTDEPTH']=1 # and some tools depend on these.
         
         return params
     def init_hydro_parameters(self):
@@ -10253,6 +10262,8 @@ END_MULTIGRID"""%num_layers
         """
         self.ensure_base_path()
         # parameter files are also written along the way
+        for process in self.processes:
+            self.parameters['ACTIVE_'+process]=1
         inp=InpFile(scenario=self)
         inp.write()
 
@@ -10997,7 +11008,6 @@ class WaqOnlineModel(WaqModelBase):
         
         self.sub_file = 'sources.sub'
         self.sub_path = os.path.join(self.model.run_dir, self.sub_file)
-        self.processes=[]
 
     @property
     def proc_path(self):
@@ -11152,9 +11162,6 @@ class WaqOnlineModel(WaqModelBase):
         else:
             assert isinstance(bc, DelwaqScalarBC), f"BC type {type(bc)} cannot be handled by Delwaq model."
             self.bcs.append(bc)
-
-    def add_process(self,name):
-        self.processes.append(name)
         
     def update_command(self,cmd):
         """
