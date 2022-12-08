@@ -1295,8 +1295,6 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         fns.sort()
         return fns[0]
 
-<<<<<<< HEAD
-=======
     @classmethod
     def clean_his_dataset(cls, fn, decode_geometry=True,set_coordinates=True,refresh=False,
                           **xr_kwargs):
