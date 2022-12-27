@@ -33,7 +33,8 @@ def wkb2shp(shp_name,
             overwrite=False,
             geom_type=None,
             driver=None,
-            layer_name=None):
+            layer_name=None,
+            unpack_multi=True):
     """
     Save data to a shapefile.
 
@@ -161,7 +162,7 @@ def wkb2shp(shp_name,
         # works when shapely geometries were passed in.
         types = np.array( [text2ogr[g.type] for g in geoms] )
         geom_type = int(types.max())
-        # print "Chose geometry type to be %s"%ogr2text[geom_type]
+        print("Chose geometry type to be %s"%ogr2text[geom_type])
 
     new_layer = new_ds.CreateLayer(layer_name,
                                    srs=srs,
@@ -211,8 +212,11 @@ def wkb2shp(shp_name,
         elif type(geom) in (Polygon,LineString,Point):
             geom_wkbs = [geom.wkb]
         elif type(geom) in (MultiPolygon,MultiLineString,MultiPoint):
-            geom_wkbs = [g.wkb for g in geom.geoms]
-
+            if unpack_multi:
+                geom_wkbs = [g.wkb for g in geom.geoms]
+            else:
+                geom_wkbs = [geom.wkb]
+    
         for geom_wkb in geom_wkbs:
             feat_geom = ogr.CreateGeometryFromWkb(geom_wkb)
             feat = ogr.Feature( new_layer.GetLayerDefn() )
