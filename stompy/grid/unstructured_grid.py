@@ -3711,7 +3711,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         split_cells: True: split cells, creating two
          or three cells from the original.
         False: just insert the new node into cells
-          Note that this may be ignore if self.max_sides
+          Note that this may be ignored if self.max_sides
           is not large enough!
 
         merge_thresh: if non-negative, check new cells for being joined
@@ -5758,9 +5758,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         all cell polygons if the edge-based approach fails.
         """
         try:
+            # TODO: why does this fail so often? Is it stale edge_to_cells? 
             return self.boundary_polygon_by_edges()
         except Exception as exc:
-            self.log.warning('Warning, boundary_polygon() failed using edges!  Trying polygon union method')
+            self.log.info('Warning, boundary_polygon() failed using edges!  Trying polygon union method')
             # self.log.warning(exc,exc_info=True)
             return self.boundary_polygon_by_union()
 

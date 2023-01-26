@@ -520,8 +520,10 @@ def linear_scales(gen,method='adhoc'):
     bad=(extraps[0]<=0) | (extraps[1]<=0)
     if np.any(bad):
         idxs=np.nonzero(bad)[0]
-        log.error("Bad nodes: %s"%str(gen_tri.nodes['x'][idxs]))
-        raise Exception("Probably disconnected cells with no scale")
+        log.warning("Bad nodes: %s"%str(gen_tri.nodes['x'][idxs]))
+        # push the error to later -- possible that the nodes we care about
+        # have scale.
+        #raise Exception("Probably disconnected cells with no scale")
     return i_field, j_field
 
 
@@ -668,6 +670,7 @@ class QuadGen(object):
 
     # 'rebay', 'front', 'gmsh'.  When intermediate is 'tri', this chooses the method for
     # generating the intermediate triangular grid
+    # note that rebay is buggy! gmsh is great if installed.
     triangle_method='rebay'
 
     # How internal angles are specified.  'node' is only valid when a single cell
@@ -695,7 +698,7 @@ class QuadGen(object):
         # Process angles on the whole quad grid, so we can also get
         # scales
         if self.angle_source=='halfedge':
-            # HERE: does this need snap_angles first??
+            snap_angles(gen)
             prepare_angles_halfedge(gen)
         elif self.angle_source=='existing':
             pass
@@ -717,19 +720,31 @@ class QuadGen(object):
         gen.delete_orphan_edges()
         gen.delete_orphan_nodes()
         gen.renumber(reorient_edges=False)
-        
+
+        self.gen_orig=gen.copy() # before merging
         self.gen=gen
         # [ [node_a,node_b,angle], ...]
         # node indices reference gen, which provide
         # additional groupings of nodes.
         self.internal_edges=[]
+        self.breaklines=[]
 
         if execute:
             self.execute()
 
-    def add_internal_edge(self,nodes,angle=None):
-        self.internal_edges.append( [nodes[0], nodes[1], angle] )
-        
+    def add_internal_edge(self,nodes,angle=None,colinear=True):
+        """
+        nodes: the two nodes making up the edge
+        angle: if known, the orientation of the edge.
+        colinear: if true, marks the edge as being colinear with
+        an external edge.
+        """
+        if colinear:
+            self.internal_edges.append( [nodes[0], nodes[1], angle] )
+        else:
+            # towards aligning internal rows
+            self.breaklines.append( [nodes[0],nodes[1],angle] )
+            
     def execute(self):
         self.process_internal_edges(self.gen)
         self.g_int=self.create_intermediate_grid_tri()
@@ -1003,12 +1018,14 @@ class QuadGen(object):
     def process_internal_edges(self,gen):
         """
         Remove and save internal edges.
+        self.internal_edges will end up with internal
+        edges that are colinear with external edges (i.e. inside corners)
+
         Flip angle for remaining edge to reflect orientation
         along boundary cycle.
         Add 'fixed' and 'turn' field to gen.nodes
         """
         e2c=gen.edge_to_cells()
-
         internal=(e2c.min(axis=1)>=0)
 
         for j in np.nonzero(internal)[0]:
@@ -1027,16 +1044,19 @@ class QuadGen(object):
                     if (gen.edges['angle'][j_nbr] - angle)%180==0:
                         parallel_count+=1
                         break # parallel. good
-            if parallel_count<2:
-                log.info(f"Will skip potential internal edge {j}")
-            else:
-                self.add_internal_edge(gen.edges['nodes'][j],
-                                       gen.edges['angle'][j])
+            self.add_internal_edge(gen.edges['nodes'][j],
+                                   gen.edges['angle'][j],
+                                   colinear=parallel_count>=2) # probably just ==2
             # DBG
             # Tricky: if there are multiple segments, the first succeeds,
             # and the second is degenerate (spike into the cell interior)
             # this should be handled now down in delete_edge_cascade
-            gen.merge_cells(j=j)
+            # but it's not robust. I think it can still fail when some of the interior
+            # edges become disconnected -- then they are left with -2,-2 neighbors
+            if np.all(gen.edge_to_cells(j)==-2):
+                gen.delete_edge(j)
+            else:
+                gen.merge_cells(j=j)
         # A bit of insurance? Hopefully doesn't break things
         gen.delete_orphan_edges()
             
@@ -2032,13 +2052,6 @@ class QuadGen(object):
         self.g_not_final=g_final
         self.g_final2=g_final2
         
-        # import pdb
-        # pdb.set_trace()
-        
-        #print("Bailing early")
-        #return
-        # /DBG
-
         # --- Compile Swaths ---
         e2c=g_final2.edge_to_cells(recalc=True)
 
@@ -2149,20 +2162,56 @@ class QuadGen(object):
             s=np.cumsum(d_vals*0.5*(o_ds_dval[:-1]+o_ds_dval[1:]))
             s=np.r_[0,s]
 
-            # HERE -- calculate this from resolution
-            # Scale is under-utilized here.
+            n_swath_cells=None
+            # def prescribed_cell_count():
+            # want to get the edges in g_final2 for the two relevant ends of the
+            # swath. Pull all edges from g_final2 that are on the boundary of the
+            # swath
+            swath_boundaries=[]
+            e2c=g_final2.edge_to_cells()
+            for comp_cell in comp_cells:
+                swath_boundaries.append( np.nonzero( (e2c.min(axis=1)<0) & (e2c.max(axis=1)==comp_cell))[0] )
+            swath_boundaries=np.concatenate(swath_boundaries)
+            angle_to_nodes={} # angle => list of nodes on that border
+            for angle in [0,90,180,270]:
+                angle_to_edges=swath_boundaries[ g_final2.edges['angle'][swath_boundaries]==angle]
+                angle_to_nodes[angle] = set( g_final2.edges['nodes'][angle_to_edges].ravel())
+
+             # hoping these can be mapped back to gen...
+            for angle in [0+90*coord,180+90*coord]:
+                cornerA=(angle_to_nodes[angle] & angle_to_nodes[(angle-90)%360]).pop()
+                cornerB=(angle_to_nodes[angle] & angle_to_nodes[(angle+90)%360]).pop()
+                genA = self.gen.select_nodes_nearest( g_final2.nodes['x'][cornerA] )
+                genB = self.gen.select_nodes_nearest( g_final2.nodes['x'][cornerB] )
+                gen_edges = self.gen.shortest_path(genA,genB,
+                                                   edge_selector=lambda j,direc: self.gen.edges['angle'][j]==angle,
+                                                   return_type='edges')
+                scales=self.gen.edges['scale'][gen_edges]
+                if np.all(scales<0):
+                    count=-scales.sum()
+                    if n_swath_cells is None:
+                        n_swath_cells=int(count)
+                        print("Swath cell prescribed as ",n_swath_cells)
+                    elif n_swath_cells!=count:
+                        raise Exception("Both ends of this swath have set counts, but the counts don't match")
             
-            # This is just calculating a mean scale over the whole swath
-            if uniform_scale:
-                local_scale=scale( g_int.nodes['x'][swath_nodes] ).mean(axis=0)
-            else:
-                local_scale=1.0
-                
-            # s gives the average geographic distance along the swath.
-            # this takes the average geographic length of the swath,
-            # and divides by local scale to get the number of cells
-            n_swath_cells=int(np.round( (s.max() - s.min())/local_scale))
-            n_swath_cells=max(1,n_swath_cells)
+            if n_swath_cells is None:
+                # This is just calculating a mean scale over the whole swath
+                if uniform_scale:
+                    local_scale=scale( g_int.nodes['x'][swath_nodes] ).mean(axis=0)
+                else:
+                    local_scale=1.0
+
+                # s gives the average geographic distance along the swath.
+                # this takes the average geographic length of the swath,
+                # and divides by local scale to get the number of cells
+                # It may be worthwhile to shift towards something more like SimpleSingleQuadGen --
+                # advantage is that information from the user is more directly incorporated, including
+                # distribution of edges. Downside is that it becomes a local determination and
+                # ignores how the internal parts of the domain are turning/expanding/contracting.
+                n_swath_cells=int(np.round( (s.max() - s.min())/local_scale))
+                n_swath_cells=max(1,n_swath_cells)
+
 
             # Evenly divide up geographic space into the desired number of cells
             s_contours=np.linspace(s[0],s[-1],1+n_swath_cells)
@@ -2188,6 +2237,7 @@ class QuadGen(object):
                     n_comp=n_comp_j
                     node_field=self.psi
 
+                    
                 for comp in range(n_comp):
                     log.info("Swath: %s"%comp)
                     comp_cells=np.nonzero(labels==comp)[0]
@@ -2318,7 +2368,231 @@ class QuadGen(object):
                                 smooth_iters=smooth_iters,
                                 nudge_iters=nudge_iters)
 
+    def nudge_to_internal(self):
+        """
+        For internal breaklines nudge nodes onto the breakline
+        """
+        nudge_lines=self.find_nudge_lines()
+        self.do_nudging(nudge_lines)
+    def do_nudging(self, nudge_lines):
+        # Do the actual nudging. For now, only nudge the specific nodes that fall on the
+        # contour, but record all nudges
+        g_final=self.g_final
+        nudges=np.zeros( (g_final.Nnodes(),2), np.float64)
 
+        for orient,contour, nodes, points in nudge_lines:
+            geom=geometry.LineString(points)
+            for n in g_final.valid_node_iter():
+                if g_final.nodes['ij'][n,orient]==contour:
+                    x_orig=g_final.nodes['x'][n]
+                    pt,_ = ops.nearest_points(geom,geometry.Point(x_orig))
+                    x_nudged=np.array([pt.x,pt.y])
+                    nudges[n] += x_nudged - x_orig
+                    g_final.nodes['x'][n] = x_nudged
+        
+    def find_nudge_lines(self):
+        gen_orig=self.gen_orig # get gen before internal edges were removed.
+        gen=self.gen
+        g_final=self.g_final
+        e2c=gen_orig.edge_to_cells()
+
+        nudge_lines=[] # [ ( {0 for i, 1 for j}, contour value, nodestring from gen_orig, linestring), ]
+        internal=(e2c.min(axis=1)>=0)
+
+        internal_linestrings=[]
+        for orient in [0,90]:
+            # Careful with internal linestrings that intersect. Search separately in
+            # each orientation, and override the default behavior that stops on node
+            # degree>2
+            edge_sel=internal & (gen_orig.edges['angle']%180==orient)
+            orient_ls=gen_orig.extract_linear_strings(edge_select=edge_sel,
+                                                      end_func=lambda n,js: len(js)<2)
+            internal_linestrings.extend(orient_ls)
+
+
+        node_to_ij={} # map node index of gen_orig to ij value in g_final, based on exact matches.
+        for n in gen_orig.valid_node_iter():
+            n_final = g_final.select_nodes_nearest(gen_orig.nodes['x'][n])
+            dist = utils.dist( gen_orig.nodes['x'][n], g_final.nodes['x'][n_final])
+            if dist<1e-5:
+                node_to_ij[n] = g_final.nodes['ij'][n_final]
+        
+        for internal_ls in internal_linestrings:
+            # HERE:
+            # Rather than all of this craziness -- can it be more of a graph search question?
+            # From each end of the line string, search gen_orig, accumulating the scales along
+            # the way if they are of the right orientation, until reaching a node that has
+            # i,j values in g_final.
+            # possible that we need to update gen to include that information?
+            # the main caveat is that angles in gen_orig are ambiguous % 180.
+            # but the shortest path I think will take care of that.
+            # the remaining issue is that it won't know if the coordinate should be
+            # increasing or decreasing.
+            # Really just need a way to set di/dj on all edges of gen_orig.
+
+            # start a search from each end
+            # Trying to get to any node for which we can identify i,j
+            # g_final has ij
+
+            end_nodes=[internal_ls[0],internal_ls[-1]]
+
+            end_ijs=[]
+            for end_node in end_nodes:
+                node_paths=gen_orig.shortest_path(n1=end_node,
+                                                  n2=list(node_to_ij.keys()),
+                                                  return_type='nodes')
+                ij_recon=[np.nan,np.nan]
+                for (n_target,node_path) in node_paths:
+                    dists={0:0.0, 90:0.0, 180:0.0, 270:0.0 }
+                    for a,b in zip(node_path[:-1],node_path[1:]):
+                        he=gen_orig.nodes_to_halfedge(a,b)
+                        scale=gen_orig.edges['scale'][he.j]
+                        if scale<0:
+                            steps = -scale
+                        else:
+                            # only count up cases where the steps are exact.
+                            # otherwise will revert to nearest node check
+                            steps=np.nan 
+                        angle=(gen_orig.edges['angle'][he.j] + he.orient*180)%360
+                        dists[angle]+=steps
+                    dist90=dists[90] - dists[270]
+                    dist0=dists[0] - dists[180] # this one has not been tested.
+
+                    one_ij_recon=node_to_ij[n_target] - np.r_[dist90,dist0]
+                    for ii in [0,1]:
+                        if np.isnan(one_ij_recon[ii]): continue
+                        if np.isnan(ij_recon[ii]):
+                            ij_recon[ii]=one_ij_recon[ii]
+                        else:
+                            # hopefully these match
+                            print(f"reconstructured coord: {ij_recon[ii]} vs {one_ij_recon[ii]}")
+                for ii in [0,1]:
+                    if np.isfinite(ij_recon[ii]): continue
+                    n_final=g_final.select_nodes_nearest(end_node)
+                    ij_recon[ii]=g_final.nodes['ij'][n_final]
+                    
+            # sign and 0/90 bugs to test!
+            # seems to have worked..
+            breakpoint()
+
+
+
+            def edge_to_steps(j):
+                scale=gen.edges['scale'][j]
+                if scale<0:
+                    return -scale
+                else:
+                    if scale==0:
+                        angle=gen_orig.edges['angle'][he.j]
+                        if angle%180==0:
+                            orient=1
+                        else:
+                            orient=0
+                            # untested! possible that orient is wrong.
+                        scale = self.scales[orient](gen.edges_center()[j])
+                    return gen.edges_length(j) / scale
+            
+            # Is this a constant i or constant j line? and what is that constant value?
+            nA=internal_ls[0]
+            nB=internal_ls[-1]
+
+            # for internal lines that span the complete swath
+            perp_edgesA=gen.node_to_edges(nA)
+            # if the internal lines stop mid-way, this will fail.
+            assert len(perp_edgesA)==2,"Expected internal line to hit simple boundary"
+            # this has scale, turn_fwd, turn_rev, angle
+            perp_angleA = gen.edges['angle'][perp_edgesA[0]]
+
+            perp_edgesB=gen.node_to_edges(nB)
+            assert len(perp_edgesB)==2,"Expected internal line to hit simple boundary"
+            # this has scale, turn_fwd, turn_rev, angle
+            perp_angleB = gen.edges['angle'][perp_edgesB[0]]
+
+            assert (perp_angleA-perp_angleB)%360 == 180
+
+            if perp_angleA%180==0:
+                internal_contour_orient=1 # this internal line is a contour of constant j values
+            else:
+                internal_contour_orient=0 # this internal line is a contour of constant i values
+
+            # and finally, need to figure out what that contour value is...
+            # This is easier if it's all scale<0, giving exact edge counts.
+            he = gen.halfedge(perp_edgesA[0],0)
+            if he.cell()<0: he=he.opposite()
+
+            # so I have a half edge, it's next to the internal line's end point. Use that
+            # to get two halfedges, one to step forward, the other to step back.
+            if he.node_fwd()==nA:
+                he_fwd=he.fwd()
+            elif he.node_rev()==nA:
+                he_fwd=he
+            else:
+                raise Exception("sanity lost")
+
+            he_rev=he_fwd.rev()
+
+            breakpoint()
+            
+            # step forward, counting up
+            j_fwd=[]
+            n_fwd=[nA]
+            while gen.edges['angle'][he_fwd.j]==perp_angleA:
+                j_fwd.append(he_fwd.j)
+                n_fwd.append(he_fwd.node_fwd())
+                he_fwd=he_fwd.fwd()
+            j_rev=[]
+            n_rev=[]
+            while gen.edges['angle'][he_rev.j]==perp_angleA:
+                j_rev.append(he_rev.j)
+                n_rev.append(he_rev.node_rev())
+                he_rev=he_rev.rev()
+
+            j_boundary=j_rev[::-1] + j_fwd
+            n_boundary=n_rev[::-1] + n_fwd
+
+            deltas=[] # how much the contour coordinate increments between each edge
+            for j in j_boundary:
+                deltas.append( edge_to_steps(j) )
+                
+            deltas=np.array(deltas) # nominal number of final edges per j in j_boundary
+            
+
+            # is our coordinate increasing or decreasing on this edge?
+            if perp_angleA>=180: # I think decreasing
+                deltas *= -1
+
+            # Get first node along the boundary edge, but in the final grid
+            n_start_final=g_final.select_nodes_nearest(gen.nodes['x'][n_boundary[0]])
+            n_stop_final =g_final.select_nodes_nearest(gen.nodes['x'][n_boundary[-1]])
+
+            coord_start=g_final.nodes['ij'][n_start_final,internal_contour_orient]
+            coord_stop =g_final.nodes['ij'][n_stop_final,internal_contour_orient]
+
+            ratio=deltas.sum() / (coord_stop - coord_start)
+            assert ratio>0.0,"Got the direction wrong"
+
+            print("Ratio of boundary deltas to actual grid coordinates %.1f"%ratio)
+            # just to be sure, scale deltas
+            deltas /= ratio
+            coords=coord_start + np.cumsum(np.r_[0,deltas])
+            print("Coords:", coords)
+            print("nA: ", nA)
+            print("n_boundary: ",n_boundary)
+            contour_value=coords[n_boundary.index(nA)]
+
+            gen.plot_nodes(mask=internal_ls,labeler=lambda i,r: contour_value)
+            g_final.plot_nodes( labeler=lambda i,r: r['ij'][internal_contour_orient])
+
+            nudge_lines.append( dict(orient=internal_contour_orient,
+                                     value=contour_value,
+                                     nodestring=internal_ls,
+                                     linestring=gen_orig.nodes['x'][internal_ls] ))
+
+        return nudge_lines
+
+
+
+        
         
 class SimpleQuadGen(object):
     """
@@ -2326,7 +2600,8 @@ class SimpleQuadGen(object):
     - each cell must map to a rectangle, and the smallest 4 internal angles
       will be automatically labeled as 90-degree turns, the rest 180.
     - all edges shared by two cells must have a specific count of nodes, given
-      by a negative scale value.
+      by a negative scale value. (though by default this is enforced in a
+      preprocessing step with adjust_scale=True)
     """
     nom_res=3.5 # needs to be adaptive..
     triangle_method='gmsh'

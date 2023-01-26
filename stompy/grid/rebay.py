@@ -74,10 +74,12 @@ class RebayAdvancingDelaunay(front.AdvancingFront):
             self.recover_boundary()
         self.instrument_grid()
         self.init_rebay()
+        count=0
         while 1:
             new_n=self.step()
             if new_n is None:
                 break
+            count+=1
 
     def rad_scale(self,X):
         return self.rad_scale_factor * self.scale(X)
@@ -238,7 +240,7 @@ class RebayAdvancingDelaunay(front.AdvancingFront):
                 if L<j_target_L:
                     j_target=j
                     j_target_L=L
-        j=j_target
+        #j=j_target  # Cruft
         
         return c_target,j_target
 
@@ -262,7 +264,11 @@ class RebayAdvancingDelaunay(front.AdvancingFront):
         d=rho_hat_m + np.sqrt( rho_hat_m**2 - p**2)
         assert np.isfinite(d) # sanity
         e_vec=utils.to_unit( C_A - xm)
-        new_x=xm+d*e_vec
+        new_x=xm+d*e_vec # Can get a point outside the valid region... ???
+        # for now, at least fail when this goes off the rails.
+        c_new_x = g.select_cells_nearest(new_x,inside=True)
+        if c_new_x is None or g.cells['stat'][c_new_x]==EXT:
+            raise Exception("Rebay algorithm stepped out of bounds. Buggy code.")
         self.new_x=new_x
         new_n=g.add_node(x=new_x)
         return new_n

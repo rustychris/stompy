@@ -1166,7 +1166,9 @@ def murphy_skill(xmodel,xobs,xref=None,ignore_nan=True):
     o=xobs[sel]
     if xref is None:
         xref=o.mean()
-        
+
+    # so 1=>perfect
+    #    0=>same as predicting the mean of the observations 
     ms=1 - np.mean( (m-o)**2 )/np.mean( (xref-o)**2 )
     
     return ms
