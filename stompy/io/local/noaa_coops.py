@@ -60,6 +60,12 @@ def coops_json_to_ds(json,params):
         # predictions do not come back with metadata
         ds['station']= ('station',),[params['station']]
 
+    def float_or_nan(s):
+        try:
+            return float(s)
+        except ValueError:
+            return np.nan
+        
     times=[]
     values=[]
     qualities=[]
@@ -71,19 +77,39 @@ def coops_json_to_ds(json,params):
         data=json['predictions']
         
     for row in data:
-        # {'f': '0,0,0,0', 'q': 'v', 's': '0.012', 't': '2010-12-01 00:00', 'v': '0.283'}
-        try:
-            values.append(float(row['v']))
-        except ValueError:
-            values.append(np.nan)
         times.append( np.datetime64(row['t']) )
+        
+        if params['product']=='wind':
+            # For wind data:
+            # {'t': '1996-02-20 01:18', 's': '', 'd': '', 'dr': '', 'g': '', 'f': '1,1'}
+            # s: speed?
+            # d: compass direction (e.g. 267)
+            # dr: compass point (e.g. 'W')
+            # g: gust?
+            values.append( [float_or_nan(row['s']),
+                            float_or_nan(row['d']),
+                            float_or_nan(row['g'])] )
+        else:
+            # {'f': '0,0,0,0', 'q': 'v', 's': '0.012', 't': '2010-12-01 00:00', 'v': '0.283'}
+            values.append(float_or_nan(row['v']))
+        
         # for now, ignore flags, verified status.
+    values=np.array(values)
     ds['time']=( ('time',),times)
-    ds[params['product']]=( ('station','time'), [values] )
+    if params['product']=='wind':
+        # values ~  [Ntime, {speed, direction, gust}]
+        ds['wind_speed'] =     ('station','time'), [values[:,0]]
+        ds['wind_direction'] = ('station','time'), [values[:,1]]
+        ds['wind_gust'] =      ('station','time'), [values[:,2]]
+        ds['wind_speed'].attrs['units']='m s-1'
+        ds['wind_direction'].attrs['units']='deg_compass'
+        ds['wind_gust'].attrs['units']='m s-1'
+    else:
+        ds[params['product']]=( ('station','time'), [values] )
 
     bad_count=np.sum( np.isnan(values) )
     if bad_count:
-        log.warning("%d of %d data values were missing"%(bad_count,len(values)))
+        log.warning("%d of %d data values were missing for %s"%(bad_count,values.size,params['product']))
         
     if params['product'] in ['water_level','predictions']:
         ds[params['product']].attrs['datum'] = params['datum']
