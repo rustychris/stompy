@@ -2546,3 +2546,39 @@ def dominant_period(h,t,uniform=True,guess=None):
     #breakpoint()
     result = fmin(cost,[float(guess)])
     return result[0]
+
+def ideal_solar_rad(t,Imax=1000,lat=37.775,lon=-122.419):
+    """ 
+    Return time series of idealized solar radiation.
+    t: array of np.datetime64 in UTC.
+    Imax: maximum solar radiation (i.e. noon on equator at equinox).
+    lat, lon: location, in degrees. Defaults to San Francisco.
+    returns dataset including sol_rad.
+    """
+    if isinstance(t,xr.DataArray):
+        t_da=t
+        t=t.values
+    else:
+        t_da=None
+        
+    lat_rad=lat*np.pi/180.
+
+    lst=t+np.timedelta64(int(86400*lon/360.),'s') # local solar time.
+    doy=(t-t.astype('M8[Y]'))/np.timedelta64(1,'D')
+    decl=(np.pi/180) * 23.45 * np.sin(2*np.pi/365 * (doy-81))  # declination
+
+    hour=(lst - lst.astype('M8[D]'))/np.timedelta64(1,'h')
+    hour_angle=(hour-12)*np.pi/12. # 0 at solar noon, +-180 at solar midnight
+    zenith=np.arccos(np.sin(lat_rad)*np.sin(decl) + np.cos(lat_rad)*np.cos(decl)*np.cos(hour_angle))
+
+    ds=xr.Dataset()
+    if t_da is None:
+        ds['time']=('time',),t
+    else:
+        ds['time']=t_da
+    ds.attrs['latitude']=lat
+    ds.attrs['longitude']=lon
+    ds.attrs['Imax']=Imax
+    ds['sol_rad']=ds['time'].dims, Imax*np.cos(zenith).clip(0)
+    return ds
+

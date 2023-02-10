@@ -118,7 +118,7 @@ def coops_json_to_ds(json,params):
 
 
 def coops_dataset(station,start_date,end_date,products,
-                  days_per_request=None,cache_dir=None):
+                  days_per_request=None,cache_dir=None,refetch_incomplete=True):
     """
     basic retrieval script for NOAA Tides and Currents data.
     
@@ -135,6 +135,7 @@ def coops_dataset(station,start_date,end_date,products,
                                  start_date=start_date,
                                  end_date=end_date,
                                  days_per_request=days_per_request,
+                                 refetch_incomplete=refetch_incomplete,
                                  cache_dir=cache_dir)
         if ds is not None:
             ds_per_product.append(ds)
@@ -145,7 +146,7 @@ def coops_dataset_product(station,product,
                           start_date,end_date,days_per_request='M',
                           cache_dir=None,refetch_incomplete=True,
                           interval=None,datum=None,
-                          clip=True):
+                          clip=True,cache_only=False):
     """
     Retrieve a single data product from a single station.
     station: string or numeric identifier for COOPS station
@@ -188,6 +189,11 @@ def coops_dataset_product(station,product,
 
     datasets=[]
 
+    if cache_only:
+        if cache_dir is None:
+            raise Exception("cache_dir=None is not compatible with cache_only=True")
+        refetch_incomplete=False
+
     for interval_start,interval_end in periods(start_date,end_date,days_per_request):
         if cache_dir is not None:
             begin_str=utils.to_datetime(interval_start).strftime('%Y-%m-%d')
@@ -214,6 +220,10 @@ def coops_dataset_product(station,product,
                                           end_date):
                     log.warning("   but that was incomplete -- will re-fetch")
                     ds=None
+
+        if (ds is None) and cache_only:
+            continue
+        
         if ds is None:
             log.info("Fetching %s -- %s"%(interval_start,interval_end))
 
