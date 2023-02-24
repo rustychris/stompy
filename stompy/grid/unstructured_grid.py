@@ -5679,9 +5679,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 if marked[trav.j]:
                     print("maybe hit a dead end -- boundary maybe not closed")
                     print("edge centered at %s traversed twice"%(self.edges_center()[trav.j]))
-                    import pdb
-                    pdb.set_trace()
-                    break
+                    #import pdb
+                    #pdb.set_trace()
+                    raise Exception("Hit a dead end -- boundary maybe not closed."
+                                    + "edge centered at %s traversed twice"%(self.edges_center()[trav.j]))
                 this_line_nodes.append(trav.node_fwd())
                 marked[trav.j]=True
                 trav=trav.fwd()
@@ -7996,8 +7997,12 @@ class UnTRIM08Grid(UnstructuredGrid):
                 self.renumber()
 
     def Nred(self):
-        # nothing magic - just reads the cell attributes
-        return sum(self.cells['red'])
+        if 'red' in self.cells.dtype.names:
+            # nothing magic - just reads the cell attributes
+            return sum(self.cells['red'])
+        else:
+            # in case somebody deleted the red field.
+            return 0
 
     def renumber_cells_ordering(self): # untrim version
         # not sure about placement of red cells, but presumably something like this:
@@ -8005,6 +8010,9 @@ class UnTRIM08Grid(UnstructuredGrid):
         # so marked, red cells come first, then marked black cells (do these exist?)
         # then unmarked red, then unmarked black.
         # mergesort is stable, so if no reordering is necessary it will stay the same.
+        if 'red' not in self.cells.dtype.names:
+            return super().renumber_cells_ordering()
+
         Nactive = sum(~self.cells['deleted'])
         return np.argsort( -self.cells['mark']*2 - self.cells['red'] + 10*self.cells['deleted'],
                            kind='mergesort')[:Nactive]
@@ -8017,15 +8025,6 @@ class UnTRIM08Grid(UnstructuredGrid):
         mark_order[self.LAND] = 2 # land comes last
         return np.argsort(mark_order[self.edges['mark']],kind='mergesort')
 
-    def copy_from_grid(self,grid):
-        super(UnTRIM08Grid,self).copy_from_grid(grid)
-
-        # now fill in untrim specific things:
-        if isinstance(grid,UnTRIM08Grid):
-            for field in ['depth_mean','depth_max','red']:
-                self.cells[field] = grid.cells[field]
-            for field in ['depth_mean','depth_max']:
-                self.edges[field] = grid.edges[field]
     def renumber_edges_ordering(self): # untrim version
         # want marks==0, marks==self.FLOW, marks==self.LAND
         mark_order = np.zeros(3,np.int32)
@@ -8074,12 +8073,19 @@ class UnTRIM08Grid(UnstructuredGrid):
         # now fill in untrim specific things:
         if isinstance(grid,UnTRIM08Grid):
             for field in ['depth_mean','depth_max','red']:
-                self.cells[field] = grid.cells[field]
+                if field in self.cells.dtype.names:
+                    self.cells[field] = grid.cells[field]
             for field in ['depth_mean','depth_max']:
-                self.edges[field] = grid.edges[field]
+                if field in self.edges.dtype.names:
+                    self.edges[field] = grid.edges[field]
+
             # Subgrid is separate
-            self.cells['subgrid'] = copy.deepcopy(grid.cells['subgrid'])
-            self.edges['subgrid'] = copy.deepcopy(grid.edges['subgrid'])
+            if 'subgrid' in self.cells.dtype.names:
+                self.cells['subgrid'] = copy.deepcopy(grid.cells['subgrid'])
+            if 'subgrid' in self.edges.dtype.names:
+                self.edges['subgrid'] = copy.deepcopy(grid.edges['subgrid'])
+            # ideally should be smarter -- if those fields are missing, we should
+            # probably revert to non-Untrim specific code below
         else:
             # The tricky part - fabricating untrim data from a non-untrim grid:
             if 'depth' in grid.cells.dtype.names:
@@ -8646,8 +8652,15 @@ class UnTRIM08Grid(UnstructuredGrid):
                 fp.write("\n")
 
             # subgrid bathy
+            cA=self.cells_area()
             for c in range(self.Ncells()):
-                areas,depths = self.cells['subgrid'][c]
+                try:
+                    areas,depths = self.cells['subgrid'][c]
+                except TypeError:
+                    # GIS editing might leave some cells with no subgrid
+                    areas=[cA[c]]
+                    depths=[0.0]
+                    
                 nis = len(areas)
 
                 fp.write("%14d %14d\n"%(c+1,nis))
@@ -8657,7 +8670,13 @@ class UnTRIM08Grid(UnstructuredGrid):
             edge_lengths = self.edges_length()
 
             for e in range(Ninternal+Nflow):
-                lengths,depths = self.edges['subgrid'][e]
+                try:
+                    lengths,depths = self.edges['subgrid'][e]
+                except TypeError:
+                    # GIS editing might leave some edges with no subgrid
+                    lengths=[edge_length[e]]
+                    depths=[0]
+                    
                 nis = len(lengths)
 
                 fp.write("%10d %9d\n"%(e+1,nis))

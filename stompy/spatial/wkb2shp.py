@@ -162,7 +162,7 @@ def wkb2shp(shp_name,
         # works when shapely geometries were passed in.
         types = np.array( [text2ogr[g.type] for g in geoms] )
         geom_type = int(types.max())
-        print("Chose geometry type to be %s"%ogr2text[geom_type])
+        # print("Chose geometry type to be %s"%ogr2text[geom_type])
 
     new_layer = new_ds.CreateLayer(layer_name,
                                    srs=srs,

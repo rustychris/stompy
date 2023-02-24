@@ -606,10 +606,22 @@ def add_bezier(gen):
             gen.edges['bez'][he.j,1+he.orient]=cp
 
 
-def plot_gen_bezier(gen,num=10):
-    fig=plt.figure(num)
-    fig.clf()
-    ax=fig.add_subplot(1,1,1)
+def plot_gen_bezier(gen,num=10,ax=None,connect_handles=True,
+                    handle_kw=dict(color='r',zorder=1,alpha=0.5,lw=1.5),
+                    smooth_kw=dict(color='b',zorder=2,lw=1.5)):
+    """
+    gen: grid with 'bez' on edges
+    ax: optional axes to plot into
+    connect_handles: each bezier segment has two ends and two internal
+     handles. controls whether a line is drawn connecting the handles
+    """
+    if ax is None:
+        fig=plt.figure(num)
+        fig.clf()
+        ax=fig.add_subplot(1,1,1)
+    else:
+        fig=None
+        
     gen.plot_edges(lw=0.3,color='k',alpha=0.5,ax=ax)
     gen.plot_nodes(alpha=0.5,ax=ax,zorder=3,color='orange')
 
@@ -626,8 +638,13 @@ def plot_gen_bezier(gen,num=10):
         B3=t**3
         points = B0[:,None]*bez[0] + B1[:,None]*bez[1] + B2[:,None]*bez[2] + B3[:,None]*bez[3]
 
-        ax.plot(points[:,0],points[:,1],'b-',zorder=2,lw=1.5)
-        ax.plot(bez[:,0],bez[:,1],'r-o',zorder=1,alpha=0.5,lw=1.5)
+        ax.plot(points[:,0],points[:,1],**smooth_kw)
+        if connect_handles:
+            ax.plot(bez[:,0],bez[:,1],**handle_kw)
+        else:
+            ax.plot(bez[:2,0],bez[:2,1],**handle_kw)
+            ax.plot(bez[2:,0],bez[2:,1],**handle_kw)
+            
     return fig,ax
 
 def discretize_bezier_halfedge(gen,he,samples_per_edge=10):
@@ -878,8 +895,8 @@ class QuadGen(object):
         ax.axis('tight')
         ax.axis('equal')
 
-    def plot_gen_bezier(self,num=10):
-        fig,ax=plot_gen_bezier(self.gen)
+    def plot_gen_bezier(self,num=10,ax=None):
+        fig,ax=plot_gen_bezier(self.gen,ax=ax)
         
         for n12 in self.internal_edges:
             ax.plot( self.gen.nodes['x'][n12[:2],0],
@@ -903,57 +920,62 @@ class QuadGen(object):
         else:
             return front.Curve(points,closed=False)
         
-    def gen_bezier_linestring(self,j=None,samples_per_edge=10,span_fixed=True):
+    def gen_bezier_linestring(self,j=None,nodestring=None,samples_per_edge=10,span_fixed=True,
+                              gen=None):
         """
         Calculate an up-sampled linestring for the bezier boundary of self.gen
         
         j: limit the curve to a single generating edge if given.
         span_fixed: see gen_bezier_curve()
         """
-        gen=self.gen
+        if gen is None:
+            gen=self.gen
 
         # need to know which ij coordinates are used in order to know what is
         # fixed. So far fixed is the same whether IJ or ij, so not making this
         # a parameter yet.
         src='IJ'
-        
-        if j is None:
-            node_pairs=zip(bound_nodes,np.roll(bound_nodes,-1))
-            bound_nodes=self.gen.boundary_cycle() # probably eating a lot of time.
-        else:
-            if not span_fixed:
-                node_pairs=[ self.gen.edges['nodes'][j] ]
-            else:
-                nodes=[]
 
-                # Which coord is changing on j? I.e. which fixed should
-                # we consult?
-                # A little shaky here.  Haven't tested this with nodes
-                # that are fixed in only coordinate.
-                j_coords=self.gen.nodes[src][ self.gen.edges['nodes'][j] ]
-                if j_coords[0,0] == j_coords[1,0]:
-                    coord=1
-                elif j_coords[0,1]==j_coords[1,1]:
-                    coord=0
+        if nodestring is None:
+            if j is None:
+                bound_nodes=self.gen.boundary_cycle() # probably eating a lot of time.
+                nodestring=np.r_[bound_nodes, bound_nodes[:1]]
+                # node_pairs=zip(bound_nodes,np.roll(bound_nodes,-1))
+            else:
+                if not span_fixed:
+                    nodestring=self.gen.edges['nodes'][j]
                 else:
-                    raise Exception("Neither coordinate is constant on this edge??")
-                
-                trav=self.gen.halfedge(j,0)
-                while 1: # FWD
-                    n=trav.node_fwd()
-                    nodes.append(n)
-                    if self.gen.nodes[src+'_fixed'][n,coord]:
-                        break
-                    trav=trav.fwd()
-                nodes=nodes[::-1]
-                trav=self.gen.halfedge(j,0)
-                while 1: # REV
-                    n=trav.node_rev()
-                    nodes.append(n)
-                    if self.gen.nodes[src+'_fixed'][n,coord]:
-                        break
-                    trav=trav.rev()
-                node_pairs=zip( nodes[:-1], nodes[1:])
+                    nodestring=[]
+
+                    # Which coord is changing on j? I.e. which fixed should
+                    # we consult?
+                    # A little shaky here.  Haven't tested this with nodes
+                    # that are fixed in only one coordinate.
+                    j_coords=self.gen.nodes[src][ self.gen.edges['nodes'][j] ]
+                    if j_coords[0,0] == j_coords[1,0]:
+                        coord=1
+                    elif j_coords[0,1]==j_coords[1,1]:
+                        coord=0
+                    else:
+                        raise Exception("Neither coordinate is constant on this edge??")
+
+                    trav=self.gen.halfedge(j,0)
+                    while 1: # FWD
+                        n=trav.node_fwd()
+                        nodestring.append(n)
+                        if self.gen.nodes[src+'_fixed'][n,coord]:
+                            break
+                        trav=trav.fwd()
+                    nodestring=nodestring[::-1]
+                    trav=self.gen.halfedge(j,0)
+                    while 1: # REV
+                        n=trav.node_rev()
+                        nodestring.append(n)
+                        if self.gen.nodes[src+'_fixed'][n,coord]:
+                            break
+                        trav=trav.rev()
+                    
+        node_pairs=zip( nodestring[:-1], nodestring[1:])
             
         points=[]
         for a,b in node_pairs:
@@ -961,7 +983,7 @@ class QuadGen(object):
             edge_points=discretize_bezier_halfedge(gen,he,samples_per_edge=samples_per_edge)
 
             points.append(edge_points[:-1])
-        if j is not None:
+        if nodestring[0]!=nodestring[-1]:
             # When the curve isn't closed, then be inclusive of both
             # ends
             points.append(edge_points[-1:])
@@ -2380,10 +2402,13 @@ class QuadGen(object):
         g_final=self.g_final
         nudges=np.zeros( (g_final.Nnodes(),2), np.float64)
 
-        for orient,contour, nodes, points in nudge_lines:
-            geom=geometry.LineString(points)
+        for rec in nudge_lines:
+            geom=geometry.LineString(rec['linestring'])
+            orient=rec['orient']
             for n in g_final.valid_node_iter():
-                if g_final.nodes['ij'][n,orient]==contour:
+                if ( g_final.nodes['ij'][n,orient]==rec['contour']
+                     and g_final.nodes['ij'][n,1-orient]>=rec['perp_range'][0]
+                     and g_final.nodes['ij'][n,1-orient]<=rec['perp_range'][1]):
                     x_orig=g_final.nodes['x'][n]
                     pt,_ = ops.nearest_points(geom,geometry.Point(x_orig))
                     x_nudged=np.array([pt.x,pt.y])
@@ -2468,129 +2493,50 @@ class QuadGen(object):
                             print(f"reconstructured coord: {ij_recon[ii]} vs {one_ij_recon[ii]}")
                 for ii in [0,1]:
                     if np.isfinite(ij_recon[ii]): continue
-                    n_final=g_final.select_nodes_nearest(end_node)
-                    ij_recon[ii]=g_final.nodes['ij'][n_final]
-                    
+                    # This isn't great -- ideally we'd get a fractional value here.
+                    nodes_final=g_final.select_nodes_nearest(gen_orig.nodes['x'][end_node],count=4)
+                    values=g_final.nodes['ij'][nodes_final,ii]
+                    # linear interp or inv-distance weighted would be better, but this is probably
+                    # sufficient -- just need to know if a g_final node is inside or outside the
+                    # range.
+                    ij_recon[ii]=values.mean()
+                end_ijs.append(ij_recon)
             # sign and 0/90 bugs to test!
             # seems to have worked..
-            breakpoint()
 
-
-
-            def edge_to_steps(j):
-                scale=gen.edges['scale'][j]
-                if scale<0:
-                    return -scale
-                else:
-                    if scale==0:
-                        angle=gen_orig.edges['angle'][he.j]
-                        if angle%180==0:
-                            orient=1
-                        else:
-                            orient=0
-                            # untested! possible that orient is wrong.
-                        scale = self.scales[orient](gen.edges_center()[j])
-                    return gen.edges_length(j) / scale
-            
-            # Is this a constant i or constant j line? and what is that constant value?
-            nA=internal_ls[0]
-            nB=internal_ls[-1]
-
-            # for internal lines that span the complete swath
-            perp_edgesA=gen.node_to_edges(nA)
-            # if the internal lines stop mid-way, this will fail.
-            assert len(perp_edgesA)==2,"Expected internal line to hit simple boundary"
-            # this has scale, turn_fwd, turn_rev, angle
-            perp_angleA = gen.edges['angle'][perp_edgesA[0]]
-
-            perp_edgesB=gen.node_to_edges(nB)
-            assert len(perp_edgesB)==2,"Expected internal line to hit simple boundary"
-            # this has scale, turn_fwd, turn_rev, angle
-            perp_angleB = gen.edges['angle'][perp_edgesB[0]]
-
-            assert (perp_angleA-perp_angleB)%360 == 180
-
-            if perp_angleA%180==0:
-                internal_contour_orient=1 # this internal line is a contour of constant j values
+            # And what is the orientation for the line?
+            parallel_angle=gen_orig.edges['angle'][ gen_orig.nodes_to_edge(internal_ls[:2]) ]
+            if parallel_angle%180==0:
+                orient=0 # TEST
             else:
-                internal_contour_orient=0 # this internal line is a contour of constant i values
+                orient=1
+            
+            # package up the line:
+            # generally should be the same on the two ends, but just in case:
+            contour_value=int( np.round(0.5*(end_ijs[0][orient]+end_ijs[1][orient])))
+            # ideally also make sure contour_value is not on the boundary!
+            min_value=g_final.nodes['ij'][:,orient].min()
+            max_value=g_final.nodes['ij'][:,orient].max()
+            # This is not sufficient for non-rectangular cases...
+            if contour_value==min_value: contour_value+=1
+            if contour_value==max_value: contour_value-=1
+            #gen.plot_nodes(mask=internal_ls,labeler=lambda i,r: contour_value)
+            #g_final.plot_nodes( labeler=lambda i,r: r['ij'][orient])
 
-            # and finally, need to figure out what that contour value is...
-            # This is easier if it's all scale<0, giving exact edge counts.
-            he = gen.halfedge(perp_edgesA[0],0)
-            if he.cell()<0: he=he.opposite()
+            perp_values=[end_ijs[0][1-orient], end_ijs[1][1-orient]]
 
-            # so I have a half edge, it's next to the internal line's end point. Use that
-            # to get two halfedges, one to step forward, the other to step back.
-            if he.node_fwd()==nA:
-                he_fwd=he.fwd()
-            elif he.node_rev()==nA:
-                he_fwd=he
+            if 0:
+                linestring=gen_orig.nodes['x'][internal_ls]
             else:
-                raise Exception("sanity lost")
+                linestring=self.gen_bezier_linestring(nodestring=internal_ls,gen=gen_orig)
 
-            he_rev=he_fwd.rev()
-
-            breakpoint()
-            
-            # step forward, counting up
-            j_fwd=[]
-            n_fwd=[nA]
-            while gen.edges['angle'][he_fwd.j]==perp_angleA:
-                j_fwd.append(he_fwd.j)
-                n_fwd.append(he_fwd.node_fwd())
-                he_fwd=he_fwd.fwd()
-            j_rev=[]
-            n_rev=[]
-            while gen.edges['angle'][he_rev.j]==perp_angleA:
-                j_rev.append(he_rev.j)
-                n_rev.append(he_rev.node_rev())
-                he_rev=he_rev.rev()
-
-            j_boundary=j_rev[::-1] + j_fwd
-            n_boundary=n_rev[::-1] + n_fwd
-
-            deltas=[] # how much the contour coordinate increments between each edge
-            for j in j_boundary:
-                deltas.append( edge_to_steps(j) )
-                
-            deltas=np.array(deltas) # nominal number of final edges per j in j_boundary
-            
-
-            # is our coordinate increasing or decreasing on this edge?
-            if perp_angleA>=180: # I think decreasing
-                deltas *= -1
-
-            # Get first node along the boundary edge, but in the final grid
-            n_start_final=g_final.select_nodes_nearest(gen.nodes['x'][n_boundary[0]])
-            n_stop_final =g_final.select_nodes_nearest(gen.nodes['x'][n_boundary[-1]])
-
-            coord_start=g_final.nodes['ij'][n_start_final,internal_contour_orient]
-            coord_stop =g_final.nodes['ij'][n_stop_final,internal_contour_orient]
-
-            ratio=deltas.sum() / (coord_stop - coord_start)
-            assert ratio>0.0,"Got the direction wrong"
-
-            print("Ratio of boundary deltas to actual grid coordinates %.1f"%ratio)
-            # just to be sure, scale deltas
-            deltas /= ratio
-            coords=coord_start + np.cumsum(np.r_[0,deltas])
-            print("Coords:", coords)
-            print("nA: ", nA)
-            print("n_boundary: ",n_boundary)
-            contour_value=coords[n_boundary.index(nA)]
-
-            gen.plot_nodes(mask=internal_ls,labeler=lambda i,r: contour_value)
-            g_final.plot_nodes( labeler=lambda i,r: r['ij'][internal_contour_orient])
-
-            nudge_lines.append( dict(orient=internal_contour_orient,
-                                     value=contour_value,
+            nudge_lines.append( dict(orient=orient,
+                                     contour=contour_value,
+                                     perp_range=[min(perp_values),max(perp_values)],
                                      nodestring=internal_ls,
-                                     linestring=gen_orig.nodes['x'][internal_ls] ))
+                                     linestring=linestring) )
 
         return nudge_lines
-
-
 
         
         
@@ -2807,7 +2753,7 @@ class SimpleSingleQuadGen(QuadGen):
             edge_scale=np.zeros(self.gen.Nedges())
         
         while 1:
-            pnts=self.gen_bezier_linestring(he.j,span_fixed=False)
+            pnts=self.gen_bezier_linestring(j=he.j,span_fixed=False)
             
             if he.orient:
                 pnts=pnts[::-1]
