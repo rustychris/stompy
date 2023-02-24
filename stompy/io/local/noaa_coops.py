@@ -60,6 +60,12 @@ def coops_json_to_ds(json,params):
         # predictions do not come back with metadata
         ds['station']= ('station',),[params['station']]
 
+    def float_or_nan(s):
+        try:
+            return float(s)
+        except ValueError:
+            return np.nan
+        
     times=[]
     values=[]
     qualities=[]
@@ -71,19 +77,39 @@ def coops_json_to_ds(json,params):
         data=json['predictions']
         
     for row in data:
-        # {'f': '0,0,0,0', 'q': 'v', 's': '0.012', 't': '2010-12-01 00:00', 'v': '0.283'}
-        try:
-            values.append(float(row['v']))
-        except ValueError:
-            values.append(np.nan)
         times.append( np.datetime64(row['t']) )
+        
+        if params['product']=='wind':
+            # For wind data:
+            # {'t': '1996-02-20 01:18', 's': '', 'd': '', 'dr': '', 'g': '', 'f': '1,1'}
+            # s: speed?
+            # d: compass direction (e.g. 267)
+            # dr: compass point (e.g. 'W')
+            # g: gust?
+            values.append( [float_or_nan(row['s']),
+                            float_or_nan(row['d']),
+                            float_or_nan(row['g'])] )
+        else:
+            # {'f': '0,0,0,0', 'q': 'v', 's': '0.012', 't': '2010-12-01 00:00', 'v': '0.283'}
+            values.append(float_or_nan(row['v']))
+        
         # for now, ignore flags, verified status.
+    values=np.array(values)
     ds['time']=( ('time',),times)
-    ds[params['product']]=( ('station','time'), [values] )
+    if params['product']=='wind':
+        # values ~  [Ntime, {speed, direction, gust}]
+        ds['wind_speed'] =     ('station','time'), [values[:,0]]
+        ds['wind_direction'] = ('station','time'), [values[:,1]]
+        ds['wind_gust'] =      ('station','time'), [values[:,2]]
+        ds['wind_speed'].attrs['units']='m s-1'
+        ds['wind_direction'].attrs['units']='deg_compass'
+        ds['wind_gust'].attrs['units']='m s-1'
+    else:
+        ds[params['product']]=( ('station','time'), [values] )
 
     bad_count=np.sum( np.isnan(values) )
     if bad_count:
-        log.warning("%d of %d data values were missing"%(bad_count,len(values)))
+        log.warning("%d of %d data values were missing for %s"%(bad_count,values.size,params['product']))
         
     if params['product'] in ['water_level','predictions']:
         ds[params['product']].attrs['datum'] = params['datum']
@@ -92,7 +118,7 @@ def coops_json_to_ds(json,params):
 
 
 def coops_dataset(station,start_date,end_date,products,
-                  days_per_request="M",cache_dir=None):
+                  days_per_request="M",cache_dir=None,refetch_incomplete=True):
     """
     basic retrieval script for NOAA Tides and Currents data.
     
@@ -109,6 +135,7 @@ def coops_dataset(station,start_date,end_date,products,
                                  start_date=start_date,
                                  end_date=end_date,
                                  days_per_request=days_per_request,
+                                 refetch_incomplete=refetch_incomplete,
                                  cache_dir=cache_dir)
         if ds is not None:
             ds_per_product.append(ds)
@@ -119,7 +146,7 @@ def coops_dataset_product(station,product,
                           start_date,end_date,days_per_request='M',
                           cache_dir=None,refetch_incomplete=True,
                           interval=None,datum=None,
-                          clip=True):
+                          clip=True,cache_only=False):
     """
     Retrieve a single data product from a single station.
     station: string or numeric identifier for COOPS station
@@ -162,6 +189,11 @@ def coops_dataset_product(station,product,
 
     datasets=[]
 
+    if cache_only:
+        if cache_dir is None:
+            raise Exception("cache_dir=None is not compatible with cache_only=True")
+        refetch_incomplete=False
+
     for interval_start,interval_end in periods(start_date,end_date,days_per_request):
         if cache_dir is not None:
             begin_str=utils.to_datetime(interval_start).strftime('%Y-%m-%d')
@@ -188,6 +220,10 @@ def coops_dataset_product(station,product,
                                           end_date):
                     log.warning("   but that was incomplete -- will re-fetch")
                     ds=None
+
+        if (ds is None) and cache_only:
+            continue
+        
         if ds is None:
             log.info("Fetching %s -- %s"%(interval_start,interval_end))
 

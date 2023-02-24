@@ -5004,7 +5004,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             trace=np.array(points)
             return trace
     
-    def scalar_contour(self,scalar,V=10,smooth=True,boundary='reflect'):
+    def scalar_contour(self,scalar,V=10,smooth=True,boundary='reflect',
+                       return_segs=False):
         """ Generate a collection of edges showing the contours of a
         cell-centered scalar.
 
@@ -5020,7 +5021,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
              contours will never fall on a boundary.
           numeric value: apply the given constant as the out-of-domain value.
 
-        returns a LineCollection
+        returns a LineCollection, or a list of segments if return_segs
         """
         if isinstance(V,int):
             V = np.linspace( np.nanmin(scalar),np.nanmax(scalar),V )
@@ -5066,11 +5067,14 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         else:
             simple_segs = joined_segs
 
-        from matplotlib import collections
-        ecoll = collections.LineCollection(simple_segs)
-        ecoll.set_edgecolor('k')
+        if return_segs:
+            return simple_segs
+        else:
+            from matplotlib import collections
+            ecoll = collections.LineCollection(simple_segs)
+            ecoll.set_edgecolor('k')
 
-        return ecoll
+            return ecoll
 
     def make_triangular(self,record_original=True):
         """
