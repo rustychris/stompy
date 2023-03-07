@@ -6,7 +6,7 @@ import datetime
 import os
 import numpy as np
 import pandas as pd
-from stompy import memoize
+from .. import memoize, utils
 
 class DssReader(object):
     '''
@@ -19,7 +19,8 @@ class DssReader(object):
     csv_out="output.csv"
 
     # path to hec-dssvue.sh on Linux
-    hec_dssvue="hec-dssvue.sh"
+    hec_dssvue_default="hec-dssvue.sh"
+    hec_dssvue=None # fallback to DSSVUE from environment, and hec_dssvue_default failing that.
 
     vue_script=r"""
 # HEC-DSSVUE script to emulate dssutl2.exe
@@ -47,7 +48,7 @@ hecfile.done()
         self.__dict__.update(kwargs)
         self.dss_file_name = dss_file_name
 
-    def read_DSS_record(self, record_name, tstart=None, tend=None):
+    def read_DSS_record(self, record_name, start_time=None, end_time=None):
         df=self.worker(record_name,tstart,tend)
         if len(df)==0:
             log.warning("DSS path %s had no records"%(record_name))
@@ -78,7 +79,7 @@ hecfile.done()
             os.unlink(args['csv_out'])
 
         #subprocess.call([self.hec_dssvue,self.script_fn])
-        self.stdout=subprocess.check_output([self.hec_dssvue,self.script_fn],
+        self.stdout=subprocess.check_output([self.get_hec_dssvue(),self.script_fn],
                                             stderr=subprocess.STDOUT)
         df=pd.read_csv(args['csv_out'])
 
@@ -96,3 +97,44 @@ hecfile.done()
         df['time']=df['time'].apply(parse_date)
 
         return df
+    
+    def get_hec_dssvue(self):
+        if self.hec_dssvue is not None:
+            return self.hec_dssvue
+        if 'DSSVUE' in os.environ:
+            return os.environ['DSSVUE']
+        return self.hec_dssvue_default
+    
+    # placeholder for future interface to reuse instance
+    def open(self):
+        pass
+    def close(self):
+        pass
+
+
+def read_records(filename, dss_path,
+                 start_time=None, end_time=None,
+                 cache_dir=None,hec_dssvue=None):
+    if cache_dir is not None:
+        # put full information in the key
+        key=memoize.memoize_key(filename,dss_path,start_time,end_time)
+        # and make at least the filename legible in the cache file
+        # so it's easier to clear out cache files manually.
+        cache_file=os.path.join(cache_dir,
+                                f"dss-{os.path.basename(filename)}-{key}")
+
+        if not utils.is_stale(cache_file,filename):
+            with open(cache_file,'rb') as fp:
+                return pickle.load(fp)
+    else:
+        cache_file=None
+
+    reader=DssReader(filename,hec_dssvue=hec_dssvue)
+    
+    data=reader.read_DSS_record(dss_path)
+    if cache_file is not None:
+        with open(cache_file,'wb') as fp:
+            pickle.dump(data,fp)
+    return data
+
+            
