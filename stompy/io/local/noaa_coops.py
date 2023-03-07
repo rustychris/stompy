@@ -118,7 +118,7 @@ def coops_json_to_ds(json,params):
 
 
 def coops_dataset(station,start_date,end_date,products,
-                  days_per_request=None,cache_dir=None,refetch_incomplete=True):
+                  days_per_request="M",cache_dir=None,refetch_incomplete=True):
     """
     basic retrieval script for NOAA Tides and Currents data.
     
