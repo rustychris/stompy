@@ -232,7 +232,7 @@ class UGLayer(Layer):
         return self.variable
 
     def grid_meta(self):
-        return self.grid.nc_meta
+        return self.ds.grid.nc_meta
 
     def update_free_dims(self):
         changed=False
@@ -240,7 +240,7 @@ class UGLayer(Layer):
             if dim not in self.free_dims:
                 self.free_dims[dim] = self.ds.ds[dim] # can we just publish these as xr data arrays?
                 changed=True
-        for dim in self.free_dims:
+        for dim in list(self.free_dims):
             if dim not in self.local_dims:
                 del self.free_dims[dim]
                 changed=True
@@ -321,7 +321,6 @@ class UGCellLayer(UGLayer):
         # can choose to let those override local_dims.
 
         self.init_local_dims()
-        # self.grid=ds.grid # necessary?
 
     def init_plot(self,Fig):
         # okay if it is an empty dict, just not None
