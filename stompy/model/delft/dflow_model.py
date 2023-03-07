@@ -14,6 +14,7 @@ import numpy as np
 import xarray as xr
 import pandas as pd
 from shapely import geometry
+from collections import defaultdict
 
 import stompy.model.delft.io as dio
 from stompy import xr_utils
@@ -347,7 +348,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         fn=self.mdu.filepath(['output','ObsFile'])
         if fn and os.path.exists(fn):
             stations=pd.read_csv(self.mdu.filepath(['output','ObsFile']),
-                                 sep=' ',names=['x','y','name'],quotechar="'")
+                                 sep=r'\s+',names=['x','y','name'],quotechar="'")
             # crude workaround to silence warning. numpy and pandas will attempt
             # to use the array interface to streamline storage of Points.
             # that angers shapely. probably once that interface disappears this
@@ -390,13 +391,14 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         """
         Woefully inadequate parsing of boundary condition data.
         For now, returns a list of dictionaries.  
-        TODO: populate self.bcs, optionally.
         Handle other BCs like at least flow.
         """
         ext_fn=self.mdu.filepath(['external forcing','ExtForceFile'])
         ext_new_fn=self.mdu.filepath(['external forcing','ExtForceFileNew'])
 
         recs=self.parse_old_bc(ext_fn)
+
+        unhandled=defaultdict(lambda: 0)
 
         for rec in recs:
             if 'FILENAME' in rec:
@@ -414,21 +416,35 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                 rec['pli']=pli
 
                 rec['coordinates']=rec['pli'][0][1]
-                geom=geometry.LineString(rec['coordinates'])
+                if rec['coordinates'].ndim==2 and rec['coordinates'].shape[0]>1:
+                    geom=geometry.LineString(rec['coordinates'])
+                else:
+                    # probably a point source
+                    geom=geometry.Point(np.squeeze(rec['coordinates']))
                 rec['geom']=geom
 
                 # timeseries at one or more points along boundary:
-                tims=[]
-                for node_i,node_xy in enumerate(rec['coordinates']):
-                    tim_fn=pli_fn.replace('.pli','_%04d.tim'%(node_i+1))
+                # DIFFERENT logic if it's a source/sink.
+                if rec['QUANTITY'].upper()=="DISCHARGE_SALINITY_TEMPERATURE_SORSIN":
+                    tim_fn=pli_fn.replace('.pli','.tim')
                     if os.path.exists(tim_fn):
                         t_ref,t_start,t_stop=self.mdu.time_range()
-                        tim_ds=dio.read_dfm_tim(tim_fn,t_ref,columns=['stage'])
-                        tim_ds['x']=(),node_xy[0]
-                        tim_ds['y']=(),node_xy[1]
+                        # These have a column for flow and each tracer
+                        # let read_dfm_time figure out the number of columns
+                        data=dio.read_dfm_tim(tim_fn,t_ref) # ,columns=['data'])
+                        breakpoint()
+                else:
+                    tims=[]
+                    for node_i,node_xy in enumerate(rec['coordinates']):
+                        tim_fn=pli_fn.replace('.pli','_%04d.tim'%(node_i+1))
+                        if os.path.exists(tim_fn):
+                            t_ref,t_start,t_stop=self.mdu.time_range()
+                            tim_ds=dio.read_dfm_tim(tim_fn,t_ref,columns=['stage'])
+                            tim_ds['x']=(),node_xy[0]
+                            tim_ds['y']=(),node_xy[1]
 
-                        tims.append(tim_ds)
-                data=xr.concat(tims,dim='node')
+                            tims.append(tim_ds)
+                    data=xr.concat(tims,dim='node')
                 rec['data']=data
             elif ext=='.xyz':
                 xyz_fn=os.path.join(os.path.dirname(ext_fn),
@@ -457,8 +473,17 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                     print("Reading discharge boundary, did not find data (%s)"%tim_fn)
             elif rec['QUANTITY'].upper()=='FRICTIONCOEFFICIENT':
                 rec['bc']=hm.RoughnessBC(name=rec['name'],data_array=rec['data'])
+            #elif rec['QUANTITY'].upper()=='DISCHARGE_SALINITY_TEMPERATURE_SORSIN':
+            #    # The tricky part here is that the number and names of tracers attached to the
+            #    # BC depends on other parts of the model configuration. Those might
+            #    # have been changed, or haven't been set yet. 
+            #    print("Parsing source/sink BC not fully supported")
             else:
-                print("Not implemented: reading BC quantity=%s"%rec['QUANTITY'])
+                unhandled[rec['QUANTITY']]+=1
+                #print("Not implemented: reading BC quantity=%s"%rec['QUANTITY'])
+        for k in unhandled:
+            print("Encountered %d BCs with quantity=%s that weren't fully parsed"%
+                  (unhandled[k],k))
         return recs
 
     @classmethod
