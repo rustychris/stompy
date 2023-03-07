@@ -5455,11 +5455,22 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 
             coll = PolyCollection(plot_polys,**kwargs)
             ax.add_collection(coll)
+            
+            # We're
+            bounds=[np.nanmin( polys[...,0]),
+                    np.nanmax( polys[...,0]),
+                    np.nanmin( polys[...,1]),
+                    np.nanmax( polys[...,1])]
         else:
             args=[]
             if values is not None:
                 args.append(values)
             coll = ax.scatter(xy[mask,0],xy[mask,1],20,*args,**kwargs)
+            
+            bounds=[np.nanmin( xy[mask,0]),
+                    np.nanmax( xy[mask,0]),
+                    np.nanmin( xy[mask,1]),
+                    np.nanmax( xy[mask,1])]
 
         if labeler is not None:
             if labeler=='id':
@@ -5471,11 +5482,6 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             for c in np.nonzero(mask)[0]:
                 ax.text(xy[c,0],xy[c,1],labeler(c,self.cells[c]))
 
-        # We're
-        bounds=[np.nanmin( polys[...,0]),
-                np.nanmax( polys[...,0]),
-                np.nanmin( polys[...,1]),
-                np.nanmax( polys[...,1])]
         
         if (bounds[0]<bounds[1]) and (bounds[2]<bounds[3]):
             request_square(ax,bounds)
