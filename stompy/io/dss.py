@@ -49,8 +49,17 @@ hecfile.done()
         self.__dict__.update(kwargs)
         self.dss_file_name = dss_file_name
 
-    def read_DSS_record(self, record_name, start_time=None, end_time=None):
-        df=self.worker(record_name,start_time,end_time)
+    def read_DSS_record(self, record_name, start_time=None, end_time=None,
+                        csv_file=None):
+        """
+        csv_file: naive caching. If this file exists and is newer than the DSS file
+        it is assumed to be the output from
+        a previous, identical call. In that case skips invoking dssvue and parses the
+        existing csv file. Note that if the driver script above changes the format of the 
+        csv, this may fail!
+        """
+        # no particular reason why the code is split between here and worker...
+        df=self.worker(record_name,start_time,end_time,csv_file=csv_file)
         if len(df)==0:
             log.warning("DSS path %s had no records"%(record_name))
             return [[],[]]
@@ -68,21 +77,25 @@ hecfile.done()
         
         return df
 
-    def worker(self,record_name,tstart,tend):
-        args=dict(dss_file_name=self.dss_file_name,
-                  dss_path=record_name,
-                  csv_out=self.csv_out)
+    def worker(self,record_name,tstart,tend,csv_file=None):
+        if (csv_file is None) or utils.is_stale(csv_file,[self.dss_file_name]):
+            if csv_file is None:
+                csv_file=self.csv_out
 
-        with open(self.script_fn,'wt') as fp:
-            fp.write(self.vue_script%args)
+            args=dict(dss_file_name=self.dss_file_name,
+                      dss_path=record_name,
+                      csv_out=csv_file)
 
-        if os.path.exists(args['csv_out']):
-            os.unlink(args['csv_out'])
+            with open(self.script_fn,'wt') as fp:
+                fp.write(self.vue_script%args)
 
-        #subprocess.call([self.hec_dssvue,self.script_fn])
-        self.stdout=subprocess.check_output([self.get_hec_dssvue(),self.script_fn],
-                                            stderr=subprocess.STDOUT)
-        df=pd.read_csv(args['csv_out'])
+            if os.path.exists(args['csv_out']):
+                os.unlink(args['csv_out'])
+
+            self.stdout=subprocess.check_output([self.get_hec_dssvue(),self.script_fn],
+                                                stderr=subprocess.STDOUT)
+            
+        df=pd.read_csv(csv_file)
 
         # Come back to fix up dates:
         def parse_date(s):
@@ -134,21 +147,17 @@ def read_records(filename, dss_path,
             key=memoize.memoize_key(os.path.basename(filename),dss_path,start_time,end_time)
         # and make at least the filename legible in the cache file
         # so it's easier to clear out cache files manually.
+        # Cache files are just the CSV that is extracted. That seems to be more portable
+        # than pickling a pandas dataframe
         cache_file=os.path.join(cache_dir,
-                                f"dss-{os.path.basename(filename)}-{dss_path.replace('/','.')}-{key}")
-
-        if not utils.is_stale(cache_file,[filename]):
-            with open(cache_file,'rb') as fp:
-                return pickle.load(fp)
+                                f"dss-{os.path.basename(filename)}-{dss_path.replace('/','.')}-{key}.csv")
     else:
         cache_file=None
 
     reader=DssReader(filename,hec_dssvue=hec_dssvue)
     
-    data=reader.read_DSS_record(dss_path)
-    if cache_file is not None:
-        with open(cache_file,'wb') as fp:
-            pickle.dump(data,fp)
+    data=reader.read_DSS_record(dss_path,csv_file=cache_file)
+    
     return data
 
             
