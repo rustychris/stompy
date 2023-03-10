@@ -49,16 +49,16 @@ hecfile.done()
         self.dss_file_name = dss_file_name
 
     def read_DSS_record(self, record_name, start_time=None, end_time=None):
-        df=self.worker(record_name,tstart,tend)
+        df=self.worker(record_name,start_time,end_time)
         if len(df)==0:
             log.warning("DSS path %s had no records"%(record_name))
             return [[],[]]
 
         date_sel=df.time.notnull()
-        if tstart is not None:
-            date_sel&=(df['time'].values>=np.datetime64(tstart))
-        if tend is not None:
-            date_sel&=(df['time'].values<=np.datetime64(tend))
+        if start_time is not None:
+            date_sel&=(df['time'].values>=np.datetime64(start_time))
+        if end_time is not None:
+            date_sel&=(df['time'].values<=np.datetime64(end_time))
             
         df=df[date_sel]
 
