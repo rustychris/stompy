@@ -6,6 +6,7 @@ import datetime
 import os
 import numpy as np
 import pandas as pd
+import pickle
 from .. import memoize, utils
 
 class DssReader(object):
@@ -114,16 +115,29 @@ hecfile.done()
 
 def read_records(filename, dss_path,
                  start_time=None, end_time=None,
-                 cache_dir=None,hec_dssvue=None):
+                 cache_dir=None,hec_dssvue=None,
+                 cache_by_full_path=True):
+    """
+    filename: path to DSS file'
+    dss_path: /A-part/B-part/... to identify time series to extract.
+    {start,end}_time: numpy datetime64 period to request.
+    cache_dir: path to an existing folder where data is cached
+    hec_dssvue: path to hec_dssvue.sh 
+    cache_by_full_path: if true, cache filename includes hash of full path. Otherwise  just
+      basename of the file.
+    """
     if cache_dir is not None:
         # put full information in the key
-        key=memoize.memoize_key(filename,dss_path,start_time,end_time)
+        if cache_by_full_path:
+            key=memoize.memoize_key(filename,dss_path,start_time,end_time)
+        else:
+            key=memoize.memoize_key(os.path.basename(filename),dss_path,start_time,end_time)
         # and make at least the filename legible in the cache file
         # so it's easier to clear out cache files manually.
         cache_file=os.path.join(cache_dir,
-                                f"dss-{os.path.basename(filename)}-{key}")
+                                f"dss-{os.path.basename(filename)}-{dss_path.replace('/','.')}-{key}")
 
-        if not utils.is_stale(cache_file,filename):
+        if not utils.is_stale(cache_file,[filename]):
             with open(cache_file,'rb') as fp:
                 return pickle.load(fp)
     else:
