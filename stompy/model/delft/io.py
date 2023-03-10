@@ -1702,7 +1702,7 @@ def write_bnd(bnd,fn):
                                                             x[0,0],x[0,1],x[1,0],x[1,1]))
 
 
-def read_dfm_tim(fn, ref_time, time_unit='M', columns=['val1','val2','val3']):
+def read_dfm_tim(fn, ref_time, time_unit='M', columns=None):
     """
     Parse a tim file to xarray Dataset.  Must pass in the reference
     time (datetime64, or convertable to that via utils.to_dt64())
@@ -1727,6 +1727,9 @@ def read_dfm_tim(fn, ref_time, time_unit='M', columns=['val1','val2','val3']):
     raw_data=np.loadtxt(fn)
     t=ref_time + dt*raw_data[:,0]
 
+    if columns is None:
+        columns=['val%d'%(i+1) for i in range(raw_data.shape[1]-1)]
+        
     ds=xr.Dataset()
     ds['time']=('time',),t
     for col_i in range(1,raw_data.shape[1]):

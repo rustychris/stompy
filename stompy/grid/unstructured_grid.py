@@ -4622,7 +4622,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         return coll
 
     def plot_edges(self,ax=None,mask=None,values=None,clip=None,labeler=None,
-                   label_jitter=0.0,lw=0.8,return_mask=False,**kwargs):
+                   label_jitter=0.0,lw=0.8,return_mask=False,
+                   segments=None,**kwargs):
         """
         plot edges as a LineCollection.
         optionally select a subset of edges with boolean array mask.
@@ -4636,6 +4637,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         lw: defaults to a thin line, usually more useful with grids, instead of 
           modern matplotlib default which is thick for data plots.
         return_mask: return the line collection and the mask array
+        segments: specify a field name (in the future maybe a lambda) for an
+         alternative geometry in the form of an [N,2] coord string.
 
         Returns: LineCollection, and if return_mask is True then also the mask
         """
@@ -4662,6 +4665,17 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             values = values[mask]
 
         segs = self.nodes['x'][edge_nodes]
+        # Compute bounds before checking segments. Could be bad
+        # if at some point segments is valid but edges are not.
+        # But more of the logic in here has to change if segments
+        # are totally unrelated to the simple edge (spatial clipping).
+        bounds=[segs[...,0].min(),
+                segs[...,0].max(),
+                segs[...,1].min(),
+                segs[...,1].max()]
+        if isinstance(segments,six.string_types):
+            segs = self.edges[segments][mask]
+             
         if values is not None:
             kwargs['array'] = values
 
@@ -4684,10 +4698,6 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                         labeler(n,self.edges[n]))
 
         ax.add_collection(lcoll)
-        bounds=[segs[...,0].min(),
-                segs[...,0].max(),
-                segs[...,1].min(),
-                segs[...,1].max()]
         request_square(ax,bounds)
 
         if return_mask:
@@ -5426,6 +5436,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         if clip is not None: # convert clip to mask
             mask=mask & self.cell_clip_mask(clip,by_center=False)
 
+        if len(mask)==0 or np.all(~mask):
+            return
+        
         if values is not None and len(values)==self.Ncells():
             values = values[mask]
         elif masked_values is not None:
@@ -5459,11 +5472,22 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 
             coll = PolyCollection(plot_polys,**kwargs)
             ax.add_collection(coll)
+            
+            # We're
+            bounds=[np.nanmin( polys[...,0]),
+                    np.nanmax( polys[...,0]),
+                    np.nanmin( polys[...,1]),
+                    np.nanmax( polys[...,1])]
         else:
             args=[]
             if values is not None:
                 args.append(values)
             coll = ax.scatter(xy[mask,0],xy[mask,1],20,*args,**kwargs)
+            
+            bounds=[np.nanmin( xy[mask,0]),
+                    np.nanmax( xy[mask,0]),
+                    np.nanmin( xy[mask,1]),
+                    np.nanmax( xy[mask,1])]
 
         if labeler is not None:
             if labeler=='id':
@@ -5475,11 +5499,6 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             for c in np.nonzero(mask)[0]:
                 ax.text(xy[c,0],xy[c,1],labeler(c,self.cells[c]))
 
-        # We're
-        bounds=[np.nanmin( polys[...,0]),
-                np.nanmax( polys[...,0]),
-                np.nanmin( polys[...,1]),
-                np.nanmax( polys[...,1])]
         
         if (bounds[0]<bounds[1]) and (bounds[2]<bounds[3]):
             request_square(ax,bounds)
@@ -7854,6 +7873,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             return HalfEdge(self,j,0)
         else:
             return HalfEdge(self,j,1)
+        
+    def cell_to_halfedges(self,c):
+        return [HalfEdge(self,j,1-int(self.edges['cells'][j,0]==c))
+                for j in self.cell_to_edges(c) if j>=0]
 
     def cell_containing(self,xy,neighbors_to_test=4):
         """ Compatibility wrapper for select_cells_nearest.  This
