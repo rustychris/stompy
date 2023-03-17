@@ -716,7 +716,7 @@ class RoughnessBC(BC):
                                        low=rough.min(), high=rough.max())
         from matplotlib import cm
         cmap=cm.viridis
-        norm_rough=(rough-rough.min())/(rough.max()-rough.min())
+        norm_rough=(rough-rough.min())/(1e-10+rough.max()-rough.min())
         mapped=[cmap(v) for v in norm_rough]
         colors = [
             "#%02x%02x%02x" % (int(m[0]*255),
@@ -1365,7 +1365,7 @@ class HydroModel(object):
             point=point[-1,:]
         g=self.grid
         cell=g.select_cells_nearest(point,inside=True)
-        assert cell is not None,"Discharge at %s failed to find a cell"%pnt
+        assert cell is not None,"Discharge at %s failed to find a cell"%point
 
         if cell_field:
             g.cells[cell_field][cell] = min(g.cells[cell_field][cell],dredge_depth)
@@ -1511,7 +1511,8 @@ class HydroModel(object):
         there is special handling for several values:
           'geom_type' is the geom_type attribute of the geometry itself,
           e.g. 'LineString' or 'Point'. feat can specify a list of geom_type
-        values
+          values. There is special handling for MultiLineString with a single
+          sub-geometry that converts to a LineString
 
         pattern matching will be used when a criterion has a re.Pattern
         value, i.e. kws={'name':re.compile('south.*')} would match features
@@ -1519,6 +1520,8 @@ class HydroModel(object):
         """
         for k in kws:
             if k=='geom_type':
+                if feat['geom'].geom_type=='MultiLineString' and len(feat['geom'].geoms)==1:
+                    feat['geom']=feat['geom'].geoms[0]
                 feat_val=feat['geom'].geom_type
                 if isinstance(kws[k],list):
                     if feat_val in kws[k]: continue

@@ -2398,6 +2398,8 @@ def is_stale(target,srcs,ignore_missing=False,tol_s=0):
     tol_s: allow a source to be up to tol_s newer than target. Useful if 
     sources are constantly updating but you only want to recompute
     when something is really old.
+
+    src timestamps are the newer of stat and lstat
     """
     if not os.path.exists(target): return True
     for src in srcs:
@@ -2406,7 +2408,9 @@ def is_stale(target,srcs,ignore_missing=False,tol_s=0):
                 continue
             else:
                 raise Exception("Dependency %s does not exist"%src)
-        if os.stat(src).st_mtime > os.stat(target).st_mtime + tol_s:
+        src_mtime=max(os.stat(src).st_mtime,
+                      os.lstat(src).st_mtime)
+        if src_mtime > os.stat(target).st_mtime + tol_s:
             return True
     return False
 
