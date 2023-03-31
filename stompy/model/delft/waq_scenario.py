@@ -24,6 +24,7 @@ import logging
 
 import time
 import pandas as pd
+import pdb
 from matplotlib.dates import num2date, date2num
 import matplotlib.pyplot as plt
 from itertools import count
@@ -8562,6 +8563,11 @@ END_MULTIGRID"""%num_layers
         """
         Copy supporting bloominp file for runs using BLOOM algae
         """
+        if not os.path.exists(self.original_bloominp_path):
+            # pdb.set_trace()
+            self.log.warning("BLOOM not found (%s)! Tread carefully"%self.original_bloominp_path)
+            return
+        
         dst=os.path.join(self.base_path,'bloominp.d09')
         if not self.overwrite:
             assert not os.path.exists(dst)
@@ -9769,6 +9775,11 @@ class WaqModelBase(scriptable.Scriptable):
         """
         Copy supporting bloominp file for runs using BLOOM algae
         """
+        if not os.path.exists(self.original_bloominp_path):
+            # pdb.set_trace() 
+            self.log.warning("BLOOM not found (%s)! Tread carefully"%self.original_bloominp_path)
+            return
+        
         dst=os.path.join(self.base_path,'bloominp.d09')
         if os.path.exists(dst) and not self.overwrite:
             raise Exception("%s exists, but overwrite is False"%dst)

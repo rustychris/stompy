@@ -272,32 +272,35 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             return None
         # use cls(), so that custom subclasses can be used
         model=cls()
-        model.load_mdu(fn)
-        model.mdu_basename=os.path.basename(fn)
+        model.load_from_mdu(fn)
+        return model
+    
+    def load_from_mdu(self,fn):
+        self.load_mdu(fn)
+        self.mdu_basename=os.path.basename(fn)
         try:
-            model.grid = ugrid.UnstructuredGrid.read_dfm(model.mdu.filepath( ('geometry','NetFile') ))
+            self.grid = ugrid.UnstructuredGrid.read_dfm(self.mdu.filepath( ('geometry','NetFile') ))
         except FileNotFoundError:
             log.warning("Loading model from %s, no grid could be loaded"%fn)
-            model.grid=None
+            self.grid=None
         d=os.path.dirname(fn) or "."
-        model.set_run_dir(d,mode='existing')
+        self.set_run_dir(d,mode='existing')
         # infer number of processors based on mdu files
         # Not terribly robust if there are other files around..
         sub_mdu=glob.glob( fn.replace('.mdu','_[0-9][0-9][0-9][0-9].mdu') )
         if len(sub_mdu)>0:
-            model.num_procs=len(sub_mdu)
+            self.num_procs=len(sub_mdu)
         else:
             # probably better to test whether it has even been processed
-            model.num_procs=1
+            self.num_procs=1
 
-        ref,start,stop=model.mdu.time_range()
-        model.ref_date=ref
-        model.run_start=start
-        model.run_stop=stop
+        ref,start,stop=self.mdu.time_range()
+        self.ref_date=ref
+        self.run_start=start
+        self.run_stop=stop
 
-        model.load_gazetteer_from_run()
-        model.load_structures_from_run()
-        return model
+        self.load_gazetteer_from_run()
+        self.load_structures_from_run()
 
     def load_structures_from_run(self):
         struct_file=self.mdu.filepath( ('geometry','structurefile'))
@@ -660,13 +663,11 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         else:
             result=False
         return result
-    
-    def is_completed(self):
+
+    def dia_fn(self):
         """
-        return true if the model has been run.
-        this can be tricky to define -- here completed is based on
-        a report in a diagnostic that the run finished.
-        this doesn't mean that all output files are present.
+        Return path to diagnostic filename (rank 0 if mpi run).
+        returns None if file cannot be found.
         """
         root_fn=self.mdu.filename[:-4] # drop .mdu suffix
         # Look in multiple locations for diagnostic file.
@@ -675,22 +676,38 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         # output folder
         dia_fns=[]
         dia_fn_base=os.path.basename(root_fn)
-        if self.num_procs>1:
-            dia_fn_base+='_0000.dia'
-        else:
-            dia_fn_base+=".dia"
-            
-        dia_fns.append(os.path.join(self.run_dir,dia_fn_base))
-        dia_fns.append(os.path.join(self.run_dir,
-                                    "DFM_OUTPUT_%s"%self.mdu.name,
-                                    dia_fn_base))
 
-        for dia_fn in dia_fns:
-            assert dia_fn!=self.mdu.filename,"Probably case issues with %s"%dia_fn
+        # use self.num_procs as a hint, but it's not always reliable so check
+        # for both MPI and serial output.
+        dia_fn_bases=[dia_fn_base+'_0000.dia',
+                      dia_fn_base+'.dia']
 
-            if os.path.exists(dia_fn):
-                break
-        else:
+        if self.num_procs<=1:
+            # check for serial first.
+            dia_fn_bases = dia_fn_bases[::-1]
+
+        dia_paths=[self.run_dir,
+                   os.path.join(self.run_dir, "DFM_OUTPUT_%s"%self.mdu.name)]
+
+        for dia_fn_base in dia_fn_bases:
+            for dia_path in dia_paths:
+                dia_fn=os.path.join(dia_path,dia_fn_base)
+                assert dia_fn!=self.mdu.filename,"Probably case issues with %s"%dia_fn
+
+                if os.path.exists(dia_fn):
+                    return dia_fn
+        return None
+        
+    def is_completed(self):
+        """
+        return true if the model has been run.
+        this can be tricky to define -- here completed is based on
+        a report in a diagnostic that the run finished.
+        this doesn't mean that all output files are present.
+        """
+
+        dia_fn=self.dia_fn()
+        if dia_fn is None:
             return False
         
         # Read the last 1000 bytes
@@ -702,6 +719,40 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             tail=fp.read().decode(errors='ignore')
         return "Computation finished" in tail
 
+    def timing_stats(self):
+        dia_fn=self.dia_fn()
+        if dia_fn is None:
+            return None
+
+        # Read the last 1000 bytes                                                                                                             
+        with open(dia_fn,'rb') as fp:                                                                                                          
+            fp.seek(0,os.SEEK_END)                                                                                                             
+            tail_size=min(fp.tell(),10000)                                                                                                     
+            fp.seek(-tail_size,os.SEEK_CUR)                                                                                                    
+            # This may not be py2 compatible!                                                                                                  
+            tail=fp.read().decode(errors='ignore')
+
+            def parse_time(days,hours):
+                days=np.timedelta64(int(days.strip('d')),'D')
+                seconds=sum( [mult*int(val) for mult,val in zip([3600,60,1],hours.split(':'))])
+                return days+np.timedelta64(seconds,'s')
+
+            result={}
+            for line in tail.split("\n"):
+                parts=line.split()
+                if len(parts)!=14: continue
+
+                result['sim_time_completed']=parse_time(parts[3],parts[4])
+                result['sim_time_remaining']=parse_time(parts[5],parts[6])
+                result['wall_time_completed']=parse_time(parts[7],parts[8])
+                result['wall_time_remaining']=parse_time(parts[9],parts[10])
+                result['percent_complete']=float(parts[12].strip('%'))
+                result['mean_dt']=float(parts[13])
+
+                # Looking for progress lines like
+                # ** INFO   :          12d  0:00:00          0d  0:00:00          1d 15:28:44          0d  0:00:00          0   100.0%     6.12245
+        return result
+    
     def update_config(self):
         """
         Update fields in the mdu object with data from self.
@@ -1489,6 +1540,12 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         self.mdu=model.mdu.copy()
         self.mdu_basename=os.path.basename( model.mdu_basename.replace('.mdu',mdu_suffix+".mdu") )
         self.mdu.set_filename( os.path.join(self.run_dir, self.mdu_basename) )
+
+        # recent DFM errors if Tlfsmo is set for a restart.
+        self.mdu['numerics','Tlfsmo'] = 0.0
+        # And at least in tag 140737, restarts from a restart file fail if renumbering is enabled.
+        self.mdu['geometry','RenumberFlowNodes']=0
+
         self.restart=True
         self.restart_from=model # used to be restart_model, but I don't think makes sense
         self.ref_date=model.ref_date
@@ -1538,7 +1595,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             rsts=[ (rst_base[:-23] + '_%04d'%p + rst_base[-23:])
                    for p in range(self.num_procs)]
         else:
-            self.log.warning("Handling restart data with serial run is note tested")
+            self.log.warning("Handling restart data with serial run is not tested")
             rsts=[rst_base]
         return rsts
     
