@@ -882,7 +882,9 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                         geom=geometry.LineString(geom)
                 else:
                     geom=self.get_geometry(name=s['name'])
-                    
+
+                if geom.type=='MultiLineString' and len(geom.geoms)==1:
+                    geom=geom.geoms[0] # geojson I think does this.
                 assert geom.type=='LineString'
                 pli_data=[ (s['name'], np.array(geom.coords)) ]
                 dio.write_pli(pli_fn,pli_data)
