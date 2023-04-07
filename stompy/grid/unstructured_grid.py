@@ -2476,7 +2476,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             self.log.warning("Increasing max_sides from %d to %d"%(self.max_sides,ugB.max_sides))
             self.modify_max_sides(ugB.max_sides)
         else:
-            self.log.info("max_sides is okay (%d)"%(self.max_sides))
+            self.log.debug("max_sides is okay (%d)"%(self.max_sides))
             
         node_map=np.zeros( ugB.Nnodes(), 'i4')-1
         edge_map=np.zeros( ugB.Nedges(), 'i4')-1
@@ -9138,12 +9138,12 @@ def cleanup_dfm_multidomains(grid):
     # To avoid downstream errors when the 'deleted' flags
     # are not handled, renumber.
     
-    grid.log.info("Renumbering nodes")
+    grid.log.debug("Renumbering nodes")
     grid.renumber_nodes()
-    grid.log.info("Renumbering edges") 
+    grid.log.debug("Renumbering edges") 
     grid.renumber_edges()
     
-    grid.log.info("Extracting grid boundary")
+    grid.log.debug("Extracting grid boundary")
     return grid
 
 

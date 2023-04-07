@@ -6,6 +6,8 @@ TODO:
 """
 import os,shutil,glob,inspect
 import six
+import pdb
+
 import logging
 log=logging.getLogger('DFlowModel')
 
@@ -376,16 +378,24 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         recs=[]
 
         with open(fn,'rt') as fp:
+            stanza=[]
             while 1:
-                line=fp.readline()
-                if line=="": break
-                line=line.split('#')[0].strip()
-                if not line: continue # blank line or comment
+                raw_line=fp.readline()
+                if raw_line=="": break
+                
+                stanza.append(raw_line.strip())
+
+                line=raw_line.split('#')[0].strip()
+                if not line: # blank line or comment
+                    continue 
                 k,v=key_value(line)
 
+                # each tracer starts with a quantity line
                 if k=='QUANTITY':
                     rec={k:v}
                     recs.append(rec)
+                    stanza=[stanza.pop()] # Shift this line to a new stanza
+                    rec['stanza']=stanza
                 else:
                     rec[k]=v
         return recs
@@ -790,7 +800,9 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             self.dwaq.write_waq()
 
         if self.restart_from is not None:
-            self.set_restart_file()
+            # This really breaks things if we've messed with modified ICs.
+            self.log.warning("SKIPPING self.set_restart_file()")
+            #self.set_restart_file()
         
     def write_config(self):
         # Assumes update_config() already called
@@ -1568,18 +1580,27 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         """ 
         Update mdu['restart','RestartFile'] based on run_start and self.restart_from
         Should be called when dealing with a restart and self.run_start is modified.
+
+        This is currently fragile and error prone. The entry in the mdu depends on the
+        restart file *and* run_dir. And the common usage is to just specify
+        a DFlowModel instance in self.restart_from, somewhere along the way set the
+        start time of this run to an output restart file time of the restart_from,
+        and this method will take care of getting the path correct.
+
+        The problem is when one or more of these inputs change.
         """
+        self.log.info("set_restart_file: Setting RestartFile based on self.restart_from")
         rst_base=os.path.join(self.restart_from.mdu.output_dir(),
                               (self.restart_from.mdu.name
                                +'_'+utils.to_datetime(self.run_start).strftime('%Y%m%d_%H%M%S')
                                +'_rst.nc'))
         # That gets rst_base relative to the cwd, but we need it relative
         # to the new runs run_dir
+        
         # raise Exception('HERE - this is effectively including an extra basepath I think??')
-        #import pdb
-        #pdb.set_trace()
         self.mdu['restart','RestartFile']=os.path.relpath(rst_base,start=self.run_dir)
-        # Currently rst_base is relative to pwd
+        # Fragile! if run_dir is later updated, this path will be wrong
+        
     def restart_inputs(self):
         """
         Return a list of paths to restart data that will be used as the 
@@ -1612,9 +1633,11 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
 
         it should take **kw, to flexibly allow more information to be passed in
          in the future.
+
+        This updates self.mdu. Should be called after self.write(), since
+        update_config() alters RestartFile. It will make
+        the new model run directory as necessary.
         """
-        #import pdb
-        #pdb.set_trace()
         for proc,rst in enumerate(self.restart_inputs()):
             old_dir=os.path.dirname(rst)  # '../run_dye_test-p06a/DFM_OUTPUT_flowfm'
             # new_rst=os.path.join(self.mdu.output_dir(),os.path.basename(rst)) # 'run_dye_test-p06b/DFM_OUTPUT_flowfm/flowfm_0000_20161210_060000_rst.nc'
@@ -1626,8 +1649,11 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             assert rst!=new_rst
             # Note: rst and new_rst both relative to self.run_dir, but cwd may be something
             # else
-            rst_abs=os.path.join(self.run_dir,rst) 
-            ds=xr.open_dataset(rst_abs)
+            rst_abs=os.path.join(self.run_dir,rst)
+            try:
+                ds=xr.open_dataset(rst_abs)
+            except:
+                pdb.set_trace()
             new_ds=modify_ic(ds,proc=proc,model=self)
             if new_ds is None:
                 new_ds=ds # assume modified in place
@@ -1641,6 +1667,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         old_rst_base=self.mdu['restart','RestartFile']
         new_rst_base=os.path.basename(old_rst_base) # relative to run_dir
         self.mdu['restart','RestartFile']=new_rst_base
+        self.log.info(f"Updating RestartFile to {new_rst_base}")
         
     def extract_section(self,name=None,chain_count=1,refresh=False,
                         xy=None,ll=None,data_vars=None):
