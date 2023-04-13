@@ -2398,6 +2398,8 @@ def is_stale(target,srcs,ignore_missing=False,tol_s=0):
     tol_s: allow a source to be up to tol_s newer than target. Useful if 
     sources are constantly updating but you only want to recompute
     when something is really old.
+
+    src timestamps are the newer of stat and lstat
     """
     if not os.path.exists(target): return True
     for src in srcs:
@@ -2406,7 +2408,9 @@ def is_stale(target,srcs,ignore_missing=False,tol_s=0):
                 continue
             else:
                 raise Exception("Dependency %s does not exist"%src)
-        if os.stat(src).st_mtime > os.stat(target).st_mtime + tol_s:
+        src_mtime=max(os.stat(src).st_mtime,
+                      os.lstat(src).st_mtime)
+        if src_mtime > os.stat(target).st_mtime + tol_s:
             return True
     return False
 
@@ -2584,3 +2588,40 @@ def ideal_solar_rad(t,Imax=1000,lat=37.775,lon=-122.419):
     ds['sol_rad']=ds['time'].dims, Imax*np.cos(zenith).clip(0)
     return ds
 
+def fill_curvilinear(xy,xy_valid=None):
+    """
+    Extrapolate missing values of a curvilinear mesh.
+    Currently very limited: fits a plane to each coordinate and
+    evaluates plane equation at missing points. This is okay for
+    very well-behaved cases and handles extrapolation.
+
+    A more general approach might fill areas inside the convex hull
+    by linear interpolation, and define local extrapolation functions.
+    
+    xy: array with shape [M,N,{x,y}]
+    xy_valid: bitmask [M,N] of which values should be assumed valid.
+    defaults to finite values of xy.
+    """
+    if xy_valid is None:
+        xy_valid=np.isfinite(xy[:,:,0]) & np.isfinite(xy[:,:,1])
+    #if np.all(xy_valid):
+    #    return
+    rows=np.arange(xy.shape[0])
+    cols=np.arange(xy.shape[1])
+    C,R=np.meshgrid(cols,rows)
+
+    # looking for a,b,c such that a*x+b*y = c approximates the plane defined
+    # by valid points
+    # this contains both valid and invalid points:
+    M=np.array(np.c_[R.ravel(), C.ravel(), np.ones_like(R.ravel())])
+
+    Mvalid=M[xy_valid.ravel(),:]
+    abc_x,_,_,_=np.linalg.lstsq(Mvalid,xy[xy_valid,0],rcond=None)
+    abc_y,_,_,_=np.linalg.lstsq(Mvalid,xy[xy_valid,1],rcond=None)
+    
+    Minvalid=M[~xy_valid.ravel(),:]
+    fill_x = Minvalid.dot(abc_x)
+    fill_y = Minvalid.dot(abc_y)
+
+    xy[~xy_valid,0] = fill_x
+    xy[~xy_valid,1] = fill_y

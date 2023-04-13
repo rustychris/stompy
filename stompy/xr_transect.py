@@ -983,6 +983,73 @@ def plot_scalar_polys(tran,v,ax=None,xform=None,**kw):
 
 plot_scalar=plot_scalar_polys
 
+def surface_bed_linestrings(tran,v,xform=None,dzmin=0.005):
+    """
+    A more literal interpretation of how to plot a transect, with no
+    interpolation of vertical coordinates
+    xform: func(X,Y) applies a transformation to coordinates before plotting
+    Should be compatible with plot_scalar_polys.
+    variable must be specified,and is used to infer wet/dry
+    """
+    if isinstance(v,six.string_types):
+        v=tran[v]
+
+    x,y,scal,dz=xr.broadcast(get_d_sample(tran),tran.z_ctr,v,get_z_dz(tran))
+
+    # important to use .values, as xarray will otherwise muck with
+    # the indexing
+
+    # Move to numpy land
+    X=x.values
+    Y=y.values
+    Dz=dz.values
+    V=v.values
+    
+    if y.attrs.get('positive','up')=='down':
+        Y=-Y
+        
+    # Expands the vertical coordinate in the vertical
+    Ybot=Y-0.5*Dz
+    Yexpand=np.concatenate( (Ybot,Ybot[:,-1:]), axis=1)
+    Yexpand[:,-1]=np.nan
+    Yexpand[:,1:]=np.where( np.isfinite(Yexpand[:,1:]),
+                            Yexpand[:,1:],
+                            Y+0.5*Dz)
+    # Expands the horizontal coordinate in the vertical
+    Xexpand=np.concatenate( (X,X[:,-1:]), axis=1)
+
+    # And expand in the horizontal
+    dx=utils.center_to_interval(X[:,0])
+    Xexpand2=np.concatenate( (Xexpand-0.5*dx[:,None], Xexpand[-1:,:]+0.5*dx[-1:,None]), axis=0)
+
+    coords=[] # [dist,bed_elev,surface_elev]
+    #breakpoint()
+    for samp in np.arange(V.shape[0]):
+        # sometimes validity is just encoded in Y coordinate, sometimes
+        # in scalar.
+        wet = np.isfinite(Y[samp,:] * V[samp,:])
+        if np.all(~wet):
+            coords.append([np.nan,np.nan,np.nan])
+            continue
+        wet_i=np.nonzero(wet)[0]
+        # add a point on the left and right.
+        # May have to adjust if Dz is negative
+        if np.abs(Yexpand[samp,wet_i[0]] - Yexpand[samp,wet_i[-1]+1])<dzmin:
+            coords.append([np.nan,np.nan,np.nan])
+        else:                              
+            coords.append( [Xexpand2[samp,  wet_i[0]], Yexpand[samp,wet_i[0]], Yexpand[samp,wet_i[-1]+1]] )
+            coords.append( [Xexpand2[samp+1,wet_i[0]], Yexpand[samp,wet_i[0]], Yexpand[samp,wet_i[-1]+1]] )
+
+    coords=np.array(coords)        
+    if xform:
+        x,ybed=xform(coords[:,0],coords[:,1])
+        x,ysurf=xform(coords[:,0],coords[:,2])
+        coords[:,0]=x
+        coords[:,1]=ybed
+        coords[:,2]=ysurf
+
+    return coords
+
 def contour(tran,v,*args,**kwargs):
     return contour_like(tran,v,'contour',*args,**kwargs)
 

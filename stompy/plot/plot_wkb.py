@@ -13,7 +13,7 @@ def plot_linestring(linestring,**kwargs):
 
 def plot_multilinestring(mls,**kwargs):
     ax=kwargs.pop('ax',plt.gca())
-    if mls.type == 'MultiLineString':
+    if mls.geom_type == 'MultiLineString':
         segs = [np.array(ls.coords) for ls in mls.geoms]
         coll = LineCollection(segs,**kwargs)
         ax.add_collection(coll)
@@ -90,13 +90,13 @@ def plot_multipolygon(mp,*args,**kwargs):
 
 
 def plot_wkb(g,*args,**kwargs):
-    if g.type == 'MultiPolygon':
+    if g.geom_type == 'MultiPolygon':
         return plot_multipolygon(g,*args,**kwargs)
-    elif g.type=='Polygon':
+    elif g.geom_type=='Polygon':
         return plot_polygon(g,*args,**kwargs)
-    elif g.type == 'MultiLineString':
+    elif g.geom_type == 'MultiLineString':
         return plot_multilinestring(g,*args,**kwargs)
-    elif g.type =='LineString':
+    elif g.geom_type =='LineString':
         return plot_linestring(g,*args,**kwargs)
     else:
         raise Exception("no match to type")
