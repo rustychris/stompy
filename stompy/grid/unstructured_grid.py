@@ -1823,12 +1823,14 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         ds.to_netcdf(fn)
         return ds
 
-    def write_dfm(self,nc_fn,overwrite=False,node_elevation=None):
+    def write_dfm(self,nc_fn,overwrite=False,node_elevation=None,check_depth=True):
         """
         nc_fn: netcdf file to write to
         overwrite: if True, allow overwriting an existing file
-        node_depth: if specified, the field used for node elevations, assumed positive-up.
+        node_elevation: if specified, the field used for node elevations, assumed positive-up.
           if None, will check for 'node_z_bed' and 'depth' as fields for nodes.
+
+        check_depth: raise an exception if any node depth values are nan.
         """
         # use outdated netcdf wrapper
         # TODO: migrate the xarray or netCDF4
@@ -1909,7 +1911,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 node_elevation='node_z_bed'
             elif 'depth' in self.nodes.dtype.names:
                 node_elevation='depth'
-                
+
+        if check_depth:
+            # DFM does not gracefully deal with nan depths -- preemptively fail
+            if np.any(~np.isfinite(self.nodes[node_elevation])):
+                raise Exception("Grid has nan or infinite node elevations")
+            
         if node_elevation in self.nodes.dtype.names:
             node_z = nc.createVariable('NetNode_z','f8',('nNetNode'))
             node_z[:] = self.nodes[node_elevation][:]
@@ -2483,7 +2490,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             self.log.warning("Increasing max_sides from %d to %d"%(self.max_sides,ugB.max_sides))
             self.modify_max_sides(ugB.max_sides)
         else:
-            self.log.info("max_sides is okay (%d)"%(self.max_sides))
+            self.log.debug("max_sides is okay (%d)"%(self.max_sides))
             
         node_map=np.zeros( ugB.Nnodes(), 'i4')-1
         edge_map=np.zeros( ugB.Nedges(), 'i4')-1
@@ -9145,12 +9152,12 @@ def cleanup_dfm_multidomains(grid):
     # To avoid downstream errors when the 'deleted' flags
     # are not handled, renumber.
     
-    grid.log.info("Renumbering nodes")
+    grid.log.debug("Renumbering nodes")
     grid.renumber_nodes()
-    grid.log.info("Renumbering edges") 
+    grid.log.debug("Renumbering edges") 
     grid.renumber_edges()
     
-    grid.log.info("Extracting grid boundary")
+    grid.log.debug("Extracting grid boundary")
     return grid
 
 
