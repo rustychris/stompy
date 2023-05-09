@@ -1973,45 +1973,59 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     @staticmethod
     def from_shp(shp_fn,**kw):
         # bit of extra work to find the number of nodes required
-        feats=wkb2shp.shp2geom(shp_fn)['geom']
+        feats=wkb2shp.shp2geom(shp_fn)
 
         if 'max_sides' not in kw:
-            if feats[0].type=='Polygon':
-                nsides=[len(geom.exterior.coords)
-                                 for geom in wkb2shp.shp2geom(shp_fn)['geom']]
+            def all_rings():
+                for geom in feats['geom']:
+                    if geom.geom_type=='Polygon':
+                        yield geom.exterior.coords
+                        for ring in geom.interiors:
+                            yield ring.coords
+                            
+            nsides=[len(ring)
+                    for ring in all_rings()]
+            if nsides:
                 kw['max_sides']=np.max(nsides)
 
         g=UnstructuredGrid(**kw)
-        g.add_from_shp(shp_fn)
+        g.add_from_shp(features=feats)
         return g
-    def add_from_shp(self,shp_fn):
+    
+    def add_from_shp(self,shp_fn=None,features=None):
         """ Add features in the given shapefile to this grid.
         Limited support: only polygons, must conform to self.max_sides,
         and caller is responsible for adding the edges. (i.e. make_edges_from_cells)
         updated: now uses add_cell_and_edges(), so edges should exist from the start.
         """
-        geoms=wkb2shp.shp2geom(shp_fn)
-        for geo in geoms['geom']:
-            if geo.type =='Polygon':
-                coords=np.array(geo.exterior.coords) # shapely 2.0 compat
-                if np.all(coords[-1] ==coords[0] ):
-                    coords=coords[:-1]
+        if features is None:
+            features=wkb2shp.shp2geom(shp_fn)
+            
+        for geo in features['geom']:
+            if geo.geom_type =='Polygon':
+                def all_rings(geom):
+                    if geom.geom_type=='Polygon':
+                        yield np.array(geom.exterior.coords)
+                        for ring in geom.interiors:
+                            yield np.array(ring.coords)
 
-                # also check for ordering - force CCW.
-                if signed_area(coords)<0:
-                    coords=coords[::-1]
+                for coords in all_rings(geo):
+                    if np.all(coords[-1] ==coords[0] ):
+                        coords=coords[:-1]
 
-                # used to always return a new node - bad!
-                nodes=[self.add_or_find_node(x=x)
-                       for x in coords]
-                # this used to be just add_cell(), but new logic in add_cell()
-                # really needs edges to exist first.
-                self.add_cell_and_edges(nodes=nodes)
-            elif geo.type=='LineString':
+                    # also check for ordering - force CCW.
+                    if signed_area(coords)<0:
+                        coords=coords[::-1]
+
+                    # used to always return a new node - bad!
+                    nodes=[self.add_or_find_node(x=x)
+                           for x in coords]
+                    self.add_cell_and_edges(nodes=nodes)
+            elif geo.geom_type=='LineString':
                 coords=np.array(geo.coords)
                 self.add_linestring(coords)
             else:
-                raise GridException("Not ready for geometry type %s"%geo.type)
+                raise GridException("Not ready for geometry type %s"%geo.geom_type)
         # still need to collapse duplicate nodes
         
     def add_linestring(self,coords,closed=False):

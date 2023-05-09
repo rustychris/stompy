@@ -18,11 +18,11 @@ from stompy import xr_utils
 from stompy.io.local import noaa_coops, hycom
 from stompy import utils, filters, memoize
 from stompy.spatial import wkb2shp, proj_utils
-#from stompy.model.delft import dfm_grid
 import stompy.grid.unstructured_grid as ugrid
 import re
 
-#from . import io as dio
+class MissingBCData(Exception):
+    pass
 
 class BC(object):
     name=None
@@ -2490,7 +2490,7 @@ class CdecStageBC(CdecBC,StageBC):
 class NwisBC(object):
     cache_dir=None
     product_id="set_in_subclass"
-    default=None # in case no data can be fetched
+    default=None # in case no data can be fetched. if None, raise exception
     def __init__(self,station,**kw):
         """
         station: int or string station id, e.g. 11455478
@@ -2502,7 +2502,13 @@ class NwisStageBC(NwisBC,StageBC):
     product_id=65 # gage height
     def src_data(self):
         ds=self.fetch_for_period(self.data_start,self.data_stop)
-        return ds['water_level']
+        if ds is not None:
+            return ds['water_level']
+        else:
+            if self.default is not None:
+                return self.default
+            else:
+                raise MissingBCData()
     def write_bokeh(self,**kw):
         defaults=dict(title="Stage: %s (%s)"%(self.name,self.station))
         defaults.update(kw)
@@ -2527,6 +2533,11 @@ class NwisScalarBC(NwisBC,ScalarBC):
     
     def src_data(self):
         ds=self.fetch_for_period(self.data_start,self.data_stop)
+        if ds is None:
+            if self.default is not None:
+                return self.default
+            else:
+                raise MissingBCData()
         # ideally wouldn't be necessary, but a bit safer to ignore metadata/coordinates
         scalar_name=[n for n in ds.data_vars if n not in ['tz_cd','datenum','time']][0]
         return ds[scalar_name]
@@ -2565,7 +2576,10 @@ class NwisFlowBC(NwisBC,FlowBC):
         if ds is not None:
             return ds['flow']
         else:
-            return self.default
+            if self.default is not None:
+                return self.default
+            else:
+                raise MissingBCData()
     
     def write_bokeh(self,**kw):
         defaults=dict(title="Flow: %s (%s)"%(self.name,self.station))
