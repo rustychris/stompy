@@ -143,12 +143,18 @@ def read_records(filename, dss_path,
         # put full information in the key
         if cache_by_full_path:
             key=memoize.memoize_key(filename,dss_path,start_time,end_time)
-        else:
+        elif start_time is not None or end_time is not None:
             key=memoize.memoize_key(os.path.basename(filename),dss_path,start_time,end_time)
+        else:
+            # having possible trouble with hashes not matching across machines or python
+            # versions. problematic since I need to generate cached data on a machine with
+            # DSSVue, and copy to compute machine. General usage doesn't really need the
+            # hashing, so skip it.
+            key='nokey'
         # and make at least the filename legible in the cache file
         # so it's easier to clear out cache files manually.
         # Cache files are just the CSV that is extracted. That seems to be more portable
-        # than pickling a pandas dataframe
+        # than pickling a pandas dataframe.
         cache_file=os.path.join(cache_dir,
                                 f"dss-{os.path.basename(filename)}-{dss_path.replace('/','.')}-{key}.csv")
     else:

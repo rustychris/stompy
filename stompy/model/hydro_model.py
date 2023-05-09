@@ -383,6 +383,8 @@ class BC(object):
     def data(self):
         da=self.src_data()
         da=self.as_data_array(da)
+        da=self.transform_output(da)
+        
         if 'time' in da.dims:
             #on_insufficient_data='exception'
             data_start=da.time.values.min()
@@ -395,8 +397,8 @@ class BC(object):
                     data_start,data_stop)
                 
                 if self.on_insufficient_data=='exception':
-                    # raise Exception(msg)
-                    log.warning(msg)
+                    raise Exception(msg)
+                    # log.warning(msg) # I think this was just for dev
                     pass
                 elif self.on_insufficient_data=='log':
                     log.warning(msg)
@@ -406,7 +408,6 @@ class BC(object):
                     raise Exception("Bad setting for on_insufficient_data='%s'"%
                                     self.on_insufficient_dat)
                     
-        da=self.transform_output(da)
         return da
 
     # if True, bokeh plot will include time series for intermediate
@@ -625,7 +626,35 @@ class FillGaps(BCFilter):
             da_filled.values[:] = utils.fill_invalid(da_filled.values)
 
             return da_filled
+
+
+class PadTime(BCFilter):
+    """
+    Extend time to the padded extent of the run, and extend the given variable with 
+    zeros. Lazy code! Just overwrite the first/last entry as needed
+    """
+    pad_time=np.timedelta64(1,'D')
+    pad_value=0.0
     
+    def transform_output(self,da):
+        # have self.bc, self.bc.model
+        # self.bc.data_start, self.bc.data_stop
+        
+        if self.bc.model.run_stop+self.pad_time>da.time[-1]:
+            self.bc.model.log.warning("Will extend flow for %s with %s! (data end %s)"%(
+                self.bc.name,self.pad_value,
+                da.time.values[-1]))
+            # with xarray, easier to just overwrite the last sample.  lazy lazy.
+            da.time.values[-1] = self.bc.model.run_stop+self.pad_time
+            da.values[-1] = self.pad_value
+        if self.bc.model.run_start-self.pad_time<da.time[0]:
+            self.bc.model.log.warning("Will prepend flow for %s with %s! (data starts %s)"%(
+                self.bc.name,self.pad_value,da.time.values[0]))
+            # with xarray, easier to just overwrite the last sample.  lazy lazy.
+            da.time.values[0] = self.bc.model.run_start - self.pad_time
+            da.values[0] = self.pad_value
+        return da
+        
 class RoughnessBC(BC):
     shapefile=None
     data_array=None # xr.DataArray
@@ -682,7 +711,7 @@ class RoughnessBC(BC):
             import bokeh.io as bio # output_notebook, show, output_file
             import bokeh.plotting as bplt
         except ImportError:
-            self.log.info('Bokeh not found, will skip bokeh output')
+            self.model.log.info('Bokeh not found, will skip bokeh output')
             return
 
         bplt.reset_output()
