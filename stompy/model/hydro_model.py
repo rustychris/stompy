@@ -1549,8 +1549,11 @@ class HydroModel(object):
         """
         for k in kws:
             if k=='geom_type':
-                if feat['geom'].geom_type=='MultiLineString' and len(feat['geom'].geoms)==1:
+                # Some formats label things MultiXXX even for singleton features.
+                if ( (feat['geom'].geom_type in ['MultiLineString','MultiPolygon','MultiPoint'])
+                     and len(feat['geom'].geoms)==1):
                     feat['geom']=feat['geom'].geoms[0]
+                    
                 feat_val=feat['geom'].geom_type
                 if isinstance(kws[k],list):
                     if feat_val in kws[k]: continue
