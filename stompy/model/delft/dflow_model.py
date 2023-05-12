@@ -273,13 +273,14 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             # no mdu was found
             return None
         # use cls(), so that custom subclasses can be used
-        model=cls()
+        model=cls(configure=False)
         model.load_from_mdu(fn)
         return model
-    
+
     def load_from_mdu(self,fn):
         self.load_mdu(fn)
         self.mdu_basename=os.path.basename(fn)
+
         try:
             self.grid = ugrid.UnstructuredGrid.read_dfm(self.mdu.filepath( ('geometry','NetFile') ))
         except FileNotFoundError:
@@ -895,9 +896,9 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                 else:
                     geom=self.get_geometry(name=s['name'])
 
-                if geom.type=='MultiLineString' and len(geom.geoms)==1:
+                if geom.geom_type=='MultiLineString' and len(geom.geoms)==1:
                     geom=geom.geoms[0] # geojson I think does this.
-                assert geom.type=='LineString'
+                assert geom.geom_type=='LineString'
                 pli_data=[ (s['name'], np.array(geom.coords)) ]
                 dio.write_pli(pli_fn,pli_data)
                 
@@ -1118,7 +1119,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         assert isinstance(bc.geom_type,list),"Didn't fully refactor, looks like"
         if (bc.geom is None) and (None not in bc.geom_type):
             raise Exception("BC %s, name=%s has no geometry. Maybe missing from shapefiles?"%(bc,bc.name))
-        assert bc.geom.type in bc.geom_type
+        assert bc.geom.geom_type in bc.geom_type
 
         coords=np.array(bc.geom.coords)
         ndim=coords.shape[1] # 2D or 3D geometry
@@ -1224,7 +1225,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             return
         
         assert isinstance(parent_bc, (hm.StageBC,hm.FlowBC)),"Haven't implemented point-source scalar yet"
-        assert parent_bc.geom.type=='LineString'
+        assert parent_bc.geom.geom_type=='LineString'
         
         pli_data=[ (bc_id, np.array(parent_bc.geom.coords)) ]
         pli_fn=bc_id+'.pli'
