@@ -1591,7 +1591,10 @@ def dnum_py_to_mat(x):
 def dt64_to_dnum(dt64):
     # get some reference points:
 
-    dt1=datetime.datetime.fromordinal(1) # same as num2date(1)
+    # RH: 2023-05-22: resolve datetime.datetime vs num2date divergence
+    # by going with MPL. 
+    #dt1=datetime.datetime.fromordinal(1) # same as num2date(1)
+    dt1=num2date(1)
 
     for reftype,ref_to_days in [('M8[us]',86400000000),
                                 ('M8[D]',1)]:
@@ -1610,15 +1613,18 @@ def dt64_to_dnum(dt64):
     return dnum
 
 def dnum_to_dt64(dnum,units='us'):
-    reftype='m8[%s]'%units
+    # reftype='m8[%s]'%units
+    # 
+    # # how many units are in a day?
+    # units_per_day=np.timedelta64(1,'D').astype(reftype)
+    # # datetime for the epoch
+    # dt_ref=datetime.datetime(1970,1,1,0,0)
+    # 
+    # offset = ((dnum-dt_ref.toordinal())*units_per_day).astype(reftype)
+    # return np.datetime64(dt_ref) + offset
 
-    # how many units are in a day?
-    units_per_day=np.timedelta64(1,'D').astype(reftype)
-    # datetime for the epoch
-    dt_ref=datetime.datetime(1970,1,1,0,0)
-
-    offset = ((dnum-dt_ref.toordinal())*units_per_day).astype(reftype)
-    return np.datetime64(dt_ref) + offset
+    # 2023-05-22 RH: punt this to matplotlib in order to maintain consistency.
+    return np.datetime64(num2date(dnum))
 
 def dnum_jday0(dnum):
     # return a dnum for the first of the year
