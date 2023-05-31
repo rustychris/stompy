@@ -6750,7 +6750,7 @@ class ModelForcing(object):
     def text_data(self,write_supporting=True):
         data=self.render_data_to_text()
 
-        if self.separate_data_file:
+        if len(data)>100 and self.separate_data_file:
             if write_supporting:
                 if self.data_file_subdirectory is not None:
                     dir_name=os.path.join(self.scenario.base_path,
@@ -7008,9 +7008,10 @@ class ParameterSpatial(Parameter):
     # if '__default__', will use 'water-grid' if n_bottom_layers>0, otherwise the
     #  same as None.
     # any other value is used as the name of the input grid directly.
+    inline_data=False
     grid_name=DEFAULT
     def __init__(self,per_segment=None,par_file=None,scenario=None,name=None,hydro=None,
-                 grid_name=DEFAULT):
+                 grid_name=DEFAULT,inline_data=False):
         super(ParameterSpatial,self).__init__(name=name,scenario=scenario,hydro=hydro)
         if par_file is not None:
             self.par_file=par_file
@@ -7022,6 +7023,7 @@ class ParameterSpatial(Parameter):
                 per_segment=np.fromfile(fp,'f4')
         self.data=per_segment
         self.grid_name = grid_name
+        self.inline_data = inline_data
 
     @property
     def supporting_file(self):
@@ -7029,8 +7031,9 @@ class ParameterSpatial(Parameter):
         """
         return self.scenario.name + "-" + self.safe_name + ".par"
     def text(self,write_supporting=True):
-        if write_supporting:
+        if write_supporting and not self.inline_data:
             self.write_supporting()
+            
         if self.grid_name==DEFAULT:
             if self.scenario.n_bottom_layers>0:
                 self.grid_name='water-grid'
@@ -7038,11 +7041,18 @@ class ParameterSpatial(Parameter):
                 self.grid_name=None
                 
         if self.grid_name is None:
-            # if there is a bottom grid, I think this will expect data for both water segments and
-            # sediment segments.
-            return "PARAMETERS '{self.name}' ALL BINARY_FILE '{self.supporting_file}'".format(self=self)
+            grid_text='ALL'
         else:
-            return "PARAMETERS '{self.name}' INPUTGRID '{self.grid_name}' BINARY_FILE '{self.supporting_file}'".format(self=self)
+            grid_text="INPUTGRID '{self.grid_name}'"
+
+        if self.inline_data:
+            data_text="DATA " + "\n".join( ["%g"%f for f in self.data])
+        else:
+            data_text="BINARY_FILE '{self.supporting_file}'"
+        # if there is a bottom grid, I think this will expect data for both water segments and
+        # sediment segments unless a specific INPUTGRID is given. Even then, having trouble
+        # using a non-water grid here.
+        return ("PARAMETERS '{self.name}' " + grid_text + " " + data_text).format(self=self)
         
     def write_supporting(self):
         with open(os.path.join(self.scenario.base_path,self.supporting_file),'wb') as fp:
@@ -7051,7 +7061,7 @@ class ParameterSpatial(Parameter):
             # .par files written by the GUI. probably this is to make the format
             # the same as a segment function with a single time step.
             fp.write(np.array(0,dtype='i4').tobytes())
-            fp.write(self.data.astype('f4').tobytes())
+            fp.write(np.asarray(self.data,dtype=np.float32).tobytes())
 
     def evaluate(self,**kws):
         if 'seg' in kws:
@@ -7643,6 +7653,10 @@ class Scenario(scriptable.Scriptable):
     mon_stop_time=None
     mon_time_step=None
 
+    # the 'type' of all deep sediment BCs, and the prefix for BC id,
+    # followed by 1-based element number
+    bottom_bc_prefix='deep bed'
+
     def __init__(self,hydro=None,**kw):
         self.log=logging.getLogger(self.__class__.__name__)
 
@@ -7796,6 +7810,49 @@ END_MULTIGRID"""%num_layers
         for src_tag in self.src_tags:
             # conc. defaults to 1.0
             self.add_bc(src_tag['items'],src_tag['tracer'],src_tag.get('value',1.0))
+
+    def deep_sediment_boundary_defs(self):
+        n_2d=self.hydro.n_2d_elements
+        bdefs=np.zeros(n_2d, Hydro.boundary_dtype)
+        prefix=self.bottom_bc_prefix
+        for elt in range(n_2d):
+            bdefs[elt]['id'] ="%s %d"%(prefix, elt+1)
+            bdefs[elt]['name']="%s %d"%(prefix, elt+1)
+            bdefs[elt]['type']=prefix
+        return bdefs
+
+    def set_deep_sediment_bc_from_ic(self, subs, subset=[]):
+        """
+        For the given substances set the deep boundary in a layered sediment bed to the previously
+        configured IC for them.
+        """
+        self.hydro.infer_2d_elements()
+        n_2d = self.hydro.n_2d_elements
+                        
+        for scalar in subset:
+            if scalar not in subs: continue
+            sub=subs[scalar]
+
+            if sub.initial.seg_values is not None:
+                # Should be the initial condition in the bottom sediment layer.
+                values = sub.initial.seg_values[-n_2d:]
+                if np.all(values==values[0]):
+                    # Might save some space/work
+                    print("Spatially variable was actually constant for %s"%scalar)
+                    values=values[0]
+            else:
+                values = sub.initial.default
+                
+            if np.isscalar(values):
+                # Can use the 'type' to write a single BC value for all deep sediment BCs
+                # when this gets written out it ends up with 'ITEM 'sunnyvale' 'valero' ... CONCENTRATION <scalar> 
+                self.src_tags.append(dict(tracer=scalar,items=[self.bottom_bc_prefix],value=values))
+            else:
+                # Possible that there is a shorthand here
+                deep_bcs = self.deep_sediment_boundary_defs()
+                assert len(deep_bcs) == len(values)
+                for item,value in zip(deep_bcs,values):
+                    self.src_tags.append(dict(tracer=scalar,items=[item['id'].decode()],value=value))
 
     def add_bc(self,*args,**kws):
         bc=BoundaryCondition(*args,**kws)
@@ -9345,19 +9402,18 @@ INCLUDE '{self.atr_filename}'  ; attributes file
         # handled in boundary_defs()
         lines=[]
 
-        boundary_count=0
-        for bdry in self.scenario.hydro.boundary_defs():
-            boundary_count+=1
-            lines.append("'{}' '{}' '{}'".format( bdry['id'].decode(),
-                                                  bdry['name'].decode(),
-                                                  bdry['type'].decode() ) )
+        #boundary_count=0
+        bc_sets=[self.scenario.hydro.boundary_defs()]
         
         if self.scenario.n_bottom_layers>0:
-            # Assume that all water columns get a sediment interface
-            for elt in range(self.scenario.hydro.n_2d_elements):
-                lines.append("'{}' '{}' '{}'".format( "deep bed %d"%(elt+1),
-                                                      "deep bed %d"%(elt+1),
-                                                      "deep bed"))
+            bc_sets.append(self.scenario.deep_sediment_boundary_defs())
+            
+        for bc_set in bc_sets:
+            for bdry in bc_set:
+                #boundary_count+=1
+                lines.append("'{}' '{}' '{}'".format( bdry['id'].decode(),
+                                                      bdry['name'].decode(),
+                                                      bdry['type'].decode() ) )
                 
         # This used to get returned in-line, but maybe cleaner to put into separate
         # file.
@@ -9369,8 +9425,7 @@ INCLUDE '{self.atr_filename}'  ; attributes file
         data = "\n".join(lines)        
         with open(fn,'wt') as fp:
             fp.write(data)
-        return "INCLUDE '%s' ; boundary definition file for water column"%local_name
-        #return "INCLUDE '%s' ; boundary definition file"%local_name
+        return "INCLUDE '%s' ; boundary definition file"%local_name
     
     @property
     def n_boundaries(self):
