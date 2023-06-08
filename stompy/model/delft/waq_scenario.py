@@ -9486,9 +9486,7 @@ INCLUDE '{self.atr_filename}'  ; attributes file
 
         # "{}*1.0 ; no scaling".format(len(subs))] # doesn't work!
 
-        # documentation suggests that all scale factors come at the beginning,
-        # and that it includes one scale per substance. error output suggests
-        # that with TRANSPOSE, we get only one scale factor total.
+        # with TRANSPOSE we get only one scale factor total.
 
         for s in subs:
             if s.initial.seg_values is not None:

@@ -2001,9 +2001,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     
     def add_from_shp(self,shp_fn=None,features=None):
         """ Add features in the given shapefile to this grid.
-        Limited support: only polygons, must conform to self.max_sides,
-        and caller is responsible for adding the edges. (i.e. make_edges_from_cells)
-        updated: now uses add_cell_and_edges(), so edges should exist from the start.
+        Limited support: 
+        polygons must conform to self.max_sides
         """
         if features is None:
             features=wkb2shp.shp2geom(shp_fn)
