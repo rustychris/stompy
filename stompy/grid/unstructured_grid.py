@@ -2299,15 +2299,54 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         if on_bare_edge=='return':
             return bare
 
-    def orient_cells(self):
+    def orient_cells(self,cw_islands=False):
         A=self.cells_area()
-        flip=np.nonzero(A<0)[0]
+
+        flip_mask=A<0
+
+        if cw_islands:
+            # look for cells inside other cells, and make
+            islands=self.select_island_cells()
+            flip_mask[islands] = ~flip_mask[islands]
+
+        flip=np.nonzero(flip_mask)[0]
         for c in flip:
             nodes=self.cell_to_nodes(c)
             self.cells['nodes'][c,:len(nodes)] = nodes[::-1]
         # Might be able to be smarter about which edges
         self.edge_to_cells(recalc=True)
         self.cells_area(sel=flip)
+
+    def select_island_cells(self):
+        """
+        Return bitmask over cells with True for cells that are 
+        entirely inside other cells. Does not attempt to go
+        deeper than one layer (so a pond on an island in a lake
+        will be marked as an island).
+        This is used to orient cell areas, so the test is performed
+        on the un-oriented cell geometry.
+
+        Current implementation is not fast! quadratic and slow tests!
+        """
+        valid_cells=np.nonzero(~self.cells['deleted'])[0]
+        A=np.abs(self.cells_area())[valid_cells]
+
+        # from largest to smallest
+        order = np.argsort(-A)
+
+        is_island=np.zeros(self.Ncells(), bool)
+        is_island[:] = False
+
+        polys=[self.cell_polygon(c) for c in order]
+        
+        for ci,c in enumerate(order):
+            if ci==0: continue # skip first cell
+            
+            for candidate in range(ci):
+                if polys[candidate].contains( polys[ci] ):
+                    is_island[c]=True
+                    break
+        return is_island
         
     def renumber_nodes_ordering(self):
         return np.argsort(self.nodes['deleted'],kind='mergesort')
@@ -2653,9 +2692,24 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                         cycles.append(cycle)
         return cycles
     def make_cells_from_edges(self,max_sides=None):
-        max_sides=max_sides or self.max_sides
+        """
+        Traverse edges and create cells for edge cycles
+        of len<=max_sides.
+        max_sides=None will use the grid's existing max_sides.
+        max_sides='auto' will use max_sides large enough to
+        includes all cycles.
+        """
+        if max_sides=='auto':
+            cycles=self.find_cycles(max_cycle_len=self.Nedges())
+            if len(cycles)==0:
+                return
+            max_sides = max([len(cycle) for cycle in cycles])
+            if max_sides>self.max_sides:
+                self.modify_max_sides(max_sides)
+        else:
+            max_sides=max_sides or self.max_sides
+            cycles=self.find_cycles(max_cycle_len=max_sides)
         assert max_sides<=self.max_sides
-        cycles=self.find_cycles(max_cycle_len=max_sides)
         ncells=len(cycles)
         if ncells:
             self.cells = np.zeros( ncells, self.cell_dtype)
@@ -4685,14 +4739,17 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             values = values[mask]
 
         segs = self.nodes['x'][edge_nodes]
-        # Compute bounds before checking segments. Could be bad
-        # if at some point segments is valid but edges are not.
-        # But more of the logic in here has to change if segments
-        # are totally unrelated to the simple edge (spatial clipping).
-        bounds=[segs[...,0].min(),
-                segs[...,0].max(),
-                segs[...,1].min(),
-                segs[...,1].max()]
+        if len(segs):
+            # Compute bounds before checking segments. Could be bad
+            # if at some point segments is valid but edges are not.
+            # But more of the logic in here has to change if segments
+            # are totally unrelated to the simple edge (spatial clipping).
+            bounds=[segs[...,0].min(),
+                    segs[...,0].max(),
+                    segs[...,1].min(),
+                    segs[...,1].max()]
+        else:
+            bounds=None
         if isinstance(segments,six.string_types):
             segs = self.edges[segments][mask]
              
@@ -4718,7 +4775,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                         labeler(n,self.edges[n]))
 
         ax.add_collection(lcoll)
-        request_square(ax,bounds)
+        if bounds is not None:
+            request_square(ax,bounds)
 
         if return_mask:
             return lcoll,mask
@@ -5887,7 +5945,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             strings.append( feat_nodes )
         return strings
 
-    def select_quad_subset(self,ctr,max_cells=None,max_radius=None,node_set=None):
+    def select_quad_subset(self,ctr,max_cells=None,max_radius=None,node_set=None,
+                           return_full=False):
         """
         Starting from ctr, select a contiguous set of nodes connected 
         by quads, up to max_cells and within max_radius of the starting
@@ -5895,6 +5954,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         Alternatively, specify a list of node indices in node_set, and the search
         is limited to traversal among that set of nodes.
+
+        if return_full is True, return a single 2D array with node, edge and cell indices.
+        [even,even] indices are nodes, [even,odd] and [odd,even] are edges, and [odd,odd]
+        are cells.
 
         Returns (node_idxs,ij)
           node_idxs: array of indices into self.nodes
@@ -6005,8 +6068,39 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         node_idxs=np.array( list(node_ij.keys()) )
         ij=np.array( [node_ij[n] for n in node_idxs] )
 
-        return node_idxs, ij
+        if not return_full:
+            return node_idxs, ij
 
+        # Convert to full index representation.
+        # shift so ij are zero-based.
+        ij[:,:] -= ij.min(axis=0)
+        rows,cols=ij.max(axis=0) # This will be number of cells
+        IJ=-np.ones([2*rows+1,2*cols+1],np.int32)
+        for n,n_ij in zip(node_idxs,ij): IJ[2*n_ij[0],2*n_ij[1]]=n
+        for i in range(2*rows+1):
+            for j in range(2*cols+1):
+                if i%2==0 and j%2==0: continue
+                if i%2==1 and j%2==0:
+                    n1=IJ[i-1,j]
+                    n2=IJ[i+1,j]
+                    if n1<0 or n2<0: continue
+                    IJ[i,j]=self.nodes_to_edge(n1,n2)
+                elif i%2==0 and j%2==1:
+                    n1=IJ[i,j-1]
+                    n2=IJ[i,j+1]
+                    if n1<0 or n2<0: continue
+                    IJ[i,j]=self.nodes_to_edge(n1,n2)
+                else:
+                    nodes=np.r_[ IJ[i-1,j-1],
+                                IJ[i-1,j+1],
+                                IJ[i+1,j-1],
+                                IJ[i+1,j+1] ]
+                    if np.all(nodes>=0):
+                        c = self.nodes_to_cell(nodes,fail_hard=False)
+                        if c is not None:
+                            IJ[i,j] = c
+        return IJ
+        
     def select_nodes_boundary_segment(self, coords, ccw=True):
         """
         bc_coords: [ [x0,y0], [x1,y1] ] coordinates, defining
@@ -7888,7 +7982,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     def nodes_to_halfedge(self,n1,n2):
         return HalfEdge.from_nodes(self,n1,n2)
     def cell_to_halfedge(self,c,i):
-        j=self.cell_to_edges(c)[i]
+        j=self.cell_to_edges(c,ordered=True)[i]
         if self.edges['cells'][j,0]==c:
             return HalfEdge(self,j,0)
         else:
@@ -7896,7 +7990,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         
     def cell_to_halfedges(self,c):
         return [HalfEdge(self,j,1-int(self.edges['cells'][j,0]==c))
-                for j in self.cell_to_edges(c) if j>=0]
+                for j in self.cell_to_edges(c,ordered=True) if j>=0]
 
     def cell_containing(self,xy,neighbors_to_test=4):
         """ Compatibility wrapper for select_cells_nearest.  This

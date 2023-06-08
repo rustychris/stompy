@@ -24,8 +24,11 @@ import logging
 
 import time
 import pandas as pd
-import pdb
-from matplotlib.dates import num2date, date2num
+# 2023-05-23: avoid directly using MPL conversions. Go through
+# stompy.utils, to maintain a single point of control for the definition
+# of dnums.
+#from matplotlib.dates import num2date, date2num
+
 import matplotlib.pyplot as plt
 from itertools import count
 from six import iteritems
@@ -64,6 +67,8 @@ from . import nefis_nc
 from . import waq_process
 from . import dfm_grid
 from . import process_diagram
+
+DEFAULT='_DEFAULT_'
 
 def waq_timestep_to_timedelta(s):
     """ parse a delwaq-style timestep (as string or integer) into a python timedelta object.
@@ -279,7 +284,8 @@ class Hydro(object):
         """ convert self.time0 and self.t_secs to datenums
         """
         from matplotlib.dates import num2date, date2num
-        return date2num(self.time0) + self.t_secs/86400.
+        #return date2num(self.time0) + self.t_secs/86400.
+        return utils.to_dnum(self.time0) + self.t_secs/86400.
 
     @property
     def time_step(self):
@@ -2070,8 +2076,6 @@ class HydroFiles(Hydro):
                         if warning is None and tstamp[0]!=t_sec:
                             warning="WARNING: Segment function appears to have unequal steps"
                         if warning:
-                            #import pdb
-                            #pdb.set_trace()
                             print(warning)
 
                 return np.fromfile(fp,'f4',self.n_seg)
@@ -6746,7 +6750,7 @@ class ModelForcing(object):
     def text_data(self,write_supporting=True):
         data=self.render_data_to_text()
 
-        if self.separate_data_file:
+        if len(data)>100 and self.separate_data_file:
             if write_supporting:
                 if self.data_file_subdirectory is not None:
                     dir_name=os.path.join(self.scenario.base_path,
@@ -6999,15 +7003,27 @@ class ParameterSpatial(Parameter):
     """ Process parameter which varies only in space - same 
     as DWAQ's 'PARAMETERS'
     """
-    def __init__(self,per_segment=None,par_file=None,scenario=None,name=None,hydro=None):
+    # To support runs with a layered bed or streamlined specification of parameters
+    # If None, should probably specify data for all segments, water and bed.
+    # if '__default__', will use 'water-grid' if n_bottom_layers>0, otherwise the
+    #  same as None.
+    # any other value is used as the name of the input grid directly.
+    inline_data=False
+    grid_name=DEFAULT
+    def __init__(self,per_segment=None,par_file=None,scenario=None,name=None,hydro=None,
+                 grid_name=DEFAULT,inline_data=False):
         super(ParameterSpatial,self).__init__(name=name,scenario=scenario,hydro=hydro)
         if par_file is not None:
             self.par_file=par_file
             with open(par_file,'rb') as fp:
                 fp.read(4) # toss zero timestamp
                 # no checks for proper size....living on the edge
+                # note that with multiple grids, the correct number of elements is not
+                # simply scenario.n_seg
                 per_segment=np.fromfile(fp,'f4')
         self.data=per_segment
+        self.grid_name = grid_name
+        self.inline_data = inline_data
 
     @property
     def supporting_file(self):
@@ -7015,9 +7031,29 @@ class ParameterSpatial(Parameter):
         """
         return self.scenario.name + "-" + self.safe_name + ".par"
     def text(self,write_supporting=True):
-        if write_supporting:
+        if write_supporting and not self.inline_data:
             self.write_supporting()
-        return "PARAMETERS '{self.name}' ALL BINARY_FILE '{self.supporting_file}'".format(self=self)
+            
+        if self.grid_name==DEFAULT:
+            if self.scenario.n_bottom_layers>0:
+                self.grid_name='water-grid'
+            else:
+                self.grid_name=None
+                
+        if self.grid_name is None:
+            grid_text='ALL'
+        else:
+            grid_text="INPUTGRID '{self.grid_name}'"
+
+        if self.inline_data:
+            data_text="DATA " + "\n".join( ["%g"%f for f in self.data])
+        else:
+            data_text="BINARY_FILE '{self.supporting_file}'"
+        # if there is a bottom grid, I think this will expect data for both water segments and
+        # sediment segments unless a specific INPUTGRID is given. Even then, having trouble
+        # using a non-water grid here.
+        return ("PARAMETERS '{self.name}' " + grid_text + " " + data_text).format(self=self)
+        
     def write_supporting(self):
         with open(os.path.join(self.scenario.base_path,self.supporting_file),'wb') as fp:
             # leading 'i4' with value 0.
@@ -7025,7 +7061,8 @@ class ParameterSpatial(Parameter):
             # .par files written by the GUI. probably this is to make the format
             # the same as a segment function with a single time step.
             fp.write(np.array(0,dtype='i4').tobytes())
-            fp.write(self.data.astype('f4').tobytes())
+            fp.write(np.asarray(self.data,dtype=np.float32).tobytes())
+
     def evaluate(self,**kws):
         if 'seg' in kws:
             return ParameterConstant( self.data[kws.pop('seg')] )
@@ -7088,10 +7125,13 @@ class ParameterSpatioTemporal(Parameter):
     """
     interpolation='LINEAR' # or 'BLOCK'
     warned_2d_to_3d=False # track one-time warning when data is supplied as 2D
+    # in case of multiple grids. Note that the input file manual does not explicitly describe
+    # this syntax, but it is used in the sediment manual.
+    grid_name=DEFAULT
 
     def __init__(self,times=None,values=None,func_t=None,scenario=None,name=None,
                  seg_func_file=None,enable_write_symlink=None,n_seg=None,
-                 hydro=None):
+                 hydro=None,grid_name=DEFAULT):
         """
         times: [N] sized array, 'i4', giving times in system clock units
           (typically seconds after time0)
@@ -7127,6 +7167,7 @@ class ParameterSpatioTemporal(Parameter):
         else:
             self.enable_write_symlink=enable_write_symlink
         self._n_seg=n_seg # only needed for evaluate() when scenario isn't set
+        self.grid_name=grid_name
 
     # goofy helpers when n_seg or times can only be inferred after instantiation
     @property
@@ -7156,8 +7197,20 @@ class ParameterSpatioTemporal(Parameter):
     def text(self,write_supporting=True):
         if write_supporting:
             self.write_supporting()
-        return ("SEG_FUNCTIONS '{self.name}' {self.interpolation}"
-                " ALL BINARY_FILE '{self.supporting_file}'").format(self=self)
+            
+        if self.grid_name==DEFAULT:
+            if self.scenario.n_bottom_layers>0:
+                self.grid_name='water-grid'
+            else:
+                self.grid_name=None
+            
+        if self.grid_name is None:
+            return ("SEG_FUNCTIONS '{self.name}' {self.interpolation}"
+                    " ALL BINARY_FILE '{self.supporting_file}'").format(self=self)
+        else:
+            return ("SEG_FUNCTIONS '{self.name}' {self.interpolation}"
+                    " INPUTGRID '{self.grid_name}' BINARY_FILE '{self.supporting_file}'").format(self=self)
+            
     def write_supporting_try_symlink(self):
         if self.seg_func_file is not None:
             dst=self.supporting_path
@@ -7504,7 +7557,6 @@ def map_nef_names(nef):
     return elt_map,real_map
 
         
-DEFAULT='_DEFAULT_'
 
 class Scenario(scriptable.Scriptable):
     """
@@ -7541,6 +7593,8 @@ class Scenario(scriptable.Scriptable):
     map_formats=['nefis']
     history_formats=['nefis','binary']
 
+    n_bottom_layers = 0
+    
     # not fully handled, but generally trying to overwrite
     # a run without setting this to True should fail.
     overwrite=False
@@ -7598,6 +7652,10 @@ class Scenario(scriptable.Scriptable):
     mon_start_time=None
     mon_stop_time=None
     mon_time_step=None
+
+    # the 'type' of all deep sediment BCs, and the prefix for BC id,
+    # followed by 1-based element number
+    bottom_bc_prefix='deep bed'
 
     def __init__(self,hydro=None,**kw):
         self.log=logging.getLogger(self.__class__.__name__)
@@ -7752,6 +7810,49 @@ END_MULTIGRID"""%num_layers
         for src_tag in self.src_tags:
             # conc. defaults to 1.0
             self.add_bc(src_tag['items'],src_tag['tracer'],src_tag.get('value',1.0))
+
+    def deep_sediment_boundary_defs(self):
+        n_2d=self.hydro.n_2d_elements
+        bdefs=np.zeros(n_2d, Hydro.boundary_dtype)
+        prefix=self.bottom_bc_prefix
+        for elt in range(n_2d):
+            bdefs[elt]['id'] ="%s %d"%(prefix, elt+1)
+            bdefs[elt]['name']="%s %d"%(prefix, elt+1)
+            bdefs[elt]['type']=prefix
+        return bdefs
+
+    def set_deep_sediment_bc_from_ic(self, subs, subset=[]):
+        """
+        For the given substances set the deep boundary in a layered sediment bed to the previously
+        configured IC for them.
+        """
+        self.hydro.infer_2d_elements()
+        n_2d = self.hydro.n_2d_elements
+                        
+        for scalar in subset:
+            if scalar not in subs: continue
+            sub=subs[scalar]
+
+            if sub.initial.seg_values is not None:
+                # Should be the initial condition in the bottom sediment layer.
+                values = sub.initial.seg_values[-n_2d:]
+                if np.all(values==values[0]):
+                    # Might save some space/work
+                    print("Spatially variable was actually constant for %s"%scalar)
+                    values=values[0]
+            else:
+                values = sub.initial.default
+                
+            if np.isscalar(values):
+                # Can use the 'type' to write a single BC value for all deep sediment BCs
+                # when this gets written out it ends up with 'ITEM 'sunnyvale' 'valero' ... CONCENTRATION <scalar> 
+                self.src_tags.append(dict(tracer=scalar,items=[self.bottom_bc_prefix],value=values))
+            else:
+                # Possible that there is a shorthand here
+                deep_bcs = self.deep_sediment_boundary_defs()
+                assert len(deep_bcs) == len(values)
+                for item,value in zip(deep_bcs,values):
+                    self.src_tags.append(dict(tracer=scalar,items=[item['id'].decode()],value=value))
 
     def add_bc(self,*args,**kws):
         bc=BoundaryCondition(*args,**kws)
@@ -8025,7 +8126,7 @@ END_MULTIGRID"""%num_layers
         if np.issubdtype(type(t),np.integer):
             return self.time0 + t*self.scu
         elif np.issubdtype(type(t),np.floating):
-            return num2date(t)
+            return utils.to_datetime(t) #num2date(t)
         elif isinstance(t,datetime.datetime):
             return t
         else:
@@ -9301,10 +9402,19 @@ INCLUDE '{self.atr_filename}'  ; attributes file
         # handled in boundary_defs()
         lines=[]
 
-        for bdry in self.scenario.hydro.boundary_defs():
-            lines.append("'{}' '{}' '{}'".format( bdry['id'].decode(),
-                                                  bdry['name'].decode(),
-                                                  bdry['type'].decode() ) )
+        #boundary_count=0
+        bc_sets=[self.scenario.hydro.boundary_defs()]
+        
+        if self.scenario.n_bottom_layers>0:
+            bc_sets.append(self.scenario.deep_sediment_boundary_defs())
+            
+        for bc_set in bc_sets:
+            for bdry in bc_set:
+                #boundary_count+=1
+                lines.append("'{}' '{}' '{}'".format( bdry['id'].decode(),
+                                                      bdry['name'].decode(),
+                                                      bdry['type'].decode() ) )
+                
         # This used to get returned in-line, but maybe cleaner to put into separate
         # file.
         dir_name=self.scenario.base_path                    
@@ -9488,18 +9598,27 @@ INCLUDE '{self.atr_filename}'  ; attributes file
 
         # with TRANSPOSE we get only one scale factor total.
 
+        n_seg_sediment=self.scenario.n_bottom_layers * self.scenario.hydro.n_2d_elements
+        # RH: Assuming that old-style ICs with a layered bed need to specify values for both
+        # water segments and bed segments all together.
+        n_seg_total = self.scenario.hydro.n_seg + n_seg_sediment
+        
         for s in subs:
             if s.initial.seg_values is not None:
                 # Write this out to a separate file, and INCLUDE it
                 supporting_fn='initial-%s.dat'%s.name
                 with open(os.path.join(self.scenario.base_path,supporting_fn),'wt') as fp:
                     fp.write(" ; spatially varying for {}\n".format(s.name) )
-                    supp_lines= [" %f"%val for val in s.initial.seg_values]
+                    seg_values=s.initial.seg_values
+                    if len(seg_values) < n_seg_total:
+                        print("Padding %s with zeros for sediment segments"%s.name)
+                        seg_values =np.concatenate( [seg_values, np.zeros(n_seg_total - len(seg_values))])
+                    supp_lines= [" %f"%val for val in seg_values]
                     fp.write("\n".join(supp_lines))
 
                 lines.append("INCLUDE '%s' ; spatially varying for %s"%(supporting_fn,s.name) )
             else:
-                lines.append( " %d*%f ; default for %s"%(self.scenario.hydro.n_seg,
+                lines.append( " %d*%f ; default for %s"%(n_seg_total, 
                                                          s.initial.default,s.name) )
         return lines
 
