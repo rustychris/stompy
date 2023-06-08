@@ -2693,9 +2693,24 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                         cycles.append(cycle)
         return cycles
     def make_cells_from_edges(self,max_sides=None):
-        max_sides=max_sides or self.max_sides
+        """
+        Traverse edges and create cells for edge cycles
+        of len<=max_sides.
+        max_sides=None will use the grid's existing max_sides.
+        max_sides='auto' will use max_sides large enough to
+        includes all cycles.
+        """
+        if max_sides=='auto':
+            cycles=self.find_cycles(max_cycle_len=self.Nedges())
+            if len(cycles)==0:
+                return
+            max_sides = max([len(cycle) for cycle in cycles])
+            if max_sides>self.max_sides:
+                self.modify_max_sides(max_sides)
+        else:
+            max_sides=max_sides or self.max_sides
+            cycles=self.find_cycles(max_cycle_len=max_sides)
         assert max_sides<=self.max_sides
-        cycles=self.find_cycles(max_cycle_len=max_sides)
         ncells=len(cycles)
         if ncells:
             self.cells = np.zeros( ncells, self.cell_dtype)
@@ -7968,7 +7983,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     def nodes_to_halfedge(self,n1,n2):
         return HalfEdge.from_nodes(self,n1,n2)
     def cell_to_halfedge(self,c,i):
-        j=self.cell_to_edges(c)[i]
+        j=self.cell_to_edges(c,ordered=True)[i]
         if self.edges['cells'][j,0]==c:
             return HalfEdge(self,j,0)
         else:
@@ -7976,7 +7991,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         
     def cell_to_halfedges(self,c):
         return [HalfEdge(self,j,1-int(self.edges['cells'][j,0]==c))
-                for j in self.cell_to_edges(c) if j>=0]
+                for j in self.cell_to_edges(c,ordered=True) if j>=0]
 
     def cell_containing(self,xy,neighbors_to_test=4):
         """ Compatibility wrapper for select_cells_nearest.  This
