@@ -2,7 +2,6 @@
 Combine the constrained delaunay algorithm from CGAL with the interpolation methods
 available in scikit.delaunay.
 """
-
 from __future__ import print_function
 
 # First - can we manually set the fields in a delaunay object?
@@ -34,7 +33,6 @@ class ConstrainedXYZField(field.XYZField):
 
     Edges can be specified directly, or read from a linestring shapefile.
     """
-
     def __init__(self,X,F,projection=None,from_file=None,edges=None):
         """
         X: [N,2] ndarray of node locations
@@ -43,7 +41,7 @@ class ConstrainedXYZField(field.XYZField):
         """
         field.XYZField.__init__(self,X=X,F=F,projection=projection,from_file=from_file)
         if edges is None:
-            edges = zeros( (0,2),int32 )
+            edges = np.zeros( (0,2),np.int32 )
         self.edges = edges
 
     # Pickle support, since the DT can't be pickled

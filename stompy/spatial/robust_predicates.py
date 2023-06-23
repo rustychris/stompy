@@ -4,6 +4,11 @@ from __future__ import print_function
 # This is a straightforward translation of the predicates in triangle.c into
 # python.
 
+# THIS CODE IS NOT ROBUST!
+# it does not attempt to set the rounding and precision mode of the FPU
+# As such it does not properly detect FP roundoff and gives incorrect
+# results.
+
 
 ## Initialization:
 #  There is a bit of dynamic work which happens on import to figure out

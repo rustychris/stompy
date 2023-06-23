@@ -79,8 +79,14 @@ class PermissiveFinder(TrapezoidMapTriFinder):
 RIGID=front.AdvancingFront.RIGID
 
 class NodeDiscretization(object):
-    def __init__(self,g):
+    # original code set gradients by forcing the normal of the gradient
+    # to zero. This doesn't force a sign or magnitude on the gradient.
+    # If this is False, gradients are directly enforced.
+    gradient_by_normal=True
+    def __init__(self,g,**kw):
         self.g=g
+        utils.set_keywords(self,kw)
+        
     def construct_matrix(self,op='laplacian',dirichlet_nodes={},
                          zero_tangential_nodes=[],
                          gradient_nodes={},
@@ -169,10 +175,18 @@ class NodeDiscretization(object):
             dy_nodes,dy_alphas,_=self.node_discretization(n,op='dy')
             assert np.all(dx_nodes==dy_nodes),"Have to be cleverer"
             nodes=dx_nodes
-            # So if vec = [1,0], then normal=[0,-1]
-            # and I want dx*norma[0]+dy*normal[1] = 0
-            alphas=np.array(dx_alphas)*normal[0] + np.array(dy_alphas)*normal[1]
-            B[row]=0
+            if self.gradient_by_normal:
+                # So if vec = [1,0], then normal=[0,-1]
+                # and I want dx*norma[0]+dy*normal[1] = 0
+                alphas=np.array(dx_alphas)*normal[0] + np.array(dy_alphas)*normal[1]
+                B[row]=0
+            else:
+                # So if vec = [1,0]
+                # mag= sqrt(vec[0]**2 + vec[1]**2)
+                # I want dx*vec[0]+dy*vec[1] = vec[0]**2 + vec[1]**2
+                alphas=np.array(dx_alphas)*vec[0] + np.array(dy_alphas)*vec[1]
+                B[row]=vec[0]**2 + vec[1]**2
+                
             for node,alpha in zip(nodes,alphas):
                 M[row,node]=alpha
             row+=1
