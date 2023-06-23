@@ -160,7 +160,7 @@ def wkb2shp(shp_name,
     if geom_type is None:
         # find it by querying the features - minor bug - this only 
         # works when shapely geometries were passed in.
-        types = np.array( [text2ogr[g.type] for g in geoms] )
+        types = np.array( [text2ogr[g.geom_type] for g in geoms] )
         geom_type = int(types.max())
         # print("Chose geometry type to be %s"%ogr2text[geom_type])
 

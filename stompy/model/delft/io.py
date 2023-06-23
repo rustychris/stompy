@@ -1354,7 +1354,7 @@ class SectionedConfig(object):
                 return row_value
         else:
             return None
-
+        
     def set_value(self,sec_key,value):
         # set value and optionally comment.
         # sec_key: tuple of section and key (section without brackets)
@@ -1601,6 +1601,21 @@ class MDUFile(SectionedConfig):
         finally:
             os.chdir(pwd)
 
+    def get_bool(self,sec_key,key=None):
+        """
+        missing, or numeric equal to 0 => False
+        present and nonzero numeric => True
+        """
+        if key is not None:
+            sec_key=(sec_key,key)
+        value=self[sec_key]
+        if value is None:
+            value=0.0
+        else:
+            value=float(value)
+        return value!=0.0
+            
+
 def exp_z_layers(mdu,zmin=None,zmax=None):
     """
     This will probably change, not very flexible now.
@@ -1712,7 +1727,9 @@ def read_dfm_tim(fn, ref_time, time_unit='M', columns=None):
     time.  Probably ought to be 'M' always.
 
     returns Dataset with 'time' dimension, and data columns labeled according
-    to columns.
+    to columns (list of strings naming the columns after the time stamp).
+    Defaults to val1, val2,... and if specified columns is not long enough
+    # valN, valN+1, etc. will be appended.
     """
     if time_unit.lower()=='m':
         dt=np.timedelta64(60,'s')
@@ -1728,7 +1745,11 @@ def read_dfm_tim(fn, ref_time, time_unit='M', columns=None):
     t=ref_time + dt*raw_data[:,0]
 
     if columns is None:
-        columns=['val%d'%(i+1) for i in range(raw_data.shape[1]-1)]
+        columns=[]
+        
+    # fill in defaults to make sure it's long enough.
+    for i in range(len(columns), raw_data.shape[1]-1):
+        columns.append('val%d'%(i+1))
         
     ds=xr.Dataset()
     ds['time']=('time',),t

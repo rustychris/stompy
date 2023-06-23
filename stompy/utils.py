@@ -2625,3 +2625,9 @@ def fill_curvilinear(xy,xy_valid=None):
 
     xy[~xy_valid,0] = fill_x
     xy[~xy_valid,1] = fill_y
+
+def weighted_median(values, weights):
+    # credit to https://stackoverflow.com/questions/20601872/numpy-or-scipy-to-calculate-weighted-median
+    i = np.argsort(values)
+    c = np.cumsum(weights[i])
+    return values[i[np.searchsorted(c, 0.5 * c[-1])]]

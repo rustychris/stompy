@@ -11,6 +11,7 @@ import copy
 
 import numpy as np
 import xarray as xr
+import pandas as pd
 from shapely import geometry
 
 import stompy.model.delft.io as dio
@@ -300,29 +301,31 @@ class BC(object):
           used to create a two-point timeseries, but if that is needed it should be moved
           to model specific code.
         """
-        if isinstance(data,xr.DataArray):
-            data.attrs['mode']=self.mode
-            return data
-        elif isinstance(data,xr.Dataset):
+        # convert scalars, DataFrames and xr.Dataset to xr.DataArray
+        if isinstance(data, pd.DataFrame):
+            data=xr.Dataset.from_dataframe(data)
+            if 'time' not in data.dims:
+                print("warning: Converting pd.DataFrame to xr.Dataset, but no time dimension.")
+        elif isinstance(data, pd.Series):
+            data=xr.DataArray.from_series(data)
+            if 'time' not in data.dims:
+                print("warning: Converting pd.Series to xr.DataArray, but no time dimension.")
+                
+        if isinstance(data,xr.Dataset):
             if len(data.data_vars)==1:
-                # some xarray allow inteeger index to get first item.
+                # some xarray allow integer index to get first item.
                 # 0.10.9 requires this cast to list first.
-                da=data[list(data.data_vars)[0]]
-                da.attrs['mode']=self.mode
-                return da
+                data=data[list(data.data_vars)[0]]
             else:
                 raise Exception("Dataset has multiple data variables -- not sure which to use: %s"%( str(data.data_vars) ))
         elif isinstance(data,(np.integer,np.floating,int,float)):
-            # # handles expanding a constant to the length of the run
-            # ds=xr.Dataset()
-            # ds['time']=('time',),np.array( [self.data_start,self.data_stop] )
-            # ds[quantity]=('time',),np.array( [data,data] )
-            # da=ds[quantity]
-            da=xr.DataArray(data)
-            da.attrs['mode']=self.mode
-            return da
-        else:
+            data=xr.DataArray(data)
+
+        if not isinstance(data,xr.DataArray):
             raise Exception("Not sure how to cast %s to be a DataArray"%data)
+        
+        data.attrs['mode']=self.mode
+        return data
 
     # Not all BCs have a time dimension, but enough do that we have some general utility
     # getters/setters at this level
@@ -1577,6 +1580,11 @@ class HydroModel(object):
         bc=self.RoughnessBC(model=self,**kw)
         self.add_bcs(bc)
         return bc
+    def add_ScalarBC(self,**kw):
+        bc=self.ScalarBC(model=self,**kw)
+        self.add_bcs(bc)
+        return bc
+        
     # def add_Structure(self,**kw): # only for DFM now.
 
     def add_bcs(self,bcs):

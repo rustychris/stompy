@@ -287,7 +287,12 @@ def decode_sigma(ds,sigma_v):
     # This ordering of the multiplication puts laydim last, which is
     # assumed in some other [fragile] code.
     # a little shady, but its helpful to make the ordering here intentional
-    z=(terms['eta'] - terms['bedlevel'])*terms['sigma'] + terms['bedlevel']
+    # For temporary compatibility with multi-ugrid, force compute on all
+    eta=terms['eta'].compute()
+    bedlevel=terms['bedlevel'].compute()
+    sigma=terms['sigma'].compute()
+    
+    z=(eta-bedlevel)*sigma + bedlevel
 
     return z
 
