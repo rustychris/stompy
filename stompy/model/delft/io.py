@@ -1752,7 +1752,8 @@ def read_dfm_tim(fn, ref_time, time_unit='M', columns=None):
         columns.append('val%d'%(i+1))
         
     ds=xr.Dataset()
-    ds['time']=('time',),t
+    # 2023-05-16: force conversion to nanosecond to avoid casting warning.
+    ds['time']=('time',),t.astype('M8[ns]')
     for col_i in range(1,raw_data.shape[1]):
         ds[columns[col_i-1]]=('time',),raw_data[:,col_i]
 

@@ -19,11 +19,11 @@ from stompy import xr_utils
 from stompy.io.local import noaa_coops, hycom
 from stompy import utils, filters, memoize
 from stompy.spatial import wkb2shp, proj_utils
-#from stompy.model.delft import dfm_grid
 import stompy.grid.unstructured_grid as ugrid
 import re
 
-#from . import io as dio
+class MissingBCData(Exception):
+    pass
 
 class BC(object):
     name=None
@@ -386,6 +386,8 @@ class BC(object):
     def data(self):
         da=self.src_data()
         da=self.as_data_array(da)
+        da=self.transform_output(da)
+        
         if 'time' in da.dims:
             #on_insufficient_data='exception'
             data_start=da.time.values.min()
@@ -398,8 +400,8 @@ class BC(object):
                     data_start,data_stop)
                 
                 if self.on_insufficient_data=='exception':
-                    # raise Exception(msg)
-                    log.warning(msg)
+                    raise Exception(msg)
+                    # log.warning(msg) # I think this was just for dev
                     pass
                 elif self.on_insufficient_data=='log':
                     log.warning(msg)
@@ -409,7 +411,6 @@ class BC(object):
                     raise Exception("Bad setting for on_insufficient_data='%s'"%
                                     self.on_insufficient_dat)
                     
-        da=self.transform_output(da)
         return da
 
     # if True, bokeh plot will include time series for intermediate
@@ -628,7 +629,35 @@ class FillGaps(BCFilter):
             da_filled.values[:] = utils.fill_invalid(da_filled.values)
 
             return da_filled
+
+
+class PadTime(BCFilter):
+    """
+    Extend time to the padded extent of the run, and extend the given variable with 
+    zeros. Lazy code! Just overwrite the first/last entry as needed
+    """
+    pad_time=np.timedelta64(1,'D')
+    pad_value=0.0
     
+    def transform_output(self,da):
+        # have self.bc, self.bc.model
+        # self.bc.data_start, self.bc.data_stop
+        
+        if self.bc.model.run_stop+self.pad_time>da.time[-1]:
+            self.bc.model.log.warning("Will extend flow for %s with %s! (data end %s)"%(
+                self.bc.name,self.pad_value,
+                da.time.values[-1]))
+            # with xarray, easier to just overwrite the last sample.  lazy lazy.
+            da.time.values[-1] = self.bc.model.run_stop+self.pad_time
+            da.values[-1] = self.pad_value
+        if self.bc.model.run_start-self.pad_time<da.time[0]:
+            self.bc.model.log.warning("Will prepend flow for %s with %s! (data starts %s)"%(
+                self.bc.name,self.pad_value,da.time.values[0]))
+            # with xarray, easier to just overwrite the last sample.  lazy lazy.
+            da.time.values[0] = self.bc.model.run_start - self.pad_time
+            da.values[0] = self.pad_value
+        return da
+        
 class RoughnessBC(BC):
     shapefile=None
     data_array=None # xr.DataArray
@@ -685,7 +714,7 @@ class RoughnessBC(BC):
             import bokeh.io as bio # output_notebook, show, output_file
             import bokeh.plotting as bplt
         except ImportError:
-            self.log.info('Bokeh not found, will skip bokeh output')
+            self.model.log.info('Bokeh not found, will skip bokeh output')
             return
 
         bplt.reset_output()
@@ -1523,8 +1552,11 @@ class HydroModel(object):
         """
         for k in kws:
             if k=='geom_type':
-                if feat['geom'].geom_type=='MultiLineString' and len(feat['geom'].geoms)==1:
+                # Some formats label things MultiXXX even for singleton features.
+                if ( (feat['geom'].geom_type in ['MultiLineString','MultiPolygon','MultiPoint'])
+                     and len(feat['geom'].geoms)==1):
                     feat['geom']=feat['geom'].geoms[0]
+                    
                 feat_val=feat['geom'].geom_type
                 if isinstance(kws[k],list):
                     if feat_val in kws[k]: continue
@@ -2498,7 +2530,7 @@ class CdecStageBC(CdecBC,StageBC):
 class NwisBC(object):
     cache_dir=None
     product_id="set_in_subclass"
-    default=None # in case no data can be fetched
+    default=None # in case no data can be fetched. if None, raise exception
     def __init__(self,station,**kw):
         """
         station: int or string station id, e.g. 11455478
@@ -2510,7 +2542,13 @@ class NwisStageBC(NwisBC,StageBC):
     product_id=65 # gage height
     def src_data(self):
         ds=self.fetch_for_period(self.data_start,self.data_stop)
-        return ds['water_level']
+        if ds is not None:
+            return ds['water_level']
+        else:
+            if self.default is not None:
+                return self.default
+            else:
+                raise MissingBCData()
     def write_bokeh(self,**kw):
         defaults=dict(title="Stage: %s (%s)"%(self.name,self.station))
         defaults.update(kw)
@@ -2535,6 +2573,11 @@ class NwisScalarBC(NwisBC,ScalarBC):
     
     def src_data(self):
         ds=self.fetch_for_period(self.data_start,self.data_stop)
+        if ds is None:
+            if self.default is not None:
+                return self.default
+            else:
+                raise MissingBCData()
         # ideally wouldn't be necessary, but a bit safer to ignore metadata/coordinates
         scalar_name=[n for n in ds.data_vars if n not in ['tz_cd','datenum','time']][0]
         return ds[scalar_name]
@@ -2573,7 +2616,10 @@ class NwisFlowBC(NwisBC,FlowBC):
         if ds is not None:
             return ds['flow']
         else:
-            return self.default
+            if self.default is not None:
+                return self.default
+            else:
+                raise MissingBCData()
     
     def write_bokeh(self,**kw):
         defaults=dict(title="Flow: %s (%s)"%(self.name,self.station))

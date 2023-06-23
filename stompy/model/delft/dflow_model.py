@@ -275,13 +275,14 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             # no mdu was found
             return None
         # use cls(), so that custom subclasses can be used
-        model=cls()
+        model=cls(configure=False)
         model.load_from_mdu(fn)
         return model
-    
+
     def load_from_mdu(self,fn):
         self.load_mdu(fn)
         self.mdu_basename=os.path.basename(fn)
+
         try:
             self.grid = ugrid.UnstructuredGrid.read_dfm(self.mdu.filepath( ('geometry','NetFile') ))
         except FileNotFoundError:
@@ -1006,9 +1007,9 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                 else:
                     geom=self.get_geometry(name=s['name'])
 
-                if geom.type=='MultiLineString' and len(geom.geoms)==1:
+                if geom.geom_type=='MultiLineString' and len(geom.geoms)==1:
                     geom=geom.geoms[0] # geojson I think does this.
-                assert geom.type=='LineString'
+                assert geom.geom_type=='LineString'
                 pli_data=[ (s['name'], np.array(geom.coords)) ]
                 dio.write_pli(pli_fn,pli_data)
                 
