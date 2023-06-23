@@ -133,6 +133,7 @@ if gdal:
 class Field(object):
     """ Superclass for spatial fields
     """
+    _projection=None
     def __init__(self,projection=None):
         """
         projection: GDAL/OGR parseable string representation

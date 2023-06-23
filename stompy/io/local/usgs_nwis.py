@@ -54,7 +54,8 @@ def nwis_dataset_collection(stations,*a,**k):
 def nwis_dataset(station,start_date,end_date,products,
                  days_per_request='M',frequency='realtime',
                  cache_dir=None,clip=True,cache_only=False,
-                 cache_no_data=False):
+                 cache_no_data=False, 
+                 name_with_ts_code=False):
     """
     Retrieval script for USGS waterdata.usgs.gov
 
@@ -89,6 +90,12 @@ def nwis_dataset(station,start_date,end_date,products,
        as empty files. Otherwise it is assumed that there may be a transient error, and 
        nothing is written to cache. Do not use this for real-time retrievals, since it may
        cache no-data results from the future.
+       
+    name_with_ts_code: append the timeseries code to variable names instead of
+      arbitrary _NN suffix. Note that handling of multiple timeseries codes
+      without this option is buggy. Variables will only get unique suffixes when
+      two timeseries codes exist in the same download chunk (e.g. 1 month). 
+      Concatenation across months could accidentally mix different timeseries codes.
 
     returns an xarray dataset.
 
@@ -179,6 +186,21 @@ def nwis_dataset(station,start_date,end_date,products,
         log.warning("   no data for station %s for any periods!"%station)
         return None 
 
+    if name_with_ts_code:
+        orig_datasets=datasets
+        datasets=[]
+        for ds in orig_datasets:
+            for v in ds:
+                if v in ['datenum','tz_cd']: continue
+                suffix='_'+ds[v].attrs.get('ts_code','NA')
+                if re.match(r'.*_[0-9][0-9]$',v):
+                    v_new = v[:-3] + suffix
+                else:
+                    v_new = v + suffix
+                assert v_new not in ds
+                ds=ds.rename({v:v_new})
+            datasets.append(ds)
+            
     # occasional errors with repeated timestamps. Not sure how this comes about,
     # but it frustrates combine_first
     datasets=[ds.isel(time=np.r_[True, ds.time.values[1:]>ds.time.values[:-1]])
