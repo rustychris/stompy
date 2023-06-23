@@ -8,6 +8,8 @@ import os,shutil,glob,inspect
 import six
 import pdb
 
+import sys
+
 import logging
 log=logging.getLogger('DFlowModel')
 
@@ -400,16 +402,37 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                     rec[k]=v
         return recs
 
-    def load_bcs(self):
+    def load_bcs(self,load_data=True,ext_fn=None,keep_anonymous=True):
         """
-        Woefully inadequate parsing of boundary condition data.
-        For now, returns a list of dictionaries.  
+        Woefully inadequate parsing of external forcing file.
+        Ostensibly boundary conditions, but external forcing file has all sorts of
+        stuff: initial conditions, WAQ mass balance areas, friction coefficients. etc.
+
+        For now, returns a list of dictionaries. Some items have a 'bc' entry pointing
+        to a BC instance.
+
+        If load_data is False avoid potentially expensive file reading operations.
+        
         Handle other BCs like at least flow.
+        Breaks discharge_temperature_sorsin BCs into a SourceSink and child
+        ScalarBCs. If keep_anonymous=False, then child scalar bcs aside from
+        salinity and temperature are discarded. Otherwise they are kept but
+        will get names like 'tmp_val5'
         """
-        ext_fn=self.mdu.filepath(['external forcing','ExtForceFile'])
+        if ext_fn is None:
+            ext_fn=self.mdu.filepath(['external forcing','ExtForceFile'])
         ext_new_fn=self.mdu.filepath(['external forcing','ExtForceFileNew'])
 
         recs=self.parse_old_bc(ext_fn)
+        # translation of source sink BCs can create additional scalar BCs
+        # these are collected in this list and appended to recs on the way
+        # out
+        extra_recs=[]
+
+        # warn of various known shortcomings, but just once.
+        warn_anonymous=True
+        warn_mass_balance_not_parsed=True
+        warn_tracer_no_parent=True
 
         unhandled=defaultdict(lambda: 0)
 
@@ -417,10 +440,13 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             if 'FILENAME' in rec:
                 # The ext file doesn't have a notion of name.
                 # punt via the filename
-                rec['name'],ext=os.path.splitext(rec['FILENAME'])
+                rec['name'],ext=os.path.splitext(os.path.basename(rec['FILENAME']))
             else:
                 rec['name']=rec['QUANTITY'].upper()
                 ext=None
+
+            assert 'data' not in rec,"How is there already a data item?"
+            rec['data']=None # will get updated if there is data and load_data=True
                 
             if ext=='.pli':
                 pli_fn=os.path.join(os.path.dirname(ext_fn),
@@ -430,74 +456,159 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
 
                 rec['coordinates']=rec['pli'][0][1]
                 if rec['coordinates'].ndim==2 and rec['coordinates'].shape[0]>1:
+                    # Could be a polygon, too. Not worrying about that rn
                     geom=geometry.LineString(rec['coordinates'])
                 else:
                     # probably a point source
                     geom=geometry.Point(np.squeeze(rec['coordinates']))
                 rec['geom']=geom
 
-                # timeseries at one or more points along boundary:
-                # DIFFERENT logic if it's a source/sink.
-                if rec['QUANTITY'].upper()=="DISCHARGE_SALINITY_TEMPERATURE_SORSIN":
-                    tim_fn=pli_fn.replace('.pli','.tim')
-                    if os.path.exists(tim_fn):
-                        t_ref,t_start,t_stop=self.mdu.time_range()
-                        # These have a column for flow and each tracer
-                        # let read_dfm_time figure out the number of columns
-                        data=dio.read_dfm_tim(tim_fn,t_ref) # ,columns=['data'])
-                        breakpoint()
-                else:
-                    tims=[]
-                    for node_i,node_xy in enumerate(rec['coordinates']):
-                        tim_fn=pli_fn.replace('.pli','_%04d.tim'%(node_i+1))
+                data=None
+                tim_fn=None
+                if load_data:
+                    # timeseries at one or more points along boundary:
+                    # DIFFERENT logic if it's a source/sink.
+                    if rec['QUANTITY'].upper()=="DISCHARGE_SALINITY_TEMPERATURE_SORSIN":
+                        tim_fn=pli_fn.replace('.pli','.tim')
                         if os.path.exists(tim_fn):
                             t_ref,t_start,t_stop=self.mdu.time_range()
-                            tim_ds=dio.read_dfm_tim(tim_fn,t_ref,columns=['stage'])
-                            tim_ds['x']=(),node_xy[0]
-                            tim_ds['y']=(),node_xy[1]
+                            # These have a column for flow and each tracer
+                            # let read_dfm_time figure out the number of columns.
+                            # trying to assign names to the column is too fraught. The order
+                            # depends on the defined tracers, and the order in which they
+                            # are mentioned in boundary conditions, initial conditions and
+                            # the substance file. Punt the complexity to the caller.
+                            data=dio.read_dfm_tim(tim_fn,t_ref)
+                    else:
+                        tims=[]
+                        for node_i,node_xy in enumerate(rec['coordinates']):
+                            tim_fn=pli_fn.replace('.pli','_%04d.tim'%(node_i+1))
+                            if os.path.exists(tim_fn):
+                                t_ref,t_start,t_stop=self.mdu.time_range()
+                                tim_ds=dio.read_dfm_tim(tim_fn,t_ref,columns=['stage'])
+                                tim_ds['x']=(),node_xy[0]
+                                tim_ds['y']=(),node_xy[1]
 
-                            tims.append(tim_ds)
-                    data=xr.concat(tims,dim='node')
+                                tims.append(tim_ds)
+                        if len(tims):
+                            data=xr.concat(tims,dim='node')
                 rec['data']=data
             elif ext=='.xyz':
-                xyz_fn=os.path.join(os.path.dirname(ext_fn),
-                                    rec['FILENAME'])
-                df=pd.read_csv(xyz_fn,sep=r'\s+',names=['x','y','z'])
-                ds=xr.Dataset()
-                ds['x']=('sample',),df['x']
-                ds['y']=('sample',),df['y']
-                ds['z']=('sample',),df['z']
-                ds=ds.set_coords(['x','y'])
-                rec['data']=ds.z
+                if load_data:
+                    xyz_fn=os.path.join(os.path.dirname(ext_fn),
+                                        rec['FILENAME'])
+                    df=pd.read_csv(xyz_fn,sep=r'\s+',names=['x','y','z'])
+                    ds=xr.Dataset()
+                    ds['x']=('sample',),df['x']
+                    ds['y']=('sample',),df['y']
+                    ds['z']=('sample',),df['z']
+                    ds=ds.set_coords(['x','y'])
+                    rec['data']=ds.z
             else:
                 pli=geom=pli_fn=None # avoid pollution
                 
             if rec['QUANTITY'].upper()=='WATERLEVELBND':
-                bc=hm.StageBC(name=rec['name'],geom=rec['geom'])
+                bc=hm.StageBC(name=rec['name'],geom=rec['geom'],water_level=rec['data'])
                 rec['bc']=bc
             elif rec['QUANTITY'].upper()=='DISCHARGEBND':
-                bc=hm.FlowBC(name=rec['name'],geom=geom)
-                rec['bc']=bc
-
-                if 'data' in rec:
+                if rec.get('data',None) is not None:
                     # Single flow value, no sense of multiple time series
                     rec['data']=rec['data'].isel(node=0).rename({'stage':'flow'})
+                    bc=hm.FlowBC(name=rec['name'],geom=geom,flow=rec['data'])
                 else:
-                    print("Reading discharge boundary, did not find data (%s)"%tim_fn)
+                    if load_data:
+                        print("Reading discharge boundary, did not find data (%s)"%tim_fn)
+                    bc=hm.FlowBC(name=rec['name'],geom=geom)
+
+                rec['bc']=bc
             elif rec['QUANTITY'].upper()=='FRICTIONCOEFFICIENT':
                 rec['bc']=hm.RoughnessBC(name=rec['name'],data_array=rec['data'])
-            #elif rec['QUANTITY'].upper()=='DISCHARGE_SALINITY_TEMPERATURE_SORSIN':
-            #    # The tricky part here is that the number and names of tracers attached to the
-            #    # BC depends on other parts of the model configuration. Those might
-            #    # have been changed, or haven't been set yet. 
-            #    print("Parsing source/sink BC not fully supported")
+            elif rec['QUANTITY'].upper()  in ['SALINITYBND','TEMPERATUREBND']:
+                if warn_tracer_no_parent:
+                    self.log.warning("Parsing external forcing: tracers not yet connected to parents")
+                    warn_tracer_no_parent=False
+                tracer=rec['QUANTITY'].replace('bnd','').lower()
+                rec['bc']=hm.ScalarBC(name=rec['name'],geom=rec['geom'],
+                                      scalar=tracer,data=rec['data'])
+                
+            elif rec['QUANTITY'].upper()=='DISCHARGE_SALINITY_TEMPERATURE_SORSIN':
+                # since we didn't specify names for the tim file, it's val1, val2, val3,
+                # etc.
+                if load_data:
+                    flow=rec['data'].val1.rename('flow')
+                else:
+                    flow=None
+                    
+                rec['bc']=hm.SourceSinkBC(name=rec['name'], geom=rec['geom'], flow=flow)
+
+                if load_data:
+                    var_names=list(rec['data'].data_vars)
+                else:
+                    var_names=[]
+                    
+                def add_scalar_bc(tracer,da):
+                    bc=hm.ScalarBC(parent=rec['bc'],
+                                   scalar=tracer,value=da)
+                    extra_recs.append(dict(bc=bc,name=rec['name'],geom=rec['geom'],
+                                           child=True))
+                tracer_idx=2
+                
+                if float(self.mdu['physics','Salinity'])!=0.0:
+                    vname='val%d'%tracer_idx
+                    if load_data:
+                        salt=rec['data'][vname].rename('salinity')
+                    else:
+                        salt=None
+                    add_scalar_bc('salinity',salt)
+                    tracer_idx+=1
+                if float(self.mdu['physics','Temperature'])!=0.0:
+                    vname='val%d'%tracer_idx
+                    if load_data:
+                        temp=rec['data'][vname].rename('temperature')
+                    else:
+                        temp=None
+                    add_scalar_bc('temperature',temp)
+                    tracer_idx+=1
+                    
+                # The tricky part here is that the number and names of tracers attached to the
+                # BC depends on other parts of the model configuration. Those might
+                # have been changed, or haven't been set yet.
+                if keep_anonymous:
+                    while True:
+                        vname='val%d'%tracer_idx
+                        if vname not in var_names: break
+                        if warn_anonymous:
+                            self.log.warning("Tracers for source/sink BC beyond temp and salinity will be anonymous")
+                            warn_anonymous=False
+                        add_scalar_bc('tmp_'+vname,rec['data'][vname])
+                        tracer_idx+=1
+            elif rec['QUANTITY'].upper().startswith('WAQMASSBALANCEAREA'):
+                if warn_mass_balance_not_parsed:
+                    self.log.warning("Parsing external forcing. WAQ mass balance areas are not parsed")
+                    warn_mass_balance_not_parsed=False
             else:
                 unhandled[rec['QUANTITY']]+=1
                 #print("Not implemented: reading BC quantity=%s"%rec['QUANTITY'])
         for k in unhandled:
             print("Encountered %d BCs with quantity=%s that weren't fully parsed"%
                   (unhandled[k],k))
-        return recs
+        return recs + extra_recs
+
+    # def tracer_list(self):
+    #     """
+    #     For source/sink BCs DFM requires a single time series file with the full suite
+    #     of tracer concentrations. Note that this relies on the current state of the model.
+    #     May abandon this because it is likely to be fragile. 
+    #     """
+    #     columns=['flow']
+    #     if float(self.mdu['physics','Salinity'])!=0.0:
+    #         columns.append('salinity')
+    #     if float(self.mdu['physics','Temperature'])!=0.0:
+    #         columns.append('temperature')
+    # 
+    #     # 
+    #         
+    #     data=dio.read_dfm_tim(tim_fn,t_ref,columns=self.tracer_list())
 
     @classmethod
     def to_mdu_fn(cls,path):
@@ -983,13 +1094,13 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             if trim_time:
                 # Check for no original data within the time span
                 if times[-1] < start:
-                    times = [start, stop]
-                    values=[values[-1],values[-1]]
                     log.warning(f'{file_path}: data ends ({times.max()}) before simulation period: {start} - {stop}.')
+                    times = np.array([start, stop])
+                    values=np.r_[values[-1],values[-1]]
                 elif times[0] > stop:
-                    times = [start, stop]
-                    values=[values[0],values[0]]
                     log.warning(f'{file_path}: data starts ({times.min()}) after simulation period: {start} - {stop}.')
+                    times = np.array([start, stop])
+                    values=np.r_[values[0],values[0]]
                 else:
                     # common case -- trim and pad out 1 sample
                     i_start,i_stop=np.searchsorted(da.time,[start,stop])
@@ -1023,23 +1134,17 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         else:
             log.info("dredging disabled")
 
-    def write_source_bc(self,bc):
-        # DFM source/sinks have salinity and temperature attached
-        # the same data file.
-        # the pli file can have a single entry, and include a z coordinate,
-        # based on lsb setup
-
-        # Source Sink BCs in DFM have to include all of the scalars in one go.
-        # Build a list of scalar names and default BCs, then scan for any specified
-        # scalar BCs to use instead of defaults
+    def default_source_sink_forcing(self,single_ended):
+        """
+        Source Sink BCs in DFM have to include all of the scalars in one go.
+        Build a list of scalar names and default BCs. This will probably
+        have to get smarter w.r.t to tracer order, at least allowing
+        the order of waq tracers to be overridden. It should also
+        get some caching, but that's for another day.
+        """
         scalar_names=[] # forced to lower case
         scalar_das=[]
 
-        # In the case of a single-ended source/sink, these
-        # should pull default value from the model config, instead of
-        # assuming 0.0
-        single_ended=bc.geom.geom_type=='Point'
-        
         if int(self.mdu['physics','Salinity']):
             scalar_names.append('salinity')
             if single_ended:
@@ -1059,13 +1164,36 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                 default=0.0
             scalar_das.append(xr.DataArray(default,name='temp'))
         if self.dwaq:
-            for sub in self.dwaq.substances:
-                scalar_names.append(sub.lower())
+            for sub_name in self.dwaq.substances:
+                sub=self.dwaq.substances[sub_name]
+                if not sub.active: continue
+                scalar_names.append(sub_name.lower())
                 if single_ended:
-                    default=self.dwaq.substances[sub].initial.default
+                    default=sub.initial.default
                 else:
                     default=0.0
-                scalar_das.append(xr.DataArray(default,name=sub))
+                scalar_das.append(xr.DataArray(default,name=sub_name))
+
+        return scalar_names, scalar_das
+            
+    def write_source_bc(self,bc,**write_opts):
+        """
+        Write a source/sink BC.
+        Start with default then scan for any specified
+        scalar BCs to use instead of defaults.
+        write_opts: e.g. write_data,write_geom,write_ext
+        """
+        # DFM source/sinks have salinity and temperature attached
+        # the same data file.
+        # the pli file can have a single entry, and include a z coordinate,
+        # based on lsb setup
+        
+        # In the case of a single-ended source/sink, these
+        # should pull default value from the model config, instead of
+        # assuming 0.0
+        single_ended=bc.geom.geom_type=='Point'
+        
+        scalar_names,scalar_das = self.default_source_sink_forcing(single_ended=single_ended)
 
         salt_bc=None
         temp_bc=None
@@ -1092,92 +1220,99 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         # from an isel() )
         da_combined=xr.concat(das,dim='component',coords='minimal')
 
-        self.write_gen_bc(bc,quantity='source',da=da_combined)
+        self.write_gen_bc(bc,quantity='source',da=da_combined,**write_opts)
 
-        if (bc.dredge_depth is not None) and (self.restart_from is None):
-            # Additionally modify the grid to make sure there is a place for inflow to
-            # come in.
-            log.info("Dredging grid for source/sink BC %s"%bc.name)
-            # These are now class methods using a generic implementation in HydroModel
-            # may need some tlc
-            self.dredge_discharge(np.array(bc.geom.coords),bc.dredge_depth)
-        else:
-            log.info("dredging disabled")
+        if write_opts.get('write_geom',True):
+            if (bc.dredge_depth is not None) and (self.restart_from is None):
+                # Additionally modify the grid to make sure there is a place for inflow to
+                # come in.
+                log.info("Dredging grid for source/sink BC %s"%bc.name)
+                # These are now class methods using a generic implementation in HydroModel
+                # may need some tlc
+                self.dredge_discharge(np.array(bc.geom.coords),bc.dredge_depth)
+            else:
+                log.info("dredging disabled")
 
-    def write_gen_bc(self,bc,quantity,da=None):
+    def write_gen_bc(self,bc,quantity,da=None,write_ext=True,write_data=True,write_geom=True):
         """
         handle the actual work of writing flow and stage BCs.
         quantity: 'stage','flow','source'
         da: override value for bc.data()
+        write_ext, write_data: optionally disable updating the external forcing
+          file and/or the separate data file.
         """
         # 2019-09-09 RH: the automatic suffix is a bit annoying. it is necessary
         # when adding scalars, but for any one BC, only one of stage, flow or source
         # would be present.  Try dropping the suffix here.
         bc_id=bc.name # +"_" + quantity
 
-        assert isinstance(bc.geom_type,list),"Didn't fully refactor, looks like"
-        if (bc.geom is None) and (None not in bc.geom_type):
-            raise Exception("BC %s, name=%s has no geometry. Maybe missing from shapefiles?"%(bc,bc.name))
-        assert bc.geom.type in bc.geom_type
+        if write_geom:
+            assert isinstance(bc.geom_type,list),"Didn't fully refactor, looks like"
+            if (bc.geom is None) and (None not in bc.geom_type):
+                raise Exception("BC %s, name=%s has no geometry. Maybe missing from shapefiles?"%(bc,bc.name))
+            assert bc.geom.type in bc.geom_type
 
-        coords=np.array(bc.geom.coords)
-        ndim=coords.shape[1] # 2D or 3D geometry
+            coords=np.array(bc.geom.coords)
+            ndim=coords.shape[1] # 2D or 3D geometry
 
-        # Special handling when it's a source/sink, with z/z_src specified
-        if quantity=='source':
-            if ndim==2 and bc.z is not None:
-                # construct z
-                missing=-9999.
-                z_coords=missing*np.ones(coords.shape[0],np.float64)
-                for z_val,idx in [ (bc.z,-1),
-                                   (bc.z_src,0) ]:
-                    if z_val is None: continue
-                    if z_val=='bed':
-                        z_val=-10000
-                    elif z_val=='surface':
-                        z_val=10000
-                    z_coords[idx]=z_val
-                if z_coords[0]==missing:
-                    z_coords[0]=z_coords[-1]
-                # middle coordinates, if any, don't matter
-                coords=np.c_[ coords, z_coords ]
-                ndim=3
-                
-        pli_data=[ (bc_id, coords) ]
-        
-        if ndim==2:
-            pli_fn=bc_id+'.pli'
-        else:
-            pli_fn=bc_id+'.pliz'
-            
-        dio.write_pli(os.path.join(self.run_dir,pli_fn),pli_data)
+            # Special handling when it's a source/sink, with z/z_src specified
+            if quantity=='source':
+                if ndim==2 and bc.z is not None:
+                    # construct z
+                    missing=-9999.
+                    z_coords=missing*np.ones(coords.shape[0],np.float64)
+                    for z_val,idx in [ (bc.z,-1),
+                                       (bc.z_src,0) ]:
+                        if z_val is None: continue
+                        if z_val=='bed':
+                            z_val=-10000
+                        elif z_val=='surface':
+                            z_val=10000
+                        z_coords[idx]=z_val
+                    if z_coords[0]==missing:
+                        z_coords[0]=z_coords[-1]
+                    # middle coordinates, if any, don't matter
+                    coords=np.c_[ coords, z_coords ]
+                    ndim=3
 
-        with open(self.ext_force_file(),'at') as fp:
-            lines=[]
-            method=3 # default
-            if quantity=='stage':
-                lines.append("QUANTITY=waterlevelbnd")
-                tim_path=os.path.join(self.run_dir,bc_id+"_0001.tim")
-            elif quantity=='flow':
-                lines.append("QUANTITY=dischargebnd")
-                tim_path=os.path.join(self.run_dir,bc_id+"_0001.tim")
-            elif quantity=='source':
-                lines.append("QUANTITY=discharge_salinity_temperature_sorsin")
-                method=1 # not sure how this is different
-                tim_path=os.path.join(self.run_dir,bc_id+".tim")
+            pli_data=[ (bc_id, coords) ]
+
+            if ndim==2:
+                pli_fn=bc_id+'.pli'
             else:
-                assert False
-            lines+=["FILENAME=%s"%pli_fn,
-                    "FILETYPE=9",
-                    "METHOD=%d"%method,
-                    "OPERAND=O",
-                    ""]
-            fp.write("\n".join(lines))
+                pli_fn=bc_id+'.pliz'
 
-        if da is None:
-            da=bc.data()
-        # assert len(da.dims)<=1,"Only ready for dimensions of time or none"
-        self.write_tim(da,tim_path)
+            dio.write_pli(os.path.join(self.run_dir,pli_fn),pli_data)
+
+        lines=[]
+        method=3 # default
+        if quantity=='stage':
+            lines.append("QUANTITY=waterlevelbnd")
+            tim_path=os.path.join(self.run_dir,bc_id+"_0001.tim")
+        elif quantity=='flow':
+            lines.append("QUANTITY=dischargebnd")
+            tim_path=os.path.join(self.run_dir,bc_id+"_0001.tim")
+        elif quantity=='source':
+            lines.append("QUANTITY=discharge_salinity_temperature_sorsin")
+            method=1 # not sure how this is different
+            tim_path=os.path.join(self.run_dir,bc_id+".tim")
+        else:
+            assert False
+            
+        if write_ext:
+            with open(self.ext_force_file(),'at') as fp:
+                lines+=["FILENAME=%s"%pli_fn,
+                        "FILETYPE=9",
+                        "METHOD=%d"%method,
+                        "OPERAND=O",
+                        ""]
+                fp.write("\n".join(lines))
+
+        if write_data:
+            if da is None:
+                da=bc.data()
+            # assert len(da.dims)<=1,"Only ready for dimensions of time or none"
+            self.write_tim(da,tim_path)
 
     def write_wind_bc(self,bc):
         assert bc.geom is None,"Spatially limited wind not yet supported"
@@ -1224,7 +1359,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             return
         
         assert isinstance(parent_bc, (hm.StageBC,hm.FlowBC)),"Haven't implemented point-source scalar yet"
-        assert parent_bc.geom.type=='LineString'
+        assert parent_bc.geom.geom_type=='LineString'
         
         pli_data=[ (bc_id, np.array(parent_bc.geom.coords)) ]
         pli_fn=bc_id+'.pli'
@@ -1301,7 +1436,8 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         return fns
 
     _mu=None
-    def map_dataset(self,force_multi=False,grid=None,chain=False,xr_kwargs={}):
+    def map_dataset(self,force_multi=False,grid=None,chain=False,xr_kwargs={},
+                    clone_from=None):
         """
         Return map dataset. For MPI runs, this will emulate a single, merged
         global dataset via multi_ugrid. For serial runs it directly opens
@@ -1313,16 +1449,27 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         xr_kwargs: options to pass to xarray, whether multi or single.
 
         chain: if True, attempt to chain in time. Experimental!
+
+        clone_from: MultiUgrid instance from a previous call to map_dataset,
+          presumably for a different restart but otherwise matching run.
+          Will pull grid and local<-->global mappings from the provided MultiUgrid
+          which should speedup the loading process. Currently only handled when
+          chain is False.
         """
         if not chain:
             if self.num_procs<=1 and not force_multi:
                 # xarray caches this.
-                return xr.open_dataset(self.map_outputs()[0],**xr_kwargs)
+                ds=xr.open_dataset(self.map_outputs()[0],**xr_kwargs)
+                # put the grid in as an attribute so that the non-multiugrid
+                # and multiugrid return values can be used the same way.
+                ds.attrs['grid'] = ugrid.UnstructuredGrid.read_ugrid(ds)
+                return ds
             else:
                 from ...grid import multi_ugrid
                 # This is slow so cache the result
                 if self._mu is None:
-                    self._mu=multi_ugrid.MultiUgrid(self.map_outputs(),grid=grid,xr_kwargs=xr_kwargs)
+                    self._mu=multi_ugrid.MultiUgrid(self.map_outputs(),grid=grid,xr_kwargs=xr_kwargs,
+                                                    clone_from=clone_from)
                 return self._mu
         else:
             # as with his_dataset(), caching is not aware of options like chain.
@@ -1766,11 +1913,12 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
 
         return self.translate_vars(ds,requested_vars=data_vars)
 
-class DelwaqScalarBC(hm.ScalarBC):
-    # for now just checking if isinstance in write_scalar_bc(), but may want to handle differently than hm.ScalarBC
-    pass
+    
+# Used to be distinct from ScalarBC, but that creates problems. In particular
+# we may not know whether a tracer is specifically for DWAQ or just a DFM tracer
+# at the time of instantiation.
+DelwaqScalarBC=hm.ScalarBC
 
-import sys
 if sys.platform=='win32':
     cls=DFlowModel
     cls.dfm_bin_exe="dflowfm-cli.exe"
@@ -2028,3 +2176,38 @@ def rst_mappers(rst,g,signed=True):
             sgn=1
         M[j,link]=sgn
     return M,Melem
+
+
+def source_sink_add_tracers(model,bc,new_values=[],orig_num_values=3):
+    """
+    model: DFlowModel instance, or the run_dir
+    bc: dictionary for the source/sink entry as returned from load_bcs.
+    
+    Add additional columns to a source/sink data file. Makes a backup of the
+    original tim file. If a backup is already present, it will not be
+    overwritten, and will be read to get the original data. 
+    
+    So if the new run will include two dwaq tracers, pass new_values=[0,1]
+    (which would tag sources with 0 for the first and 1.0 for the second)
+    orig_num_values: 3 for run with salinity and temperature. I think
+    less than that if temperature and/or salinity are disabled. 
+    """
+    if isinstance(model,str):
+        run_dir=model
+    else:
+        run_dir=model.run_dir
+        
+    pli_fn=os.path.join(model.run_dir,bc['FILENAME'])
+    assert pli_fn.lower().endswith('.pli')
+    fn=pli_fn[:-4] + ".tim"
+    assert os.path.exists(fn)
+    fn_orig=fn+".orig"
+    if not os.path.exists(fn_orig):
+        shutil.copyfile(fn,fn_orig)
+    data_orig=np.loadtxt(fn_orig)
+    # drop previous forcing for new tracers. leaving time column and the original Q,S,T values
+    columns=[data_orig[:,:1+orig_num_values]] 
+    for new_val in new_values:
+        columns.append( np.full(data_orig.shape[0],new_val))
+    data=np.column_stack(columns)
+    np.savetxt(fn,data,fmt="%.6g")

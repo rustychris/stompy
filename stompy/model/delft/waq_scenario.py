@@ -7128,6 +7128,17 @@ class ParameterSpatioTemporal(Parameter):
             self.enable_write_symlink=enable_write_symlink
         self._n_seg=n_seg # only needed for evaluate() when scenario isn't set
 
+    def copy(self):
+        return ParameterSpatioTemporal(times=self._times,
+                                       values=self.values,
+                                       func_t=self.func_t,
+                                       scenario=self.scenario,
+                                       name=self.name,
+                                       seg_func_file=self.seg_func_file,
+                                       enable_write_symlink=self.enable_write_symlink,
+                                       n_seg = self._n_seg,
+                                       hydro=self.hydro)
+
     # goofy helpers when n_seg or times can only be inferred after instantiation
     @property
     def n_seg(self):
@@ -7216,17 +7227,22 @@ class ParameterSpatioTemporal(Parameter):
                 values=self.func_t(t)
             fp.write(values.astype('f4').tobytes())
 
-    def load_from_segment_file(self):
+    def load_from_segment_file(self,convert_time=False):
         """
         Set self.values and self._times from the segment function file.
         This uses memmap, so it should be fairly efficient and safe to
         do even when you only want a fraction of the data.
+
+        convert_time: convert times to dt64
         """
         self._mmap_data=np.memmap(self.seg_func_file,
                                   dtype=[('t',np.int32),
                                          ('value',np.float32,self.n_seg)],
                                   mode='r')
         self._times=self._mmap_data['t']
+        if convert_time:
+            self._times = self._times*np.timedelta64(1,'s') + utils.to_dt64(self.hydro.time0)
+            
         self.values=self._mmap_data['value']
 
     def evaluate(self,**kws):
@@ -9589,12 +9605,40 @@ class WaqModelBase(scriptable.Scriptable):
     WaqModel is the subclass for offline-specific code, and WaqOnlineModel
     handles specifics of running online under a DFlowModel instance.
     """
-    
     name="waqmodel" # this is used for the basename of the various files.
 
     # simplify imports
     Sub=Substance
-    
+
+    # python datetime giving the reference time for the run.
+    # system clock unit. Trying to move away from python datetime, just use
+    # numpy datetime64 to be consistent with pandas, numpy, xarray.
+    # scu=None # datetime.timedelta(seconds=1)
+    scu64=np.timedelta64(1,'s')
+
+    # These should all be np.datetime64, unlike WaqScenario
+    time0=None
+    start_time=None # 
+    stop_time=None  # 
+
+    time_step=None  # taken from hydro, unless specified otherwise
+
+
+    # These are not fully supported for WaqOnlineModel, but included
+    # here to facilitate setup of runs that could be online or offline.
+    mon_output= (DEFAULT,'SURF','LocalDepth') # monitor file
+    grid_output=('SURF','LocalDepth')              # grid topo
+    hist_output=(DEFAULT,'SURF','LocalDepth') # history file
+    map_output =(DEFAULT,'SURF','TotalDepth','LocalDepth')  # map file
+    # Stat output is currently not very configurable, and just allows
+    # specifying which variables to use. See text_block10() above
+    # for the specifics that are used.
+    stat_output=() # defaults to none
+
+    # easier to handle multi-platform read/write with binary, compared to nefis output
+    map_formats=('binary',)
+    history_formats=('binary',)
+
     def __init__(self,**kw):
         self.log=logging.getLogger(self.__class__.__name__)
 
@@ -9642,13 +9686,9 @@ class WaqModelBase(scriptable.Scriptable):
         params['ONLY_ACTIVE']=1 # almost always a good idea.
         self.add_process("DYNDEPTH")
         self.add_process("TOTDEPTH")
-
-        # pushing this to self.processes.
-        
-        #params['ACTIVE_DYNDEPTH']=1 # these make the outputs much easier to visualize,
-        #params['ACTIVE_TOTDEPTH']=1 # and some tools depend on these.
         
         return params
+    
     def init_hydro_parameters(self):
         """ parameters which come directly from the hydro, and are
         written out in the same way that process parameters are 
@@ -9735,7 +9775,7 @@ class WaqModelBase(scriptable.Scriptable):
 
     def add_monitor_for_geometry(self,name,geom):
         raise Exception("add_monitor_for_geometry is sub-class dependent, and apparently not implemented")
-
+    
     _pdb=None
     @property
     def process_db(self):
@@ -9751,7 +9791,7 @@ class WaqModelBase(scriptable.Scriptable):
         or a floating point datenum
         """
         if np.issubdtype(type(t),np.integer):
-            return self.time0 + t*self.scu
+            return utils.to_datetime(self.time0 + t*self.scu64)
         else:
             return utils.to_datetime(t)
 
@@ -9862,15 +9902,6 @@ class WaqModel(WaqModelBase):
     """
     desc=('DWAQ','n/a','n/a') # 3 arbitrary lines of text for description
 
-    time0=None
-    # system clock unit. 
-    scu=datetime.timedelta(seconds=1)
-    scu64=np.timedelta64(1,'s')
-    
-    time_step=None  # these are taken from hydro, unless specified otherwise
-    start_time=None # 
-    stop_time=None  # 
-
     overwrite=False 
 
     # if set, initial conditions are taken from a restart file given here
@@ -9884,18 +9915,6 @@ class WaqModel(WaqModelBase):
 
     #  add quantities to default
     DEFAULT=DEFAULT
-    mon_output= (DEFAULT,'SURF','LocalDepth') # monitor file
-    grid_output=('SURF','LocalDepth')              # grid topo
-    hist_output=(DEFAULT,'SURF','LocalDepth') # history file
-    map_output =(DEFAULT,'SURF','TotalDepth','LocalDepth')  # map file
-    # Stat output is currently not very configurable, and just allows
-    # specifying which variables to use. See text_block10() above
-    # for the specifics that are used.
-    stat_output=() # defaults to none
-
-    # easier to handle multi-platform read/write with binary, compared to nefis output
-    map_formats=['binary']
-    history_formats=['binary']
 
     # settings related to paths - a little sneaky, to allow for shorthand
     # to select the next non-existing subdirectory by setting base_path to
@@ -11003,15 +11022,71 @@ END_MULTIGRID"""%num_layers
     @property
     def delwaq2_path(self):
         return os.path.join(self.delft_bin,'delwaq2')
+
+    # Boundary conditions
+    def find_discharge_bc(self,name):
+        """
+        Find a BC by name, if needed create the discharge entry, 
+        and return the text label for the discharge
+        """
+        seg = self.bc_name_to_segment(name,layer='bed')
+
+        # Just a reminder that at least some versions of the DWAQ setup handled multiple
+        # sites dumping into the same segment. If that is still needed, it needs to be
+        # handled either here in add_load().
+        
+        #source_segs={} # name => discharge id
+        #potw_multi = []
+
+        # the same segment can receive multiple loads, so stick to seg-<id>
+        # for naming here, as opposed to naming discharge points after a
+        # specific source.
+        source_seg="seg-%d"%(seg+1)
+    
+        self.add_discharge(seg_id=seg,load_id=source_seg,on_exists='ignore')
+        return source_seg
+
+    def bc_name_to_segment(self,name,layer='bed'):
+        # This stuff should be cached if it's not already:
+        boundaries=self.hydro.boundary_defs()
+        allitems = [boundary.decode("utf-8") for boundary in set(boundaries['type'])]
+        group_boundary_links = self.hydro.group_boundary_links() # read boundary location and name information from DFM .bnd file
+          
+        g=self.hydro.grid()
+        self.hydro.infer_2d_elements()
+
+        bdn = np.nonzero(group_boundary_links['name']==k) #getting index for boundary
+        assert(len(bdn)==1)                
+        bdn = np.asscalar(np.asarray(bdn)) #bdn is in an annoying tuple type
+        line = shapely.wkt.loads(group_boundary_links['attrs'][bdn]['geom'])
+        xutm = line.xy[0][0]
+        yutm = line.xy[1][0]                
+        xy=np.array( [xutm, yutm] )
+        elt=g.select_cells_nearest(xy)
+        if layer=='bed':
+            layer=-1
+        elif layer=='surface':
+            layer=0
+        else:
+            layer=int(layer)
+        seg=np.nonzero( self.hydro.seg_to_2d_element==elt )[0][layer]
+
+        
+
     
 class WaqOnlineModel(WaqModelBase):
     """
     code for D-WAQ setup specific to running online, under a
     D-Flow hydro model
     """
-    # Kenny's code used 
-    # waq_proc_def="" # proc_def.def file for delwaq process library
-    # new code should use pre-existing self.proc_path
+    # design is evolving, but probably bcs for an online model
+    # should live in the hydro object.
+    bcs="DO NOT USE"
+
+    # Segment function (spatiotemporal parameters) have to be put onto a curvilinear
+    # grid for online coupling. Currently this is a cartesian grid with constant
+    # resolution, specified here
+    seg_function_resolution=500.0
     
     def __init__(self,model,**k):
         self.model=model
@@ -11019,6 +11094,23 @@ class WaqOnlineModel(WaqModelBase):
         
         self.sub_file = 'sources.sub'
         self.sub_path = os.path.join(self.model.run_dir, self.sub_file)
+
+        self.coupled_parameters=self.init_coupled_parameters()
+        
+
+    #time_step=None  # these are taken from hydro, unless specified otherwise
+    
+    @property
+    def start_time(self):
+        return utils.to_dt64(self.model.run_start)
+
+    @property
+    def stop_time(self):
+        return utils.to_dt64(self.model.run_stop)
+
+    @property
+    def time0(self):
+        return utils.to_dt64(self.model.ref_date)
 
     @property
     def proc_path(self):
@@ -11033,19 +11125,44 @@ class WaqOnlineModel(WaqModelBase):
         else:
             return os.path.join(self.share_path,'proc_def')
         
-    # considering as properties that pull from self.model:
-    # time0
-    # start_time
-    # stop_time
+    def init_coupled_parameters(self):
+        """
+        For online coupling there are some minor gymnastics needed to
+        get DFM parameters into DWAQ. See the section of the dia file starting
+          ** INFO   : Data from hydrodynamics available for water quality
+        to see which parameters are linked.
 
+        This method sets up self.coupled_parameters, which only serves to
+        add entries in the substances file. That triggers DFM to supply
+        those values.
+        """
+        params=NamedObjects(scenario=self,cast_value=cast_to_parameter)
+        # All of the current known options:
+        # params['Tau']=1
+        # params['TauFlow']=1
+        # params['Velocity']=1
+        if self.model.mdu.get_bool('physics','Salinity'):
+            params['salinity']=1 
+        if self.model.mdu.get_bool('physics','Temperature'):
+            params['temp']=1 
+        params['vwind']=1
+        #params['winddir']=1
+        #params['rain']=1
+        return params
+    
     def write_waq(self):
         """
-        Writes .sub file for Delwaq model, and adds Delwaq params to Dflow .mdu file
+        Writes .sub file for Delwaq model, and adds Delwaq configuration details to Dflow .mdu file.
+        Reorders self.substances
+        Initial conditions, boundary conditions, non-constant parameters are not currently
+        handled here. online_dwaq.py in the proof-of-concept manual setup has a specialization
+        of write_waq() that appends dwaq tracer info to an existing external forcing file.
+        Possible that should get merged in here.
         """
         self.log.info('Updating mdu with Delwaq settings...')
         # add reference to sub-file in .mdu
         self.model.mdu['processes', 'SubstanceFile'] = self.sub_file
-        self.model.mdu['processes', 'DtProcesses'] = 300  # hard-coded to match DtUser in template .mdu
+        self.model.mdu['processes', 'DtProcesses'] = 300  # TODO hard-coded to match DtUser in template .mdu
         self.model.mdu['processes', 'ProcessFluxIntegration'] = 1  # 1 = Delwaq, 2 = Dflow
 
         # this should be handled by the caller.
@@ -11067,9 +11184,26 @@ class WaqOnlineModel(WaqModelBase):
                         self.log.info("Translating parameter %s to process"%name)
                         self.add_process(name.upper().replace('ACTIVE_',''))
                     continue
-                self.write_param(f, self.parameters[name])
+                # Only constant parameters go in the substances file
+                # Note that this also helps with coupled parameters. If a parameter
+                # like temp is given a non-constant value it will not show
+                # up here (thus not triggering the use of a DFM value), but will just
+                # show up in the external forcing file.
+                if isinstance(self.parameters[name],ParameterConstant):
+                    self.write_param(f, self.parameters[name])
 
+            for name in self.coupled_parameters:
+                # These should only be constant valued, and are here just to request
+                # that DFM fill in the values during the run.
+                self.write_param(f, self.coupled_parameters[name])
+                
             self.write_processes(f)
+
+        for attr in ['mon_output','grid_output','hist_output',
+                     'map_output','stat_output', 'map_formats','history_formats']:
+            if getattr(self,attr) != getattr(WaqModelBase,attr):
+                self.log.info("WaqOnlineModel: '%s' has been modified, but is not [yet] handled for online coupling"
+                              %attr)
 
     def fix_substance_order(self):
         # A bit tricky: we need to know the order of WAQ substances before source/sink
@@ -11105,7 +11239,7 @@ class WaqOnlineModel(WaqModelBase):
         new_bcs=nonwaq_bcs + waq_bcs
         assert len(new_bcs)==len(self.model.bcs),"Sanity lost"
         self.model.bcs=new_bcs
-            
+
     def write_substance(self, f, substance):
         """Writes to opened .sub file f for a particular substance"""
         item=self.process_db.substance_by_id(substance.name)
@@ -11151,8 +11285,9 @@ class WaqOnlineModel(WaqModelBase):
     def write_processes(self, f):
         """Writes all active processes to .sub file"""
         s=["active-processes"]
+        skip_for_online = ['vertdisp'] 
         for proc_name in self.processes:
-            if proc_name.lower() in ['totdepth','dyndepth']:
+            if proc_name.lower() in skip_for_online:
                 self.log.info("Ignoring process %s for online WAQ configuration (right?)"%proc_name)
                 continue
             proc=self.process_db.process_by_id(proc_name)
@@ -11166,8 +11301,12 @@ class WaqOnlineModel(WaqModelBase):
         f.writelines("\n".join(s))
         return 0
 
+    def add_bc(self,*args,**kws):
+        self.model.add_ScalarBC(*args,**kws)
+    
     def add_bcs(self, bc):
         """Add bcs to DelwaqModel object (currently not used, can just add to DFlowModel)"""
+        raise Exception("Thought this was unused - probably call add_bc() instead")
         if isinstance(bc, list):
             [self.add_bcs(b) for b in bc]
         else:
@@ -11181,4 +11320,83 @@ class WaqOnlineModel(WaqModelBase):
         specified
         """
         return cmd+["--processlibrary",self.proc_path+".def"]
+
+    
+    def add_monitor_from_shp(self,shp_fn,naming=None,point_layers=None):
+        """
+        For each feature in the shapefile, add a monitor area.
+        shp_fn: path to shapefile.
+        Online output is not configurable in the same ways as offline DWAQ.
+        Online the choices are points, which go into the history file, or non-overlapping
+        regions which go into mass balance areas.
         
+        naming: field name from the shapefile giving the name of the monitor area.
+          for compatibilty with offline code, naming can be "elt_layer".
+        """
+        if naming=='elt_layer':
+            self.log.warning("monitoring for online waq doesn't support naming='elt_layer'")
+            
+        locations=wkb2shp.shp2geom(shp_fn)
+        
+        for i,rec in enumerate(locations):
+            geom=rec['geom']
+
+            # Default name
+            # This used to name everything mon%d, but for easier use
+            # and compatibility with older code, use geometry type
+            name="%s%d"%(geom.type.lower(),len(self.model.mon_points))
+
+            if naming is not None and naming in rec:
+                name=rec[naming]
+            self.add_monitor_for_geometry(name=name,geom=geom)
+                
+    def add_monitor_for_geometry(self,name,geom):
+        """
+        Add a monitor area for elements intersecting the shapely geometry geom.
+        """
+        # make sure the name is unique
+        for rec in self.model.mon_points:
+            assert name!=rec.get('name','__unnamed')
+            # getting a warning about elementwise comparison...
+            if not isinstance(name,str):
+                import pdb
+                pdb.set_trace()
+
+        self.model.mon_points.append( dict(name=name,geom=geom) )
+    
+    def add_transects_from_shp(self,shp_fn,naming='count',clip_to_poly=None,
+                               on_boundary=None,on_edge=None):
+        """
+        Add monitor transects from a shapefile.
+        By default transects are named in sequence.  
+        Specify a shapefile field name in 'naming' to pull user-specified
+        names for the transects.
+
+        online model punts details to hydro_model and dflow_model.
+        
+        on_edge, on_boundary, clip_to_poly are accepted but ignored
+        """
+        if clip_to_poly is not None:
+            self.log.warning("Online-coupled WAQ does not concern itself with clip_to_poly")
+        if on_boundary is not None:
+            self.log.warning("Online-coupled WAQ does not concern itself with on_boundary")
+        if on_edge is not None:
+            self.log.warning("Online-coupled WAQ does not concern itself with on_edge")
+            
+        locations=wkb2shp.shp2geom(shp_fn)
+
+        new_transects=[] # generate as list, then assign as tuple
+
+        for i,rec in enumerate(locations):
+            geom=rec['geom']
+
+            if naming=='count':
+                name="transect%04d"%i
+            else:
+                name=rec[naming]
+            new_transects.append( dict(name=name,geom=geom) )
+            
+        self.log.info("Added %d monitored transects from %s"%(len(new_transects),shp_fn))
+        self.model.add_monitor_sections(new_transects)
+
+    
