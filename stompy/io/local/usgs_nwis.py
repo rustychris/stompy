@@ -3,6 +3,7 @@ import os
 import logging
 import re
 import six
+from io import StringIO
 
 from six.moves import cPickle
 
@@ -230,11 +231,11 @@ def add_salinity(ds):
                                          0) # no pressure effects
                 ds[salt_name]=ds[v].dims, salt
 
-def station_metadata(station,cache_dir=None):
+def station_metadata(station,cache_dir=None,force=False):
     if cache_dir is not None:
         cache_fn=os.path.join(cache_dir,"meta-%s.pkl"%station)
 
-        if os.path.exists(cache_fn):
+        if os.path.exists(cache_fn) and not force:
             with open(cache_fn,'rb') as fp:
                 meta=cPickle.load(fp)
             return meta
@@ -255,9 +256,85 @@ def station_metadata(station,cache_dir=None):
     lat=dms_to_dd(lat)
     # no mention of west longitude, but can assume it is west.
     lon=-dms_to_dd(lon)
-    meta=dict(lat=lat,lon=lon)
+    meta=dict(lat=lat,lon=lon,text=resp.text)
 
     if cache_dir is not None:
         with open(cache_fn,'wb') as fp:
             cPickle.dump(meta,fp)
     return meta
+
+def stations_period_of_record(ll_xxyy, parameter, cache_dir=None):
+    """
+    Query USGS web service for all stations within a bounding box that
+    include monitorin data for a specific parameter.
+
+    station: numeric site id
+    parameter: numeric paramer code. e.g. 63680 is turbidity
+
+    returns a dataframe
+    a single parameter may have multiple time series and return multiple rows.
+    each row includes 
+      begin_date, end_date: period covered
+      station_nm: station name
+      dec_long_va dec_lat_va: station location
+      count_nu: count of measurements
+
+    cache_dir: cache results. Use with caution! Active real-time stations 
+    are constantly updating and the end_time changes. Caching will fail to
+    show the updated end_date.
+    """
+    text=None
+    if cache_dir is not None:
+        cache_fn = os.path.join(cache_dir,f"stations_periods-{ll_xxyy[0]}_{ll_xxyy[1]}_{ll_xxyy[2]}_{ll_xxyy[3]}_{parameter}.rdb")
+        if os.path.exists(cache_fn):
+            with open(cache_fn,'rt') as fp:
+                text=fp.read()
+                
+    if text is None:
+        url="https://waterservices.usgs.gov/nwis/site/"
+        url_params=[
+            ('format','rdb'),
+            ('bBox',f"{ll_xxyy[0]},{ll_xxyy[2]},{ll_xxyy[1]},{ll_xxyy[3]}"),
+            ('outputDataTypeCd','iv'),
+            ('parameterCd',"%05d"%parameter),
+            ('siteStatus','all'),
+            ('hasDataTypeCd','iv,id'),
+        ]
+        resp=requests.get(url,params=url_params)
+        text=resp.text
+
+        if cache_dir is not None:
+            with open(cache_fn,'wt') as fp:
+                fp.write(text)
+                
+    fp=StringIO(text)
+    df=pd.read_csv(fp,sep="\t",comment='#')
+    df=df.iloc[1:,:]
+
+    df['begin_date']=df['begin_date'].astype(np.datetime64)
+    df['end_date']=df['end_date'].astype(np.datetime64)
+    
+    df=df[ df.parm_cd=="%05d"%parameter ]
+
+    return df
+
+# This one isn't really tested. would be best to merge
+# with above
+def station_period_of_record(station, parameter):
+    # station: numeric site id
+    # parameter: numeric paramer code. 63680 is turbidity, 65 I think is flow. 10 is WSE?
+    # returns a dataframe
+    # a single parameter may have multiple time series and return multiple rows.
+    resp=requests.get(f"http://waterservices.usgs.gov/nwis/site/?format=rdb&sites={station}&seriesCatalogOutput=true")
+
+    fp=StringIO(resp.text)
+    df=pd.read_csv(fp,sep="\t",comment='#')
+    df=df.iloc[1:,:]
+
+    # filter to monitoring / high-frequency data
+    df_filt=df[ df.data_type_cd.isin(['iv','uv','rt'])]
+    parm=63680
+    df_parm=df_filt[ df_filt.parm_cd=="%05d"%parm ]
+
+    return df_parm
+
