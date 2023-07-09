@@ -76,10 +76,11 @@ def combine_sources(all_sources,dt=np.timedelta64(900,'s'),min_period=True):
             print("All empty time series")
             return None
         t_min,t_max=period_union(all_sources)
-        
+
+    # Force to ns precision to appease pandas.
     resample_bins=np.arange(utils.floor_dt64(t_min,dt),
                             utils.ceil_dt64(t_max,dt)+dt,
-                            dt)
+                            dt).astype('M8[ns]')
 
     if len(resample_bins)<2:
         log.warning("No overlapping data")
@@ -96,11 +97,18 @@ def combine_sources(all_sources,dt=np.timedelta64(900,'s'),min_period=True):
         # having trouble with groupby_bins
         #
         da['dnum']=('time',),utils.to_dnum(da.time)
+
+        # check for datetimes that are not ns precision
+        
         bins=utils.to_dnum(resample_bins)
         # dim='time' is needed for vector-valued data to indicate not to
         # take the mean across vector components, just within bins on the
         # time axis
         # This is slow, but more general than a hand-rolled numpy solution
+        # The da.groupby_bins portion is causing some heartache with new pandas.
+        # it claims that non-nanosecond times are being forced to nanosecond
+        # times. But when I look they appear to already be nanosecond times.
+        # I think it's the bin_labels.
         da_r=(da.groupby_bins('dnum',bins,labels=bin_labels)
               .mean(dim='time')
               .rename(dnum_bins='time')
@@ -429,8 +437,10 @@ def calibration_figure_3panel(all_sources,combined=None,
         df['label']=[labels[i] for i in metric_x]
         del df['lag']
         df=df.set_index('label')
+        # 2023-05-16: with recent pandas there is both display.precision and
+        # styler.format.precision
         with pd.option_context('expand_frame_repr', False,
-                               'precision',3):
+                               'display.precision',3):
             tbl=str(df)
             
         plt.setp(list(ax.spines.values()),visible=0)

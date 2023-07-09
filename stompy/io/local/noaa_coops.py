@@ -303,7 +303,13 @@ def coops_dataset_product(station,product,
     if len(datasets)>1:
         # data_vars='minimal' is needed to keep lat/lon from being expanded
         # along the time axis.
-        dataset=xr.concat( datasets, dim='time',data_vars='minimal')
+        # For longer periods it's possible that lat/long change. Not sure
+        # if this is from an actual relocation of the sensor or from a
+        # change in output rounding. Explicitly setting the concatenation 
+        # coordinates and compat='override' gets around this, at the expense
+        # of not catching potential errors or real changes in station location.
+        dataset=xr.concat( datasets, dim='time',coords=['time'],data_vars='minimal',
+                           compat='override')
     else:
         dataset=datasets[0].copy(deep=True)
     # better not to leave these lying around open
