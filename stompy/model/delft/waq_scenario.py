@@ -9609,9 +9609,7 @@ INCLUDE '{self.atr_filename}'  ; attributes file
 
         # "{}*1.0 ; no scaling".format(len(subs))] # doesn't work!
 
-        # documentation suggests that all scale factors come at the beginning,
-        # and that it includes one scale per substance. error output suggests
-        # that with TRANSPOSE, we get only one scale factor total.
+        # with TRANSPOSE we get only one scale factor total.
 
         n_seg_sediment=self.scenario.n_bottom_layers * self.scenario.hydro.n_2d_elements
         # RH: Assuming that old-style ICs with a layered bed need to specify values for both
