@@ -616,7 +616,7 @@ def pli_to_grid_edges(g,levees):
 def create_restart(res_fn, map_fn, hyd, state_vars = None, map_net_cdf = False, extr_time = None,
                    start_time = None):
     """ 
-    Create a restart file using an exisiting map file and a user defined 
+    Create a restart file using an existing map file and a user defined 
     time. 
     
     res_fn: path/file name of the restart file 
@@ -699,7 +699,7 @@ def create_restart(res_fn, map_fn, hyd, state_vars = None, map_net_cdf = False, 
     return 
 
 
-def read_map(fn,hyd=None,use_memmap=True,include_grid=True,return_grid=False):
+def read_map(fn,hyd=None,use_memmap=True,include_grid=True,return_grid=False,n_layers='hydro'):
     """
     Read binary D-Water Quality map output, returning an xarray dataset.
 
@@ -714,6 +714,9 @@ def read_map(fn,hyd=None,use_memmap=True,include_grid=True,return_grid=False):
        for unstructured_grid.from_ugrid(ds).
        WARNING: there is currently a bug which causes this grid to have errors.
        probably a one-off error of some sort.
+
+    n_layers: generally can be inferred from the hydro ('hydro'), but for delwaqg output this must
+    be specified as an integer, or can be trusted from the map file by passing 'auto'
 
     note that missing values at this time are not handled - they'll remain as
     the delwaq standard -999.0.
@@ -751,12 +754,15 @@ def read_map(fn,hyd=None,use_memmap=True,include_grid=True,return_grid=False):
 
         substance_names=np.fromfile(fp,'S20',n_subs)
 
+        g=hyd.grid() # ignore message about ugrid.
 
         # not sure if there is a quicker way to get the number of layers
-        hyd.infer_2d_elements()
-        n_layers=1+hyd.seg_k.max()
-
-        g=hyd.grid() # ignore message about ugrid.
+        if n_layers=='hydro':
+            hyd.infer_2d_elements()
+            n_layers=1+hyd.seg_k.max()
+        elif n_layers=='auto':
+            # This is quicker, but gives up an extra sanity check
+            n_layers=int(n_segs / g.Ncells())
 
         assert g.Ncells()*n_layers == n_segs
 
@@ -772,6 +778,9 @@ def read_map(fn,hyd=None,use_memmap=True,include_grid=True,return_grid=False):
         log.warning("Reading map file %s: %d or %d frames? bad length %d extra bytes (or %d missing)"%(
             fn,nframes,nframes+1,extra,framesize-extra))
 
+    if hyd.n_2d_elements<=0:
+        hyd.infer_2d_elements() # or just use g.Ncells()...
+        
     # Specify nframes in cases where the filesizes don't quite match up.
     mapped=np.memmap(fn,[ ('tsecs','i4'),
                           ('data','f4',(n_layers,hyd.n_2d_elements,n_subs))] ,

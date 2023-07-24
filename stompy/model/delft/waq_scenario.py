@@ -7035,11 +7035,8 @@ class ParameterSpatial(Parameter):
             self.write_supporting()
             
         if self.grid_name==DEFAULT:
-            if self.scenario.n_bottom_layers>0:
-                self.grid_name='water-grid'
-            else:
-                self.grid_name=None
-                
+            self.grid_name = self.scenario.water_grid
+
         if self.grid_name is None:
             grid_text='ALL'
         else:
@@ -7210,10 +7207,7 @@ class ParameterSpatioTemporal(Parameter):
             self.write_supporting()
             
         if self.grid_name==DEFAULT:
-            if self.scenario.n_bottom_layers>0:
-                self.grid_name='water-grid'
-            else:
-                self.grid_name=None
+            self.grid_name=self.scenario.water_grid
             
         if self.grid_name is None:
             return ("SEG_FUNCTIONS '{self.name}' {self.interpolation}"
@@ -7609,7 +7603,12 @@ class Scenario(scriptable.Scriptable):
     map_formats=['nefis']
     history_formats=['nefis','binary']
 
-    n_bottom_layers = 0
+    n_bottom_layers = 0 # redundant with bottom_layers, but we have vestiges of old-style and delwaqg
+    water_grid=None # if using old style layered bed then this should probably be 'water-grid'
+    # if using old style layered bed this should be set to something. None indicates no old-style
+    # bed and disables defining deep BCs.
+    bottom_grid=None
+    bottom_layers=[] # thickness of layers, used for delwaqg
     
     # not fully handled, but generally trying to overwrite
     # a run without setting this to True should fail.
@@ -7842,6 +7841,8 @@ END_MULTIGRID"""%num_layers
         For the given substances set the deep boundary in a layered sediment bed to the previously
         configured IC for them.
         """
+        assert self.bottom_grid is not None,"Trying to set deep BCs, but bottom_grid is not configured"
+        
         self.hydro.infer_2d_elements()
         n_2d = self.hydro.n_2d_elements
                         
@@ -9434,7 +9435,7 @@ INCLUDE '{self.atr_filename}'  ; attributes file
         #boundary_count=0
         bc_sets=[self.scenario.hydro.boundary_defs()]
         
-        if self.scenario.n_bottom_layers>0:
+        if self.scenario.bottom_grid is not None: # self.scenario.n_bottom_layers>0:
             bc_sets.append(self.scenario.deep_sediment_boundary_defs())
             
         for bc_set in bc_sets:
@@ -9627,7 +9628,11 @@ INCLUDE '{self.atr_filename}'  ; attributes file
 
         # with TRANSPOSE we get only one scale factor total.
 
-        n_seg_sediment=self.scenario.n_bottom_layers * self.scenario.hydro.n_2d_elements
+        if self.scenario.bottom_grid is not None:
+            n_seg_sediment=self.scenario.n_bottom_layers * self.scenario.hydro.n_2d_elements
+        else:
+            n_seg_sediment = 0 # might have bed state in DelwaqG, but that is handled elsewhere.
+            
         # RH: Assuming that old-style ICs with a layered bed need to specify values for both
         # water segments and bed segments all together.
         n_seg_total = self.scenario.hydro.n_seg + n_seg_sediment
@@ -11528,5 +11533,39 @@ class WaqOnlineModel(WaqModelBase):
             
         self.log.info("Added %d monitored transects from %s"%(len(new_transects),shp_fn))
         self.model.add_monitor_sections(new_transects)
+
+    
+def write_delwaqg_parameters(scen,layers):
+    """
+    scen: a Scenario or WaqModelBase instance
+    layers: list or array of layer thicknesses in meters.
+    """
+    fn = os.path.join(scen.base_path,"delwaqg.parameters")
+
+    lines=[]
+    lines.append("'delwaqg.map'   # map file for output of bed concentration")
+    lines.append("'delwaqg.restart' # write restart information to here")
+    # 2023-07-24: Waiting to catch up with Pradeep before getting into generating
+    # initial conditions file.
+    lines.append("'none'  # separate file for initial conditions")
+    # 
+    lines.append("%d  # count of layers"%len(layers))
+    for thick in layers:
+        # [m], [m2/s], [m2/s]
+        # lines.append(" %g %g %g"%(thickness[i],diffusion[i],bioturb[i]))
+        # Try specifying only the thickness.
+        lines.append(" %g"%thick)
+
+    # 2023-07-24: Likewise, discuss before worrying about zones and ICs in this file.
+    # Unclear whether zones will work correctly in online coupling. 
+    #lines.append("'zones.dwq'  # file defining zones")
+
+    ## For each relevant substance,
+    #for sub in dwaqg_subs:
+    #    lines.append("'%s'  %g"%(sub.name, sub.ic.value))
+    
+    with open(fn,'wt') as fp:
+        for l in lines:
+            fp.write(l+"\n")
 
     
