@@ -8723,7 +8723,7 @@ END_MULTIGRID"""%num_layers
     def cmd_write_nc(self):
         """ Transcribe binary or NEFIS to NetCDF for a completed DWAQ run 
         """
-        self.write_nefis_his_nc()
+        self.write_binary_his_nc() or self.write_nefis_his_nc()
         # binary is faster and doesn't require dwaq libraries, but
         # does not know about units.
         self.write_binary_map_nc() or self.write_nefis_map_nc()
@@ -8737,6 +8737,19 @@ END_MULTIGRID"""%num_layers
             return True
         else:
             return False
+
+    def write_binary_his_nc(self):
+        """ If binary history output is present, write that out to netcdf, otherwise
+        return False
+        """
+        his_fn=os.path.join(self.base_path,self.name+".his")
+        his_nc_fn=os.path.join(self.base_path,'dwaq_hist.nc')
+        
+        if not os.path.exists(his_fn): return False
+        ds=dio.his_file_xarray(his_fn)
+        if os.path.exists(his_nc_fn):
+            os.unlink(his_nc_fn)
+        ds.to_netcdf(his_nc_fn)
         
     def write_nefis_map_nc(self):
         nc_fn=os.path.join(self.base_path,'dwaq_map.nc')
