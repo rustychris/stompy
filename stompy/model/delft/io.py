@@ -797,7 +797,8 @@ def read_map(fn,hyd=None,use_memmap=True,include_grid=True,return_grid=False):
 
     times=utils.to_dt64(hyd.time0) + np.timedelta64(1,'s') * mapped['tsecs']
 
-    ds['time']=( ('time',), times)
+    # force ns to satisfy transient xarray warning.
+    ds['time']=( ('time',), times.astype('M8[ns]') )
     ds['t_sec']=( ('time',), mapped['tsecs'] )
 
     for idx,name in enumerate(ds.sub.values):
