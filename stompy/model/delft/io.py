@@ -637,6 +637,11 @@ def create_restart(res_fn, map_fn, hyd, state_vars = None, map_net_cdf = False, 
     # Identify whether read_map call is needed 
     if not map_net_cdf:
         ds = read_map(map_fn, hyd)
+    else:
+        ds = map_fn
+        assert isinstance(ds,xr.Dataset),"Maybe this should check for a string and xr.open_dataset it"
+        assert 'layer' in ds.dims,"Provided dataset must have 'layer' and 'face' dimensions"
+        assert 'face' in ds.dims,"Provided dataset must have 'layer' and 'face' dimensions"
     
     # infer n_subs and n_segs
     if state_vars is None: 
@@ -646,37 +651,49 @@ def create_restart(res_fn, map_fn, hyd, state_vars = None, map_net_cdf = False, 
     
     n_segs = np.int32(len(ds.layer)*len(ds.face))
     
-    # convert time to dt 
-    if extr_time is not None:
-        dt = np.datetime64(extr_time)
+    # convert time to dt
+    if 'time' in ds.dims:
+        if extr_time is not None:
+            dt = np.datetime64(extr_time)
+        else:
+            dt = max(ds.time.values)
+            extr_time = pd.to_datetime(dt).strftime('%Y-%m-%d %H:%M')
+        ds_t = ds.sel(time = dt)
     else:
-        dt = max(ds.time.values)
-        extr_time = pd.to_datetime(dt).strftime('%Y-%m-%d %H:%M')
+        # assume ds already represents a single snapshot.
+        # I don't think the time values really matters.
+        dt = np.datetime64(hyd.time0)
+        ds_t = ds
+        pass
         
     dt_st = np.datetime64(hyd.time0)
     if start_time is not None:
         dt_st = np.datetime64(start_time)
      
-    ds_t = ds.sel(time = dt)
     
     # construct output arrays 
     # now = pd.Timestamp.today().strftime('%Y-%m-%d %H:%M')
     # txt_header = np.array('Restart file starting at {:s} ' \
     #                       'Written by stompy.model.delft.io.create_restart '\
     #                       'Written at {:s}'.format(extr_time, now),dtype='S160')
-    
+
     txt_header = np.array(ds.header,dtype = 'S160')
     
     out_arr = np.zeros((n_segs,n_subs), dtype = 'f4' )  
     subs = np.array(['']*n_subs,dtype='S20')
     time = np.int32(pd.to_timedelta(dt-dt_st).total_seconds())
 
-    count = 0
-    for idx,name in enumerate(ds_t.sub.values):
-        if name in state_vars:
-            subs[count] = name
-            out_arr[:,count] = ds_t[name].values.flatten()
-            count = count + 1             
+    for count,name in enumerate(state_vars):
+        subs[count] = name
+        # RH: Have to be careful about order. I don't want to create a bug
+        # here, but also don't want to get inputs transposed.
+        # assert the expected order. Ideally this would be 
+        # out_arr[:,count] = ds_t[name].transpose('layer','face').values.flatten()
+        # but I'm wary of making this change and creating a bug.
+        assert ds_t[name].dims == ('layer','face'),"Dimension order issue"
+        out_arr[:,count] = ds_t[name].values.flatten()
+
+        # print(f"create_restart(): {name} has range {ds_t[name].values.min()} to {ds_t[name].values.max()}")
     
     # write out file 
     with open(res_fn,'wb') as fp:

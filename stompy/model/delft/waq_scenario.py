@@ -7603,13 +7603,18 @@ class Scenario(scriptable.Scriptable):
     map_formats=['nefis']
     history_formats=['nefis','binary']
 
-    n_bottom_layers = 0 # redundant with bottom_layers, but we have vestiges of old-style and delwaqg
     water_grid=None # if using old style layered bed then this should probably be 'water-grid'
     # if using old style layered bed this should be set to something. None indicates no old-style
-    # bed and disables defining deep BCs.
+    # bed and disables defining deep BCs. If bottom_grid is None but bottom_layers is set, assume
+    # that DelwaqG will be used and allocate DelwaqG initial conditions accordingly.
     bottom_grid=None
     bottom_layers=[] # thickness of layers, used for delwaqg
-    
+    delwaqg_initial=None
+
+    @property
+    def n_bottom_layers(self):
+        return len(self.bottom_layers)
+
     # not fully handled, but generally trying to overwrite
     # a run without setting this to True should fail.
     overwrite=False
@@ -7694,6 +7699,12 @@ class Scenario(scriptable.Scriptable):
                 setattr(self,k,v)
             except AttributeError:
                 raise Exception("Unknown Scenario attribute: %s"%k)
+
+        if len(self.bottom_layers) and not self.bottom_grid:
+            # This can be set to None in which case DelwaqG will end up pulling
+            # depth-uniform initial conditions from water column parameters with
+            # S1* names.
+            self.delwaqg_initial=make_delwaqg_dataset(self)
 
         self.parameters=self.init_parameters()
         if self.hydro is not None:
@@ -8703,6 +8714,12 @@ END_MULTIGRID"""%num_layers
 
         self.cmd_write_bloominp()
         self.cmd_write_runid()
+
+        if self.n_bottom_layers and not self.bottom_grid:
+            self.write_delwaqg()
+
+    def write_delwaqg(self):
+        write_delwaqg_parameters(self) # will check for delwaqg_initials
 
     def cmd_write_hydro(self):
         """
@@ -11535,19 +11552,31 @@ class WaqOnlineModel(WaqModelBase):
         self.model.add_monitor_sections(new_transects)
 
     
-def write_delwaqg_parameters(scen,layers):
+def write_delwaqg_parameters(scen):
     """
     scen: a Scenario or WaqModelBase instance
     layers: list or array of layer thicknesses in meters.
     """
+    layers = scen.bottom_layers
     fn = os.path.join(scen.base_path,"delwaqg.parameters")
+
+    if scen.delwaqg_initial is not None:
+        initial_fn="delwaqg.initials"
+        # write a restart file
+        dio.create_restart(res_fn=os.path.join(scen.base_path,initial_fn),
+                           hyd=scen.hydro,
+                           map_net_cdf=True,
+                           map_fn=scen.delwaqg_initial,
+                           state_vars=delwaqg_substances)
+    else:
+        initial_fn="none"
 
     lines=[]
     lines.append("'delwaqg.map'   # map file for output of bed concentration")
     lines.append("'delwaqg.restart' # write restart information to here")
     # 2023-07-24: Waiting to catch up with Pradeep before getting into generating
     # initial conditions file.
-    lines.append("'none'  # separate file for initial conditions")
+    lines.append("'%s'  # separate file for initial conditions"%initial_fn)
     # 
     lines.append("%d  # count of layers"%len(layers))
     for thick in layers:
@@ -11568,4 +11597,60 @@ def write_delwaqg_parameters(scen,layers):
         for l in lines:
             fp.write(l+"\n")
 
+
+# Expected order of delwaqg substances in restart file.
+delwaqg_substances = [
+    'CH4-pore', 'DOC-pore', 'DON-pore', 'DOP-pore', 'DOS-pore', 'NH4-pore', 
+    'NO3-pore', 'OXY-pore', 'PO4-pore', 'Si-pore', 'SO4-pore', 'SUD-pore', 
+    'AAP-bulk', 'APATP-bulk', 'FeIIIpa-bulk', 'Opal-bulk', 'POC1-bulk', 'POC2-bulk', 
+    'POC3-bulk', 'POC4-bulk', 'PON1-bulk', 'PON2-bulk', 'PON3-bulk', 'PON4-bulk', 
+    'POP1-bulk', 'POP2-bulk', 'POP3-bulk', 'POP4-bulk', 'POS1-bulk', 'POS2-bulk', 
+    'POS3-bulk', 'POS4-bulk', 'SUP-bulk', 'VIVP-bulk',
+]
+            
+def make_delwaqg_dataset(scen):
+    """
+    Half of the process for passing 3D initial conditions to delwaqg.
+    Returns a dataset with the grid, layers, and required substances included.
+    Caller can edit that as needed and then pass to write_delwaqg_map()
+    (or maybe as an extra argument to write_delwaqg_parameters()).
+    """
+    layers = scen.bottom_layers
+    grid = scen.hydro.grid()
+
+    ds=grid.write_xarray() # create_restart expects face and layer dimensions
+
+    ds['layer_thickness']=('layer',), layers
+    ds['layer_thickness'].attrs['long_name']="Thickness of sediment layers in DelwaqG"
+    ds['layer_thickness'].attrs['units']='m'
+
+    for sub in delwaqg_substances:
+        # create_restart expects "native" dwaq order of 'layer','face'
+        ds[sub] = ('layer','face'), np.zeros( (ds.dims['layer'], ds.dims['face']), np.float32)
+        if '-pore' in sub:
+            ds[sub].attrs['units']='g/m3 of porewater'
+        else:
+            ds[sub].attrs['units']='g/m3 bulk'
+            
+    # DelwaqG does not use the names.
+    # Must get the order correct
     
+    # read title
+    # read nosysini, nosegini (substance count, segment count)
+    # read substances names into synameinit array, but they are never used.
+    # read data into sedconc array ~ [layer, substance, segment]
+    # dissolved substances (the first 12) are scaled by porosity.
+    # re units: the code that reads in WC parameters appears to assume
+    #   g/m2 input, which is then divided by total bed thickness to
+    #   get g/m3.
+    # dissolved substances are assumed to come in as a porewater concentration,
+    # and scaling by porisity then gives a bulk concentration.
+
+    # Order:
+    # Names don't matter. For simplicity, use the same names as in the map and restart
+    # files:
+
+    # create_restart() expects this.
+    ds['header']="Initial conditions file for DelwaqG"
+
+    return ds
