@@ -2413,7 +2413,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         valid_nodes=self.edges['nodes'][valid_edges,:].ravel()
         used[ valid_nodes ]=True
 
-        self.log.info("%d nodes found to be orphans"%np.sum(~used))
+        self.log.debug("%d nodes found to be orphans"%np.sum(~used))
 
         for n in np.nonzero(~used)[0]:
             self.delete_node(n)
@@ -2755,6 +2755,98 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         vertex_vals[weights==0]=0
         cvals=vertex_vals.sum(axis=1)/weights.sum(axis=1)
         return cvals
+
+    def interp_cell_to_raster_function(self,*a,**kw):
+        """
+        Bundle interp_cell_to_raster_matrix into a simple function that
+        takes an array of cell values and returns a raster field.SimpleGrid.
+        Handles the reshaping and boundary filling, and with precomputing
+        the sparse matrix this can resample 50k cell values to a 250m grid
+        in 20ms.
+
+        Can be called with data array set to None in order to get a SimpleGrid
+        of the right size/extent for metadata purposes.
+        """
+        from ..spatial import field
+        fld,M=self.interp_cell_to_raster_matrix(*a,**kw)
+        invalid=M.A.sum(axis=1)==0.0
+        
+        def to_field(cell_values,fld=fld,M=M,invalid=invalid):
+            if cell_values is None:
+                # shorthand to get a field with the extents and shape of
+                # the output.
+                cell_values=np.zeros(M.shape[1])
+            pix_values=M.dot(cell_values)
+            pix_values[invalid]=np.nan
+            f_result=field.SimpleGrid(extents=fld.extents,F=pix_values.reshape(fld.F.shape))
+            f_result.fill_by_convolution(iterations=1)
+            return f_result
+        return to_field
+            
+    def interp_cell_to_raster_matrix(self,fld=None, dx=None, dy=None):
+        """
+        return field.SimpleGrid and sparse matrix that interpolates cell-centered values to
+        the given field.SimpleGrid, such that
+
+        fld,M = g.interp_cell_to_raster_matrix(dx=50,dy=50)
+        pix_values=M.dot(cell_values).reshape(fld.F.shape)
+        interped=field.SimpleGrid(extents=fld.extents,F=pix_values)
+
+        sets interped as a georeferenced raster that interpolates cell-centered
+        values.
+
+        As-is, pixels that do not overlap the grid (specifically that do not overlap
+        the bounding box of any cell) end up with 0.
+        This can be troubling if the pixels are then used for interpolation, since
+        that zero can creep back in even when the zero pixel does not overlap the grid
+
+        This could be solved 'in post', by masking and fill_by_convolution. Better yet
+        would be to include that filling in the matrix, but that may be more work than
+        its worth. Punt to a wrapper function that will do this in post.
+        """
+        from scipy import sparse
+        from ..spatial import field
+        
+        if fld is None:
+            g_xxyy=self.bounds()
+            assert dx is not None
+            assert dy is not None
+            fld=field.SimpleGrid.zeros(extents=[g_xxyy[0]-dx, g_xxyy[1]+dx,
+                                                g_xxyy[2]-dy, g_xxyy[3]+dy],
+                                       dx=dx,dy=dy)
+        
+        n_rows,n_cols=fld.F.shape
+        n_pix=fld.F.size
+        
+        # columns are mesh cells
+        # rows are pixels.
+        M=sparse.dok_matrix( (n_pix, self.Ncells()), np.float32)
+
+        # iterate over mesh cells and update pixels.
+        #   can be fairly fast -- bounds of the cell, evenly distribute pixels.
+        #   then normalize rows to sum to 1.
+        #   if needed this could be more precise, intersecting pixels with each
+        #   cell. Too expensive for the current application.
+        for cell in range(self.Ncells()):
+            pnts = self.nodes['x'][self.cell_to_nodes(cell)]
+            pmin=pnts.min(axis=0)
+            pmax=pnts.max(axis=0)
+            rrcc=fld.rect_to_indexes([pmin,pmax])
+            for row in range(rrcc[0],rrcc[1]):
+                for col in range(rrcc[2],rrcc[3]):
+                    lidx=col+row*n_cols
+                    M[lidx,cell]=1.0
+                    
+        cell_counts=M.sum(axis=1).A[:,0]
+        valid=cell_counts>0
+        cell_counts[valid] = 1./cell_counts[valid]
+        # Appears that nan's don't propagate as expected.
+        # cell_counts[~valid] = np.nan # blank out non-overlapping pixels
+        cell_diag = sparse.dok_matrix( (n_pix,n_pix), np.float32)
+        cell_diag.setdiag(cell_counts)
+        M = cell_diag * M 
+                    
+        return fld,M
     
     def interp_edge_to_cell(self,values):
         """
@@ -6168,7 +6260,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
          by distance along the linestring. force as_type='indices'
         return_distance: with order -- return the distance along the transect too
         """        
-        if geom.type=='LineString' and order:
+        if geom.geom_type=='LineString' and order:
             as_type='indices'
 
         if isinstance(as_type,str) and as_type=='mask':
@@ -6198,7 +6290,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 if test:
                     sel.append(c)
 
-        if geom.type=='LineString' and order:                    
+        if geom.geom_type=='LineString' and order:                    
             sel=np.array(sel)
             centers=self.cells_center()[sel]
             dist_along=np.array( [geom.project(geometry.Point(center))
@@ -9238,11 +9330,11 @@ def cleanup_dfm_multidomains(grid):
 
     Cell indices are preserved, but node and edge indices are not.
     """
-    grid.log.info("Regenerating edges")
+    grid.log.debug("Regenerating edges")
     grid.make_edges_from_cells()
-    grid.log.info("Removing orphaned nodes")
+    grid.log.debug("Removing orphaned nodes")
     grid.delete_orphan_nodes()
-    grid.log.info("Removing duplicate nodes")
+    grid.log.debug("Removing duplicate nodes")
     grid.merge_duplicate_nodes() # this can delete edges
     
     # To avoid downstream errors when the 'deleted' flags
