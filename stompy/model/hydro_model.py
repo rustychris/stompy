@@ -22,6 +22,8 @@ from stompy.spatial import wkb2shp, proj_utils
 import stompy.grid.unstructured_grid as ugrid
 import re
 
+bokeh_warned=[]
+
 class MissingBCData(Exception):
     pass
 
@@ -428,7 +430,9 @@ class BC(object):
             import bokeh.io as bio # output_notebook, show, output_file
             import bokeh.plotting as bplt
         except ModuleNotFoundError:
-            log.warning("Bokeh not found.  Will not generate bokeh plots")
+            if not bokeh_warned:
+                log.warning("Bokeh not found.  Will not generate bokeh plots")
+                bokeh_warned.append(True)
             return
 
         bplt.reset_output()
@@ -714,7 +718,9 @@ class RoughnessBC(BC):
             import bokeh.io as bio # output_notebook, show, output_file
             import bokeh.plotting as bplt
         except ImportError:
-            self.model.log.info('Bokeh not found, will skip bokeh output')
+            if not bokeh_warned:
+                log.warning("Bokeh not found.  Will not generate bokeh plots")
+                bokeh_warned.append(True)
             return
 
         bplt.reset_output()
@@ -1182,6 +1188,7 @@ class HydroModel(object):
         tricky, though. e.g. gazetteers. Choice of gazetteer is tied to choice
         of grid, yet it is handy to have when loading a model.
         """
+        super().__init__()
         self.log=log
         self.bcs=[]
         self.extra_files=[]
@@ -1633,7 +1640,16 @@ class HydroModel(object):
             assert (bc.model is None) or (bc.model==self),"Not expecting to share BC objects"
             bc.model=self
         self.bcs.extend(bcs)
-
+        
+    def scalar_parent_bc(self,name):
+        """
+        Find a BC object by name that can be a parent to a ScalarBC.
+        """
+        for bc in self.bcs:
+            if bc.name == name and isinstance(bc, (CommonFlowBC, StageBC)):
+                return bc
+        return None
+        
     def utc_to_native(self,t):
         return t+self.utc_offset
     def native_to_utc(self,t):

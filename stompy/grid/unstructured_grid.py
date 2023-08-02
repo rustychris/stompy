@@ -1130,8 +1130,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
             if np.issubdtype(cells.dtype,np.floating):
                 bad=np.isnan(cells)
+                cells[bad]=-1.0 # used to be 0, and after the cast
                 cells=cells.astype(np.int32)
-                cells[bad]=0
 
             # just to be safe, do this even if it came from Masked.
             cell_start_index=nc[var_cells].attrs.get('start_index',1)
@@ -1188,6 +1188,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         if 'NetLinkType' in nc.variables:
             # typ: 0: 2D closed, 1: 2D open, 2: 1D open
             g.add_edge_field('NetLinkType',nc['NetLinkType'].values)
+
+        if 'iglobal_s' in nc.variables:
+            g.add_cell_field('iglobal_s',nc['iglobal_s'].values)
 
         if cleanup:
             # defined below
