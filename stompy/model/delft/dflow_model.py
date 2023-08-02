@@ -65,9 +65,11 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         # might assume that self.mdu exists.
         # I don't think there is a downside to setting up a default
         # mdu right here.
+        self.tracers=[] # non-DWAQ tracers. WIP.
+        
         self.load_default_mdu()
 
-        super(DFlowModel,self).__init__(*a,**kw)
+        super().__init__(*a,**kw)
 
     def __repr__(self):
         return '<DFlowModel: %s>'%self.run_dir
@@ -90,6 +92,8 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         # Updated defaults-r53925.mdu by removing settings that 2021.03
         # complains about.
         fn=os.path.join(os.path.dirname(__file__),"data","defaults-2021.03.mdu")
+        # Made some updates to this, but not yet tested:
+        # fn=os.path.join(os.path.dirname(__file__),"data","defaults-2023.02.mdu")
         self.load_mdu(fn)
         
         # And some extra settings to make it compatible with this script
@@ -176,11 +180,15 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                 shutil.copyfile(fn_path, os.path.join(self.run_dir,fn))
                 
     def write_forcing(self,overwrite=True):
+        # Prep external forcing file
         bc_fn=self.ext_force_file()
         assert bc_fn,"DFM script requires old-style BC file.  Set [external forcing] ExtForceFile"
         if overwrite and os.path.exists(bc_fn):
             os.unlink(bc_fn)
         utils.touch(bc_fn)
+
+        # Could compile names of any generic tracers. For now, require user to
+        # add names to self.tracers.
         super(DFlowModel,self).write_forcing()
 
     def set_grid(self,grid):
@@ -527,6 +535,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         pass
 
     def partition(self,partition_grid=None):
+        print(f"Top of partition: num_procs={self.num_procs}")
         if self.num_procs<=1:
             return
         # precompiled 1.5.2 linux binaries are able to partition the mdu okay,
@@ -544,7 +553,11 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             # here we strip to the basename
             cmd=["--partition:ndomains=%d:icgsolver=6"%self.num_procs,
                  os.path.basename(self.mdu.filename)]
-            self.run_dflowfm(cmd,mpi=False)
+            print(f"About to call {cmd}")
+            output=self.run_dflowfm(cmd,mpi=False)
+            print("-"*80)
+            print(output)
+            print("-"*80)
         else:
             # Copy the partitioned network files:
             if self.restart_deep:
@@ -559,6 +572,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             # not a cross platform solution!
             gen_parallel=os.path.join(self.dfm_bin_dir,"generate_parallel_mdu.sh")
             cmd=[gen_parallel,os.path.basename(self.mdu.filename),"%d"%self.num_procs,'6']
+            print(f"About to call {cmd}")
             return utils.call_with_path(cmd,self.run_dir)
 
     def chain_restarts(self):
@@ -1059,6 +1073,10 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             else:
                 default=0.0
             scalar_das.append(xr.DataArray(default,name='temp'))
+        for tracer in self.tracers:
+            # TODO: track more information in a small class or dict
+            scalar_names.append(tracer)
+            scalar_das.append(xr.DataArray(0.0,name=tracer))
         if self.dwaq:
             for sub in self.dwaq.substances:
                 scalar_names.append(sub.lower())
@@ -1231,15 +1249,17 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         pli_fn=bc_id+'.pli'
         dio.write_pli(os.path.join(self.run_dir,pli_fn),pli_data)
 
-        if isinstance(bc, DelwaqScalarBC):
+        is_dwaq=bool(self.dwaq) and (bc.scalar in self.dwaq.substances)
+        
+        if is_dwaq: # DelwaqScalarBC is defunct
             quant=f'tracerbnd{bc.scalar}'
         elif bc.scalar=='salinity':
             quant='salinitybnd'
         elif bc.scalar=='temperature':
             quant='temperaturebnd'
         else:
-            self.log.info("scalar '%s' will be passed to DFM verbatim"%bc.scalar)
-            quant=bc.scalar
+            self.log.info("scalar '%s' will be passed to DFM as generic tracer"%bc.scalar)
+            quant=f'tracerbnd{bc.scalar}'
 
         with open(self.ext_force_file(),'at') as fp:
             lines=["QUANTITY=%s"%quant,
