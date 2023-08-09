@@ -11,6 +11,7 @@ import copy
 
 import numpy as np
 import xarray as xr
+import pandas as pd
 from shapely import geometry
 
 import stompy.model.delft.io as dio
@@ -20,6 +21,8 @@ from stompy import utils, filters, memoize
 from stompy.spatial import wkb2shp, proj_utils
 import stompy.grid.unstructured_grid as ugrid
 import re
+
+bokeh_warned=[]
 
 class MissingBCData(Exception):
     pass
@@ -300,29 +303,31 @@ class BC(object):
           used to create a two-point timeseries, but if that is needed it should be moved
           to model specific code.
         """
-        if isinstance(data,xr.DataArray):
-            data.attrs['mode']=self.mode
-            return data
-        elif isinstance(data,xr.Dataset):
+        # convert scalars, DataFrames and xr.Dataset to xr.DataArray
+        if isinstance(data, pd.DataFrame):
+            data=xr.Dataset.from_dataframe(data)
+            if 'time' not in data.dims:
+                print("warning: Converting pd.DataFrame to xr.Dataset, but no time dimension.")
+        elif isinstance(data, pd.Series):
+            data=xr.DataArray.from_series(data)
+            if 'time' not in data.dims:
+                print("warning: Converting pd.Series to xr.DataArray, but no time dimension.")
+                
+        if isinstance(data,xr.Dataset):
             if len(data.data_vars)==1:
-                # some xarray allow inteeger index to get first item.
+                # some xarray allow integer index to get first item.
                 # 0.10.9 requires this cast to list first.
-                da=data[list(data.data_vars)[0]]
-                da.attrs['mode']=self.mode
-                return da
+                data=data[list(data.data_vars)[0]]
             else:
                 raise Exception("Dataset has multiple data variables -- not sure which to use: %s"%( str(data.data_vars) ))
         elif isinstance(data,(np.integer,np.floating,int,float)):
-            # # handles expanding a constant to the length of the run
-            # ds=xr.Dataset()
-            # ds['time']=('time',),np.array( [self.data_start,self.data_stop] )
-            # ds[quantity]=('time',),np.array( [data,data] )
-            # da=ds[quantity]
-            da=xr.DataArray(data)
-            da.attrs['mode']=self.mode
-            return da
-        else:
+            data=xr.DataArray(data)
+
+        if not isinstance(data,xr.DataArray):
             raise Exception("Not sure how to cast %s to be a DataArray"%data)
+        
+        data.attrs['mode']=self.mode
+        return data
 
     # Not all BCs have a time dimension, but enough do that we have some general utility
     # getters/setters at this level
@@ -425,7 +430,9 @@ class BC(object):
             import bokeh.io as bio # output_notebook, show, output_file
             import bokeh.plotting as bplt
         except ModuleNotFoundError:
-            log.warning("Bokeh not found.  Will not generate bokeh plots")
+            if not bokeh_warned:
+                log.warning("Bokeh not found.  Will not generate bokeh plots")
+                bokeh_warned.append(True)
             return
 
         bplt.reset_output()
@@ -711,7 +718,9 @@ class RoughnessBC(BC):
             import bokeh.io as bio # output_notebook, show, output_file
             import bokeh.plotting as bplt
         except ImportError:
-            self.model.log.info('Bokeh not found, will skip bokeh output')
+            if not bokeh_warned:
+                log.warning("Bokeh not found.  Will not generate bokeh plots")
+                bokeh_warned.append(True)
             return
 
         bplt.reset_output()
@@ -1179,6 +1188,7 @@ class HydroModel(object):
         tricky, though. e.g. gazetteers. Choice of gazetteer is tied to choice
         of grid, yet it is handy to have when loading a model.
         """
+        super().__init__()
         self.log=log
         self.bcs=[]
         self.extra_files=[]
@@ -1609,6 +1619,11 @@ class HydroModel(object):
         bc=self.RoughnessBC(model=self,**kw)
         self.add_bcs(bc)
         return bc
+    def add_ScalarBC(self,**kw):
+        bc=self.ScalarBC(model=self,**kw)
+        self.add_bcs(bc)
+        return bc
+        
     # def add_Structure(self,**kw): # only for DFM now.
 
     def add_bcs(self,bcs):
@@ -1625,7 +1640,16 @@ class HydroModel(object):
             assert (bc.model is None) or (bc.model==self),"Not expecting to share BC objects"
             bc.model=self
         self.bcs.extend(bcs)
-
+        
+    def scalar_parent_bc(self,name):
+        """
+        Find a BC object by name that can be a parent to a ScalarBC.
+        """
+        for bc in self.bcs:
+            if bc.name == name and isinstance(bc, (CommonFlowBC, StageBC)):
+                return bc
+        return None
+        
     def utc_to_native(self,t):
         return t+self.utc_offset
     def native_to_utc(self,t):
