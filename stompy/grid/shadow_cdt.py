@@ -28,6 +28,12 @@ class ShadowCDT(exact_delaunay.Triangulation):
         
         self.nodemap_g_to_local={}
 
+        self.connect()
+        if not ignore_existing and g.Nnodes():
+            self.init_from_grid(g)
+            
+    def connect(self):
+        g=self.g
         g.subscribe_before('add_node',self.before_add_node)
         g.subscribe_after('add_node',self.after_add_node)
         g.subscribe_before('modify_node',self.before_modify_node)
@@ -37,8 +43,16 @@ class ShadowCDT(exact_delaunay.Triangulation):
         g.subscribe_before('delete_edge',self.before_delete_edge)
         g.subscribe_before('modify_edge',self.before_modify_edge)
 
-        if not ignore_existing and g.Nnodes():
-            self.init_from_grid(g)
+    def disconnect(self):
+        g=self.g
+        g.unsubscribe_before('add_node',self.before_add_node)
+        g.unsubscribe_after('add_node',self.after_add_node)
+        g.unsubscribe_before('modify_node',self.before_modify_node)
+        g.unsubscribe_before('delete_node',self.before_delete_node)
+        
+        g.unsubscribe_before('add_edge',self.before_add_edge)
+        g.unsubscribe_before('delete_edge',self.before_delete_edge)
+        g.unsubscribe_before('modify_edge',self.before_modify_edge)
 
     def init_from_grid(self,g): # ShadowCDT
         # Nodes:

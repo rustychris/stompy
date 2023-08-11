@@ -143,7 +143,8 @@ def lowpass_fir(x,winsize,ignore_nan=True,axis=-1,mode='same',use_fft=False,
         win=winsize
         winsize=len(win)
     else:
-        if isinstance(winsize, np.timedelta64) and isinstance(x,xr.DataArray):
+        if isinstance(winsize, np.timedelta64):
+            assert isinstance(x,xr.DataArray)
             dts=np.diff(x.time)
             dts.sort()
             dt=dts[len(dts)//2]
