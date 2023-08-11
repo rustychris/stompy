@@ -1375,3 +1375,25 @@ def pos_up(tran,vname):
     else:
         z_sgn=-1
     return z_sgn*tran[vname]
+
+
+def casts_to_transect(df_casts,f_dist,f_depth):
+    """
+    Convert pandas dataframe with cast data to a transect.
+    f_dist: field holding the per-station distance, i.e. d_sample.
+    Must be constant within a cast.
+    f_depth: field holding depth/elevation.  Will end up in z_ctr.
+    """
+    df_casts=df_casts.set_index(f_dist)
+
+    dss_cast=[]
+    for d in df_casts.index.unique():
+        # Don't set depth as index
+        df_cast=df_casts.loc[d].reset_index() # .set_index(f_depth)
+        ds_cast=xr.Dataset.from_dataframe(df_cast)
+        ds_cast['d_sample']=(), d
+        dss_cast.append(ds_cast)
+    ds_casts=xr.concat(dss_cast,dim='sample')
+    ds_casts=ds_casts.rename_dims({'index':'layer'}).rename_vars({f_depth:'z_ctr'})
+    ds_casts=ds_casts.set_coords(['d_sample','z_ctr'])
+    return ds_casts
