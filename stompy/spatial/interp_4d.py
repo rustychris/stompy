@@ -12,6 +12,7 @@ from .. import utils
 from ..grid import unstructured_grid
 from ..model import unstructured_diffuser
 
+from scipy.sparse import linalg 
 ## 
 
 def interp_to_time_per_ll(df,tstamp,lat_col='latitude',lon_col='longitude',
@@ -37,6 +38,108 @@ def interp_to_time_per_ll(df,tstamp,lat_col='latitude',lon_col='longitude',
     assert np.all(np.isfinite(result[value_col].values))
     return result
 
+class PreparedExtrapolation:
+    """
+    Save some intermediate state to allow much faster extrapolation when the
+    shape of the system does not change.
+    The weighted extrapolation only uses flux BCs, which are set entirely in
+    the rhs.
+    Alpha cannot be dynamically changed.
+    """
+    def __init__(self, g, alpha=1e-5, edge_depth=None, cell_depth=None):
+        self.g = g
+        self.alpha = alpha
+        
+        self.D=unstructured_diffuser.Diffuser(self.g,edge_depth=edge_depth,cell_depth=cell_depth)
+        self.D.set_decay_rate(self.alpha)
+
+        self.prepare()
+    def prepare(self):
+        self.D.construct_linear_system()
+        self.A = self.D.A.tocsr()
+
+    def process(self, samples, 
+                x_col='x',y_col='y',value_col='value',weight_col='weight', cell_col=None,
+                return_weights=False):
+        # B[:,0]: rhs for values
+        # B[:,1]: rhs for weights
+        D=self.D
+        B=np.zeros( (D.Ncalc, 2), np.float64) # possible it will be faster if this is sparse.
+
+
+        if weight_col is None:
+            weights=np.ones(len(samples))
+        else:
+            weights=samples[weight_col].values
+
+        values=samples[value_col].values
+
+        if cell_col is not None:
+            cells=samples[cell_col].values
+        else:
+            xys=samples[[x_col,y_col]].values
+            cells=[ (D.grid.point_to_cell(xy) or D.grid.select_cells_nearest(xy))
+                    for xy in xys]
+
+        for i in range(len(samples)):
+            weight_flux=weights[i]
+            value_flux =weight_flux*values[i]
+            
+            # Flux boundary conditions:
+            cell=cells[i]
+            mic=D.c_map[cell]
+            B[mic,0] -= value_flux/(D.area_c[cell]*D.dzc[cell]) * D.dt
+            B[mic,1] -= weight_flux/(D.area_c[cell]*D.dzc[cell]) * D.dt
+        
+        # Solve both at once:
+        CW_solved=linalg.spsolve(self.A,B)
+        C=CW_solved[:,0]
+        W=CW_solved[:,1]
+        assert np.all(np.isfinite(C))
+        assert np.all(np.isfinite(W))
+        assert np.all(W>0)
+    
+        T=C / W
+        if return_weights:
+            return T,W
+        else:
+            return T
+
+    def process_raw(self, cell_weights, cell_values=None, cell_value_weights=None,
+                    return_weights=False):
+        """
+        Even more direct. If we have per-cell value and weight, can just 
+        directly use those.
+        values can be unscaled, or can be supplied already scaled by weight.
+        """
+        D=self.D
+        B=np.zeros( (D.Ncalc, 2), np.float64)
+        assert D.Ncalc == len(cell_weights)
+
+        time_per_vol=-D.dt / (D.area_c*D.dzc)
+
+        B[:,1] = cell_weights * time_per_vol
+        
+        if cell_values is not None:
+            B[:,0] = cell_weights * cell_values * time_per_vol
+        elif cell_value_weights is not None:
+            B[:,0] = cell_value_weights * time_per_vol
+            
+        # Solve both at once:
+        CW_solved=linalg.spsolve(self.A,B)
+        C=CW_solved[:,0]
+        W=CW_solved[:,1]
+        assert np.all(np.isfinite(C))
+        assert np.all(np.isfinite(W))
+        assert np.all(W>=0)
+    
+        T=C / W
+        if return_weights:
+            return T,W
+        else:
+            return T
+
+        
 
 def weighted_grid_extrapolation(g,samples,alpha=1e-5,
                                 x_col='x',y_col='y',value_col='value',weight_col='weight',
