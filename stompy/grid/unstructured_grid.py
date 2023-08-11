@@ -1034,6 +1034,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             cell_nodes = h['Geometry/2D Flow Areas/' + twod_area_name + '/Cells FacePoint Indexes']
             cell_nodes=np.array(cell_nodes)
             max_cell_faces=cell_nodes.shape[1]
+            ncells=len(cell_nodes) # can be smaller than len(cell_center_xy) ?
             for i in range(len(cell_nodes)):
                 if cell_nodes[i,2] < 0:  # first ghost cell (which are sorted to end of list)
                     ncells=i # don't count ghost cells
@@ -2002,13 +2003,28 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         g.add_from_shp(features=feats)
         return g
     
-    def add_from_shp(self,shp_fn=None,features=None):
+    def add_from_shp(self,shp_fn=None,features=None,linestring_field=None,
+                     check_degenerate_edges=True):
         """ Add features in the given shapefile to this grid.
         Limited support: 
         polygons must conform to self.max_sides
+        
+        linestring_field: incoming linestring are stuffed into an edge field
+         as [N,2] coordinate arrays. mesh topology uses only start/end of 
+         each linestring. If None (default), linestrings are handled segment
+         by segment as distinct mesh edges.
+         
+        allow_degenerate_edges: permit edges that start/end on same node.
         """
         if features is None:
             features=wkb2shp.shp2geom(shp_fn)
+            
+        if linestring_field is not None:
+            if linestring_field is self.edges.dtype.names:
+                assert np.issubdtype(object,self.edges.dtype),"Linestring field has weird type"
+            
+            self.add_edge_field(linestring_field,np.zeros(self.Nedges(),dtype=object),
+                                on_exists='pass')
             
         for geo in features['geom']:
             if geo.geom_type =='Polygon':
@@ -2032,7 +2048,13 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     self.add_cell_and_edges(nodes=nodes)
             elif geo.geom_type=='LineString':
                 coords=np.array(geo.coords)
-                self.add_linestring(coords)
+                if linestring_field is None:
+                    self.add_linestring(coords)
+                else:
+                    nA=self.add_or_find_node(coords[0,:])
+                    nB=self.add_or_find_node(coords[-1,:])
+                    j=self.add_edge(nodes=[nA,nB],_check_degenerate=check_degenerate_edges)
+                    self.edges[linestring_field][j]=coords                    
             else:
                 raise GridException("Not ready for geometry type %s"%geo.geom_type)
         # still need to collapse duplicate nodes
@@ -2302,14 +2324,14 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         if on_bare_edge=='return':
             return bare
 
-    def orient_cells(self,cw_islands=False):
-        A=self.cells_area()
+    def orient_cells(self,cw_islands=False, subedges=None):
+        A=self.cells_area(subedges=subedges)
 
         flip_mask=A<0
 
         if cw_islands:
             # look for cells inside other cells, and make
-            islands=self.select_island_cells()
+            islands=self.select_island_cells(subedges=subedges)
             flip_mask[islands] = ~flip_mask[islands]
 
         flip=np.nonzero(flip_mask)[0]
@@ -2320,7 +2342,88 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         self.edge_to_cells(recalc=True)
         self.cells_area(sel=flip)
 
-    def select_island_cells(self):
+    def explode_subedges(self,subedges):
+        """
+        Convert subedges to regular edges, and return the set of original nodes.
+        This ignores cells.
+        """
+        original_nodes=list(self.valid_node_iter())
+        for j in self.valid_edge_iter():
+            coords=self.edges[subedges][j]
+            if coords is None:
+                continue
+            coords=np.asarray(coords)
+            if coords.ndim==0 or coords.shape[0]==2:
+                continue
+            
+            nodes=self.edges['nodes'][j].copy()
+            coords=coords.copy()
+            self.delete_edge(j)
+            inner_nodes,inner_edges=self.add_linestring(coords[1:-1,:],closed=False)
+            self.add_edge(nodes=[nodes[0],inner_nodes[0]])
+            self.add_edge(nodes=[inner_nodes[-1],nodes[1]])
+            
+        return original_nodes
+
+    def get_subedge(self,j,subedges):
+        subedge=np.asarray(self.edges[subedges][j])
+        if (subedge.ndim!=2):
+            subedge=self.nodes['x'][ self.edges['nodes'][j] ]
+            self.edges[subedges][j]=subedge
+        return subedge
+    
+    def implode_subedges(self,subedges,break_nodes,allow_duplicates=False):
+        """
+        Glue edges back into complex edges except at break_nodes. This has to be aware of 
+        cells!
+        Start with slow implementation since we can reuse some other methods
+        """
+        break_nodes={n:True for n in break_nodes}
+        
+        # Ensure that all subedge fields are valid.
+        for j in self.valid_edge_iter():
+            self.get_subedge(j,subedges)
+        
+        for n in self.valid_node_iter():
+            if n in break_nodes: continue
+            edges=self.node_to_edges(n)
+            if len(edges)!=2: continue
+            #hes=self.node_to_halfedges(n)
+            #if len(hes)!=2: continue
+
+            sub0=self.edges[subedges][edges[0]]
+            sub1=self.edges[subedges][edges[1]]
+            
+            # n_left ---edges[0]--- n ---edges[1]--- n_right
+            e0nodes=self.edges['nodes'][edges[0]]
+            e1nodes=self.edges['nodes'][edges[1]]
+            if e0nodes[0]==n:
+                n_left=e0nodes[1]
+                sub0=sub0[::-1]
+            elif e0nodes[1]==n:
+                n_left=e0nodes[0]
+            else: assert False
+            if e1nodes[0]==n:
+                n_right=e1nodes[1]
+            elif e1nodes[1]==n:
+                n_right=e1nodes[0]
+                sub1=sub1[::-1]
+            else: assert False
+            
+            # combine...
+            new_edge=self.merge_edges(edges,_check_existing=not allow_duplicates)
+            # Could make this dependent on whether end points match.
+            sub=np.concatenate([sub0,sub1[1:]])
+            if self.edges['nodes'][new_edge,0]==n_left:
+                pass
+            elif self.edges['nodes'][new_edge,0]==n_right:
+                sub=sub[::-1]
+            else: assert False  
+            
+            self.edges[subedges][new_edge] = sub
+
+
+    def select_island_cells(self,subedges=None):
         """
         Return bitmask over cells with True for cells that are 
         entirely inside other cells. Does not attempt to go
@@ -2332,7 +2435,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         Current implementation is not fast! quadratic and slow tests!
         """
         valid_cells=np.nonzero(~self.cells['deleted'])[0]
-        A=np.abs(self.cells_area())[valid_cells]
+        A=np.abs(self.cells_area(subedges=subedges))[valid_cells]
 
         # from largest to smallest
         order = np.argsort(-A)
@@ -2340,7 +2443,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         is_island=np.zeros(self.Ncells(), bool)
         is_island[:] = False
 
-        polys=[self.cell_polygon(c) for c in order]
+        polys=[self.cell_polygon(c,subedges=subedges) for c in order]
         
         for ci,c in enumerate(order):
             if ci==0: continue # skip first cell
@@ -2694,6 +2797,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     else:
                         cycles.append(cycle)
         return cycles
+    
     def make_cells_from_edges(self,max_sides=None):
         """
         Traverse edges and create cells for edge cycles
@@ -2724,6 +2828,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 self.cells['nodes'][i,:len(cycle)]=cycle
             # This is now stale
             self._cell_center_index=None
+            self.edge_to_cells(recalc=True)
 
     def interp_cell_to_node(self,cval):
         result=np.zeros(self.Nnodes(),cval.dtype)
@@ -3235,6 +3340,23 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             if not self.cells['deleted'][c]:
                 points[ci]=np.array(self.cell_polygon(c).representative_point())
         return points
+    
+    def cell_coords_subedges(self,c,subedges):
+        """
+        Coordinate sequence [N,2] pulling sub-edge linestring from
+        self.cells[subedges].
+        """
+        coords=[]
+        for j in self.cell_to_edges(c):
+            seg_coords=self.edges[subedges][j]
+            if self.edges['cells'][j,0]==c:
+                pass
+            elif self.edges['cells'][j,1]==c:
+                seg_coords=seg_coords[::-1,:]
+            else:
+                assert False
+            coords.append(seg_coords[1:,:])
+        return np.concatenate(coords)
         
     def cells_centroid_shapely(self,ids=None):
         """
@@ -3473,17 +3595,25 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         if n2 is None:
             n1,n2=n1
 
-        assert n1!=n2,"Duplicate node %d in nodes_to_edge"%n1
-
+        # Some slight "exotic" cases like conceptual meshes
+        # and have edges that start/end on the same node.
+        #assert n1!=n2,"Duplicate node %d in nodes_to_edge"%n1
         candidates1 = self.node_to_edges(n1)
-        candidates2 = self.node_to_edges(n2)
-
-        # about twice as fast to loop this way
-        for e in candidates1:
-            if e in candidates2:
-                return e
-        return None
-
+        if n1!=n2:
+            candidates2 = self.node_to_edges(n2)
+    
+            # about twice as fast to loop this way
+            for e in candidates1:
+                if e in candidates2:
+                    return e
+            return None
+        else:
+            for e in candidates1:
+                if ( (self.edges['nodes'][e,0]==n1)
+                    and (self.edges['nodes'][e,1]==n2) ):
+                    return e
+            return None
+                
         # # this way has nodes_to_edge taking 3x longer than just the node_to_edges call
         # for e in candidates1:
         #     if n2 in self.edges['nodes'][e]:
@@ -3688,9 +3818,11 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         pass
 
     @listenable
-    def add_edge(self,_check_existing=True,**kwargs):
+    def add_edge(self,_check_existing=True,_check_degenerate=True,**kwargs):
         """
         Does *not* check topology / planarity
+        _check_existing: fail if the edge (or its reverse) already exists
+        _check_degenerate: fail if the two nodes are equal
         """
         j=None
         if '_index' in kwargs:
@@ -3720,13 +3852,15 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             self.edges[k][j]=v
 
         # most basic checks on edge validity:
-        if self.edges[j]['nodes'][0]==self.edges[j]['nodes'][1]:
-            raise self.InvalidEdge('duplicate nodes')
+        if _check_degenerate:
+            if self.edges[j]['nodes'][0]==self.edges[j]['nodes'][1]:
+                raise self.InvalidEdge('duplicate nodes')
 
         if self._node_to_edges is not None:
             n1,n2=self.edges['nodes'][j]
             self._node_to_edges[n1].append(j)
-            self._node_to_edges[n2].append(j)
+            if n1!=n2:
+                self._node_to_edges[n2].append(j)
 
         self.push_op(self.unadd_edge,j)
         return j
@@ -3743,8 +3877,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             raise GridException("Edge %d has cell neighbors"%j)
         self.edges['deleted'][j] = True
         if self._node_to_edges is not None:
-            for n in self.edges['nodes'][j]:
-                self._node_to_edges[n].remove(j)
+            n1,n2 = self.edges['nodes'][j]
+            self._node_to_edges[n1].remove(j)
+            if n1!=n2:
+                self._node_to_edges[n2].remove(j)
 
         self.push_op(self.undelete_edge,j,self.edges[j].copy())
 
@@ -3773,12 +3909,15 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             self.delete_cell(c2)
         self.delete_edge(j)
 
-    def merge_edges(self,edges=None,node=None):
+    def merge_edges(self,edges=None,node=None,_check_existing=True):
         """ Given a pair of edges sharing a node,
         with no adjacent cells or additional edges,
         remove/delete the nodes, combined the edges
         to a single edge, and return the index of the
         resulting edge.
+        _check_existing: True: usual check that the newly created
+          edge does not already exist. False skips that check. Failing
+          this test leaves the grid in a partially updated state!
         """
         if edges is None:
             edges=self.node_to_edges(node)
@@ -3816,7 +3955,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 c_nodes=[n
                          for n in self.cell_to_nodes(c)
                          if n!=B ]
-                self.modify_cell(c,nodes=c_nodes)
+                # Marks the edge information as stale. Just for safety --
+                # we patch it up below.
+                self.modify_cell(c,nodes=c_nodes,edges=[self.UNKNOWN])
 
         # Edge A will be the one to keep
         # modify_edge knows about changes to nodes
@@ -3843,7 +3984,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         self.delete_edge(A,check_cells=False)
         self.delete_node(B)
         edge_data['nodes']=new_nodes
-        self.add_edge(_index=A,**edge_data)
+        self.add_edge(_index=A,_check_existing=_check_existing,**edge_data)
+        for c in edge_data['cells']:
+            if c>=0:
+                self.modify_cell(c,edges=self.cell_to_edges(edge_data['cells'][0], ordered=True))
         return A
     def split_edge_basic(self,j,**node_args):
         """
@@ -4792,7 +4936,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
     def plot_edges(self,ax=None,mask=None,values=None,clip=None,labeler=None,
                    label_jitter=0.0,lw=0.8,return_mask=False,
-                   segments=None,**kwargs):
+                   subedges=None,**kwargs):
         """
         plot edges as a LineCollection.
         optionally select a subset of edges with boolean array mask.
@@ -4806,7 +4950,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         lw: defaults to a thin line, usually more useful with grids, instead of 
           modern matplotlib default which is thick for data plots.
         return_mask: return the line collection and the mask array
-        segments: specify a field name (in the future maybe a lambda) for an
+        subedges: specify a field name (in the future maybe a lambda) for an
          alternative geometry in the form of an [N,2] coord string.
 
         Returns: LineCollection, and if return_mask is True then also the mask
@@ -4845,8 +4989,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     segs[...,1].max()]
         else:
             bounds=None
-        if isinstance(segments,six.string_types):
-            segs = self.edges[segments][mask]
+        if isinstance(subedges,six.string_types):
+            segs = self.edges[subedges][mask]
              
         if values is not None:
             kwargs['array'] = values
@@ -4866,6 +5010,11 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 
             # weirdness to account for mask being indices vs. bitmask
             for n in np.arange(self.Nedges())[mask]:
+                if subedges is not None:
+                    arc=self.edges[subedges][n]
+                    pnt=0.5*( arc[arc.shape[0]//2,:] + arc[arc.shape[0]//2+1,:])
+                else:
+                    pnt=ec[n,:]
                 ax.text(ec[n,0], ec[n,1],
                         labeler(n,self.edges[n]))
 
@@ -5569,7 +5718,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
     def plot_cells(self,ax=None,mask=None,values=None,clip=None,centers=False,labeler=None,
                    masked_values=None,ragged_edges=None,
-                   centroid=False,**kwargs):
+                   centroid=False,subedges=None,**kwargs):
         """
         values: color cells based on the given values.  can also be
           the name of a field in self.cells.
@@ -5581,6 +5730,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         ragged_edges: controls how cells with fewer than max_sides edges are handled.
           False: nan-mask extra edges (but edges won't plot correctly), True: pass
           a ragged list of arrays. None: choose based on whether edgecolor is specified.
+        subedges: a field on edges that provides an alternate geometry as a linestring 
+        [N,2].
         """
         ax = ax or plt.gca()
 
@@ -5617,6 +5768,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         elif masked_values is not None:
             values = masked_values
 
+        if values is not None and not np.issubdtype(values.dtype,np.number):
+            # Hack to scalarize categorical data. This will still fail
+            # if the type is not comparable.
+            uniq = np.unique(values)
+            values = np.searchsorted(uniq,values)
+            
         if centers or labeler:
             if isinstance(centroid,np.ndarray):
                 xy=centroid
@@ -5632,16 +5789,21 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 kwargs['array'] = values
             cell_nodes = self.cells['nodes'][mask]
 
+            # do this regardless of settings in order to get bounds.
             polys = self.nodes['x'][cell_nodes]
             missing = cell_nodes<0
             polys[missing,:] = np.nan # seems to work okay for triangles
 
-            if ragged_edges:
-                # slower, but properly shows edges
-                plot_polys = [ self.nodes['x'][cn[ cn>=0 ]]
-                               for cn in cell_nodes]
+            if subedges is None:                
+                if ragged_edges:
+                    # slower, but properly shows edges
+                    plot_polys = [ self.nodes['x'][cn[ cn>=0 ]]
+                                   for cn in cell_nodes]
+                else:
+                    plot_polys=polys
             else:
-                plot_polys=polys
+                plot_polys = [self.cell_coords_subedges(c,subedges)
+                              for c in np.nonzero(mask)[0]]
                 
             coll = PolyCollection(plot_polys,**kwargs)
             ax.add_collection(coll)
@@ -5694,12 +5856,26 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             lengths=mag( p2-p1 )
         return lengths
 
-    def cells_area(self,sel=None):
+    def cells_area(self,sel=None,subedges=None):
         """
         sel: list/array of cell indices to calculate.  Can be multidimensional,
           but cannot be a bitmask.
         defaults to cells which have a nan area
+        subedges: include sub-edge geometry given by edges[subedges]. Disables updates to _area.
         """
+        if subedges is not None:
+            areas=np.full(self.Ncells(), np.nan) # could be wasteful...
+            if sel is None:
+                sel=np.arange(self.Ncells())
+                cells=self.valid_cell_iter()
+            else:
+                cells=sel
+            for c in cells:
+                coords=self.cell_coords_subedges(c,subedges=subedges)
+                areas[c] = signed_area(coords)
+            return areas[sel]
+
+        
         if sel is None:
             recalc=np.nonzero( np.isnan(self.cells['_area']) & (~self.cells['deleted']))[0]
         else:
@@ -5830,8 +6006,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         else:
             return sel
 
-    def cell_polygon(self,c):
-        return geometry.Polygon(self.nodes['x'][self.cell_to_nodes(c)])
+    def cell_polygon(self,c,subedges=None):
+        if subedges is None:
+            coords=self.nodes['x'][self.cell_to_nodes(c)]
+        else:
+            coords=self.cell_coords_subedges(c,subedges=subedges)
+        return geometry.Polygon(coords)
 
     def edge_line(self,e):
         return geometry.LineString(self.nodes['x'][self.edges['nodes'][e]])
@@ -7055,7 +7235,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         else:
             return hits
 
-    def select_cells_nearest(self,xy,count=None,inside=False,method='auto'):
+    def select_cells_nearest(self,xy,count=None,inside=False,method='auto',
+                             subedges=None):
         """
         xy: coordinate to query around
         count: if None, return a single index, otherwise return an array of
@@ -7074,6 +7255,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
           'node_index': get candidate cells from nearby nodes
           'auto': heuristic.  If inside is True, try cell centers, fallback to nodes. If
            inside is False, just use cell centers and hope.
+        subedges: partial support for sub-edge geometry. Specifies a field on edges with
+          coordinates. Only relevant for inside test.
         """
         xy=np.asarray(xy)
         real_count=count
@@ -7127,7 +7310,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             #      if self.cell_polygon(hit).contains(pnt):
             # -- using matplotlib to determine contains
             for hit in hits:
-                if self.cell_path(hit).contains_point(xy):
+                if self.cell_path(hit,subedges=subedges).contains_point(xy):
                     return hit
             if inside=='try':
                 return hits[0]
@@ -8076,6 +8259,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         return HalfEdge(self,j,orient)
     def nodes_to_halfedge(self,n1,n2):
         return HalfEdge.from_nodes(self,n1,n2)
+    def node_to_halfedges(self,n):
+        return [self.nodes_to_halfedge(n,nbr) 
+                for nbr in self.angle_sort_adjacent_nodes(n)]
     def cell_to_halfedge(self,c,i):
         j=self.cell_to_edges(c,ordered=True)[i]
         if self.edges['cells'][j,0]==c:
@@ -8097,17 +8283,18 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         else:
             return hit
 
-    def cell_path(self,i):
+    def cell_path(self,i,subedges=None):
         """
         Return a matplotlib Path object representing the closed polygon of
         cell i
         """
-        cell_nodes = self.cell_to_nodes(i)
-        #cell_codes = np.ones(len(cell_nodes),np.int32)*Path.LINETO
-        #cell_codes[0] = Path.MOVETO
-        #cell_codes[-1] = Path.CLOSEPOLY
-        return Path(self.nodes['x'][cell_nodes])
+        if subedges is None:
+            cell_nodes = self.cell_to_nodes(i)
+            return Path(self.nodes['x'][cell_nodes])
+        else:
+            return Path(self.cell_coords_subedges(i,subedges))
 
+    
 class UGrid(UnstructuredGrid):
     def __init__(self,nc=None,grid=None):
         """
