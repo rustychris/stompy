@@ -543,6 +543,118 @@ def linear_scales(gen,method='adhoc'):
 
 def add_bezier(gen):
     """
+    This version only needs turn_rev/turn_fwd, and does not need
+    the absolute angles to be globally consistent.
+
+    Note that the quad generation still relies on absolute angles.
+
+    Generate bezier control points for each edge.  Uses angles (in ij
+    space) in the generating grid to calculate angles at each vertex, and then
+    choose bezier control points to achieve that angle.
+
+    This version is standalone, and can handle nodes with degree>2.
+    """
+    # Need to force the internal angles at nodes to match xy space
+    # angles and ij space angles.
+
+    order=3 # cubic bezier curves
+    bez=np.nan*np.zeros( (gen.Nedges(),order+1,2) )
+    valid_edges=~gen.edges['deleted']
+    bez[valid_edges,0    ,:] = gen.nodes['x'][gen.edges['nodes'][valid_edges,0]]
+    bez[valid_edges,order,:] = gen.nodes['x'][gen.edges['nodes'][valid_edges,1]]
+
+    gen.add_edge_field('bez', bez, on_exists='overwrite')
+
+    for n in gen.valid_node_iter():
+        hes=gen.node_to_halfedges(n)
+
+        # Filter out non-quad grid edges in there, which will have angle=nan
+        hes=[he for he in hes 
+             if gen.edges['turn_fwd'][he.j]>0 or gen.edges['turn_rev'][he.j]>0]
+
+        if len(hes)==0:
+            continue
+        
+        # when a node is part of multple cells, but those
+        # cells have no edges in common, treat it as two separate
+        # groups of angles
+
+        # label nodes:
+        # These are already angle sorted, but they won't necessarily
+        # start with the most CW of the group.
+        node_groups=np.arange(len(hes))
+        group_start=0 # index into hes giving the first element of a group.
+        for a in range(len(hes)):
+            b=(a+1)%len(hes)
+            he_a=hes[a]
+            he_b=hes[b]
+            if he_a.cell()>=0:
+                # in the old code this was an additional condition.
+                # But this should always be true.
+                assert he_a.cell()==he_b.cell_opp()
+                node_groups[ node_groups==node_groups[b] ] = node_groups[a]
+            else:
+                group_start=b
+
+        # rotate so we start at the beginning of a group.
+        hes=np.roll(hes,-group_start)
+        node_groups=np.roll(node_groups,-group_start)
+        
+        # Don't actually need absolute angles, just need to be able to assign
+        # locally consistent ij angles.
+        
+        # Each of those half-edges has an angle in ij space, relative
+        # to natural edge direction.
+        def he_xy_angle(he):
+            A=gen.nodes['x'][he.node_rev()]
+            B=gen.nodes['x'][he.node_fwd()]
+            delta=B-A
+            return 180/np.pi * np.arctan2(delta[1],delta[0])        
+        xy_angles=np.array( [he_xy_angle(he) for he in hes] )
+
+        xy_tgts=0*xy_angles
+        
+        for grp in np.arange(len(hes)):
+            sel=node_groups==grp
+            if np.all(~sel): continue
+            grp_ij=[0] # by fiat, start of group is ij angle 0
+            
+            # turn information will be on the incoming half-edge
+            # but each of he are outgoing half-edges.
+            for he in hes[sel][1:]:
+                if he.orient==0:
+                    turn = gen.edges['turn_rev'][he.j]
+                else:
+                    turn = gen.edges['turn_fwd'][he.j]
+                assert turn>0
+                grp_ij.append(grp_ij[-1] + turn)
+                
+            grp_xy = xy_angles[sel] 
+            grp_ij = np.array(grp_ij)
+            # overall rotation -
+            # 0 degress in xy space is rot degrees from 0 degrees in
+            # ij space.
+            xy_to_ij=np.pi/180 * (grp_ij-grp_xy)
+            
+            # angular average:            
+            rot=180/np.pi * np.arctan2( np.sin(xy_to_ij).mean(),
+                                        np.cos(xy_to_ij).mean())
+            xy_tgts[sel]=grp_ij[sel] - rot
+            
+        xy_errs=xy_angles - xy_tgts
+
+        for he,xy_err in zip(hes,xy_errs):
+            vec=gen.nodes['x'][he.node_fwd()] - gen.nodes['x'][he.node_rev()]
+            cp=gen.nodes['x'][n] + utils.rot(-xy_err*np.pi/180., 1./3 * vec)
+            gen.edges['bez'][he.j,1+he.orient]=cp
+
+
+
+
+def add_bezier_from_angle(gen):
+    """
+    This version requires absolute angle set on each edge.
+ 
     Generate bezier control points for each edge.  Uses angles (in ij
     space) in the generating grid to calculate angles at each vertex, and then
     choose bezier control points to achieve that angle.
