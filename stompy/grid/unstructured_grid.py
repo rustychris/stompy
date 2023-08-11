@@ -2372,7 +2372,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             self.edges[subedges][j]=subedge
         return subedge
     
-    def implode_subedges(self,subedges,break_nodes):
+    def implode_subedges(self,subedges,break_nodes,allow_duplicates=False):
         """
         Glue edges back into complex edges except at break_nodes. This has to be aware of 
         cells!
@@ -2388,6 +2388,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             if n in break_nodes: continue
             edges=self.node_to_edges(n)
             if len(edges)!=2: continue
+            #hes=self.node_to_halfedges(n)
+            #if len(hes)!=2: continue
 
             sub0=self.edges[subedges][edges[0]]
             sub1=self.edges[subedges][edges[1]]
@@ -2409,8 +2411,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             else: assert False
             
             # combine...
-            new_edge=self.merge_edges(edges)
-            sub=np.concatenate([sub0,sub1])
+            new_edge=self.merge_edges(edges,_check_existing=not allow_duplicates)
+            # Could make this dependent on whether end points match.
+            sub=np.concatenate([sub0,sub1[1:]])
             if self.edges['nodes'][new_edge,0]==n_left:
                 pass
             elif self.edges['nodes'][new_edge,0]==n_right:
@@ -3906,12 +3909,15 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             self.delete_cell(c2)
         self.delete_edge(j)
 
-    def merge_edges(self,edges=None,node=None):
+    def merge_edges(self,edges=None,node=None,_check_existing=True):
         """ Given a pair of edges sharing a node,
         with no adjacent cells or additional edges,
         remove/delete the nodes, combined the edges
         to a single edge, and return the index of the
         resulting edge.
+        _check_existing: True: usual check that the newly created
+          edge does not already exist. False skips that check. Failing
+          this test leaves the grid in a partially updated state!
         """
         if edges is None:
             edges=self.node_to_edges(node)
@@ -3949,7 +3955,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 c_nodes=[n
                          for n in self.cell_to_nodes(c)
                          if n!=B ]
-                self.modify_cell(c,nodes=c_nodes)
+                # Marks the edge information as stale. Just for safety --
+                # we patch it up below.
+                self.modify_cell(c,nodes=c_nodes,edges=[self.UNKNOWN])
 
         # Edge A will be the one to keep
         # modify_edge knows about changes to nodes
@@ -3976,7 +3984,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         self.delete_edge(A,check_cells=False)
         self.delete_node(B)
         edge_data['nodes']=new_nodes
-        self.add_edge(_index=A,**edge_data)
+        self.add_edge(_index=A,_check_existing=_check_existing,**edge_data)
+        for c in edge_data['cells']:
+            if c>=0:
+                self.modify_cell(c,edges=self.cell_to_edges(edge_data['cells'][0], ordered=True))
         return A
     def split_edge_basic(self,j,**node_args):
         """
@@ -4999,6 +5010,11 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 
             # weirdness to account for mask being indices vs. bitmask
             for n in np.arange(self.Nedges())[mask]:
+                if subedges is not None:
+                    arc=self.edges[subedges][n]
+                    pnt=0.5*( arc[arc.shape[0]//2,:] + arc[arc.shape[0]//2+1,:])
+                else:
+                    pnt=ec[n,:]
                 ax.text(ec[n,0], ec[n,1],
                         labeler(n,self.edges[n]))
 
@@ -8243,6 +8259,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         return HalfEdge(self,j,orient)
     def nodes_to_halfedge(self,n1,n2):
         return HalfEdge.from_nodes(self,n1,n2)
+    def node_to_halfedges(self,n):
+        return [self.nodes_to_halfedge(n,nbr) 
+                for nbr in self.angle_sort_adjacent_nodes(n)]
     def cell_to_halfedge(self,c,i):
         j=self.cell_to_edges(c,ordered=True)[i]
         if self.edges['cells'][j,0]==c:
