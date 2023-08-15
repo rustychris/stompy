@@ -269,7 +269,8 @@ class Diffuser(object):
             mic=c_map[ic]
             # make mass/time into concentration/step
             # arrived at minus sign by trial and error.
-            b[mic] -= value/(area_c[ic2]*dzc[ic2]) * self.dt
+            # 2023-08-04: there was a bug here that used ic2 instead of ic.
+            b[mic] -= value/(area_c[ic]*dzc[ic]) * self.dt
 
         if meth == 'dok':
             self.A = sparse.coo_matrix(A)

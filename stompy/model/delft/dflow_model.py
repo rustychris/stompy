@@ -138,6 +138,9 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                 # less sure about these.
                 self.update_config()
                 self.mdu.write()
+
+        if self.dwaq:
+            self.dwaq.write_waq_forcing()
                 
     def copy_files_for_restart(self):
         """
@@ -619,6 +622,13 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
     #         
     #     data=dio.read_dfm_tim(tim_fn,t_ref,columns=self.tracer_list())
 
+    @property
+    def n_layers(self):
+        """
+        Returns 0 for 2D, 1 for 3D with a single layer.
+        """
+        return int(self.mdu['geometry','Kmx'])
+    
     @classmethod
     def to_mdu_fn(cls,path):
         """
@@ -949,6 +959,11 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
     def write_monitor_points(self):
         fn=self.mdu.filepath( ('output','ObsFile') )
         if fn is None: return
+        if not fn.startswith(self.run_dir):
+            # Assume we should just use pre-existing file.
+            if not os.path.exists(fn):
+                self.log.warning("Monitor points file '%s' is outside run directory but does not exist"%fn)
+            return
         with open(fn,'at') as fp:
             for i,mon_feat in enumerate(self.mon_points):
                 try:
@@ -960,6 +975,12 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
     def write_monitor_sections(self,append=True):
         fn=self.mdu.filepath( ('output','CrsFile') )
         if fn is None: return
+        if not fn.startswith(self.run_dir):
+            # Assume we should just use pre-existing file.
+            if not os.path.exists(fn):
+                self.log.warning("Monitor sections file '%s' is outside run directory but does not exist"%fn)
+            return
+        
         if append:
             mode='at'
         else:

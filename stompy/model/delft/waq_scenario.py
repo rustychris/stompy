@@ -11224,7 +11224,24 @@ END_MULTIGRID"""%num_layers
         seg=np.nonzero( self.hydro.seg_to_2d_element==elt )[0][layer]
 
         
+class HydroOnlineProxy(Hydro):
+    """
+    Place to put methods that make online coupled hydro look like regular
+    hydro.
+    """
+    def __init__(self, scenario, dflow_model):
+        self.scenario = scenario
+        self.dflow_model = dflow_model
+        
+    def extrude_element_to_segment(self,V):
+        """ V: [n_2d_elements] array
+        returns [n_seg] array
+        """
+        layers = max(1,self.dflow_model.n_layers) # in case it's 2D == 0 layers
+        return np.tile(V,layers)
 
+    def grid(self):
+        return self.dflow_model.grid
     
 class WaqOnlineModel(WaqModelBase):
     """
@@ -11242,6 +11259,7 @@ class WaqOnlineModel(WaqModelBase):
     
     def __init__(self,model,**k):
         self.model=model
+        self.hydro = HydroOnlineProxy(scenario=self,dflow_model=model)
         super(WaqOnlineModel,self).__init__(**k)
         
         self.sub_file = 'sources.sub'
@@ -11306,10 +11324,15 @@ class WaqOnlineModel(WaqModelBase):
         """
         Writes .sub file for Delwaq model, and adds Delwaq configuration details to Dflow .mdu file.
         Reorders self.substances
-        Initial conditions, boundary conditions, non-constant parameters are not currently
-        handled here. online_dwaq.py in the proof-of-concept manual setup has a specialization
+        Initial conditions, boundary conditions are not [yet] handled here.
+
+        Non-constant parameters are [WIP] handled here by appending to external forcing file. 
+        handled here.
+
+        This is called during DFM.update_config(), since it modifies the MDU.
+        
+        See online_dwaq.py in the proof-of-concept manual setup for a specialization
         of write_waq() that appends dwaq tracer info to an existing external forcing file.
-        Possible that should get merged in here.
         """
         self.log.info('Updating mdu with Delwaq settings...')
         # add reference to sub-file in .mdu
@@ -11351,12 +11374,180 @@ class WaqOnlineModel(WaqModelBase):
                 
             self.write_processes(f)
 
-        for attr in ['mon_output','grid_output','hist_output',
-                     'map_output','stat_output', 'map_formats','history_formats']:
+            # Additional output can be specified in the substance file but affects both map and history files.
+            # Separate outputs can be specified but it requires an extra file and adding an entry to
+            # the MDU.
+            extra_outputs = np.unique( self.hist_output + self.map_output )
+            for out_var in extra_outputs:
+                if out_var==DEFAULT or out_var in self.substances: continue
+                f.write("output '%s'\n"%out_var)
+                # Could fetch description in NEFIS or csvs
+                f.write("  description '%s extra output'\n"%out_var)
+                f.write("end-output\n")
+            
+        for attr in ['mon_output','grid_output','stat_output',
+                     'map_formats','history_formats']:
             if getattr(self,attr) != getattr(WaqModelBase,attr):
                 self.log.info("WaqOnlineModel: '%s' has been modified, but is not [yet] handled for online coupling"
                               %attr)
 
+    def write_waq_forcing(self):
+        """
+        Make edits to external forcing file for online waq run. Entries that
+        were added to the model config as BC objects should be added in write_waq(),
+        and will get written out by the DFM driver as part of writing other BCs.
+        This is for 'out-of-band' edits to external forcing file.
+        """
+        # WAQ parameters that go in the external forcing file:
+        with open(self.model.mdu.filepath(('external forcing','ExtForceFile')),'at') as fp:
+            fp.write("\n\n")
+            for name in self.parameters:
+                if isinstance(self.parameters[name],ParameterSpatial):
+                    self.write_parameter_spatial(fp,self.parameters[name])
+                elif isinstance(self.parameters[name],ParameterTemporal):
+                    self.write_parameter_temporal(fp,self.parameters[name])
+                elif isinstance(self.parameters[name],ParameterSpatioTemporal):
+                    self.write_parameter_spatiotemporal(fp,self.parameters[name])
+
+    
+    def write_waq_spatial(self,fp,quantity,data_fn,xyn):
+        """
+        Write an xyz dataset and add as spatial data source in fp (presumably
+        external forcing file).
+        data_fn is expected to be relative to the run directory (not the script
+        directory).
+        """
+        np.savetxt(os.path.join(self.model.run_dir,data_fn),
+                   xyn,fmt="%.6g")
+        fp.write("\n".join(["QUANTITY=%s"%quantity,
+                            "FILENAME=%s"%data_fn,
+                            "FILETYPE=7",
+                            "METHOD=4",
+                            "OPERAND=O\n"]))
+        
+    def write_parameter_spatial(self, fp, param):
+        xy=self.model.grid.cells_centroid()
+        name=param.name
+        assert name!="unnamed"
+        
+        if param.per_segment is not None:
+            pdb.set_trace()
+            # Hopefully seg_values is 2D, with no vertical variation.
+            conc = something
+        else:
+            pdb.set_trace()
+            
+        xyn=np.c_[xy, conc]
+
+        self.write_waq_spatial(fp,
+                               quantity="waqparameter"+name,
+                               data_fn="PARAM-%s.xyn"%name,
+                               xyn=xyn)
+
+    def write_parameter_temporal(self,fp, param):
+        print("Would be writing temporal parameter to external forcing file")
+        # e.g. RadSurf
+        name=param.name
+        tim_fn="%s.tim"%name
+        tim_path = os.path.join(self.model.run_dir,tim_fn)
+
+        # expecting xr.DataArray
+        ds=xr.Dataset()
+        times=np.asarray(param.times)
+        if not np.issubdtype(times.dtype,np.datetime64):
+            print("Whoa hoss. Expected parameter times to be np.datetime64")
+            pdb.set_trace()
+        ds['time']=('time',),times
+        ds[name]=('time',),param.values
+        self.model.write_tim(ds[name],tim_path)
+        
+        fp.write( "\n".join( [
+            "QUANTITY=waqfunction%s"%name,
+            "FILENAME=%s"%tim_fn,
+            "FILETYPE=1",
+            "METHOD=1", # linear interpolation. 0 for block
+            "OPERAND=O\n"
+            ]))
+            
+    def write_parameter_spatiotemporal(self, fp, param):
+        """
+        Convert a segment function to 2D raster netcdf and add to external forcing file.
+        This is not exact! Incoming data is on the grid, but we have to write a curvilinear
+        grid
+        """
+        # assert param.values is not None,"Expected seg function data in param.values"
+        
+        seg_fn="seg-%s.nc"%param.name
+
+        name=param.name
+
+        if 1: # write the cartesian netcdf 
+            # param.values:  2 x 10 x 49996 => time x layer x cell
+
+            # Could be done ahead of time and cached.
+            cell_to_pixels=self.model.grid.interp_cell_to_raster_function(dx=self.seg_function_resolution,
+                                                                          dy=self.seg_function_resolution)
+            template_fld = cell_to_pixels(None)
+
+            segfunc_ds=xr.Dataset()
+
+            times=np.asarray(param._times)
+            if isinstance(times[0],str): # some files comes in with ASCII datetimes
+                times=times.astype(np.datetime64)
+            if not np.issubdtype(times.dtype,np.datetime64):
+                # may get inputs that are in 'dwaq time' (e.g. seconds since reference time)
+                print("Whoa hoss. Expected segment function times to be np.datetime64")
+                pdb.set_trace()
+            segfunc_ds['time']=('time',),times
+
+            # It's possible that DFM would understand a proper SGRID-compliant file. But I know that
+            # it understands this, which is simpler.
+            segfunc_ds.attrs.update(dict(grid_type='IRREGULAR',
+                                         coordinate_system=self.model.projection or 'EPSG:26910',
+                                         Conventions='CF-1.0'))
+            X,Y = template_fld.XY()
+            segfunc_ds['y'] =('M','N'), Y
+            segfunc_ds['x'] =('M','N'), X
+            segfunc_ds['y'].attrs.update(dict(long_name='northing',standard_name='projection_y_coordinate',
+                                              units='m'))
+            segfunc_ds['x'].attrs.update(dict(long_name='easting',standard_name='projection_x_coordinate',
+                                              units='m'))
+
+            data = np.zeros( (segfunc_ds.dims['time'],segfunc_ds.dims['M'], segfunc_ds.dims['N']),
+                             np.float32)
+            n_2d_elts=self.model.grid.Ncells()
+            for tidx,t in utils.progress(enumerate(times)):
+                if param.values is not None:
+                    data_on_grid=param.values[tidx,:]
+                elif param.func_t is not None:
+                    data_on_grid=param.func_t(t)
+                    
+                # param.values is theoretically coming in as n_seg, but can also come in
+                # as n_2d_elements. Either way, make it [layers,elements], and layers might be
+                # 1-long or n_layers long
+                data_on_grid = data_on_grid.reshape([-1,n_2d_elts])
+                    
+                col_range=data_on_grid.max(axis=0) - data_on_grid.min(axis=0)
+                assert np.all(col_range<1e-12),"Segment function has 3D data, but online coupling can only represent 2D"
+                data_2d=data_on_grid[0,:] # or average if we tolerate some variation.
+                data[tidx,:,:] = cell_to_pixels(data_2d).F
+
+            segfunc_ds[name]=('time','M','N'), data
+            segfunc_ds[name].attrs.update(dict(long_name=name,
+                                               grid_mapping='projected_coordinate_system'))
+            seg_path=os.path.join(self.model.run_dir,seg_fn)
+            segfunc_ds.to_netcdf(seg_path)
+            self.log.info("Wrote %s to %s"%(param.name, seg_path))
+
+        fp.write("\n".join([
+            "QUANTITY=waqsegmentfunction%s"%name,
+            "FILENAME=%s"%seg_fn,
+            "VARNAME=%s"%name,
+            "FILETYPE=11",
+            "METHOD=3",
+            "OPERAND=O\n"]) )
+
+                
     def fix_substance_order(self):
         # A bit tricky: we need to know the order of WAQ substances before source/sink
         # BCs can be written, and that order is some unknown function of the order
@@ -11451,6 +11642,7 @@ class WaqOnlineModel(WaqModelBase):
             s.append( f"\tname '{proc_name}'  '{desc}'" )
         s.append("end-active-processes")
         f.writelines("\n".join(s))
+        f.write("\n")
         return 0
 
     def add_bc(self,*args,**kws):
