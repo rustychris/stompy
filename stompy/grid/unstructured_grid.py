@@ -3335,7 +3335,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         for ci,c in enumerate(ids):
             if not self.cells['deleted'][c]:
-                points[ci]=np.array(self.cell_polygon(c).representative_point())
+                # 2023-08-25 RH: use coords accessor as direct array conversion
+                # deprecated.
+                points[ci]=np.array(self.cell_polygon(c).representative_point().coords)[0]
         return points
     
     def cell_coords_subedges(self,c,subedges):
@@ -5945,9 +5947,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         if return_nodes:
             nodes=list( self.edges['nodes'][edge_hits[0]] )
-            # BUG HERE! 2022-01-17 RH: details lost to the sands of time.
-            # probably DFM related.
-            if nodes[-1] in self.edges['nodes'][edge_hits[1]]:
+            # Flip first pair of nodes as needed
+            if nodes[-1] not in self.edges['nodes'][edge_hits[1]]:
                 nodes=nodes[::-1]
 
             for j in edge_hits[1:]:
