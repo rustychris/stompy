@@ -566,10 +566,7 @@ def add_bezier(gen):
     gen.add_edge_field('bez', bez, on_exists='overwrite')
 
     for n in gen.valid_node_iter():
-        nbrs=gen.angle_sort_adjacent_nodes(n)
-        if len(nbrs)==0:
-            continue
-        hes=[gen.nodes_to_halfedge(n,nbr) for nbr in nbrs]
+        hes=gen.node_to_halfedges(n)
 
         # Filter out non-quad grid edges in there, which will have angle=nan
         hes=[he for he in hes 
