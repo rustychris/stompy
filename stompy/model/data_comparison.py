@@ -311,9 +311,9 @@ def fix_date_labels(ax,nticks=3):
 def calibration_figure_3panel(all_sources,combined=None,
                               metric_x=1,metric_ref=0,
                               offset_source=None,scatter_x_source=0,
-                              num=None,trim_time=False,
+                              num=None,fig=None,trim_time=False,
                               lowpass=True,
-                              styles=None,
+                              styles=None,ylabel=None,
                               offset_method='mean'):
     """
     all_sources: list of DataArrays to compare.
@@ -361,8 +361,11 @@ def calibration_figure_3panel(all_sources,combined=None,
     labels=list(combined.label.values)
 
     gs = gridspec.GridSpec(5, 3)
-    fig=plt.figure(figsize=(9,7),num=num)
-    plt.tight_layout()
+    if fig is not None:
+        fig.clf()
+    else:
+        fig=plt.figure(figsize=(9,7),num=num)
+    #plt.tight_layout()
     ts_ax = fig.add_subplot(gs[:-3, :])
     lp_ax = fig.add_subplot(gs[-3:-1, :-1])
     scat_ax=fig.add_subplot(gs[-3:-1, 2])
@@ -401,6 +404,8 @@ def calibration_figure_3panel(all_sources,combined=None,
                     label=label,
                     **styles[src_i])
         ax.legend(fontsize=8,loc='upper left')
+        if ylabel is not None:
+            ax.set_ylabel(ylabel)
 
     # Scatter:
     if 1:
@@ -478,6 +483,9 @@ def calibration_figure_3panel(all_sources,combined=None,
             if np.any(np.isfinite(y)):
                 has_lp_data=True
                 ax.plot(t, y, label=labels[i], **styles[i])
+        if ylabel is not None:
+            ax.set_ylabel(ylabel)
+            
     fix_date_labels(ts_ax,4)
     
     # zoom to common period

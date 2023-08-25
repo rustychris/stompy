@@ -355,8 +355,56 @@ def station_period_of_record(station, parameter):
 
     # filter to monitoring / high-frequency data
     df_filt=df[ df.data_type_cd.isin(['iv','uv','rt'])]
-    parm=63680
-    df_parm=df_filt[ df_filt.parm_cd=="%05d"%parm ]
+    #parm=63680
+    df_parm=df_filt[ df_filt.parm_cd=="%05d"%parameter ]
+
+    return df_parm
+
+# This one isn't really tested. would be best to merge
+# with above
+def station_metadata(station, parameter):
+    # station: numeric site id
+    # parameter: numeric paramer code. 63680 is turbidity, 65 is stage. 60 is flow. 10 is temperature
+    # returns a dataframe
+    # a single parameter may have multiple time series and return multiple rows.
+    # Filters rows (each corresponding to a timeseries id) to only include the specified
+    # parameter, only high frequency monitoring data.
+    # Returns a dataframe with all fields from NWIS.
+    # Typical fields:
+    #    agency_cd       -- Agency
+    #    site_no         -- Site identification number
+    #    station_nm      -- Site name
+    #    site_tp_cd      -- Site type
+    #    dec_lat_va      -- Decimal latitude
+    #    dec_long_va     -- Decimal longitude
+    #    coord_acy_cd    -- Latitude-longitude accuracy
+    #    dec_coord_datum_cd -- Decimal Latitude-longitude datum
+    #    alt_va          -- Altitude of Gage/land surface
+    #    alt_acy_va      -- Altitude accuracy
+    #    alt_datum_cd    -- Altitude datum
+    #    huc_cd          -- Hydrologic unit code
+    #    data_type_cd    -- Data type
+    #    parm_cd         -- Parameter code
+    #    stat_cd         -- Statistical code
+    #    ts_id           -- Internal timeseries ID
+    #    loc_web_ds      -- Additional measurement description
+    #    medium_grp_cd   -- Medium group code
+    #    parm_grp_cd     -- Parameter group code
+    #    srs_id          -- SRS ID
+    #    access_cd       -- Access code
+    #    begin_date      -- Begin date
+    #    end_date        -- End date
+    #    count_nu        -- Record count
+    resp=requests.get(f"http://waterservices.usgs.gov/nwis/site/?format=rdb&sites={station}&seriesCatalogOutput=true")
+
+    fp=StringIO(resp.text)
+    df=pd.read_csv(fp,sep="\t",comment='#')
+    df=df.iloc[1:,:]
+
+    # filter to monitoring / high-frequency data
+    df_filt=df[ df.data_type_cd.isin(['iv','uv','rt'])]
+    #parm=63680
+    df_parm=df_filt[ df_filt.parm_cd=="%05d"%parameter ]
 
     return df_parm
 
