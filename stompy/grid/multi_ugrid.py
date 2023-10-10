@@ -183,7 +183,10 @@ class MultiVar(object):
                 # When we assumed that shape was the same across procs
                 # left=lambda proc: slice(None)
                 # Our new, less innocent and naiive, understanding of the world:
-                left=lambda proc, lengths=sv_lengths: slice(0,sv_lengths[proc])
+                # Also note that variable binding is important here!
+                # sv_lengths is passed in so that as sv_lengths changes in later
+                # loop iterations, the lambda will hold onto the original value.
+                left=lambda proc, lengths=sv_lengths: slice(0,lengths[proc])
                 
             right_idx.append( right ) # no subsetting on rhs for now.
             left_idx.append( left )
