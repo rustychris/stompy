@@ -2464,9 +2464,13 @@ class NOAAStageBC(StageBC):
     station=None # integer station
     product='water_level' # or 'predictions'
     cache_dir=None
+    vertical_datum='NAVD88' # TODO: NAVD88 is generally available, but really should check what comes back from coops_dataset
+
     def src_data(self):
         ds=self.fetch_for_period(self.data_start,self.data_stop)
-        return ds['z']
+        da=ds['z']
+        da.attrs['vertical_datum']=self.vertical_datum
+        return da
     def write_bokeh(self,**kw):
         defaults=dict(title="Stage: %s (%s)"%(self.name,self.station))
         defaults.update(kw)
@@ -2556,10 +2560,21 @@ class NwisBC(object):
 
 class NwisStageBC(NwisBC,StageBC):
     product_id=65 # gage height
+
+    # Some gages are NAVD88, others are not...
+    # At some point it would be nice for usgs_nwis to handle this by querying
+    # station metadata. It gets a bit messy since datum is specific to time series,
+    # leaving some ambiguity about how to combine distinct values.
+    # For now, this is just a field that a caller can set and later query.
+    vertical_datum='n/a' # 'auto' => try to fetch from NWIS. 'NAVD88', 'n/a'.
+    cache_only=False # Passed on to usgs_nwis.nwis_dataset
+    
     def src_data(self):
         ds=self.fetch_for_period(self.data_start,self.data_stop)
         if ds is not None:
-            return ds['water_level']
+            da=ds['water_level']
+            da.attrs['vertical_datum']=self.vertical_datum
+            return da
         else:
             if self.default is not None:
                 return self.default
