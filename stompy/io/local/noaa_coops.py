@@ -95,7 +95,7 @@ def coops_json_to_ds(json,params):
         
         # for now, ignore flags, verified status.
     values=np.array(values)
-    ds['time']=( ('time',),times)
+    ds['time']=( ('time',),np.asarray(times,dtype='M8[ns]')) # appease pandas with ns resolution.
     if params['product']=='wind':
         # values ~  [Ntime, {speed, direction, gust}]
         ds['wind_speed'] =     ('station','time'), [values[:,0]]
