@@ -733,7 +733,11 @@ def get_aspect(ax):
     # Total figure size
     figW, figH = ax.get_figure().get_size_inches()
     # Axis size on figure
-    _, _, w, h = ax.get_position().bounds
+    bnds=ax.get_position()
+    w=bnds.width
+    h=bnds.height
+    # _, _, w, h = =ax.get_position()
+
     # Ratio of display units
     disp_ratio = (figH * h) / (figW * w)
     # Ratio of data units
@@ -744,18 +748,27 @@ def get_aspect(ax):
 
 
 def annotate_line(l,s,norm_position=0.5,offset_points=10,ax=None,
-                  buff=None,**kwargs):
+                  buff=None,flip=True,clip=True,**kwargs):
     """
     line: a matplotlib line object
     s: string to show
     norm_position: where along the line, normalized to [0,1]
     offset_points: how to offset the text baseline relative to the line.
     buff: options to draw a buffer around text. foreground, linewidth
+    clip: trim the line coordinates to points within current axis.
     """
     ax=ax or plt.gca()
 
     x,y = l.get_data()
 
+    if clip:
+        try:
+            clip[3]
+        except:
+            clip=ax.axis()
+        sel=utils.within_2d(np.c_[x,y], clip)
+        x=x[sel]
+        y=y[sel]
     deltas = np.sqrt(np.diff(x)**2 + np.diff(y)**2)
     deltas = np.concatenate( ([0],deltas) )
     dists = np.cumsum(deltas)
@@ -770,11 +783,16 @@ def annotate_line(l,s,norm_position=0.5,offset_points=10,ax=None,
     asp=get_aspect(ax)
     dx = np.interp(abs_position2,dists,x) - x_of_label
     dy = np.interp(abs_position2,dists,y) - y_of_label
+
+    if flip and dx<0:
+        dx=-dx
+        dy=-dy
+        
     angle = np.arctan2(asp*dy,dx)*180/np.pi
 
     perp = np.array([-dy,dx])
     perp = offset_points * perp / utils.mag(perp)
-    
+
     settings=dict(xytext=perp, textcoords='offset points',
                   rotation=angle,xycoords=l.get_transform(),
                   ha='center',va='center')

@@ -975,13 +975,18 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         return SchismGrid.read_gr3(fn)
     
     @staticmethod
-    def read_ras2d(hdf_fname, twod_area_name=None, elevations=True):
+    def read_ras2d(hdf_fname, twod_area_name=None, elevations=True, subedges=None):
         """
         Read a RAS2D grid from HDF.
         hdf_fname: path to hdf file
         twod_area_name: string naming the 2D grid in the HDF file.  If omitted,
           attempt to detect this, but will fail if the number of valid names
           is not exactly 1.
+        subedges: check for face internal points and populate coordinate strings in this
+         field. stompy stores the full geometry here. If subedges is None, skip processing.
+         otherwise all edges will get an entry, and faces with no internal points will 
+         just get a copy of the simple face geometry.
+
         Acknowledgements: Original code by Stephen Andrews.
 
         elevations: If elevation-related fields (currently just min elevation in 
@@ -1031,6 +1036,11 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 edges[j][0] = edge_nodes[j,0]
                 edges[j][1] = edge_nodes[j,1]
 
+            if subedges is not None:
+                extra_edge_fields=[(subedges,object)]
+            else:
+                extra_edge_fields=[]
+
             cell_nodes = h['Geometry/2D Flow Areas/' + twod_area_name + '/Cells FacePoint Indexes']
             cell_nodes=np.array(cell_nodes)
             max_cell_faces=cell_nodes.shape[1]
@@ -1045,7 +1055,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     cells[i][k] = cell_nodes[i][k]
 
             grd = UnstructuredGrid(edges=edges, points=points,
-                                   cells=cells, max_sides=max_cell_faces)
+                                   cells=cells, max_sides=max_cell_faces,
+                                   extra_edge_fields=extra_edge_fields)
             grd.twod_area_name = twod_area_name
             
             if elevations:
@@ -1058,6 +1069,24 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 if edge_key in h:
                     grd.add_edge_field('edge_z_min',
                                        h[edge_key])
+            if subedges is not None:
+                # index,count for each face into perimeter values
+                internal_info  = h['Geometry/2D Flow Areas/' + twod_area_name + '/Faces Perimeter Info']
+                # combined array of points, [N,{x,y}]
+                internal_values= h['Geometry/2D Flow Areas/' + twod_area_name + '/Faces Perimeter Values']
+                
+                edge_nodes=np.array(edge_nodes)
+                nedges = len(edge_nodes)
+                edges = -1 * np.ones((nedges, 2), dtype=int)
+                for j in range(grd.Nedges()):
+                    points = grd.nodes['x'][grd.edges['nodes'][j]]
+                    start,count=internal_info[j,:]
+                    if count>0:
+                        points=np.concatenate( [points[:1,:],
+                                                internal_values[start:start+count],
+                                                points[1:,:]],axis=0)
+                    grd.edges[subedges][j]=points
+                    
             return grd
         finally:
             h.close()
@@ -3344,7 +3373,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     def cell_coords_subedges(self,c,subedges):
         """
         Coordinate sequence [N,2] pulling sub-edge linestring from
-        self.cells[subedges].
+        self.edges[subedges].
         """
         coords=[]
         for j in self.cell_to_edges(c):
@@ -5012,11 +5041,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             for n in np.arange(self.Nedges())[mask]:
                 if subedges is not None:
                     arc=self.edges[subedges][n]
-                    pnt=0.5*( arc[arc.shape[0]//2,:] + arc[arc.shape[0]//2+1,:])
+                    pnt=0.5*( arc[arc.shape[0]//2,:] + arc[arc.shape[0]//2-1,:])
                 else:
                     pnt=ec[n,:]
-                ax.text(ec[n,0], ec[n,1],
-                        labeler(n,self.edges[n]))
+                ax.text(pnt[0], pnt[1], labeler(n,self.edges[n]))
 
         ax.add_collection(lcoll)
         if bounds is not None:
