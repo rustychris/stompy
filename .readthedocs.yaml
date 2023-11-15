@@ -1,0 +1,13 @@
+version: 2
+
+#build:
+#  tools:
+    
+
+sphinx:
+  configuration: docs/conf.py
+
+python:
+  install:
+    - requirements-rtd.txt
+
