@@ -31,27 +31,17 @@ from .rdb_datadescriptors import dd_to_synonyms
 from .. import utils
 from . import rdb_codes
 
-
-# best way to deal with dates:
-# 64-bit float is plenty to cover milliseconds to a century.
-# what is the best unit, though?
-# days are nice, could pretty much ignore leap seconds
-# leap years are still a problem, and one would want to be able
-# to convert days to years reliably
-# presumably the python datetime library can handle dates beyond
-# the epoch.
-# I think mxdatetime is probably the way to go.  If it's good enough
-# for postgresql, it's good enough for me.  Looks like they use a
-# pair of values - an int for days, and a float for seconds in the
-# day.  Nicely compacted in an "absdays" attr
-
-
 class Rdb(object):
     record_count = 0
+    
+    aggregate=True # combine fields that don't change into a scalar
+    
     def __init__(self,
                  text=None,
                  source_file=None,
-                 fp=None):
+                 fp=None,
+                 **kw):
+        utils.set_keywords(self,kw)
         self.source_filename = source_file
         if text is not None:
             try:
@@ -163,20 +153,21 @@ class Rdb(object):
             elif specs[i][-1] == 's':
                 columns[i] = np.array(columns[i],dtype=object)
 
-            # check for single-valued lists -
-            # The logic here is a bit odd - since we often get columns
-            # that have the same value (e.g. station_id) for every record,
-            # it's convenient to detect that and replace them with a constant.
-            # however, if there is just one record, it screws up code that
-            # isn't expecting a single value...  
-            if self.record_count > 1:
-                try:
-                    for elt in columns[i]:
-                        if elt != columns[i][0]:
-                            raise StopIteration
-                    columns[i] = columns[i][0]
-                except StopIteration:
-                    pass
+            if self.aggregate:
+                # check for single-valued lists -
+                # The logic here is a bit odd - since we often get columns
+                # that have the same value (e.g. station_id) for every record,
+                # it's convenient to detect that and replace them with a constant.
+                # however, if there is just one record, it screws up code that
+                # isn't expecting a single value...  
+                if self.record_count > 1:
+                    try:
+                        for elt in columns[i]:
+                            if elt != columns[i][0]:
+                                raise StopIteration
+                        columns[i] = columns[i][0]
+                    except StopIteration:
+                        pass
 
         # merge the columns into a hash
         self.compiled={}
@@ -351,8 +342,10 @@ def rdb_to_dataset(filename=None,text=None,to_utc=True):
             ds.attrs['tz_cd_original']=ds.tz_cd
 
         tz_src=usgs_data['tz_cd']
-        ds.assign(time=lambda x: x.time - offset_hours * np.timedelta64(1,'h'))
-        ds.assign(datenum=lambda x: x.datenum - offset_hours/24.)
+        # assign creates a *new* dataset. Be sure to get the result.
+        ds=ds.assign(time=lambda x: x.time - offset_hours * np.timedelta64(1,'h'))
+        ds=ds.assign(datenum=lambda x: x.datenum - offset_hours/24.)
+        
         ds.attrs['tz_cd']='UTC'
 
     return ds

@@ -107,7 +107,8 @@ def lowpass_godin(data,in_t_days=None,ends='pass',
     return data
 
 def lowpass_fir(x,winsize,ignore_nan=True,axis=-1,mode='same',use_fft=False,
-                nan_weight_threshold=0.49999,window='hanning'):
+                nan_weight_threshold=0.49999,window='hanning',
+                dim='time'):
     """
     In the absence of exact filtering needs, choose the window 
     size to match the cutoff period.  Signals with a frequency corresponding to
@@ -127,6 +128,8 @@ def lowpass_fir(x,winsize,ignore_nan=True,axis=-1,mode='same',use_fft=False,
     nan_weight_threshold: items with a weight less than this will be marked nan
       the default value is slightly less than half, to avoid numerical roundoff
       issues with 0.49999999 < 0.5
+    dim: if x is a xarray.DataArray, gives the dimension name along which to
+      filter.
 
     N.B. In the case of an input with nan only at the beginning and end, to 
     guarantee that the output will have the same nans as the input winsize must
@@ -135,15 +138,24 @@ def lowpass_fir(x,winsize,ignore_nan=True,axis=-1,mode='same',use_fft=False,
     # hanning windows have first/last elements==0.
     # but it's counter-intuitive - so force a window with nonzero
     # elements matching the requested size
+    import xarray as xr
     if isinstance(winsize,np.ndarray):
         win=winsize
         winsize=len(win)
-    elif window=='hanning':
-        win=np.hanning(winsize+2)[1:-1]
-    elif window=='boxcar':
-        win=np.ones(winsize)
     else:
-        raise Exception("window must be one of hanning, boxcar")
+        if isinstance(winsize, np.timedelta64):
+            assert isinstance(x,xr.DataArray)
+            dts=np.diff(x.time)
+            dts.sort()
+            dt=dts[len(dts)//2]
+            winsize=max(1,int(winsize / dt))
+            
+        if window=='hanning':
+            win=np.hanning(winsize+2)[1:-1]
+        elif window=='boxcar':
+            win=np.ones(winsize)
+        else:
+            raise Exception("window must be one of hanning, boxcar")
     win/=win.sum()
 
     if use_fft:
@@ -151,6 +163,14 @@ def lowpass_fir(x,winsize,ignore_nan=True,axis=-1,mode='same',use_fft=False,
     else:    
         convolve=scipy.signal.convolve
 
+    if isinstance(x,xr.DataArray):
+        x_da=x
+        x=x_da.values
+        if dim is not None:
+            axis=x_da.get_axis_num(dim)
+    else:
+        x_da=None
+        
     slices=[None]*x.ndim
     slices[axis]=slice(None)
     win=win[tuple(slices)] # expand to get the right broadcasting
@@ -168,8 +188,13 @@ def lowpass_fir(x,winsize,ignore_nan=True,axis=-1,mode='same',use_fft=False,
         result[has_weight] = result[has_weight] / weights[has_weight]
         result[~has_weight]=0 # redundant, but in case of roundoff.
         result[weights<nan_weight_threshold]=np.nan
-        
-    return result
+
+    if x_da is not None:
+        result_da=x_da.copy()
+        result_da.values[...] = result
+        return result_da
+    else:
+        return result
 
 # xarray time series versions:
 def lowpass_xr(da,cutoff,**kw):

@@ -133,6 +133,7 @@ if gdal:
 class Field(object):
     """ Superclass for spatial fields
     """
+    _projection=None
     def __init__(self,projection=None):
         """
         projection: GDAL/OGR parseable string representation
@@ -1962,8 +1963,17 @@ class SimpleGrid(QuadrilateralGrid):
             self.dx=dx
         if dy is not None:
             self.dy=dy
+
         self.delta() # compute those if unspecified
-            
+
+    @classmethod
+    def zeros(cls,extents,dx,dy,dtype=np.float64):
+        nx=int( np.ceil((extents[1] - extents[0])/dx) )
+        ny=int( np.ceil((extents[3] - extents[2])/dy) )
+        
+        F=np.zeros((ny,nx),dtype=dtype)
+        return cls(extents,F=F)
+    
     @property
     def shape(self):
         return self.F.shape
@@ -2022,7 +2032,7 @@ class SimpleGrid(QuadrilateralGrid):
             os.unlink(fname_shp)
             os.close(fd1)
             os.close(fd2)
-            self.write_gdal(fname_tif)
+            self.write_gdal(fname_tif,overwrite=True)
             res=subprocess.run([gdal_contour,"-fl",str(vmin),str(vmax),fname_tif,fname_shp],
                                 capture_output=True)
             print(res.stdout)
@@ -3143,7 +3153,7 @@ class GdalGrid(SimpleGrid):
             self.dx,self.dy = transformed.delta()
 
 def rasterize_grid_cells(g,values,dx=None,dy=None,stretch=True,
-                         cell_mask=slice(None),match=None):
+                         cell_mask=slice(None),match=None,extra_options=[]):
     """ 
     g: UnstructuredGrid
     values: scalar values for each cell of the grid.  Must be uint16.
@@ -3185,7 +3195,7 @@ def rasterize_grid_cells(g,values,dx=None,dy=None,stretch=True,
     target_ds = target_field.write_gdal('Memory')
     
     # write 1000 into the array where the polygon falls.
-    gdal.RasterizeLayer(target_ds,[1],poly_ds.GetLayer(0),options=["ATTRIBUTE=VAL"])
+    gdal.RasterizeLayer(target_ds,[1],poly_ds.GetLayer(0),options=["ATTRIBUTE=VAL"]+extra_options)
     #None,None,[1000],[])
     new_raster=GdalGrid(target_ds)
 

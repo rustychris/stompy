@@ -171,8 +171,22 @@ class MultiVar(object):
                 assert l2g is None,"Can only concatenate on one parallel dimension"
                 left=lambda proc: self.mu.node_l2g[proc]
             else:
-                shape.append( sv0.shape[dim_i] )
-                left=lambda proc: slice(None)
+                # Check for differing lengths across sub vars
+                sv_lengths =[sv.shape[dim_i] for sv in self.sub_vars]
+                max_length = max(sv_lengths)
+                if max_length != min(sv_lengths):
+                    fill_value = self.infer_fill_value(sv0)
+                    log.info("Ragged shapes for %s, filling with %s"%(sv0.name,fill_value))
+                
+                shape.append( max_length )
+
+                # When we assumed that shape was the same across procs
+                # left=lambda proc: slice(None)
+                # Our new, less innocent and naiive, understanding of the world:
+                # Also note that variable binding is important here!
+                # sv_lengths is passed in so that as sv_lengths changes in later
+                # loop iterations, the lambda will hold onto the original value.
+                left=lambda proc, lengths=sv_lengths: slice(0,lengths[proc])
                 
             right_idx.append( right ) # no subsetting on rhs for now.
             left_idx.append( left )
@@ -190,7 +204,8 @@ class MultiVar(object):
         shape,left_idx,right_idx=self.shape_and_indexes()
         
         sv0=self.sub_vars[0] # template sub variable
-        result=np.zeros( shape, sv0.dtype)
+        
+        result=np.full( shape, self.infer_fill_value(sv0), sv0.dtype)
 
         # Copy subdomains to global:
         
@@ -198,11 +213,22 @@ class MultiVar(object):
             # In the future may want to control which subdomain provides
             # a value in ghost cells, by having some values of the mapping
             # negative, and they get filtered out here.
+
+            # Another annoyance here is the possibility that with grid
+            # topology some subdomains can have different shapes like
+            # max_faces.
             left_slice =tuple( [i(proc) for i in left_idx ])
             right_slice=tuple( [i(proc) for i in right_idx])
             result[left_slice]=sv.values[right_slice]
         return result
 
+    def infer_fill_value(self,sv):
+        if 'start_index' in sv.attrs:
+            return sv.attrs['start_index'] - 1
+        if np.issubdtype(sv.dtype, np.floating):
+            return np.nan
+        return 0
+    
     @property
     def attrs(self):
         return self.sub_vars[0].attrs
@@ -231,6 +257,27 @@ class MultiVar(object):
                         name=self.sub_vars[0].name,
                         attrs=self.sub_vars[0].attrs)
         return da
+
+    # Incomplete attempt to look like a DataArray in math operations
+    # I think xarray is sometimes too greedy in trying to handle operations, though.
+    # having some issues with DataArray + MultiVar
+    def __add__(self,other):
+        return self.compute()+other
+    def __radd__(self,other):
+        return other+self.compute()
+    def __sub__(self,other):
+        return self.compute()-other
+    def __rsub__(self,other):
+        return other-self.compute()
+    def __mul__(self,other):
+        return self.compute()*other
+    def __rmul__(self,other):
+        return other*self.compute()
+    def __truediv__(self,other):
+        return self.compute()/other
+    def __rtruediv__(self,other):
+        return other/self.compute()
+    
         
         
 class MultiUgrid(object):
@@ -256,7 +303,7 @@ class MultiUgrid(object):
     merge_tol=0.0
     
     def __init__(self,paths,cleanup_dfm='auto',xr_kwargs={},grid=None,
-                 match_grid_tol=1e-3,
+                 match_grid_tol=1e-3,clone_from=None,
                  **grid_kwargs):
         """
         paths: 
@@ -274,6 +321,10 @@ class MultiUgrid(object):
           note that edges may not preserve orientation, and cells may not preserve
           exact node order.
 
+        clone_from: a MultiUgrid object with exactly matching structure (same number
+          of subdomains, identical subdomain grids). In this case just copy the
+          mapping information from the existing MultiUgrid, and replace the datasets.        
+
         ** (grid_kwargs): keyword arguments passed to read_ugrid.
         xr_kwargs: dict of arguments passed to xr.open_dataset.
         """
@@ -285,6 +336,16 @@ class MultiUgrid(object):
         # list of str vs list of xr.Dataset is handled in self.load()
         self.paths=paths # paths might be xr.Datasets!
         self.dss=self.load(**xr_kwargs)
+
+        if clone_from is not None:
+            self.grids=clone_from.grids
+            self.rev_meta=clone_from.rev_meta
+            self.node_l2g=clone_from.node_l2g
+            self.edge_l2g=clone_from.edge_l2g
+            self.cell_l2g=clone_from.cell_l2g
+            self.grid=clone_from.grid
+            return
+        
         self.grids=[unstructured_grid.UnstructuredGrid.read_ugrid(ds,**grid_kwargs) for ds in self.dss]
 
         # Build a mapping from dimension to ugrid role -- used by MultiVar to

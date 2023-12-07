@@ -1166,7 +1166,9 @@ def murphy_skill(xmodel,xobs,xref=None,ignore_nan=True):
     o=xobs[sel]
     if xref is None:
         xref=o.mean()
-        
+
+    # so 1=>perfect
+    #    0=>same as predicting the mean of the observations 
     ms=1 - np.mean( (m-o)**2 )/np.mean( (xref-o)**2 )
     
     return ms
@@ -1589,7 +1591,10 @@ def dnum_py_to_mat(x):
 def dt64_to_dnum(dt64):
     # get some reference points:
 
-    dt1=datetime.datetime.fromordinal(1) # same as num2date(1)
+    # RH: 2023-05-22: resolve datetime.datetime vs num2date divergence
+    # by going with MPL. 
+    #dt1=datetime.datetime.fromordinal(1) # same as num2date(1)
+    dt1=num2date(1)
 
     for reftype,ref_to_days in [('M8[us]',86400000000),
                                 ('M8[D]',1)]:
@@ -1608,15 +1613,18 @@ def dt64_to_dnum(dt64):
     return dnum
 
 def dnum_to_dt64(dnum,units='us'):
-    reftype='m8[%s]'%units
+    # reftype='m8[%s]'%units
+    # 
+    # # how many units are in a day?
+    # units_per_day=np.timedelta64(1,'D').astype(reftype)
+    # # datetime for the epoch
+    # dt_ref=datetime.datetime(1970,1,1,0,0)
+    # 
+    # offset = ((dnum-dt_ref.toordinal())*units_per_day).astype(reftype)
+    # return np.datetime64(dt_ref) + offset
 
-    # how many units are in a day?
-    units_per_day=np.timedelta64(1,'D').astype(reftype)
-    # datetime for the epoch
-    dt_ref=datetime.datetime(1970,1,1,0,0)
-
-    offset = ((dnum-dt_ref.toordinal())*units_per_day).astype(reftype)
-    return np.datetime64(dt_ref) + offset
+    # 2023-05-22 RH: punt this to matplotlib in order to maintain consistency.
+    return np.datetime64(num2date(dnum))
 
 def dnum_jday0(dnum):
     # return a dnum for the first of the year
@@ -2396,6 +2404,8 @@ def is_stale(target,srcs,ignore_missing=False,tol_s=0):
     tol_s: allow a source to be up to tol_s newer than target. Useful if 
     sources are constantly updating but you only want to recompute
     when something is really old.
+
+    src timestamps are the newer of stat and lstat
     """
     if not os.path.exists(target): return True
     for src in srcs:
@@ -2404,7 +2414,9 @@ def is_stale(target,srcs,ignore_missing=False,tol_s=0):
                 continue
             else:
                 raise Exception("Dependency %s does not exist"%src)
-        if os.stat(src).st_mtime > os.stat(target).st_mtime + tol_s:
+        src_mtime=max(os.stat(src).st_mtime,
+                      os.lstat(src).st_mtime)
+        if src_mtime > os.stat(target).st_mtime + tol_s:
             return True
     return False
 
@@ -2546,3 +2558,82 @@ def dominant_period(h,t,uniform=True,guess=None):
     #breakpoint()
     result = fmin(cost,[float(guess)])
     return result[0]
+
+def ideal_solar_rad(t,Imax=1000,lat=37.775,lon=-122.419):
+    """ 
+    Return time series of idealized solar radiation.
+    t: array of np.datetime64 in UTC.
+    Imax: maximum solar radiation (i.e. noon on equator at equinox).
+    lat, lon: location, in degrees. Defaults to San Francisco.
+    returns dataset including sol_rad.
+    """
+    if isinstance(t,xr.DataArray):
+        t_da=t
+        t=t.values
+    else:
+        t_da=None
+        
+    lat_rad=lat*np.pi/180.
+
+    lst=t+np.timedelta64(int(86400*lon/360.),'s') # local solar time.
+    doy=(t-t.astype('M8[Y]'))/np.timedelta64(1,'D')
+    decl=(np.pi/180) * 23.45 * np.sin(2*np.pi/365 * (doy-81))  # declination
+
+    hour=(lst - lst.astype('M8[D]'))/np.timedelta64(1,'h')
+    hour_angle=(hour-12)*np.pi/12. # 0 at solar noon, +-180 at solar midnight
+    zenith=np.arccos(np.sin(lat_rad)*np.sin(decl) + np.cos(lat_rad)*np.cos(decl)*np.cos(hour_angle))
+
+    ds=xr.Dataset()
+    if t_da is None:
+        ds['time']=('time',),t
+    else:
+        ds['time']=t_da
+    ds.attrs['latitude']=lat
+    ds.attrs['longitude']=lon
+    ds.attrs['Imax']=Imax
+    ds['sol_rad']=ds['time'].dims, Imax*np.cos(zenith).clip(0)
+    return ds
+
+def fill_curvilinear(xy,xy_valid=None):
+    """
+    Extrapolate missing values of a curvilinear mesh.
+    Currently very limited: fits a plane to each coordinate and
+    evaluates plane equation at missing points. This is okay for
+    very well-behaved cases and handles extrapolation.
+
+    A more general approach might fill areas inside the convex hull
+    by linear interpolation, and define local extrapolation functions.
+    
+    xy: array with shape [M,N,{x,y}]
+    xy_valid: bitmask [M,N] of which values should be assumed valid.
+    defaults to finite values of xy.
+    """
+    if xy_valid is None:
+        xy_valid=np.isfinite(xy[:,:,0]) & np.isfinite(xy[:,:,1])
+    #if np.all(xy_valid):
+    #    return
+    rows=np.arange(xy.shape[0])
+    cols=np.arange(xy.shape[1])
+    C,R=np.meshgrid(cols,rows)
+
+    # looking for a,b,c such that a*x+b*y = c approximates the plane defined
+    # by valid points
+    # this contains both valid and invalid points:
+    M=np.array(np.c_[R.ravel(), C.ravel(), np.ones_like(R.ravel())])
+
+    Mvalid=M[xy_valid.ravel(),:]
+    abc_x,_,_,_=np.linalg.lstsq(Mvalid,xy[xy_valid,0],rcond=None)
+    abc_y,_,_,_=np.linalg.lstsq(Mvalid,xy[xy_valid,1],rcond=None)
+    
+    Minvalid=M[~xy_valid.ravel(),:]
+    fill_x = Minvalid.dot(abc_x)
+    fill_y = Minvalid.dot(abc_y)
+
+    xy[~xy_valid,0] = fill_x
+    xy[~xy_valid,1] = fill_y
+
+def weighted_median(values, weights):
+    # credit to https://stackoverflow.com/questions/20601872/numpy-or-scipy-to-calculate-weighted-median
+    i = np.argsort(values)
+    c = np.cumsum(weights[i])
+    return values[i[np.searchsorted(c, 0.5 * c[-1])]]

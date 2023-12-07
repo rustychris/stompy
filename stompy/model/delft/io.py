@@ -616,7 +616,7 @@ def pli_to_grid_edges(g,levees):
 def create_restart(res_fn, map_fn, hyd, state_vars = None, map_net_cdf = False, extr_time = None,
                    start_time = None):
     """ 
-    Create a restart file using an exisiting map file and a user defined 
+    Create a restart file using an existing map file and a user defined 
     time. 
     
     res_fn: path/file name of the restart file 
@@ -637,6 +637,11 @@ def create_restart(res_fn, map_fn, hyd, state_vars = None, map_net_cdf = False, 
     # Identify whether read_map call is needed 
     if not map_net_cdf:
         ds = read_map(map_fn, hyd)
+    else:
+        ds = map_fn
+        assert isinstance(ds,xr.Dataset),"Maybe this should check for a string and xr.open_dataset it"
+        assert 'layer' in ds.dims,"Provided dataset must have 'layer' and 'face' dimensions"
+        assert 'face' in ds.dims,"Provided dataset must have 'layer' and 'face' dimensions"
     
     # infer n_subs and n_segs
     if state_vars is None: 
@@ -646,37 +651,49 @@ def create_restart(res_fn, map_fn, hyd, state_vars = None, map_net_cdf = False, 
     
     n_segs = np.int32(len(ds.layer)*len(ds.face))
     
-    # convert time to dt 
-    if extr_time is not None:
-        dt = np.datetime64(extr_time)
+    # convert time to dt
+    if 'time' in ds.dims:
+        if extr_time is not None:
+            dt = np.datetime64(extr_time)
+        else:
+            dt = max(ds.time.values)
+            extr_time = pd.to_datetime(dt).strftime('%Y-%m-%d %H:%M')
+        ds_t = ds.sel(time = dt)
     else:
-        dt = max(ds.time.values)
-        extr_time = pd.to_datetime(dt).strftime('%Y-%m-%d %H:%M')
+        # assume ds already represents a single snapshot.
+        # I don't think the time values really matters.
+        dt = np.datetime64(hyd.time0)
+        ds_t = ds
+        pass
         
     dt_st = np.datetime64(hyd.time0)
     if start_time is not None:
         dt_st = np.datetime64(start_time)
      
-    ds_t = ds.sel(time = dt)
     
     # construct output arrays 
     # now = pd.Timestamp.today().strftime('%Y-%m-%d %H:%M')
     # txt_header = np.array('Restart file starting at {:s} ' \
     #                       'Written by stompy.model.delft.io.create_restart '\
     #                       'Written at {:s}'.format(extr_time, now),dtype='S160')
-    
+
     txt_header = np.array(ds.header,dtype = 'S160')
     
     out_arr = np.zeros((n_segs,n_subs), dtype = 'f4' )  
     subs = np.array(['']*n_subs,dtype='S20')
     time = np.int32(pd.to_timedelta(dt-dt_st).total_seconds())
 
-    count = 0
-    for idx,name in enumerate(ds_t.sub.values):
-        if name in state_vars:
-            subs[count] = name
-            out_arr[:,count] = ds_t[name].values.flatten()
-            count = count + 1             
+    for count,name in enumerate(state_vars):
+        subs[count] = name
+        # RH: Have to be careful about order. I don't want to create a bug
+        # here, but also don't want to get inputs transposed.
+        # assert the expected order. Ideally this would be 
+        # out_arr[:,count] = ds_t[name].transpose('layer','face').values.flatten()
+        # but I'm wary of making this change and creating a bug.
+        assert ds_t[name].dims == ('layer','face'),"Dimension order issue"
+        out_arr[:,count] = ds_t[name].values.flatten()
+
+        # print(f"create_restart(): {name} has range {ds_t[name].values.min()} to {ds_t[name].values.max()}")
     
     # write out file 
     with open(res_fn,'wb') as fp:
@@ -699,7 +716,7 @@ def create_restart(res_fn, map_fn, hyd, state_vars = None, map_net_cdf = False, 
     return 
 
 
-def read_map(fn,hyd=None,use_memmap=True,include_grid=True,return_grid=False):
+def read_map(fn,hyd=None,use_memmap=True,include_grid=True,return_grid=False,n_layers='hydro'):
     """
     Read binary D-Water Quality map output, returning an xarray dataset.
 
@@ -714,6 +731,9 @@ def read_map(fn,hyd=None,use_memmap=True,include_grid=True,return_grid=False):
        for unstructured_grid.from_ugrid(ds).
        WARNING: there is currently a bug which causes this grid to have errors.
        probably a one-off error of some sort.
+
+    n_layers: generally can be inferred from the hydro ('hydro'), but for delwaqg output this must
+    be specified as an integer, or can be trusted from the map file by passing 'auto'
 
     note that missing values at this time are not handled - they'll remain as
     the delwaq standard -999.0.
@@ -751,12 +771,15 @@ def read_map(fn,hyd=None,use_memmap=True,include_grid=True,return_grid=False):
 
         substance_names=np.fromfile(fp,'S20',n_subs)
 
+        g=hyd.grid() # ignore message about ugrid.
 
         # not sure if there is a quicker way to get the number of layers
-        hyd.infer_2d_elements()
-        n_layers=1+hyd.seg_k.max()
-
-        g=hyd.grid() # ignore message about ugrid.
+        if n_layers=='hydro':
+            hyd.infer_2d_elements()
+            n_layers=1+hyd.seg_k.max()
+        elif n_layers=='auto':
+            # This is quicker, but gives up an extra sanity check
+            n_layers=int(n_segs / g.Ncells())
 
         assert g.Ncells()*n_layers == n_segs
 
@@ -772,6 +795,9 @@ def read_map(fn,hyd=None,use_memmap=True,include_grid=True,return_grid=False):
         log.warning("Reading map file %s: %d or %d frames? bad length %d extra bytes (or %d missing)"%(
             fn,nframes,nframes+1,extra,framesize-extra))
 
+    if hyd.n_2d_elements<=0:
+        hyd.infer_2d_elements() # or just use g.Ncells()...
+        
     # Specify nframes in cases where the filesizes don't quite match up.
     mapped=np.memmap(fn,[ ('tsecs','i4'),
                           ('data','f4',(n_layers,hyd.n_2d_elements,n_subs))] ,
@@ -797,7 +823,8 @@ def read_map(fn,hyd=None,use_memmap=True,include_grid=True,return_grid=False):
 
     times=utils.to_dt64(hyd.time0) + np.timedelta64(1,'s') * mapped['tsecs']
 
-    ds['time']=( ('time',), times)
+    # force ns to satisfy transient xarray warning.
+    ds['time']=( ('time',), times.astype('M8[ns]') )
     ds['t_sec']=( ('time',), mapped['tsecs'] )
 
     for idx,name in enumerate(ds.sub.values):
@@ -1354,7 +1381,7 @@ class SectionedConfig(object):
                 return row_value
         else:
             return None
-
+        
     def set_value(self,sec_key,value):
         # set value and optionally comment.
         # sec_key: tuple of section and key (section without brackets)
@@ -1601,6 +1628,21 @@ class MDUFile(SectionedConfig):
         finally:
             os.chdir(pwd)
 
+    def get_bool(self,sec_key,key=None):
+        """
+        missing, or numeric equal to 0 => False
+        present and nonzero numeric => True
+        """
+        if key is not None:
+            sec_key=(sec_key,key)
+        value=self[sec_key]
+        if value is None:
+            value=0.0
+        else:
+            value=float(value)
+        return value!=0.0
+            
+
 def exp_z_layers(mdu,zmin=None,zmax=None):
     """
     This will probably change, not very flexible now.
@@ -1702,7 +1744,7 @@ def write_bnd(bnd,fn):
                                                             x[0,0],x[0,1],x[1,0],x[1,1]))
 
 
-def read_dfm_tim(fn, ref_time, time_unit='M', columns=['val1','val2','val3']):
+def read_dfm_tim(fn, ref_time, time_unit='M', columns=None):
     """
     Parse a tim file to xarray Dataset.  Must pass in the reference
     time (datetime64, or convertable to that via utils.to_dt64())
@@ -1712,7 +1754,9 @@ def read_dfm_tim(fn, ref_time, time_unit='M', columns=['val1','val2','val3']):
     time.  Probably ought to be 'M' always.
 
     returns Dataset with 'time' dimension, and data columns labeled according
-    to columns.
+    to columns (list of strings naming the columns after the time stamp).
+    Defaults to val1, val2,... and if specified columns is not long enough
+    # valN, valN+1, etc. will be appended.
     """
     if time_unit.lower()=='m':
         dt=np.timedelta64(60,'s')
@@ -1727,8 +1771,16 @@ def read_dfm_tim(fn, ref_time, time_unit='M', columns=['val1','val2','val3']):
     raw_data=np.loadtxt(fn)
     t=ref_time + dt*raw_data[:,0]
 
+    if columns is None:
+        columns=[]
+        
+    # fill in defaults to make sure it's long enough.
+    for i in range(len(columns), raw_data.shape[1]-1):
+        columns.append('val%d'%(i+1))
+        
     ds=xr.Dataset()
-    ds['time']=('time',),t
+    # 2023-05-16: force conversion to nanosecond to avoid casting warning.
+    ds['time']=('time',),t.astype('M8[ns]')
     for col_i in range(1,raw_data.shape[1]):
         ds[columns[col_i-1]]=('time',),raw_data[:,col_i]
 

@@ -1446,4 +1446,20 @@ def mypause(interval):
             if canvas.figure.stale:
                 canvas.draw()
             canvas.start_event_loop(interval)
-            return        
+            return
+
+        
+def plot_with_isolated(x,y,*a,**k):
+    """
+    line plot, but isolated data points with nan on both sides
+    are plotted with a marker. 
+    """
+    valid=np.isfinite(y)
+    valid_ghost = np.r_[ valid[:1], valid, valid[-1:] ]
+    isolated = valid[1:-1] & (~valid[:-2]) & (~valid[2:])
+    marker=k.pop('marker','.')
+    ax=k.pop('ax',plt.gca())
+    ax.plot(x,y,*a,**k)
+    k.pop('label','')
+    ax.plot(x[isolated],y[isolated],marker=marker, *a,**k)
+    

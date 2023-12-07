@@ -79,8 +79,14 @@ class PermissiveFinder(TrapezoidMapTriFinder):
 RIGID=front.AdvancingFront.RIGID
 
 class NodeDiscretization(object):
-    def __init__(self,g):
+    # original code set gradients by forcing the normal of the gradient
+    # to zero. This doesn't force a sign or magnitude on the gradient.
+    # If this is False, gradients are directly enforced.
+    gradient_by_normal=True
+    def __init__(self,g,**kw):
         self.g=g
+        utils.set_keywords(self,kw)
+        
     def construct_matrix(self,op='laplacian',dirichlet_nodes={},
                          zero_tangential_nodes=[],
                          gradient_nodes={},
@@ -169,10 +175,18 @@ class NodeDiscretization(object):
             dy_nodes,dy_alphas,_=self.node_discretization(n,op='dy')
             assert np.all(dx_nodes==dy_nodes),"Have to be cleverer"
             nodes=dx_nodes
-            # So if vec = [1,0], then normal=[0,-1]
-            # and I want dx*norma[0]+dy*normal[1] = 0
-            alphas=np.array(dx_alphas)*normal[0] + np.array(dy_alphas)*normal[1]
-            B[row]=0
+            if self.gradient_by_normal:
+                # So if vec = [1,0], then normal=[0,-1]
+                # and I want dx*norma[0]+dy*normal[1] = 0
+                alphas=np.array(dx_alphas)*normal[0] + np.array(dy_alphas)*normal[1]
+                B[row]=0
+            else:
+                # So if vec = [1,0]
+                # mag= sqrt(vec[0]**2 + vec[1]**2)
+                # I want dx*vec[0]+dy*vec[1] = vec[0]**2 + vec[1]**2
+                alphas=np.array(dx_alphas)*vec[0] + np.array(dy_alphas)*vec[1]
+                B[row]=vec[0]**2 + vec[1]**2
+                
             for node,alpha in zip(nodes,alphas):
                 M[row,node]=alpha
             row+=1
@@ -520,13 +534,127 @@ def linear_scales(gen,method='adhoc'):
     bad=(extraps[0]<=0) | (extraps[1]<=0)
     if np.any(bad):
         idxs=np.nonzero(bad)[0]
-        log.error("Bad nodes: %s"%str(gen_tri.nodes['x'][idxs]))
-        raise Exception("Probably disconnected cells with no scale")
+        log.warning("Bad nodes: %s"%str(gen_tri.nodes['x'][idxs]))
+        # push the error to later -- possible that the nodes we care about
+        # have scale.
+        #raise Exception("Probably disconnected cells with no scale")
     return i_field, j_field
 
 
 def add_bezier(gen):
     """
+    This version only needs turn_rev/turn_fwd, and does not need
+    the absolute angles to be globally consistent.
+
+    Note that the quad generation still relies on absolute angles.
+
+    Generate bezier control points for each edge.  Uses angles (in ij
+    space) in the generating grid to calculate angles at each vertex, and then
+    choose bezier control points to achieve that angle.
+
+    This version is standalone, and can handle nodes with degree>2.
+    """
+    # Need to force the internal angles at nodes to match xy space
+    # angles and ij space angles.
+
+    order=3 # cubic bezier curves
+    bez=np.nan*np.zeros( (gen.Nedges(),order+1,2) )
+    valid_edges=~gen.edges['deleted']
+    bez[valid_edges,0    ,:] = gen.nodes['x'][gen.edges['nodes'][valid_edges,0]]
+    bez[valid_edges,order,:] = gen.nodes['x'][gen.edges['nodes'][valid_edges,1]]
+
+    gen.add_edge_field('bez', bez, on_exists='overwrite')
+
+    for n in gen.valid_node_iter():
+        hes=gen.node_to_halfedges(n)
+
+        # Filter out non-quad grid edges in there, which will have angle=nan
+        hes=[he for he in hes 
+             if gen.edges['turn_fwd'][he.j]>0 or gen.edges['turn_rev'][he.j]>0]
+
+        if len(hes)==0:
+            continue
+        
+        # when a node is part of multple cells, but those
+        # cells have no edges in common, treat it as two separate
+        # groups of angles
+
+        # label nodes:
+        # These are already angle sorted, but they won't necessarily
+        # start with the most CW of the group.
+        node_groups=np.arange(len(hes))
+        group_start=0 # index into hes giving the first element of a group.
+        for a in range(len(hes)):
+            b=(a+1)%len(hes)
+            he_a=hes[a]
+            he_b=hes[b]
+            if he_a.cell()>=0:
+                # in the old code this was an additional condition.
+                # But this should always be true.
+                assert he_a.cell()==he_b.cell_opp()
+                node_groups[ node_groups==node_groups[b] ] = node_groups[a]
+            else:
+                group_start=b
+
+        # rotate so we start at the beginning of a group.
+        hes=np.roll(hes,-group_start)
+        node_groups=np.roll(node_groups,-group_start)
+        
+        # Don't actually need absolute angles, just need to be able to assign
+        # locally consistent ij angles.
+        
+        # Each of those half-edges has an angle in ij space, relative
+        # to natural edge direction.
+        def he_xy_angle(he):
+            A=gen.nodes['x'][he.node_rev()]
+            B=gen.nodes['x'][he.node_fwd()]
+            delta=B-A
+            return 180/np.pi * np.arctan2(delta[1],delta[0])        
+        xy_angles=np.array( [he_xy_angle(he) for he in hes] )
+
+        xy_tgts=0*xy_angles
+        
+        for grp in np.arange(len(hes)):
+            sel=node_groups==grp
+            if np.all(~sel): continue
+            grp_ij=[0] # by fiat, start of group is ij angle 0
+            
+            # turn information will be on the incoming half-edge
+            # but each of he are outgoing half-edges.
+            for he in hes[sel][1:]:
+                if he.orient==0:
+                    turn = gen.edges['turn_rev'][he.j]
+                else:
+                    turn = gen.edges['turn_fwd'][he.j]
+                assert turn>0
+                grp_ij.append(grp_ij[-1] + turn)
+                
+            grp_xy = xy_angles[sel] 
+            grp_ij = np.array(grp_ij)
+            # overall rotation -
+            # 0 degress in xy space is rot degrees from 0 degrees in
+            # ij space.
+            xy_to_ij=np.pi/180 * (grp_ij-grp_xy)
+            
+            # angular average:            
+            rot=180/np.pi * np.arctan2( np.sin(xy_to_ij).mean(),
+                                        np.cos(xy_to_ij).mean())
+            xy_tgts[sel]=grp_ij[sel] - rot
+            
+        xy_errs=xy_angles - xy_tgts
+
+        for he,xy_err in zip(hes,xy_errs):
+            vec=gen.nodes['x'][he.node_fwd()] - gen.nodes['x'][he.node_rev()]
+            cp=gen.nodes['x'][n] + utils.rot(-xy_err*np.pi/180., 1./3 * vec)
+            gen.edges['bez'][he.j,1+he.orient]=cp
+
+
+
+
+def add_bezier_from_angle(gen):
+    """
+    This version requires absolute angle set on each edge.
+ 
     Generate bezier control points for each edge.  Uses angles (in ij
     space) in the generating grid to calculate angles at each vertex, and then
     choose bezier control points to achieve that angle.
@@ -604,10 +732,22 @@ def add_bezier(gen):
             gen.edges['bez'][he.j,1+he.orient]=cp
 
 
-def plot_gen_bezier(gen,num=10):
-    fig=plt.figure(num)
-    fig.clf()
-    ax=fig.add_subplot(1,1,1)
+def plot_gen_bezier(gen,num=10,ax=None,connect_handles=True,
+                    handle_kw=dict(color='r',zorder=1,alpha=0.5,lw=1.5),
+                    smooth_kw=dict(color='b',zorder=2,lw=1.5)):
+    """
+    gen: grid with 'bez' on edges
+    ax: optional axes to plot into
+    connect_handles: each bezier segment has two ends and two internal
+     handles. controls whether a line is drawn connecting the handles
+    """
+    if ax is None:
+        fig=plt.figure(num)
+        fig.clf()
+        ax=fig.add_subplot(1,1,1)
+    else:
+        fig=None
+        
     gen.plot_edges(lw=0.3,color='k',alpha=0.5,ax=ax)
     gen.plot_nodes(alpha=0.5,ax=ax,zorder=3,color='orange')
 
@@ -624,8 +764,13 @@ def plot_gen_bezier(gen,num=10):
         B3=t**3
         points = B0[:,None]*bez[0] + B1[:,None]*bez[1] + B2[:,None]*bez[2] + B3[:,None]*bez[3]
 
-        ax.plot(points[:,0],points[:,1],'b-',zorder=2,lw=1.5)
-        ax.plot(bez[:,0],bez[:,1],'r-o',zorder=1,alpha=0.5,lw=1.5)
+        ax.plot(points[:,0],points[:,1],**smooth_kw)
+        if connect_handles:
+            ax.plot(bez[:,0],bez[:,1],**handle_kw)
+        else:
+            ax.plot(bez[:2,0],bez[:2,1],**handle_kw)
+            ax.plot(bez[2:,0],bez[2:,1],**handle_kw)
+            
     return fig,ax
 
 def discretize_bezier_halfedge(gen,he,samples_per_edge=10):
@@ -668,6 +813,7 @@ class QuadGen(object):
 
     # 'rebay', 'front', 'gmsh'.  When intermediate is 'tri', this chooses the method for
     # generating the intermediate triangular grid
+    # note that rebay is buggy! gmsh is great if installed.
     triangle_method='rebay'
 
     # How internal angles are specified.  'node' is only valid when a single cell
@@ -695,7 +841,7 @@ class QuadGen(object):
         # Process angles on the whole quad grid, so we can also get
         # scales
         if self.angle_source=='halfedge':
-            # HERE: does this need snap_angles first??
+            snap_angles(gen)
             prepare_angles_halfedge(gen)
         elif self.angle_source=='existing':
             pass
@@ -717,19 +863,31 @@ class QuadGen(object):
         gen.delete_orphan_edges()
         gen.delete_orphan_nodes()
         gen.renumber(reorient_edges=False)
-        
+
+        self.gen_orig=gen.copy() # before merging
         self.gen=gen
         # [ [node_a,node_b,angle], ...]
         # node indices reference gen, which provide
         # additional groupings of nodes.
         self.internal_edges=[]
+        self.breaklines=[]
 
         if execute:
             self.execute()
 
-    def add_internal_edge(self,nodes,angle=None):
-        self.internal_edges.append( [nodes[0], nodes[1], angle] )
-        
+    def add_internal_edge(self,nodes,angle=None,colinear=True):
+        """
+        nodes: the two nodes making up the edge
+        angle: if known, the orientation of the edge.
+        colinear: if true, marks the edge as being colinear with
+        an external edge.
+        """
+        if colinear:
+            self.internal_edges.append( [nodes[0], nodes[1], angle] )
+        else:
+            # towards aligning internal rows
+            self.breaklines.append( [nodes[0],nodes[1],angle] )
+            
     def execute(self):
         self.process_internal_edges(self.gen)
         self.g_int=self.create_intermediate_grid_tri()
@@ -863,8 +1021,8 @@ class QuadGen(object):
         ax.axis('tight')
         ax.axis('equal')
 
-    def plot_gen_bezier(self,num=10):
-        fig,ax=plot_gen_bezier(self.gen)
+    def plot_gen_bezier(self,num=10,ax=None):
+        fig,ax=plot_gen_bezier(self.gen,ax=ax)
         
         for n12 in self.internal_edges:
             ax.plot( self.gen.nodes['x'][n12[:2],0],
@@ -888,57 +1046,62 @@ class QuadGen(object):
         else:
             return front.Curve(points,closed=False)
         
-    def gen_bezier_linestring(self,j=None,samples_per_edge=10,span_fixed=True):
+    def gen_bezier_linestring(self,j=None,nodestring=None,samples_per_edge=10,span_fixed=True,
+                              gen=None):
         """
         Calculate an up-sampled linestring for the bezier boundary of self.gen
         
         j: limit the curve to a single generating edge if given.
         span_fixed: see gen_bezier_curve()
         """
-        gen=self.gen
+        if gen is None:
+            gen=self.gen
 
         # need to know which ij coordinates are used in order to know what is
         # fixed. So far fixed is the same whether IJ or ij, so not making this
         # a parameter yet.
         src='IJ'
-        
-        if j is None:
-            node_pairs=zip(bound_nodes,np.roll(bound_nodes,-1))
-            bound_nodes=self.gen.boundary_cycle() # probably eating a lot of time.
-        else:
-            if not span_fixed:
-                node_pairs=[ self.gen.edges['nodes'][j] ]
-            else:
-                nodes=[]
 
-                # Which coord is changing on j? I.e. which fixed should
-                # we consult?
-                # A little shaky here.  Haven't tested this with nodes
-                # that are fixed in only coordinate.
-                j_coords=self.gen.nodes[src][ self.gen.edges['nodes'][j] ]
-                if j_coords[0,0] == j_coords[1,0]:
-                    coord=1
-                elif j_coords[0,1]==j_coords[1,1]:
-                    coord=0
+        if nodestring is None:
+            if j is None:
+                bound_nodes=self.gen.boundary_cycle() # probably eating a lot of time.
+                nodestring=np.r_[bound_nodes, bound_nodes[:1]]
+                # node_pairs=zip(bound_nodes,np.roll(bound_nodes,-1))
+            else:
+                if not span_fixed:
+                    nodestring=self.gen.edges['nodes'][j]
                 else:
-                    raise Exception("Neither coordinate is constant on this edge??")
-                
-                trav=self.gen.halfedge(j,0)
-                while 1: # FWD
-                    n=trav.node_fwd()
-                    nodes.append(n)
-                    if self.gen.nodes[src+'_fixed'][n,coord]:
-                        break
-                    trav=trav.fwd()
-                nodes=nodes[::-1]
-                trav=self.gen.halfedge(j,0)
-                while 1: # REV
-                    n=trav.node_rev()
-                    nodes.append(n)
-                    if self.gen.nodes[src+'_fixed'][n,coord]:
-                        break
-                    trav=trav.rev()
-                node_pairs=zip( nodes[:-1], nodes[1:])
+                    nodestring=[]
+
+                    # Which coord is changing on j? I.e. which fixed should
+                    # we consult?
+                    # A little shaky here.  Haven't tested this with nodes
+                    # that are fixed in only one coordinate.
+                    j_coords=self.gen.nodes[src][ self.gen.edges['nodes'][j] ]
+                    if j_coords[0,0] == j_coords[1,0]:
+                        coord=1
+                    elif j_coords[0,1]==j_coords[1,1]:
+                        coord=0
+                    else:
+                        raise Exception("Neither coordinate is constant on this edge??")
+
+                    trav=self.gen.halfedge(j,0)
+                    while 1: # FWD
+                        n=trav.node_fwd()
+                        nodestring.append(n)
+                        if self.gen.nodes[src+'_fixed'][n,coord]:
+                            break
+                        trav=trav.fwd()
+                    nodestring=nodestring[::-1]
+                    trav=self.gen.halfedge(j,0)
+                    while 1: # REV
+                        n=trav.node_rev()
+                        nodestring.append(n)
+                        if self.gen.nodes[src+'_fixed'][n,coord]:
+                            break
+                        trav=trav.rev()
+                    
+        node_pairs=zip( nodestring[:-1], nodestring[1:])
             
         points=[]
         for a,b in node_pairs:
@@ -946,7 +1109,7 @@ class QuadGen(object):
             edge_points=discretize_bezier_halfedge(gen,he,samples_per_edge=samples_per_edge)
 
             points.append(edge_points[:-1])
-        if j is not None:
+        if nodestring[0]!=nodestring[-1]:
             # When the curve isn't closed, then be inclusive of both
             # ends
             points.append(edge_points[-1:])
@@ -1003,12 +1166,14 @@ class QuadGen(object):
     def process_internal_edges(self,gen):
         """
         Remove and save internal edges.
+        self.internal_edges will end up with internal
+        edges that are colinear with external edges (i.e. inside corners)
+
         Flip angle for remaining edge to reflect orientation
         along boundary cycle.
         Add 'fixed' and 'turn' field to gen.nodes
         """
         e2c=gen.edge_to_cells()
-
         internal=(e2c.min(axis=1)>=0)
 
         for j in np.nonzero(internal)[0]:
@@ -1027,16 +1192,19 @@ class QuadGen(object):
                     if (gen.edges['angle'][j_nbr] - angle)%180==0:
                         parallel_count+=1
                         break # parallel. good
-            if parallel_count<2:
-                log.info(f"Will skip potential internal edge {j}")
-            else:
-                self.add_internal_edge(gen.edges['nodes'][j],
-                                       gen.edges['angle'][j])
+            self.add_internal_edge(gen.edges['nodes'][j],
+                                   gen.edges['angle'][j],
+                                   colinear=parallel_count>=2) # probably just ==2
             # DBG
             # Tricky: if there are multiple segments, the first succeeds,
             # and the second is degenerate (spike into the cell interior)
             # this should be handled now down in delete_edge_cascade
-            gen.merge_cells(j=j)
+            # but it's not robust. I think it can still fail when some of the interior
+            # edges become disconnected -- then they are left with -2,-2 neighbors
+            if np.all(gen.edge_to_cells(j)==-2):
+                gen.delete_edge(j)
+            else:
+                gen.merge_cells(j=j)
         # A bit of insurance? Hopefully doesn't break things
         gen.delete_orphan_edges()
             
@@ -2032,13 +2200,6 @@ class QuadGen(object):
         self.g_not_final=g_final
         self.g_final2=g_final2
         
-        # import pdb
-        # pdb.set_trace()
-        
-        #print("Bailing early")
-        #return
-        # /DBG
-
         # --- Compile Swaths ---
         e2c=g_final2.edge_to_cells(recalc=True)
 
@@ -2149,20 +2310,56 @@ class QuadGen(object):
             s=np.cumsum(d_vals*0.5*(o_ds_dval[:-1]+o_ds_dval[1:]))
             s=np.r_[0,s]
 
-            # HERE -- calculate this from resolution
-            # Scale is under-utilized here.
+            n_swath_cells=None
+            # def prescribed_cell_count():
+            # want to get the edges in g_final2 for the two relevant ends of the
+            # swath. Pull all edges from g_final2 that are on the boundary of the
+            # swath
+            swath_boundaries=[]
+            e2c=g_final2.edge_to_cells()
+            for comp_cell in comp_cells:
+                swath_boundaries.append( np.nonzero( (e2c.min(axis=1)<0) & (e2c.max(axis=1)==comp_cell))[0] )
+            swath_boundaries=np.concatenate(swath_boundaries)
+            angle_to_nodes={} # angle => list of nodes on that border
+            for angle in [0,90,180,270]:
+                angle_to_edges=swath_boundaries[ g_final2.edges['angle'][swath_boundaries]==angle]
+                angle_to_nodes[angle] = set( g_final2.edges['nodes'][angle_to_edges].ravel())
+
+             # hoping these can be mapped back to gen...
+            for angle in [0+90*coord,180+90*coord]:
+                cornerA=(angle_to_nodes[angle] & angle_to_nodes[(angle-90)%360]).pop()
+                cornerB=(angle_to_nodes[angle] & angle_to_nodes[(angle+90)%360]).pop()
+                genA = self.gen.select_nodes_nearest( g_final2.nodes['x'][cornerA] )
+                genB = self.gen.select_nodes_nearest( g_final2.nodes['x'][cornerB] )
+                gen_edges = self.gen.shortest_path(genA,genB,
+                                                   edge_selector=lambda j,direc: self.gen.edges['angle'][j]==angle,
+                                                   return_type='edges')
+                scales=self.gen.edges['scale'][gen_edges]
+                if np.all(scales<0):
+                    count=-scales.sum()
+                    if n_swath_cells is None:
+                        n_swath_cells=int(count)
+                        print("Swath cell prescribed as ",n_swath_cells)
+                    elif n_swath_cells!=count:
+                        raise Exception("Both ends of this swath have set counts, but the counts don't match")
             
-            # This is just calculating a mean scale over the whole swath
-            if uniform_scale:
-                local_scale=scale( g_int.nodes['x'][swath_nodes] ).mean(axis=0)
-            else:
-                local_scale=1.0
-                
-            # s gives the average geographic distance along the swath.
-            # this takes the average geographic length of the swath,
-            # and divides by local scale to get the number of cells
-            n_swath_cells=int(np.round( (s.max() - s.min())/local_scale))
-            n_swath_cells=max(1,n_swath_cells)
+            if n_swath_cells is None:
+                # This is just calculating a mean scale over the whole swath
+                if uniform_scale:
+                    local_scale=scale( g_int.nodes['x'][swath_nodes] ).mean(axis=0)
+                else:
+                    local_scale=1.0
+
+                # s gives the average geographic distance along the swath.
+                # this takes the average geographic length of the swath,
+                # and divides by local scale to get the number of cells
+                # It may be worthwhile to shift towards something more like SimpleSingleQuadGen --
+                # advantage is that information from the user is more directly incorporated, including
+                # distribution of edges. Downside is that it becomes a local determination and
+                # ignores how the internal parts of the domain are turning/expanding/contracting.
+                n_swath_cells=int(np.round( (s.max() - s.min())/local_scale))
+                n_swath_cells=max(1,n_swath_cells)
+
 
             # Evenly divide up geographic space into the desired number of cells
             s_contours=np.linspace(s[0],s[-1],1+n_swath_cells)
@@ -2188,6 +2385,7 @@ class QuadGen(object):
                     n_comp=n_comp_j
                     node_field=self.psi
 
+                    
                 for comp in range(n_comp):
                     log.info("Swath: %s"%comp)
                     comp_cells=np.nonzero(labels==comp)[0]
@@ -2318,7 +2516,155 @@ class QuadGen(object):
                                 smooth_iters=smooth_iters,
                                 nudge_iters=nudge_iters)
 
+    def nudge_to_internal(self):
+        """
+        For internal breaklines nudge nodes onto the breakline
+        """
+        nudge_lines=self.find_nudge_lines()
+        self.do_nudging(nudge_lines)
+    def do_nudging(self, nudge_lines):
+        # Do the actual nudging. For now, only nudge the specific nodes that fall on the
+        # contour, but record all nudges
+        g_final=self.g_final
+        nudges=np.zeros( (g_final.Nnodes(),2), np.float64)
 
+        for rec in nudge_lines:
+            geom=geometry.LineString(rec['linestring'])
+            orient=rec['orient']
+            for n in g_final.valid_node_iter():
+                if ( g_final.nodes['ij'][n,orient]==rec['contour']
+                     and g_final.nodes['ij'][n,1-orient]>=rec['perp_range'][0]
+                     and g_final.nodes['ij'][n,1-orient]<=rec['perp_range'][1]):
+                    x_orig=g_final.nodes['x'][n]
+                    pt,_ = ops.nearest_points(geom,geometry.Point(x_orig))
+                    x_nudged=np.array([pt.x,pt.y])
+                    nudges[n] += x_nudged - x_orig
+                    g_final.nodes['x'][n] = x_nudged
+        
+    def find_nudge_lines(self):
+        gen_orig=self.gen_orig # get gen before internal edges were removed.
+        gen=self.gen
+        g_final=self.g_final
+        e2c=gen_orig.edge_to_cells()
+
+        nudge_lines=[] # [ ( {0 for i, 1 for j}, contour value, nodestring from gen_orig, linestring), ]
+        internal=(e2c.min(axis=1)>=0)
+
+        internal_linestrings=[]
+        for orient in [0,90]:
+            # Careful with internal linestrings that intersect. Search separately in
+            # each orientation, and override the default behavior that stops on node
+            # degree>2
+            edge_sel=internal & (gen_orig.edges['angle']%180==orient)
+            orient_ls=gen_orig.extract_linear_strings(edge_select=edge_sel,
+                                                      end_func=lambda n,js: len(js)<2)
+            internal_linestrings.extend(orient_ls)
+
+
+        node_to_ij={} # map node index of gen_orig to ij value in g_final, based on exact matches.
+        for n in gen_orig.valid_node_iter():
+            n_final = g_final.select_nodes_nearest(gen_orig.nodes['x'][n])
+            dist = utils.dist( gen_orig.nodes['x'][n], g_final.nodes['x'][n_final])
+            if dist<1e-5:
+                node_to_ij[n] = g_final.nodes['ij'][n_final]
+        
+        for internal_ls in internal_linestrings:
+            # HERE:
+            # Rather than all of this craziness -- can it be more of a graph search question?
+            # From each end of the line string, search gen_orig, accumulating the scales along
+            # the way if they are of the right orientation, until reaching a node that has
+            # i,j values in g_final.
+            # possible that we need to update gen to include that information?
+            # the main caveat is that angles in gen_orig are ambiguous % 180.
+            # but the shortest path I think will take care of that.
+            # the remaining issue is that it won't know if the coordinate should be
+            # increasing or decreasing.
+            # Really just need a way to set di/dj on all edges of gen_orig.
+
+            # start a search from each end
+            # Trying to get to any node for which we can identify i,j
+            # g_final has ij
+
+            end_nodes=[internal_ls[0],internal_ls[-1]]
+
+            end_ijs=[]
+            for end_node in end_nodes:
+                node_paths=gen_orig.shortest_path(n1=end_node,
+                                                  n2=list(node_to_ij.keys()),
+                                                  return_type='nodes')
+                ij_recon=[np.nan,np.nan]
+                for (n_target,node_path) in node_paths:
+                    dists={0:0.0, 90:0.0, 180:0.0, 270:0.0 }
+                    for a,b in zip(node_path[:-1],node_path[1:]):
+                        he=gen_orig.nodes_to_halfedge(a,b)
+                        scale=gen_orig.edges['scale'][he.j]
+                        if scale<0:
+                            steps = -scale
+                        else:
+                            # only count up cases where the steps are exact.
+                            # otherwise will revert to nearest node check
+                            steps=np.nan 
+                        angle=(gen_orig.edges['angle'][he.j] + he.orient*180)%360
+                        dists[angle]+=steps
+                    dist90=dists[90] - dists[270]
+                    dist0=dists[0] - dists[180] # this one has not been tested.
+
+                    one_ij_recon=node_to_ij[n_target] - np.r_[dist90,dist0]
+                    for ii in [0,1]:
+                        if np.isnan(one_ij_recon[ii]): continue
+                        if np.isnan(ij_recon[ii]):
+                            ij_recon[ii]=one_ij_recon[ii]
+                        else:
+                            # hopefully these match
+                            print(f"reconstructured coord: {ij_recon[ii]} vs {one_ij_recon[ii]}")
+                for ii in [0,1]:
+                    if np.isfinite(ij_recon[ii]): continue
+                    # This isn't great -- ideally we'd get a fractional value here.
+                    nodes_final=g_final.select_nodes_nearest(gen_orig.nodes['x'][end_node],count=4)
+                    values=g_final.nodes['ij'][nodes_final,ii]
+                    # linear interp or inv-distance weighted would be better, but this is probably
+                    # sufficient -- just need to know if a g_final node is inside or outside the
+                    # range.
+                    ij_recon[ii]=values.mean()
+                end_ijs.append(ij_recon)
+            # sign and 0/90 bugs to test!
+            # seems to have worked..
+
+            # And what is the orientation for the line?
+            parallel_angle=gen_orig.edges['angle'][ gen_orig.nodes_to_edge(internal_ls[:2]) ]
+            if parallel_angle%180==0:
+                orient=0 # TEST
+            else:
+                orient=1
+            
+            # package up the line:
+            # generally should be the same on the two ends, but just in case:
+            contour_value=int( np.round(0.5*(end_ijs[0][orient]+end_ijs[1][orient])))
+            # ideally also make sure contour_value is not on the boundary!
+            min_value=g_final.nodes['ij'][:,orient].min()
+            max_value=g_final.nodes['ij'][:,orient].max()
+            # This is not sufficient for non-rectangular cases...
+            if contour_value==min_value: contour_value+=1
+            if contour_value==max_value: contour_value-=1
+            #gen.plot_nodes(mask=internal_ls,labeler=lambda i,r: contour_value)
+            #g_final.plot_nodes( labeler=lambda i,r: r['ij'][orient])
+
+            perp_values=[end_ijs[0][1-orient], end_ijs[1][1-orient]]
+
+            if 0:
+                linestring=gen_orig.nodes['x'][internal_ls]
+            else:
+                linestring=self.gen_bezier_linestring(nodestring=internal_ls,gen=gen_orig)
+
+            nudge_lines.append( dict(orient=orient,
+                                     contour=contour_value,
+                                     perp_range=[min(perp_values),max(perp_values)],
+                                     nodestring=internal_ls,
+                                     linestring=linestring) )
+
+        return nudge_lines
+
+        
         
 class SimpleQuadGen(object):
     """
@@ -2326,7 +2672,8 @@ class SimpleQuadGen(object):
     - each cell must map to a rectangle, and the smallest 4 internal angles
       will be automatically labeled as 90-degree turns, the rest 180.
     - all edges shared by two cells must have a specific count of nodes, given
-      by a negative scale value.
+      by a negative scale value. (though by default this is enforced in a
+      preprocessing step with adjust_scale=True)
     """
     nom_res=3.5 # needs to be adaptive..
     triangle_method='gmsh'
@@ -2532,7 +2879,7 @@ class SimpleSingleQuadGen(QuadGen):
             edge_scale=np.zeros(self.gen.Nedges())
         
         while 1:
-            pnts=self.gen_bezier_linestring(he.j,span_fixed=False)
+            pnts=self.gen_bezier_linestring(j=he.j,span_fixed=False)
             
             if he.orient:
                 pnts=pnts[::-1]

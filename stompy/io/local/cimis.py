@@ -62,7 +62,7 @@ def cimis_json_to_xr(data):
                      + datetime.timedelta(days=int(s.endswith('2400'))))
                     for s in df.Date.values]
     dt64s=[utils.to_dt64(dt) for dt in datetimes]
-    df['time']=('time',),dt64s
+    df['time']=('time',),np.asarray(dt64s,'M8[ns]') # appease pandas
 
     def cnv(s):
         try:
@@ -107,11 +107,11 @@ def cimis_fetch_station_metadata(station,df=None,cimis_key=None,cache_dir=None):
     # that trips up python unicode.  Latin-1 in theory means don't transform any
     # bytes -- just write it out, and pretend we all agree on the high byte symbols.
     if (cache_fn is not None) and os.path.exists(cache_fn):
-        log.warning("Station metadata from cache")
+        log.info("Station metadata from cache")
         with open(cache_fn,'rb') as fp:
             station_meta=json.loads(fp.read().decode('Latin-1'))
     else:
-        log.warning("Station metadata from download")
+        log.info("Station metadata from download")
         req=requests.get("http://et.water.ca.gov/api/station/%s"%station,
                          headers=dict(Accept='application/json'))
         if cache_fn is not None:
@@ -183,7 +183,7 @@ def cimis_fetch_to_xr(stations,
     else:
         fields_label="_".join(fields)
 
-    if isinstance(stations,np.int) or isinstance(stations,str):
+    if isinstance(stations,np.integer) or isinstance(stations,str):
         stations=[stations]
 
     stations=[str(s) for s in stations] 
@@ -215,11 +215,11 @@ def cimis_fetch_to_xr(stations,
             cache_fn=None
 
         if (cache_fn is not None) and os.path.exists(cache_fn):
-            log.warning("Cached   %s -- %s"%(interval_start,interval_end))
+            log.info("Cached   %s -- %s"%(interval_start,interval_end))
             ds=xr.open_dataset(cache_fn)
         else:
-            log.warning("Requesting %s to %s"%(interval_start,interval_end))
-            log.warning("CIMIS: %s"%url)
+            log.info("Requesting %s to %s"%(interval_start,interval_end))
+            log.info("CIMIS: %s"%url)
             params=dict(appKey=cimis_key,
                         targets=",".join(stations), 
                         startDate=begin_str,
@@ -227,10 +227,30 @@ def cimis_fetch_to_xr(stations,
                         unitOfMeasure='M', # metric please
                         # is this causing problems?
                         dataItems=",".join( fields ))
-            log.warning(str(params))
-            req=requests.get(url,params=params)
+            log.info(str(params))
             try:
-                ds=cimis_json_to_xr(req.json())
+                req=requests.get(url,params=params)
+            except requests.ConnectError:
+                log.warning("CIMIS connction error")
+                time.sleep(1.0)
+                continue
+            
+            try:
+                req_json=req.json()
+            except json.JSONDecodeError:
+                log.warning("CIMIS request: ")
+                log.warning(req.text[:200])
+                time.sleep(1.0)
+                continue
+                
+            if isinstance(req_json,str):
+                log.warning("CIMIS request: ")
+                log.warning(req_json)
+                time.sleep(1.0)
+                continue
+            
+            try:
+                ds=cimis_json_to_xr(req_json)
             except Exception:
                 log.warning("While requesting from:")
                 log.warning(req.url)
