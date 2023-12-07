@@ -1208,6 +1208,8 @@ class HydroModel(object):
          'pristine' create, and clear anything already in there
          'noclobber' create, and fail if it already exists.
          'existing' assert that the path exists, but do nothing to it.
+         'increment' if path exists, add a '-vNN' suffix, incrementing NN until finding
+          a path that doesn't exist or reaching 100. Returns the path that was used
         """
         if mode=='create':
             if not os.path.exists(path):
@@ -1242,8 +1244,20 @@ class HydroModel(object):
                 os.makedirs(path)
         elif mode=='existing':
             assert os.path.exists(path),"Directory %s does not exist"%path
+        elif mode=='increment':
+            if not os.path.exists(path):
+                os.makedirs(path)
+                return path
+            else:
+                for suffix in range(1,100):
+                    new_path=path+"-v%02d"%suffix
+                    if not os.path.exists(new_path):
+                        os.makedirs(new_path)
+                        return new_path
+                raise Exception("Couldn't find new suffix")
         else:
             raise Exception("Did not understand create mode: %s"%mode)
+        return path
 
     def set_run_dir(self,path,mode='create'):
         """
@@ -1254,12 +1268,12 @@ class HydroModel(object):
         script process, as opposed to 'pristine' which deletes
         everything.
         """
-        self.run_dir=path
         if mode=="clean":
-            self.create_with_mode(path,"create")
+            path=self.create_with_mode(path,"create")
             self.clean_run_dir()
         else:
-            self.create_with_mode(path,mode)
+            path=self.create_with_mode(path,mode)
+        self.run_dir=path
 
     def clean_run_dir(self):
         """

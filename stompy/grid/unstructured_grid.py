@@ -3344,7 +3344,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         return cells[0]
 
-    def cell_to_edges(self,c,ordered=False,pad=False):
+    def cell_to_edges(self,c=None,ordered=False,pad=False):
         """ returns the indices of edges making up this cell -
         including trimming to the number of sides for this cell.
 

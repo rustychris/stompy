@@ -40,7 +40,7 @@ def upsample_linearring(points,density,closed_ring=1,return_sources=False):
         scale = density( 0.5*(A+B) )
         # print "Scale is ",scale
 
-        npoints = max(1,round( l/scale ))
+        npoints = max( [1, int(round( l/scale ))] )
         # print "N points ",npoints
 
         alphas = arange(npoints) / float(npoints)

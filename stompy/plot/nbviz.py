@@ -123,14 +123,20 @@ class UGDataset(Dataset):
         if grid is None:
             grid=unstructured_grid.UnstructuredGrid.read_ugrid(ds)            
         self.grid=grid
+        self.nc_meta = self.grid.nc_meta
+        self.nc_meta['vector_dimension']='xy' # ad-hoc
+        self.ds['xy']=('xy',), [0,1] # not sure we're ready for labels here
         
         # select field to plot for cells:
         self.dim_selectors=dict(time=self.ds.dims['time']-5)
         #self.set_cell_var('eta')
         self.expressions=[]
 
-        # need more generic expression handling.
+        self.add_automatic_expressions()
+    def add_automatic_expressions(self):
         cell_vars=self.available_cell_vars(include_virtual=False)
+        
+        # need more generic expression handling.
         if ('eta' in cell_vars) and ('bed_elev' in cell_vars):
             def depth_func(src,dims):
                 return src('eta',dims) - src('bed_elev',dims)
@@ -138,6 +144,30 @@ class UGDataset(Dataset):
             self.expressions.append(
                 BoundExpression(name='depth',dims=('time','face'),
                                 func=depth_func))
+
+        east_vel=None
+        north_vel=None
+        for v in cell_vars:
+            long_name=self.ds[v].attrs['long_name'].lower()
+            if long_name=='eastward water velocity component':
+                east_vel=v
+            elif long_name=='northward water velocity component':
+                north_vel=v
+                
+        if (east_vel is not None) and (north_vel is not None):
+            vec_dim=self.nc_meta['vector_dimension'] # 'xy'
+            def make_velocity(src,dims):
+                return xr.concat( [src(east_vel,dims), src(north_vel,dims)], dim=vec_dim)
+            self.expressions.append( BoundExpression(name='velocity_cell',
+                                                     dims=self.ds[east_vel].dims+('xy',),
+                                                     func=make_velocity))
+            def make_speed(src,dims):
+                return np.sqrt( src(east_vel,dims)**2 + src(north_vel,dims)**2)
+            print("Speed dims: ", self.ds[east_vel].dims)
+            # xarray gives time, Nk, Nc
+            self.expressions.append( BoundExpression(name='speed_cell',
+                                                     dims=self.ds[east_vel].dims,
+                                                     func=make_speed))
 
     def available_vars(self):
         # To show when creating a new plot
@@ -155,20 +185,34 @@ class UGDataset(Dataset):
             else:
                 print("Not sure how to handle variable for layer: ",variable)
                 return None
+        elif plot_type=='quiver':
+            if variable in self.available_cell_vector_vars():
+                return UGCellQuiverLayer(self, variable)
+            else:
+                print("Not sure how to handle variable for layer: ",variable)
+                return None
 
-    def available_cell_vars(self,include_virtual=True):
+
+    def available_cell_vector_vars(self,include_virtual=True):
+        vec_dim = self.nc_meta.get('vector_dimension','N/A')
+        return self.available_cell_vars(include_virtual=include_virtual,
+                                        dim_filter=lambda dims: vec_dim in dims)
+    
+    def available_cell_vars(self,include_virtual=True,dim_filter=lambda dims: True):
         """
         this includes expressions, though maybe that could be opt-out with
         a flag.
         """
-        meta=self.grid.nc_meta
+        meta=self.nc_meta
         cell_vars=[]
         for v in self.ds:
-            if meta['face_dimension'] in self.ds[v].dims:
+            dims=self.ds[v].dims
+            if (meta['face_dimension'] in dims) and dim_filter(dims):
                 cell_vars.append(v)
         if include_virtual:
             for v in self.expressions:
-                if meta['face_dimension'] in v.dims:
+                dims=v.dims
+                if (meta['face_dimension'] in dims) and dim_filter(dims):
                     cell_vars.append(v.name)
                     
         # also should filter out variables that are known to be
@@ -176,9 +220,7 @@ class UGDataset(Dataset):
         return cell_vars
 
     def available_edge_vars(self):
-        meta=self.grid.nc_meta
-        print("Checking for edge vars")
-        print(f"edge dimension: {meta['edge_dimension']}")
+        meta=self.nc_meta
         edge_vars=[]
         for v in self.ds:
             if meta['edge_dimension'] in self.ds[v].dims:
@@ -232,7 +274,7 @@ class UGLayer(Layer):
         return self.variable
 
     def grid_meta(self):
-        return self.grid.nc_meta
+        return self.ds.nc_meta
 
     def update_free_dims(self):
         changed=False
@@ -321,8 +363,7 @@ class UGCellLayer(UGLayer):
         # can choose to let those override local_dims.
 
         self.init_local_dims()
-        # self.grid=ds.grid # necessary?
-
+        
     def init_plot(self,Fig):
         # okay if it is an empty dict, just not None
         assert self.local_dims is not None
@@ -394,7 +435,74 @@ class UGCellLayer(UGLayer):
             self.ccoll.set_clim(np.nanmin(data), np.nanmax(data))
             #self.ccoll.norm.autoscale(data)
             self.Fig.redraw()
+
+
+class UGCellQuiverLayer(UGLayer):
+    coll=None
+
+    # Dimensions which are covered by the plot itself
+    plot_meta_dims=['face_dimension','vector_dimension']
+
+    def __init__(self,*a,**k):
+        super().__init__(*a,**k)
+        self.init_local_dims()
+        
+    def init_plot(self,Fig):
+        # okay if it is an empty dict, just not None
+        assert self.local_dims is not None
+        
+        self.Fig=Fig
+        data=self.get_data()
+        ax=self.Fig.ax
+        cc=self.ds.grid.cells_center()
+        # TODO: make zorder reflect order in the UI, and provide buttons to move
+        # items around.
+        self.coll=ax.quiver(cc[:,0],cc[:,1],data[...,0],data[...,1],zorder=3)
+
+    def get_data(self):
+        # force components to be last
+        data=self.ds.select_cell_data(self.variable,self.local_dims)
+        dims=data.dims
+        vec_dim=self.grid_meta()['vector_dimension']
+        new_dims=[d for d in dims if d!=vec_dim] + [vec_dim]
+        return data.transpose(*new_dims)
     
+    def redraw(self):
+        if self.Fig is not None and self.coll is not None:
+            self.Fig.redraw()
+            
+    def update_arrays(self):
+        if self.coll is not None:
+            self.coll.remove()
+            self.init_plot(self.Fig)
+    
+    def available_vars(self):
+        return self.ds.available_cell_vector_vars()
+    
+    def layer_edit_pane(self):
+        vbox=super().layer_edit_pane()
+        
+        var_selector = widgets.Dropdown(options=self.available_vars(),
+                                        value=self.variable,
+                                        description='Var:')
+        var_selector.observe(self.on_change_var, names='value')
+
+        vbox.children += (var_selector,)
+        return vbox
+
+    def on_change_var(self,change):
+        self.set_variable(change['new'])
+        
+    def set_variable(self,v):
+        if v==self.variable: return
+        self.variable=v
+        # May need to adjust dimensions
+        self.init_local_dims(defaults=self.local_dims)
+        # This feels a bit too early. Would be nice to be more JIT.
+        if self.coll is not None:
+            self.update_arrays()
+            self.Fig.redraw()
+            
 class UGEdgeLayer(UGLayer):
     """
     pseudocolor plot of edge-centered values for unstructured grid
@@ -414,9 +522,8 @@ class UGEdgeLayer(UGLayer):
     def init_local_dims(self,defaults={}):
         self.local_dims={} # NB: possible that defaults==self.local_dims.
         ds=self.ds.ds # get the actual xarray dataset
-        grid=self.ds.grid
         for dim in ds[self.variable].dims:
-            if dim!=grid.nc_meta['edge_dimension']:
+            if dim!=self.ds.nc_meta['edge_dimension']:
                 # use a default dim if given, otherwise punt with 0.
                 self.local_dims[dim]=defaults.get(dim,0)
         # Update the advertised list of dimensions
@@ -722,7 +829,7 @@ class NBViz(widgets.AppLayout):
             if dim not in new_global_dims:
                 del self.global_dims[dim] 
                 has_changed=True
-            elif new_global_dims[dim] != self.global_dims[dim]:
+            elif np.any( new_global_dims[dim] != self.global_dims[dim]):
                 self.global_dims[dim] = new_global_dims[dim]
                 has_changed=True
         # And newly added dims
