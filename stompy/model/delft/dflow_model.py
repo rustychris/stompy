@@ -1747,7 +1747,10 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         # recent DFM errors if Tlfsmo is set for a restart.
         self.mdu['numerics','Tlfsmo'] = 0.0
         # And at least in tag 140737, restarts from a restart file fail if renumbering is enabled.
-        self.mdu['geometry','RenumberFlowNodes']=0
+        # 2023-12-08: restart is failing for a case with initial run had RenumberFlowNodes=1, and
+        #   restart has RenumberFlowNodes=1.
+        # Maybe we should just leave it??
+        # self.mdu['geometry','RenumberFlowNodes']=0
 
         self.restart=True
         self.restart_from=model # used to be restart_model, but I don't think makes sense
