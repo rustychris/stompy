@@ -6,7 +6,11 @@ from stompy import utils
 
 
 # When including this as a 'mixin', it needs to go first, before
-# DFlowModel
+# DFlowModel.
+
+# Making this work with WaqModel:
+#   just needs .write() to get called, and for the caller to use self.waq_proc_def
+
 class CustomProcesses:
     # Ideally this would get integrated in waq_scenario. Since this model
     # is online coupled it's awkward to have it here.
@@ -45,9 +49,20 @@ class CustomProcesses:
         super().__init__(*a,**k)
 
     def write(self):
+        """
+        Hook into DFlowModel initialization
+        """
         super().write()
         if self.custom_procs:
             self.build_process_db()
+
+    def write_inp(self):
+        """
+        Hook into WaqModel initialization
+        """
+        super().write_inp()
+        if self.custom_procs:
+            self.build_process_db() # will update self.waq_proc_def
         
     def build_process_db(self):
         """
