@@ -70,6 +70,11 @@ from . import process_diagram
 
 DEFAULT='_DEFAULT_'
 
+def normalize_to_str(item):
+    if isinstance(item,str): pass
+    elif isinstance(item,bytes): item=item.decode()
+    return item
+
 def waq_timestep_to_timedelta(s):
     """ parse a delwaq-style timestep (as string or integer) into a python timedelta object.
     """
@@ -1057,9 +1062,17 @@ class Hydro(object):
                     bdefs['type']=[ bc_lgroups['name'][self.exch_to_2d_link['link'][exch]] 
                                     for exch in bc_exchs]
                 else:
-                    self.log.info("Slowly setting boundary info")
+                    #self.log.info("Slowly setting boundary info")
+                    # Not so slow anymore
+                    boundary_exchs=np.nonzero(self.pointers[:,0]<0)[0] # these are the
+                    boundary_segs = -self.pointers[boundary_exchs,0]
+
                     for bdry0 in range(Nbdry):
-                        exchs=np.nonzero(-self.pointers[:,0] == bdry0+1)[0]
+                        # This scans the whole pointer table
+                        # exchs=np.nonzero(-self.pointers[:,0] == bdry0+1)[0]
+                        # This still scans (meh), but only the boundary exchanges
+                        exchs=boundary_exchs[boundary_segs==bdry0+1]
+
                         assert len(exchs)==1 # may be relaxable.
                         exch=exchs[0]
                         # 2018-11-29: getting some '0' types.
@@ -6688,6 +6701,7 @@ class Initial(object):
         else:
             raise Exception("Not sure how to interpret initial value '%s'"%v)
 
+        
 class ModelForcing(object):
     """ 
     holds some common code between BoundaryCondition and 
@@ -6708,8 +6722,13 @@ class ModelForcing(object):
     def __init__(self,items,substances,data):
         if isinstance(substances,str):
             substances=[substances]
-        if isinstance(items,str) or not isinstance(items,Iterable):
+        # items have a tendency to come in as bytes.
+        # ideally support, in both python 2 and 3,
+
+        if isinstance(items,six.string_types+(bytes,)):
             items=[items]
+        items=[normalize_to_str(item) for item in items]
+
         self.items=items
         self.substances=substances
         self.data=data
@@ -7657,7 +7676,7 @@ class Scenario(scriptable.Scriptable):
     # These really shouldn't be this large.  in the update WaqModel they all
     # default to 0.0, much more sensible.
     base_x_dispersion=1.0 # m2/s
-    base_y_dispersion=1.0 # m2/s
+    base_y_dispersion=0.0 # m2/s not used in unstructured, but nonzero breaks scheme 24 performance.
     base_z_dispersion=1e-7 # m2/s
 
     # these default to simulation start/stop/timestep
@@ -9765,8 +9784,11 @@ class WaqModelBase(scriptable.Scriptable):
     # python datetime giving the reference time for the run.
     # system clock unit. Trying to move away from python datetime, just use
     # numpy datetime64 to be consistent with pandas, numpy, xarray.
-    # scu=None # datetime.timedelta(seconds=1)
     scu64=np.timedelta64(1,'s')
+    # but provide a read-only field for queries by Hydro.
+    @property
+    def scu(self):
+        return datetime.timedelta(seconds=self.scu64/np.timedelta64(1,'s'))
 
     # These should all be np.datetime64, unlike WaqScenario
     time0=None
@@ -9786,6 +9808,8 @@ class WaqModelBase(scriptable.Scriptable):
     # specifying which variables to use. See text_block10() above
     # for the specifics that are used.
     stat_output=() # defaults to none
+
+    delwaqg_initial=None
 
     # easier to handle multi-platform read/write with binary, compared to nefis output
     map_formats=('binary',)
@@ -10067,6 +10091,10 @@ class WaqModel(WaqModelBase):
 
     #  add quantities to default
     DEFAULT=DEFAULT
+
+    water_grid=None # from old style layered bed. Leave None
+    bottom_grid=None
+    bottom_layers=[] # thickness of layers, used for delwaqg
 
     # settings related to paths - a little sneaky, to allow for shorthand
     # to select the next non-existing subdirectory by setting base_path to
