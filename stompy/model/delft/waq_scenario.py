@@ -10045,18 +10045,18 @@ class WaqModelBase(scriptable.Scriptable):
         # this gets copied into the model run directory
         return os.path.join(self.share_path,'bloominp.d09')
 
-    _proc_path=None
+    _waq_proc_def=None
     @property
-    def proc_path(self):
-        if self._proc_path is not None:
-            return self._proc_path
+    def waq_proc_def(self):
+        if self._waq_proc_def is not None:
+            return self._waq_proc_def
         return os.path.join(self.share_path,'proc_def')
     
-    @proc_path.setter
-    def proc_path(self,value):
+    @waq_proc_def.setter
+    def waq_proc_def(self,value):
         if value.endswith('.def') or value.endswith('.dat'):
-            raise ValueError("proc_path should not include the extension")
-        self._proc_path=value
+            raise ValueError("waq_proc_def should not include the extension")
+        self._waq_proc_def=value
 
     # plot process diagrams
     def cmd_plot_process(self,run_name='dwaq'):
@@ -11132,7 +11132,7 @@ END_MULTIGRID"""%num_layers
 
         cmd=[self.delwaq1_path,
              "-waq", bloom_part,
-             "-p",self.proc_path]
+             "-p",self.waq_proc_def]
         self.log.info("Running delwaq1:")
         self.log.info("  "+ " ".join(cmd))
 
@@ -11311,7 +11311,7 @@ class WaqOnlineModel(WaqModelBase):
         return utils.to_dt64(self.model.ref_date)
 
     @property
-    def proc_path(self):
+    def waq_proc_def(self):
         if self.model.waq_proc_def:
             # DFlowModel has been assuming that we provide
             # the full proc_def.def, but waq_scenario code
@@ -11691,9 +11691,8 @@ class WaqOnlineModel(WaqModelBase):
         invoking dflowfm. This is also where a custom dll would be 
         specified
         """
-        return cmd+["--processlibrary",self.proc_path+".def"]
+        return cmd+["--processlibrary",self.waq_proc_def+".def"]
 
-    
     def add_monitor_from_shp(self,shp_fn,naming=None,point_layers=None):
         """
         For each feature in the shapefile, add a monitor area.
