@@ -3,13 +3,14 @@ import sys
 import os
 from collections import defaultdict
 from stompy import utils
+from . import dflow_model
 
 
 # When including this as a 'mixin', it needs to go first, before
 # DFlowModel.
 
 # Making this work with WaqModel:
-#   just needs .write() to get called, and for the caller to use self.waq_proc_def
+#   .write_inp() hook, and caller should use self.waq_proc_def.
 
 class CustomProcesses:
     # Ideally this would get integrated in waq_scenario. Since this model
@@ -23,12 +24,24 @@ class CustomProcesses:
     # path to where edits, import/export will happen
     @property
     def proc_table_dst_dir(self):
-        return os.path.join(self.run_dir,"proc_tables")
+        if isinstance(self,dflow_model.DFlowModel):
+            run_dir = self.run_dir
+        else:
+            run_dir = self.base_path
+            
+        return os.path.join(run_dir,"proc_tables")
 
+    @property
+    def bin_dir(self):
+        if isinstance(self,dflow_model.DFlowModel):
+            return self.dfm_bin_dir
+        else:
+            return self.delft_bin
+        
     _waqpbexport=None
     @property
     def waqpbexport(self):
-        return self._waqpbexport or os.path.join(self.dfm_bin_dir,'waqpb_export')
+        return self._waqpbexport or os.path.join(self.bin_dir,'waqpb_export')
     @waqpbexport.setter
     def waqpbexport(self,value):
         self._waqpbexport = value
@@ -36,7 +49,7 @@ class CustomProcesses:
     _waqpbimport=None
     @property
     def waqpbimport(self):
-        return self._waqpbimport or os.path.join(self.dfm_bin_dir,'waqpb_import')
+        return self._waqpbimport or os.path.join(self.bin_dir,'waqpb_import')
     @waqpbimport.setter
     def waqpbimport(self,value):
         self._waqpbimport = value
@@ -153,7 +166,10 @@ class CustomProcesses:
         p.update(kw)
 
         # Presumably want to enable it, though could be optional
-        self.dwaq.add_process(p['name'])
+        if isinstance(self,dflow_model.DFlowModel):
+            self.dwaq.add_process(p['name'])
+        else: # WaqModel or related
+            self.add_process(p['name'])
         
         n_stoich=1
         if conc_decay!=0.0:

@@ -110,6 +110,7 @@ def rel_symlink(src, dst, overwrite=False):
     # pwd, create a symlink that includes the right number of
     # ../..'s
     if os.path.lexists(dst):
+        assert not os.path.samefile(src,dst),"Attempt to symlink file to itself"
         if not overwrite:
             raise Exception("%s already exists, and overwrite is False"%dst)
         else:
@@ -484,15 +485,20 @@ class Hydro(object):
         """
         raise WaqException("Implement in subclass")
 
-    flowgeom_filename='flowgeom.nc'
+    @property
+    def flowgeom_filename(self):
+        # This used to return just the basename, but that makes it different
+        # than all other xxx_filename properties.
+        return os.path.join(self.scenario.base_path,'flowgeom.nc')
+    
     def write_geom(self):
         ds=self.get_geom()
         if ds is None:
             self.log.debug("This Hydro class does not support writing geometry")
             
-        dest=os.path.join(self.scenario.base_path,
-                          self.flowgeom_filename)
-        ds.to_netcdf(dest)
+        #dest=os.path.join(self.scenario.base_path,
+        #                  self.flowgeom_filename)
+        ds.to_netcdf(self.flowgeom_filename)
     def get_geom(self):
         # Return the geometry as an xarray / ugrid-ish Dataset.
         return None
@@ -662,6 +668,11 @@ class Hydro(object):
         """
         raise NotImplementedError("Implement in subclass")
 
+    def element_depth(self,t_secs=0):
+        """
+        Returns array of total water column depth per 2d element. 
+        """
+        return self.seg_z_range(t_secs)[1][-self.n_2d_elements:]
     
     def seg_active(self):
         # this is now just a thin wrapper on seg_attrs
@@ -1243,7 +1254,7 @@ class Hydro(object):
             # here we could reference the filename relative to the hyd file
             "grid-indices-file     '%s.bnd'"%self.fn_base,# lies, damn lies
             "boundaries-file       '%s.bnd'"%self.fn_base, # this one might be true.
-            "grid-coordinates-file '%s'"%self.flowgeom_filename,
+            "grid-coordinates-file '%s'"%os.path.basename(self.flowgeom_filename),
             "attributes-file       '%s.atr'"%self.fn_base,
             "volumes-file          '%s.vol'"%self.fn_base,
             "areas-file            '%s.are'"%self.fn_base,
@@ -1750,6 +1761,10 @@ class HydroFiles(Hydro):
     # and potentially renumbers nodes and edges, so it's not always
     # the right thing to do.
     clean_mpi_dfm_grid=True
+
+    # If True, override vol_filename and friends to point to the original
+    # file.
+    reference_originals=False
     
     def __init__(self,hyd_path,**kw):
         self.hyd_path=hyd_path
@@ -1758,8 +1773,8 @@ class HydroFiles(Hydro):
         super(HydroFiles,self).__init__(**kw)
         if sys.platform=='win32' and self.enable_write_symlink:
             self.log.warning("Symlinks disabled on windows")
-            self.enable_write_symlink=False            
-
+            self.enable_write_symlink=False
+            
     def parse_hyd(self):
         self.hyd_toks={}
 
@@ -1828,6 +1843,15 @@ class HydroFiles(Hydro):
         else:
             return val.strip("'")
 
+    @property
+    def vol_filename(self):
+        if self.reference_originals:
+            return self.get_path('volumes-file')
+        else:
+            # os.path.join(self.scenario.base_path, self.fn_base+".vol")
+            return super().vol_filename
+
+        
     def get_dir(self):
         return os.path.dirname(self.hyd_path)
     
@@ -1945,11 +1969,21 @@ class HydroFiles(Hydro):
             return np.fromfile(fp,'f4',2*self.n_exch).reshape( (self.n_exch,2) )
 
     def write_are(self):
-        if not self.enable_write_symlink:
-            return super(HydroFiles,self).write_are()
-        else:
+        if self.reference_originals:
+            pass
+        elif self.enable_write_symlink:
             rel_symlink(self.get_path('areas-file'),
                         self.are_filename,overwrite=self.overwrite)
+        else:
+            return super(HydroFiles,self).write_are()
+
+    @property
+    def are_filename(self):
+        if self.reference_originals:
+            return self.get_path('areas-file')
+        else:
+            return super().are_filename
+        
 
     _areas_mmap=None
     def areas(self,t,memmap=False):
@@ -1993,12 +2027,15 @@ class HydroFiles(Hydro):
         return np.frombuffer(raw,np.float32)
 
     def write_vol(self):
-        if not self.enable_write_symlink:
-            return super(HydroFiles,self).write_vol()
-        else:
+        if self.reference_originals:
+            pass
+        elif self.enable_write_symlink:
             rel_symlink(self.get_path('volumes-file'),
                         self.vol_filename,
                         overwrite=self.overwrite)
+        else:
+            return super(HydroFiles,self).write_vol()
+
 
     def volumes(self,t,**kw):
         return self.seg_func(t,label='volumes-file',**kw)
@@ -2101,12 +2138,22 @@ class HydroFiles(Hydro):
         return self.seg_func(t_sec,label='vert-diffusion-file')
 
     def write_flo(self):
-        if not self.enable_write_symlink:
-            return super(HydroFiles,self).write_flo()
-        else:
+        if self.reference_originals:
+            pass
+        elif  self.enable_write_symlink:
             rel_symlink(self.get_path('flows-file'),
                         self.flo_filename,
                         overwrite=self.overwrite)
+        else:
+            return super(HydroFiles,self).write_flo()
+        
+    @property
+    def flo_filename(self):
+        if self.reference_originals:
+            return self.get_path('flows-file')
+        else:
+            return super().flo_filename
+        
 
     _flows_mmap=None
     def flows(self,t,memmap=False):
@@ -2322,15 +2369,18 @@ class HydroFiles(Hydro):
             return super(HydroFiles,self).seg_attrs(number)
 
     def write_geom(self):
+        if self.reference_originals:
+            return
+        
         # just copy existing grid geometry
         try:
             orig=self.get_path('grid-coordinates-file',check=True)
         except KeyError:
             return
 
-        dest=os.path.join(self.scenario.base_path,
-                          self.flowgeom_filename)
+        dest=self.flowgeom_filename
         if os.path.exists(dest) or os.path.lexists(dest):
+            assert not os.path.samefile(dest,orig)
             if self.overwrite:
                 self.log.warning("Removing old geom file %s"%dest)
                 os.unlink(dest)
@@ -2341,6 +2391,16 @@ class HydroFiles(Hydro):
             rel_symlink(orig,dest)
         else:
             shutil.copyfile(orig,dest)
+
+    @property
+    def flowgeom_filename(self):
+        if self.reference_originals:
+            return self.get_path('grid-coordinates-file')
+        else:
+            # WIP changing this from a basename to a path.
+            return super().flowgeom_filename
+
+            
     def get_geom(self):
         try:
             return xr.open_dataset( self.get_path('grid-coordinates-file',check=True) )
@@ -4696,7 +4756,7 @@ class DwaqAggregator(Hydro):
             # e.g. self.vol_filename should probably be self.vol_filepath, then
             # here we could reference the filename relative to the hyd file
             "grid-indices-file     '%s.bnd'"%self.fn_base,# lies, damn lies
-            "grid-coordinates-file '%s'"%self.flowgeom_filename,
+            "grid-coordinates-file '%s'"%os.path.basename(self.flowgeom_filename), # hyd files are always relative...
             "attributes-file       '%s.atr'"%self.fn_base,
             "volumes-file          '%s.vol'"%self.fn_base,
             "areas-file            '%s.are'"%self.fn_base,
@@ -7027,8 +7087,8 @@ class ParameterSpatial(Parameter):
     # if '__default__', will use 'water-grid' if n_bottom_layers>0, otherwise the
     #  same as None.
     # any other value is used as the name of the input grid directly.
-    inline_data=False
     grid_name=DEFAULT
+    inline_data=False
     def __init__(self,per_segment=None,par_file=None,scenario=None,name=None,hydro=None,
                  grid_name=DEFAULT,inline_data=False):
         super(ParameterSpatial,self).__init__(name=name,scenario=scenario,hydro=hydro)
@@ -7145,9 +7205,11 @@ class ParameterSpatioTemporal(Parameter):
     # this syntax, but it is used in the sediment manual.
     grid_name=DEFAULT
 
+    reference_originals=False
+    
     def __init__(self,times=None,values=None,func_t=None,scenario=None,name=None,
                  seg_func_file=None,enable_write_symlink=None,n_seg=None,
-                 hydro=None,grid_name=DEFAULT):
+                 hydro=None,grid_name=DEFAULT,reference_originals=None):
         """
         times: [N] sized array, 'i4', giving times in system clock units
           (typically seconds after time0)
@@ -7164,6 +7226,9 @@ class ParameterSpatioTemporal(Parameter):
         start/stop times of the associated scenario.  Still, on creation, should
         pass the full complement of times for which data exists (of course consistent
         with the shape of data when explicit data is passed)
+
+        reference_originals: override hydro setting. True means that instead of symlinking
+          to an existing file use the full path to it.
         """
         if seg_func_file is None:
             assert(times is not None)
@@ -7182,6 +7247,15 @@ class ParameterSpatioTemporal(Parameter):
                 self.enable_write_symlink=False
         else:
             self.enable_write_symlink=enable_write_symlink
+
+        if reference_originals is None:
+            if hydro is not None:
+                self.reference_originals = hydro.reference_originals
+            else:
+                pass # leave as default from class
+        else:
+            self.reference_originals = reference_originals
+            
         self._n_seg=n_seg # only needed for evaluate() when scenario isn't set
         self.grid_name=grid_name
 
@@ -7193,6 +7267,7 @@ class ParameterSpatioTemporal(Parameter):
                                        name=self.name,
                                        seg_func_file=self.seg_func_file,
                                        enable_write_symlink=self.enable_write_symlink,
+                                       reference_originals=self.reference_originals,
                                        n_seg = self._n_seg,
                                        hydro=self.hydro)
 
@@ -7215,11 +7290,19 @@ class ParameterSpatioTemporal(Parameter):
 
     @property
     def supporting_file(self):
-        """ base name of the supporting binary file, (no dir. name) """
-        return self.scenario.name + "-" + self.safe_name + ".seg"
+        raise Exception("Should be using supporting_path()")
+        if self.reference_originals:
+            HERE
+        else:
+            return self.scenario.name + "-" + self.safe_name + ".seg"
+    
     @property
     def supporting_path(self):
-        return os.path.join(self.scenario.base_path,self.supporting_file)
+        if self.reference_originals and self.seg_func_file is not None:
+            return self.seg_func_file
+        else:
+            basename=self.scenario.name + "-" + self.safe_name + ".seg"
+            return os.path.join(self.scenario.base_path,basename)
     
     def text(self,write_supporting=True):
         if write_supporting:
@@ -7227,17 +7310,29 @@ class ParameterSpatioTemporal(Parameter):
             
         if self.grid_name==DEFAULT:
             self.grid_name=self.scenario.water_grid
-            
+
+        # if we're writing a new file, it will be in scen.base_path, and
+        # we just get back to the basename here.
+        # But if we're referencing a file elsewhere, this gives a relative
+        # path for it.
+        supporting_file = os.path.relpath(self.supporting_path, self.scenario.base_path)
+
+        print("Writing paramater spatiotemporal: supporting_file is %s"%supporting_file)
+        
         if self.grid_name is None:
             return ("SEG_FUNCTIONS '{self.name}' {self.interpolation}"
-                    " ALL BINARY_FILE '{self.supporting_file}'").format(self=self)
+                    " ALL BINARY_FILE '{supporting_file}'").format(self=self,supporting_file=supporting_file)
         else:
             return ("SEG_FUNCTIONS '{self.name}' {self.interpolation}"
-                    " INPUTGRID '{self.grid_name}' BINARY_FILE '{self.supporting_file}'").format(self=self)
+                    " INPUTGRID '{self.grid_name}' BINARY_FILE '{supporting_file}'").format(self=self,supporting_file=supporting_file)
             
     def write_supporting_try_symlink(self):
         if self.seg_func_file is not None:
             dst=self.supporting_path
+            if self.reference_originals:
+                assert os.path.exists(dst),"Expected to use existing file, but %s does not exist"%dst
+                return True
+            
             if os.path.lexists(dst):
                 if self.scenario.overwrite:
                     os.unlink(dst)
@@ -7399,11 +7494,11 @@ class ParameterSpatioTemporal(Parameter):
         return ParameterSpatioTemporal(times=self.times,
                                        values=values,
                                        enable_write_symlink=False,
+                                       reference_originals=False,
                                        n_seg=self.n_seg,
                                        # these probably get overwritten anyway.
                                        scenario=self.scenario,
                                        name=self.name)
-
 
 def cast_to_parameter(v):
     if isinstance(v,Parameter):
@@ -8023,7 +8118,8 @@ END_MULTIGRID"""%num_layers
         self.monitor_areas = self.monitor_areas + ( new_area, )
 
     def add_transects_from_shp(self,shp_fn,naming='count',clip_to_poly=True,
-                               on_boundary='warn_and_skip',on_edge=False):
+                               on_boundary='warn_and_skip',on_edge=False,
+                               add_station=False):
         """
         Add monitor transects from a shapefile.
         By default transects are named in sequence.  
@@ -8032,6 +8128,8 @@ END_MULTIGRID"""%num_layers
         on_edge: indicates that the shapefile is made up of nodes already following
           edges of the grid.  In theory not needed, but included here for compatibility
           with ZZ code.
+        add_station: if True, select the deepest adjacent cell and add a monitoring station
+          with the same name
         """
         locations=wkb2shp.shp2geom(shp_fn)
         g=self.hydro.grid()
@@ -8078,6 +8176,9 @@ END_MULTIGRID"""%num_layers
                 self.log.warning("Not ready to handle geometry type %s"%geom.type)
         self.log.info("Added %d monitored transects from %s"%(len(new_transects),shp_fn))
         self.monitor_transects = self.monitor_transects + tuple(new_transects)
+
+        if add_station:
+            self.add_station_for_transects(new_transects) # Not yet implement for Scenario
 
     def add_area_boundary_transects(self,exclude='dummy'):
         """
@@ -8672,7 +8773,7 @@ END_MULTIGRID"""%num_layers
         if the data is not around.
         """
         if self._flowgeom is None:
-            fn=os.path.join(self.base_path,self.hydro.flowgeom_filename)
+            fn=self.hydro.flowgeom_filename
             if os.path.exists(fn):
                 self._flowgeom=qnc.QDataset(fn)
         
@@ -8683,7 +8784,7 @@ END_MULTIGRID"""%num_layers
         if the data is not around.  Returns as an xarray Dataset.
         """
         if self._flowgeom_ds is None:
-            fn=os.path.join(self.base_path,self.hydro.flowgeom_filename)
+            fn=self.hydro.flowgeom_filename
             if os.path.exists(fn):
                 self._flowgeom_ds=xr.open_dataset(fn)
         
@@ -9199,17 +9300,45 @@ class InpFile(object):
     #def act_filename(self):
     #    return "com-{}.act".format(self.scenario.name)
 
+    # when using existing hydro data these are usually symlinks,
+    # but symlinks are not simple on windows filesystems. Support
+    # an option to instead write an absolute or full path
+    
     @property
     def vol_filename(self):
-        return "com-{}.vol".format(self.scenario.name)
+        #return "com-{}.vol".format(self.scenario.name)
+
+        # 1. Hydro objects can write their data out. This can be
+        #    new file, or a symlink to an original file.
+        #    Hydro.vol_filename is the full path to this file.
+        
+        # 2. HydroFiles objects reference existing files, typically by
+        #    reading a hyd file.
+        #    HydroFiles.get_path('volumes-file') is a relative path
+        #
+        # Both of those are either absolute or relative to the working
+        # directory.
+        #
+        # "com-<scenario>.vol" is a default name put in the inp file.
+
+        fn=self.scenario.hydro.vol_filename 
+        abs_fn=os.path.abspath(fn) # easier to compare paths
+        abs_inp_path = os.path.abspath(self.scenario.base_path)
+        rel_vol_path=os.path.relpath(abs_fn,abs_inp_path)
+        return rel_vol_path
 
     @property
     def flo_filename(self):
-        return "com-{}.flo".format(self.scenario.name)
+        return os.path.relpath(os.path.abspath(self.scenario.hydro.flo_filename),
+                               os.path.abspath(self.scenario.base_path))
+        
+        #return "com-{}.flo".format(self.scenario.name)
 
     @property
     def are_filename(self):
-        return "com-{}.are".format(self.scenario.name)
+        #return "com-{}.are".format(self.scenario.name)
+        return os.path.relpath(os.path.abspath(self.scenario.hydro.are_filename),
+                               os.path.abspath(self.scenario.base_path))
 
     @property
     def poi_filename(self):
@@ -10338,7 +10467,8 @@ END_MULTIGRID"""%num_layers
         self.monitor_areas = self.monitor_areas + ( new_area, )
 
     def add_transects_from_shp(self,shp_fn,naming='count',clip_to_poly=True,
-                               on_boundary='warn_and_skip',on_edge=False):
+                               on_boundary='warn_and_skip',on_edge=False,
+                               add_station=False):
         """
         Add monitor transects from a shapefile.
         By default transects are named in sequence.  
@@ -10398,7 +10528,27 @@ END_MULTIGRID"""%num_layers
                 self.log.warning("Not ready to handle geometry type %s"%geom.type)
         self.log.info("Added %d monitored transects from %s"%(len(new_transects),shp_fn))
         self.monitor_transects = self.monitor_transects + tuple(new_transects)
+        if add_station:
+            self.add_station_for_transects(new_transects) # Not yet implement for Scenario
 
+    def add_station_for_transects(self,transects):
+        stations=[]
+
+        self.hydro.infer_2d_links()
+
+        elt_depth=self.hydro.element_depth(t_secs=0)
+
+        for tran in transects:
+            name,exchs=tran
+            exch0s = np.abs(exchs) - 1
+            links = np.unique(self.hydro.exch_to_2d_link['link'][exch0s])
+            elts = np.unique(self.hydro.links[links])
+            elt = elts[ np.argmax( elt_depth[elts] ) ]
+
+            segs=np.nonzero( self.hydro.seg_to_2d_element==elt )[0] # probably slow
+            stations.append( (name,segs) )
+        self.monitor_areas = self.monitor_areas + tuple(stations)
+            
     def add_area_boundary_transects(self,exclude='dummy'):
         """
         create monitor transects for the common boundaries between a subset of
@@ -10992,7 +11142,7 @@ END_MULTIGRID"""%num_layers
         """
         assert self.hydro,"Must set hydro before requesting flowgeom_ds"
         if self._flowgeom_ds is None:
-            fn=os.path.join(self.base_path,self.hydro.flowgeom_filename)
+            fn=self.hydro.flowgeom_filename
             if os.path.exists(fn):
                 self._flowgeom_ds=xr.open_dataset(fn)
         
