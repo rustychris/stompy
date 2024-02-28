@@ -492,6 +492,8 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
                 return (self.INF_CELL,self.IN_EDGE,j)
 
     def tri_insert(self,n,loc):
+        self.log.info("%s: tri_insert"%self)
+        
         # n: index for newly inserted node.
         # note that loc must already be computed -
 
@@ -699,9 +701,9 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
         side).
         """
         c_left,c_right=self.edges['cells'][j,:]
-        self.log.debug("Flipping edge %d, with cells %d, %d   nodes %d,%d"%(j,c_left,c_right,
-                                                                            self.edges['nodes'][j,0],
-                                                                            self.edges['nodes'][j,1]) )
+        self.log.info("Flipping edge %d, with cells %d, %d   nodes %d,%d"%(j,c_left,c_right,
+                                                                           self.edges['nodes'][j,0],
+                                                                           self.edges['nodes'][j,1]) )
         assert c_left>=0 # could be relaxed, at the cost of some complexity here
         assert c_right>=0
         # could work harder to preserve extra info:
@@ -731,7 +733,8 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
         # keep the time where the cells are deleted to a minimum
         self.delete_cell(c_left)
         self.delete_cell(c_right)
-                
+
+        self.log.info("%s: calling self.modify_edge which is %s"%(self,self.modify_edge))
         self.modify_edge(j,nodes=[nb,nd])
         new_left =self.add_cell(nodes=[na,nb,nd])
         new_right=self.add_cell(nodes=[nc,nd,nb])
@@ -1031,6 +1034,7 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
         """ n: node that was just inserted and may have adjacent cells
         which do not meet the Delaunay criterion
         """
+        self.log.info("%s: call to exact_delaunay.restore_delaunay()"%self)
         # n is node for Vertex_handle v
         if self.dim() <= 1:
             return
@@ -1743,6 +1747,9 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
         return
     
     def add_constraint(self,nA,nB):
+        if nA==nB:
+            # likely a corrupt grid, but we can carry on as if it doesn't matter.
+            return
         jAB=self.nodes_to_edge([nA,nB])
         if jAB is not None:
             # no work to do - topology already good.
@@ -1807,7 +1814,18 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
         flipped as needed.
         """
         if j is None:
+            if nA==nB:
+                # likely a bad mesh, but for umbra usage it's better
+                # to let this pass
+                self.log.warning(f"remove_constraint: Ignoring duplicate nodes nA=nB={nA}")
+                return 
+
             j=self.nodes_to_edge([nA,nB])
+
+            if j is None:
+                self.log.warning(f"remove_constraint: no edge found for nA={nA} nB={nB}")
+                return
+            
         assert self.edges['constrained'][j]
         self.edges['constrained'][j]=False
 
