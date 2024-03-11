@@ -13,6 +13,8 @@ import six
 from collections import defaultdict
 from shapely import geometry
 
+from ...grid import unstructured_grid
+
 import logging
 
 log=logging.getLogger('delft.io')
@@ -1883,3 +1885,149 @@ def read_dfm_bc(fn):
                     # fall through, which will leave original ds intact.
             bcs[ds.attrs['name']]=ds
     return bcs
+
+
+    
+    
+def read_meteo_on_curvilinear(fn,run_dir,flip_grid_rows=True):
+    # The orientation of the data is confusing
+    # Using hac_linear_wind_2022_bloom.tem and meteo_coarse.grd,
+    # The grid places node=0 == curvilinear node [0,0] at the physical lower left
+    # corner.
+    # 
+    # The data includes:
+    # first_data_value =    grid_llcorner
+    #
+    # Comparing these inputs to Tair in the DFM output (i.e. on the computational
+    # grid for which orientation is not ambiguous), I get correct alignment when
+    # plotting the gridded data with imshow(origin='upper').
+
+    # On the day in question, the first temperature value in the .tem file is 15.5
+    # this comes through as the [0,0] value in the dataset parsed below.
+    # This value appears to be in the upper-left corner of the domain.
+
+    # Confusing. Either (a) DFM ignores some of the metadata, and the behavior is
+    # just arbitary, or (b) DFM expects the curvilinear mesh to place its origin at the
+    # upper left, so 'grid_llcorner' really means "Data rows are flipped relative to grid"
+
+    # flip_grid_rows: flip the grid vertically to make it agree with the data. 
+    # Rearrange the grid to match the data, and copy pixel x,y values to the dataset
+    # To that end,
+    header={}
+    with open(fn,'rt') as fp:
+        l=fp.readline()
+        assert l.startswith('###') # START OF HEADER
+        
+        while 1:
+            line=fp.readline()
+            if line=='':
+                print(f"Early EOF reading {fn}")
+                return None
+
+            if line.startswith('###'): # END OF HEADER
+                break
+
+            line=line.split('#')[0].strip()
+            if line=='': continue
+            lval,rval = line.split('=')
+            header[lval.strip()] = rval.strip()
+
+        quantities=[]
+        for i in range(10):
+            hdr_name=f'quantity{i+1}'
+            hdr_unit=f'unit{i+1}'
+            if hdr_name in header:
+                quantities.append( dict(name=header[hdr_name], units=header[hdr_unit]))
+            else:
+                break
+
+        assert header['filetype'] == 'meteo_on_curvilinear_grid'
+
+        grid_fn=os.path.join(run_dir,header['grid_file'])
+        grid = unstructured_grid.UnstructuredGrid.read_delft_curvilinear(grid_fn,dep_fn=None,enc_fn=None)
+
+        # Data is on nodes, so drop cells to avoid confusion.
+        for c in grid.valid_cell_iter():
+            grid.delete_cell(c)
+
+        shape = grid.rowcol_to_node.shape # TRANSPOSITION WOES
+            
+        if flip_grid_rows:
+            n_row,n_col = shape
+            grid.rowcol_to_node = grid.rowcol_to_node[::-1,:]
+            grid.nodes['row'] = n_row - grid.nodes['row'] - 1
+
+        values_per_frame = grid.Nnodes()
+        frames=[]
+        while True:
+            # Read a frame:
+            ds=xr.Dataset()
+            line=fp.readline()
+            if line=='': break
+            ds['time_string'] = line.strip()
+            time_val=line.split('=')[1].strip()
+            val_units=time_val.split(' ',1)
+            ds['time']=float(val_units[0])
+            ds['time'].attrs['units'] = val_units[1]
+            ds['time'].attrs['calendar'] = "proleptic_gregorian"
+            ds=xr.decode_cf(ds)
+            
+            for quantity in quantities:
+                raveled=[]
+                data_count=0
+                while data_count < values_per_frame:
+                    line=fp.readline()
+                    assert line!=""
+                    values = [float(s) for s in line.strip().split()]
+                    raveled.append(values)
+                    data_count+=len(values)
+                assert data_count==values_per_frame
+                data=np.concatenate(raveled).reshape(shape)
+                ds[quantity['name']] = ('row','col'), data
+            frames.append(ds)
+
+        ds=xr.concat(frames, dim='time')
+        for key in header:
+            ds.attrs[key] = header[key]
+
+        xy = grid.nodes['x'][grid.rowcol_to_node]
+        ds['x'] = ('row','col'),xy[:,:,0]
+        ds['y'] = ('row','col'),xy[:,:,1]        
+        ds['quantity'] = ('quantity',), [q['name'] for q in quantities]
+            
+    return ds # ,grid
+            
+                
+def rewrite_meteo_on_curvilinear(orig_fn,new_fn,ds):
+    """
+    Copy a curvilinear met file, but replace the data.
+    orig_fn: path to curvilinear met file, as passed to read_meteo_on_curvilinear()
+    new_fn: path to the new file to create
+    ds: a dataset as returned by read_meteo_on_curvilinear()
+    """
+    header_count=0 # how many times we've seen '###'
+    with open(orig_fn,'rt') as fp_old:
+        with open(new_fn,'wt') as fp_new:
+            while 1:
+                l=fp_old.readline()
+                assert l!="","Premature end of file"
+                if l.startswith('###'): header_count+=1
+                fp_new.write(l)
+
+                if header_count==2:
+                    break
+
+            quantities=ds.quantity.values
+            for tidx,time_string in utils.progress(enumerate(ds.time_string.values)):
+                fp_new.write(time_string)
+                fp_new.write("\n")
+                for quantity in quantities:
+                    data=ds[quantity].isel(time=tidx).values
+                    s=(np.array2string(data,max_line_width=2000,separator=' ', threshold=1e9, formatter={'float': lambda f: f"{f:.1f}"})
+                       .replace(' [','')
+                       .replace('[','')
+                       .replace(']','') )
+                    fp_new.write(s)
+                    fp_new.write("\n")
+
+

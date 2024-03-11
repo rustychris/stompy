@@ -3,6 +3,8 @@ import six
 import time
 import os
 import logging
+from contextlib import contextmanager
+
 log=logging.getLogger('utils')
 
 try:
@@ -638,6 +640,18 @@ def nearest_val(A,x):
     """
     return A[nearest(A,x)]
 
+def nearest_2d(X,Y,x,y):
+    """
+    return row,col indexing X and Y (both assumed 2D), that is closest to the
+    point(s) given by x,y
+    For starters this makes no attempt to be fast or handle non-scalar x,y inputs.
+    """
+    dx=X-x
+    dy=Y-y
+    dists=dx**2+dy**2
+    rows,cols=np.nonzero(dists==dists.min())
+    return rows[0],cols[0]
+    
 def mag(vec):
     vec = np.asarray(vec)
     return np.sqrt( (vec**2).sum(axis=-1))
@@ -2355,18 +2369,22 @@ def download_url(url,local_file,log=None,on_abort='pass',on_exists='pass',
                 os.unlink(local_file)
         raise
 
-def call_with_path(cmd,path):
-    import subprocess
+@contextmanager
+def working_dir(path):
     pwd=os.getcwd()
     try:
         os.chdir(path)
-        shell=(type(cmd) in six.string_types)
-        # return subprocess.call(cmd,shell=shell)
-        output=subprocess.check_output(cmd,shell=shell)
-        return output
+        yield None
     finally:
         os.chdir(pwd)
 
+def call_with_path(cmd,path):
+    import subprocess
+    with working_dir(path):
+        shell=(type(cmd) in six.string_types)
+        output=subprocess.check_output(cmd,shell=shell)
+        return output
+        
 def progress(a,interval_s=5.0,msg="%s",func=log.info,count=0):
     """
     Print progress messages while iterating over a sequence a.
@@ -2559,7 +2577,7 @@ def dominant_period(h,t,uniform=True,guess=None):
     result = fmin(cost,[float(guess)])
     return result[0]
 
-def ideal_solar_rad(t,Imax=1000,lat=37.775,lon=-122.419):
+def ideal_solar_rad(t,Imax=1000,lat=37.775,lon=-122.419, declination=True):
     """ 
     Return time series of idealized solar radiation.
     t: array of np.datetime64 in UTC.
@@ -2577,22 +2595,27 @@ def ideal_solar_rad(t,Imax=1000,lat=37.775,lon=-122.419):
 
     lst=t+np.timedelta64(int(86400*lon/360.),'s') # local solar time.
     doy=(t-t.astype('M8[Y]'))/np.timedelta64(1,'D')
-    decl=(np.pi/180) * 23.45 * np.sin(2*np.pi/365 * (doy-81))  # declination
-
+    if declination:
+        decl=(np.pi/180) * 23.45 * np.sin(2*np.pi/365 * (doy-81))  # declination
+    else:
+        # Omit seasonal cycle. Locked to doy=81
+        decl=0.0
+        
     hour=(lst - lst.astype('M8[D]'))/np.timedelta64(1,'h')
     hour_angle=(hour-12)*np.pi/12. # 0 at solar noon, +-180 at solar midnight
     zenith=np.arccos(np.sin(lat_rad)*np.sin(decl) + np.cos(lat_rad)*np.cos(decl)*np.cos(hour_angle))
 
-    ds=xr.Dataset()
+    I = Imax*np.cos(zenith).clip(0)
     if t_da is None:
-        ds['time']=('time',),t
+        return I
     else:
+        ds=xr.Dataset()
         ds['time']=t_da
-    ds.attrs['latitude']=lat
-    ds.attrs['longitude']=lon
-    ds.attrs['Imax']=Imax
-    ds['sol_rad']=ds['time'].dims, Imax*np.cos(zenith).clip(0)
-    return ds
+        ds.attrs['latitude']=lat
+        ds.attrs['longitude']=lon
+        ds.attrs['Imax']=Imax
+        ds['sol_rad']=ds['time'].dims, I
+        return ds
 
 def fill_curvilinear(xy,xy_valid=None):
     """
@@ -2637,3 +2660,18 @@ def weighted_median(values, weights):
     i = np.argsort(values)
     c = np.cumsum(weights[i])
     return values[i[np.searchsorted(c, 0.5 * c[-1])]]
+
+
+def sigma_median(C):
+    # C is assumed to be cell-constant
+    # assume vertical coordinate is the last dimension
+    sigma=np.linspace(0,1,1+C.shape[-1])
+    accum = np.cumsum(C,axis=-1)
+    accum = np.concatenate( [ 0*accum[...,:1], accum], axis=-1)
+    if C.ndim==1:
+        return np.interp(0.5, accum/accum[-1], sigma)
+    else:
+        results = np.zeros( C.shape[:-1], np.float64)
+        for idx in np.ndindex(*results.shape):
+            results[idx] = np.interp( 0.5, accum[idx][:]/accum[idx][-1], sigma)
+        return results # np.interp(0.5, accum/accum[-1], sigma)

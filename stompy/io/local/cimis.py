@@ -238,13 +238,15 @@ def cimis_fetch_to_xr(stations,
             try:
                 req_json=req.json()
             except json.JSONDecodeError:
-                log.warning("CIMIS request: ")
+                log.warning("CIMIS request json decode error: ")
+                log.warning(f"  url was: {req.url}")
                 log.warning(req.text[:200])
                 time.sleep(1.0)
                 continue
                 
             if isinstance(req_json,str):
-                log.warning("CIMIS request: ")
+                log.warning("CIMIS request json is just a string?: ")
+                log.warning(f"  url was: {req.url}")
                 log.warning(req_json)
                 time.sleep(1.0)
                 continue

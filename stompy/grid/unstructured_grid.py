@@ -1201,6 +1201,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         return g
 
     @staticmethod
+    def read_delft_curvilinear(fn,**kw):
+        return RgfGrid(fn,**kw)
+    
+    @staticmethod
     def read_suntans_hybrid(path='.',points='points.dat',edges='edges.dat',cells='cells.dat'):
         """
         For backwards compatibility.  Better to use read_suntans which auto-detects
@@ -5718,6 +5722,17 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             cell_valid=(xmin<xxyy[1])&(xmax>xxyy[0])&(ymin<xxyy[3])&(ymax>xxyy[2])
             return cell_valid
 
+    def tripcolor_cell_values(self,values,ax=None,**kw):
+        """
+        Plot cell values using matplotlib's tripcolor. The main advantage
+        compared to plot_cells is that the result is truly seamless, without having
+        to use finite thickness edges.
+        """
+        tri,sources = self.mpl_triangulation(return_sources=True,refresh=False)
+        if ax is None:
+            ax=plt.gca()
+        return ax.tripcolor(tri, values[sources], **kw)
+    
     def plot_cells(self,ax=None,mask=None,values=None,clip=None,centers=False,labeler=None,
                    masked_values=None,ragged_edges=None,
                    centroid=False,subedges=None,**kwargs):
@@ -9371,11 +9386,17 @@ class RgfGrid(UnstructuredGrid):
             self.fp=open(grd_fn,'rt')
             self.buff=None # unprocessed data
         def read_key_value(self):
+            key,value = self.try_read_key_value()
+            assert key is not None
+            return key,value
+        
+        def try_read_key_value(self):
             while self.buff is None:
                 self.buff=self.fp.readline().strip()
                 if self.buff[0]=='*':
                     self.buff=None
-            assert '=' in self.buff
+            if '=' not in self.buff:
+                return None,None
             key,value=self.buff.split('=',1)
             self.buff=None
             key=key.strip()
@@ -9403,9 +9424,20 @@ class RgfGrid(UnstructuredGrid):
         
         tok=self.GrdTok(grd_fn)
 
-        _,coord_sys=tok.read_key_value()
-        _,missing_val=tok.read_key_value()
-        missing_val=float(missing_val)
+        metadata={
+            'Missing Value':np.nan, # probably could find a better default
+            'Coordinate System':None # probably not the right string
+        }
+        
+        while 1: # read key-value pairs
+            key,value = tok.try_read_key_value()
+            if key is not None:
+                metadata[key] = value
+            else:
+                break
+        #_,coord_sys=tok.read_key_value()
+        #_,missing_val=tok.read_key_value()
+        missing_val=float(metadata['Missing Value'])
 
         m_count=int(tok.read_token())
         n_count=int(tok.read_token())

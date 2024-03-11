@@ -18,8 +18,8 @@ import hashlib
 from bs4 import BeautifulSoup, Comment
 import re
 
-from stompy import (utils,xr_utils)
-from stompy.spatial import proj_utils
+from ... import (utils,xr_utils,memoize)
+from ...spatial import proj_utils
 
 StringIO=six.StringIO
 
@@ -188,15 +188,15 @@ usgs_sfbay_columns=[ ('realdate','Date (MM/DD/YYYY)'),
                      ]
 
 
-station_locs=None
+@memoize.memoize()
+def station_locs():
+    this_dir=os.path.dirname(__file__)
+    # The web API doesn't provide lat/lon
+    return pd.read_csv(os.path.join(this_dir,'usgs_sfbay_station_locations.csv'),
+                       skiprows=[1]).set_index('StationNumber')
+
 def station_number_to_lonlat(s):
-    global station_locs
-    if station_locs is None:
-        this_dir=os.path.dirname(__file__)
-        # The web API doesn't provide lat/lon
-        station_locs=pd.read_csv(os.path.join(this_dir,'usgs_sfbay_station_locations.csv'),
-                                 skiprows=[1]).set_index('StationNumber')
-    return station_locs.loc[float(s),[ 'longitude','latitude']].values
+    return station_locs().loc[float(s),[ 'longitude','latitude']].values
 
 
 # This is a snapshot to give a sense of some of the options, but not everything

@@ -61,7 +61,8 @@ class CustomProcesses:
 
         print("First call to waqpb_export")
         sys.stdout.flush()
-        print( utils.call_with_path(self.waqpbexport,self.proc_table_dst_dir).decode('latin1') )
+        output = utils.call_with_path(self.waqpbexport,self.proc_table_dst_dir).decode('latin1') 
+        print("Suppressed output")
         # That says Normal end, but then goes on to
         # make proces.asc
         sys.stdout.flush()
@@ -90,13 +91,15 @@ class CustomProcesses:
         print("Calling waqpb_import")
         sys.stdout.flush()
         # Pretty sure this is the one that fails.
-        print( utils.call_with_path(self.waqpbimport,self.proc_table_dst_dir).decode('latin1') )
+        output = utils.call_with_path(self.waqpbimport,self.proc_table_dst_dir).decode('latin1') 
+        print("Suppressed output")
         sys.stdout.flush()
         print("Return from waqpb_import")
         sys.stdout.flush()
         print("Second call to waqpb_export")
         sys.stdout.flush()
-        print( utils.call_with_path(self.waqpbexport,self.proc_table_dst_dir).decode('latin1') )
+        output = utils.call_with_path(self.waqpbexport,self.proc_table_dst_dir).decode('latin1') 
+        print( "Suppressed output")
         sys.stdout.flush()
         print("Return from second call to waqpb_export")
         sys.stdout.flush()
