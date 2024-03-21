@@ -3649,7 +3649,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         return cells[0]
 
-    def cell_to_edges(self,c,ordered=False,pad=False):
+    def cell_to_edges(self,c=None,ordered=False,pad=False):
         """ returns the indices of edges making up this cell -
         including trimming to the number of sides for this cell.
 
@@ -4543,10 +4543,15 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         """ if x is inside a cell, delete it.
         if x is inside a potential cell, create it.
         """
+        self.log.info("%s: toggle_cell_at_point()"%self)
         c=self.delete_cell_at_point(x)
+        self.log.info("%s: toggle_cell_at_point() deletion yielded %s"%(self,c))
+
         if c is None:
             c=self.add_cell_at_point(x,**kw)
+            self.log.info("%s: toggle_cell_at_point() add yielded %s"%(self,c))
         return c
+    
     def delete_cell_at_point(self,x):
         c=self.select_cells_nearest(x,inside=True)
         if c is not None:
@@ -5860,6 +5865,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 
         return coll
 
+    def tripcolor_cell_values(self,values,ax=None,refresh=False,**kw):
+        tri,sources = self.mpl_triangulation(return_sources=True,refresh=refresh)
+        if ax is None: ax=plt.gca()
+
+        return ax.tripcolor(tri,values[sources],**kw)
+    
     def edges_length(self,sel=None):
         if sel is None:
             lengths=np.full(self.Nedges(),np.nan,np.float64)

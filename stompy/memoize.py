@@ -58,6 +58,9 @@ def memoize_key(*args,**kwargs):
 def memoize_key_str(*args,**kwargs):
     return str(args) + str(kwargs)
 
+def memoize_key_strhash(*args,**kwargs):
+    return hashlib.md5( memoize_key_str(*args,**kwargs).encode() ).hexdigest()
+
 def memoize_key_repr(*args,**kwargs):
     # repr is probably more appropriate than str
     return repr(args) + repr(kwargs)
@@ -96,6 +99,8 @@ def memoize(lru=None,cache_dir=None,key_method='pickle'):
                 key = memoize_key(args,**kwargs)
             elif key_method=='str':
                 key = memoize_key_str(args,**kwargs)
+            elif key_method=='strhash':
+                key = memoize_key_strhash(args,**kwargs)
             elif key_method=='repr':
                 key = memoize_key_repr(args,**kwargs)
             else:
@@ -161,6 +166,8 @@ def imemoize(lru=None,key_method='pickle'):
                 key = memoize_key(args,**kwargs)
             elif key_method=='str':
                 key = memoize_key_str(args,**kwargs)
+            elif key_method=='strhash':
+                key = memoize_key_strhash(args,**kwargs)
             else:
                 key=key_method(args,**kwargs)
 

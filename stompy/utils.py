@@ -2661,7 +2661,6 @@ def weighted_median(values, weights):
     c = np.cumsum(weights[i])
     return values[i[np.searchsorted(c, 0.5 * c[-1])]]
 
-
 def sigma_median(C):
     # C is assumed to be cell-constant
     # assume vertical coordinate is the last dimension
@@ -2675,3 +2674,18 @@ def sigma_median(C):
         for idx in np.ndindex(*results.shape):
             results[idx] = np.interp( 0.5, accum[idx][:]/accum[idx][-1], sigma)
         return results # np.interp(0.5, accum/accum[-1], sigma)
+
+def windowed_slope(x,y,lp_function):
+    """
+    Calculate a running estimate of the slope y' ~ m*x'
+    using the given lowpass filter.
+
+    This specific code has not been tested, and is more of a place to 
+    put some notes on how it was implemented in a specific application.
+    """
+    xp = x-lp_function(x)
+    yp = y-lp_function(y)
+    sigXY = lp_function(xp*yp)
+    sigXX = lp_function(xp*xp)
+    return sigXY / sigXX
+
