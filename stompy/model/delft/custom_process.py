@@ -197,3 +197,82 @@ O2FuncNT1                   x oxygen function for nitrification              (-)
 END
 """
         return process
+
+# NOT YET IMPLEMENTED
+#     def custom_settling(self,**kw):
+#         proc_txt=self.settling(**kw)
+#         self.custom_procs.append(proc_txt)
+
+#      def settling(self, **kw):
+#          idx=self.copy_count['SETTLING']
+#          self.copy_count['SETTLING']+=1
+#          
+#          suffix=str(idx)
+#          p=dict(name="SETTLE"+suffix,
+#                 # FIX BELOW
+#                 zero_order="ZAge"+suffix,
+#                 partial="PartAge"+suffix,
+#                 conc=f"Age{suffix}Conc",
+#                 partial_default=1.0,
+#                 age_conc=f"Age{suffix}AConc",
+#                 flux="dAge"+suffix)
+#          p.update(kw)
+#  
+#          # Presumably want to enable it, though could be optional
+#          self.dwaq.add_process(p['name'])
+#          
+#          n_stoich=1
+#          if conc_decay!=0.0:
+#              n_stoich+=1
+#  
+#          # partial is a rate in d-1, defaults to 1.0.
+#          # flux = partial * conc
+#  
+#          # All of this is to have a pair of tracers that
+#          # integrate this:
+#          
+#          #     d conc / dt = -conc_decay*partial * conc
+#          # d age_conc / dt =             partial * conc
+#  
+#          # partial defaults to 1.0.
+#  
+#          process=f"""
+#  {p['name']:10}                    Reuse nitrification as age                         
+#  NITRIF    ; module name. 
+#  123       ; TRswitch
+#          18; # input items for segments
+#  {p['zero_order']:10}      0.00000     x zeroth-order flux          (g/m3/d)
+#  {p['partial']   :10}      {p['partial_default']: 8g}     x set this to get partial age
+#  RcNit20        0.100000     x ignored (b/c SWVnNit=0)
+#  TcNit           1.00000     x ignored
+#  OXY             10.0000     x ignored
+#  KsAmNit        0.500000     x ignored
+#  KsOxNit         1.00000     x ignored
+#  Temp            15.0000     x ignored
+#  CTNit           3.00000     x ignored
+#  Rc0NitOx        0.00000     x ignored
+#  COXNIT          1.00000     x ignored
+#  Poros           1.00000     x volumetric porosity                            (-)
+#  SWVnNit         0.00000     x switch for old (0), new (1), TEWOR (2) version (-)
+#  {p['conc']    :10}     0.100000     x concentration tracer
+#  OOXNIT          5.00000     x ignored
+#  CFLNIT          0.00000     x ignored
+#  CurvNit         0.00000     x ignored
+#  DELT           -999.000     x timestep for processes                         (d)
+#           0; # input items for exchanges
+#           1; # output items for segments
+#  O2FuncNT1                   x oxygen function for nitrification              (-)
+#           0; # output items for exchanges
+#           1; # fluxes
+#  {p['flux']:10}                  x nitrification flux                       (gN/m3/d)
+#           {n_stoich}; # stoichiometry lines. Could probably drop most of these.
+#  {p['age_conc']:10}  {p['flux']:10}     1.00000
+#  """
+#          if conc_decay!=0.0:
+#              process+=f"{p['conc']:10}  {p['flux']:10}    {-conc_decay:.5f}\n"
+#          process+="""         0; # stoichiometry lines dispersion arrays
+#           0; # stoichiometry lines velocity arrays
+#  END
+#  """
+#          return process
+    
