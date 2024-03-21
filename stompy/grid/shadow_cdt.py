@@ -440,9 +440,10 @@ class ShadowCGALCDT(object):
         
         if len(to_remove) != len(g.node_to_edges(n)):
             # Usually means that there is an inconsistency in the CDT
-            log.error("WARNING: modify_node len(DT constraints) != len(pnt2edges(i))")
-            import pdb
-            pdb.set_trace()
+            log.error("WARNING: modify_node len(DT constraints) != len(pnt2edges(i)) at %s"%k['x'])
+            #import pdb
+            # pdb.set_trace()
+            return
             
         # remove all of the constraints in one go:
         self.DT.remove_incident_constraints(vh)

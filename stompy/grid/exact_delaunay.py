@@ -1176,10 +1176,13 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
             return history
         else:
             while trav!=('node',nB):
-                # DBG!
                 if len(history)>1 and history[0]==history[1]:
-                    import pdb
-                    pdb.set_trace()
+                    #import pdb
+                    #pdb.set_trace()
+                    self.log.error("find_intersected_elements: history starts with repeated entries %s"%(history[0],))
+                    self.log.error(" possible duplicate node near %s"%( self.nodes['x'][nA] ))
+                    raise Exception("find_intersected_elements failed, possible duplicate node near %s"%( self.nodes['x'][nA] ))
+                    #return history
                     
                 if trav[0]=='node':
                     ntrav=trav[1]
@@ -2030,10 +2033,15 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
         sdt = spatial.Delaunay(points-points.mean(axis=0))
 
         self.nodes=np.zeros( len(points), self.node_dtype)
-        self.cells=np.zeros( sdt.vertices.shape[0], self.cell_dtype)
+        try: # version issues
+            vertices=sdt.vertices
+        except AttributeError:
+            vertices=sdt.simplices
+            
+        self.cells=np.zeros( vertices.shape[0], self.cell_dtype)
 
         self.nodes['x']=points
-        self.cells['nodes']=sdt.vertices
+        self.cells['nodes']=vertices
 
         # looks like it's CGAL style:
         # neighbor[1] shares nodes[0] and nodes[2]
