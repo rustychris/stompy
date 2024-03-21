@@ -1769,6 +1769,20 @@ class HydroFiles(Hydro):
                             break
                         layers.append(float(line))
                     self.hyd_toks[tok]=layers
+                elif tok == 'sink-sources':
+                    sink_sources=[]
+                    while 1:
+                        line=fp.readline().strip()
+                        if line=='' or line=='end-'+tok:
+                            break
+                        index1,link_id,elt_id,from_x,from_y,to_x,to_y,name = line.split()
+                        sink_sources.append(dict(index1=int(index1),
+                                                 link_id=int(link_id),
+                                                 elt_id=int(elt_id),
+                                                 from_x=float(from_x), from_y=float(from_y),
+                                                 to_x=float(to_x), to_y=float(to_y),
+                                                 name=name))
+                    self.hyd_toks[tok]=sink_sources
                 else:
                     self.hyd_toks[tok]=rest
 
@@ -2057,7 +2071,7 @@ class HydroFiles(Hydro):
                         warning=None
                         if ti<0:
                             if t_sec>=0:
-                                warning="WARNING: inferred time index %d is negative!"%ti
+                                warning="WARNING: inferred time index %d is negative in %s!"%(ti,filename)
                             else:
                                 # kludgey - the problem is that something like the temperature field
                                 # can have a different time line, and to be sure that it has data
@@ -2649,7 +2663,10 @@ class DwaqAggregator(Hydro):
         """ Same as open_flowgeom(), but transitioning to xarray dataset instead of qnc.
 
         This also adds in some fields which can be inferred in the case the original data
-        is missing them, namely FlowElemDomain, FlowElemGlobalNr
+        is missing them, namely FlowElemDomain, FlowElemGlobalNr.
+
+        Also adds a FlowLinkSS field and dimensions that adds sink-source links back in
+        from the hyd file.
         """
         if self._flowgeoms_xr is None:
             self._flowgeoms_xr={}
@@ -2744,7 +2761,7 @@ class DwaqAggregator(Hydro):
                     ds['FlowElemGlobalNr']=(elem_dim,),1+np.arange(n_elem,dtype=np.int32)
                 if 'FlowElemDomain' not in ds:
                     ds['FlowElemDomain']  =(elem_dim,),np.zeros(n_elem,np.int32)
-                    
+                
             # This had been just for nprocs==1.  But it's needed for MPI, too.
             if 'FlowLink' not in ds:
                 link_dim='nFlowLink'
@@ -2822,7 +2839,33 @@ class DwaqAggregator(Hydro):
                     # each link.
                     # remember that FlowLink has 1-based numbering
                     ds['FlowLinkDomain']  =(link_dim,),ds['FlowElemDomain'].values[FlowLink[:,1]-start_index]
-                        
+
+            if True: # Fabricate FlowLink that includes sink-source links
+                if 'sink-sources' in hyd.hyd_toks:
+                    sink_srcs= hyd.hyd_toks['sink-sources']
+                    n_sink_src = len(sink_srcs)
+                    extra_FlowLink = np.zeros( (n_sink_src,2), np.int32)
+                    for ss_idx,sink_src in enumerate(sink_srcs):
+                        extra_FlowLink[ss_idx,0]=ds.dims['nFlowElem'] + -sink_src['link_id']
+                        extra_FlowLink[ss_idx,1]=sink_src['elt_id']
+                    FlowLinkSS = np.concatenate( (ds.FlowLink.values, extra_FlowLink), axis=0)
+                    FlowLinkSSDomain = np.concatenate( (ds.FlowLinkDomain.values, np.full(n_sink_src,p)) )
+                    FlowLinkSSType = np.concatenate( (ds.FlowLinkType.values, np.full(n_sink_src,2)) )
+                    # ignore the latu/lonu fields
+                else:
+                    FlowLinkSS = ds.FlowLink.values
+                    FlowLinkSSDomain = ds.FlowLinkDomain.values
+                    FlowLinkSSType = ds.FlowLinkType.values
+                ds['FlowLinkSS'] = ('nFlowLinkSS',ds.FlowLink.dims[1]),FlowLinkSS
+                ds['FlowLinkSSDomain'] = ('nFlowLinkSS',),FlowLinkSSDomain
+                ds['FlowLinkSSType'] = ('nFlowLinkSS',),FlowLinkSSType
+
+                # Make sure we're not double-counting. 
+                sub_bnds = hyd.read_bnd()
+                min_bc_linkid = min( [0] +[sub_bnd[1]['link'].min() for sub_bnd in sub_bnds] )
+                # I think this is fair, but it might be too stringent.
+                assert FlowLinkSS.max() == ds.dims['nFlowElem'] - min_bc_linkid
+                
             self._flowgeoms_xr[p] = ds
             
         return self._flowgeoms_xr[p]
@@ -2928,7 +2971,11 @@ class DwaqAggregator(Hydro):
             else:
                 raise Exception("Could't find face dimension")
             max_elts_2d_per_proc=max(max_elts_2d_per_proc,len(nc[ncell]))
-            if 'nFlowLink' in nc.dims:
+            # If this works, FlowLinkSS should always get populated.
+            assert 'nFlowLinkSS' in nc.dims,"Seems we're not using the new FlowLinkSS code??"
+            if 'nFlowLinkSS' in nc.dims:
+                nlinks_here=len(nc['nFlowLinkSS'])
+            elif 'nFlowLink' in nc.dims:
                 nlinks_here=len(nc['nFlowLink'])
             elif 'mesh2d_face_links' in nc:
                 nlinks_here=nc['mesh2d_face_links'].max()
@@ -2939,6 +2986,14 @@ class DwaqAggregator(Hydro):
                 nlinks_here=nc.dims['nmesh2d_edge']
             else:
                 raise Exception("Couldn't find link dimension")
+            # Since the above is referencing nFlowLinkSS, no need to add them in this way.
+            # hyd = self.open_hyd(p)
+            # if 'sink-sources' in hyd.hyd_toks:
+            #     # 2024-01-26: source/sink pairs might contribute, but it appears
+            #     # that the netcdf information no longer includes them, and instead
+            #     # lists them in the hyd file:
+            #     nlinks_here += len(hyd.hyd_toks['sink-sources'])
+                                   
             max_lnks_2d_per_proc=max(max_lnks_2d_per_proc,nlinks_here)
             # no nc.close(), as it is now cached
 
@@ -3358,11 +3413,11 @@ class DwaqAggregator(Hydro):
             elem_dom_id=nc.FlowElemDomain.values # domains are numbered from 0
 
             if self.link_ownership=="FlowLinkDomain":
-                if p==0 and 'FlowLinkDomain' not in nc:
-                    self.log.warning("FlowLinkDomain not found, so link ownership will use min element")
+                if p==0 and 'FlowLinkSSDomain' not in nc:
+                    self.log.warning("FlowLinkSSDomain not found, so link ownership will use min element")
                     self.link_ownership="owner_of_min_elem"
                 else:
-                    link_dom_id=nc.FlowLinkDomain.values
+                    link_dom_id=nc.FlowLinkSSDomain.values
             else:
                 # otherwise, don't even load it.  probably means we can't trust it.
                 pass 
@@ -3387,9 +3442,10 @@ class DwaqAggregator(Hydro):
             # should be...
 
             # hmm - with ugrid output do not necessarily have link variable.
-            if 'FlowLink' in nc:
-                links=nc.FlowLink.values # 1-based
+            if 'FlowLinkSS' in nc:
+                links=nc.FlowLinkSS.values # 1-based
             else:
+                raise Exception("Really should have FlowLinkSS")
                 self.log.warning("Danger: faking missing link data with edges")
                 # These are 1-based, with closed, non-computational neighbors
                 # ==0
@@ -3400,14 +3456,14 @@ class DwaqAggregator(Hydro):
                 sela=(links[:,0]==from_2d)&(links[:,1]==to_2d)
                 selb=(links[:,0]==to_2d)  &(links[:,1]==from_2d)
                 idxs=np.nonzero(sela|selb)[0]
-                assert(len(idxs)==1)
+                assert(len(idxs)==1),"Probably need to include source-sinks in links"
                 return idxs[0] # 0-based index
 
             hits=0
             for local_i in range(len(pointers)):
                 # these are *all* 1-based indices
                 local_from,local_to=pointers[local_i,:2]
-                from_2d,to_2d=pointers2d[local_i,:2]
+                from_2d,to_2d=pointers2d[local_i,:2] # Probably have to update pointers2d code.
 
                 if local_i<n_hor:
                     direc='x' # structured grids not supported, no 'y'
@@ -4536,9 +4592,10 @@ class DwaqAggregator(Hydro):
            of the internal segment determines the local/nonlocal status of the
            exchange.
         """
+        # This may need some updating with FlowLinkSS. 
         for p in range(self.nprocs):
             #print "------",p,"------"
-            nc=self.open_flowgeom(p)
+            nc=self.open_flowgeom_ds(p)
             hyd=self.open_hyd(p)
             poi=hyd.pointers
             n_layers=hyd['number-water-quality-layers']
@@ -4553,9 +4610,9 @@ class DwaqAggregator(Hydro):
                 if ab==1:
                     assert(len(idxs)==0)
 
-            link=nc.FlowLink[:]
-            link_domain=nc.FlowLinkDomain[:]
-            elem_domain=nc.FlowElemDomain[:]
+            link=nc.FlowLink.values # Should this be FlowLinkSS?
+            link_domain=nc.FlowLinkDomain.values
+            elem_domain=nc.FlowElemDomain.values
             nelems=len(elem_domain)
 
             for ab in [0,1]:
@@ -4953,23 +5010,28 @@ class DwaqAggregator(Hydro):
         self.infer_2d_links()
         
         # iterate over bnds from each subdomain
+        fail=False
         for proc in range(self.nprocs):
             sub_hyd=self.open_hyd(proc)
             sub_hyd.infer_2d_elements()
 
-            # CHANGE
-            #sub_geom=sub_hyd.get_geom() # for MultiAggregator -
-            sub_geom=self.open_flowgeom_ds(proc) # for DwaqAggregator
+            sub_geom=self.open_flowgeom_ds(proc)
             if 'mesh2d' in sub_geom:
                 face_dim=sub_geom.mesh2d.attrs.get('face_dimension','nFlowElem')
             else:
                 face_dim='nFlowElem'
             sub_nFlowElem=sub_geom.dims[face_dim]
             sub_bnds=sub_hyd.read_bnd()
-            #sub_g=dfm_grid.DFMGrid(sub_geom) # deprecated
             sub_g=unstructured_grid.UnstructuredGrid.read_dfm(sub_geom)
 
             sub_hyd.infer_2d_links()
+
+            if 1: # debugging
+                print(f"[proc={proc}] n_2d_elements={sub_hyd.n_2d_elements} g.Ncells={sub_g.Ncells()}")
+                print(f"              FlowLink min={sub_geom.FlowLink.values.min()} max={sub_geom.FlowLink.values.max()}")
+                min_bc_linkid = min( [0] +[sub_bnd[1]['link'].min() for sub_bnd in sub_bnds] )
+                # Is this 1-off? No, I think it's correct.
+                print(f"              min_bc_link_id={min_bc_linkid} expected max FlowLink {sub_hyd.n_2d_elements-min_bc_linkid}")
 
             for sub_bnd in sub_bnds:
                 name,segs=sub_bnd
@@ -4986,7 +5048,6 @@ class DwaqAggregator(Hydro):
                     # Can we now get back to the local link this belongs to?
                     # Then go from that local link to an aggregated link
                     if np.all( x[0] == x[1] ):
-                        self.log.warning("Vertical/source entry - this is probably outdated code")
                         # Would like figure out which entry in FlowLink to point to
                         # the aggregated output includes these source links in FlowLink
                         # but the source domains do not
@@ -5002,19 +5063,25 @@ class DwaqAggregator(Hydro):
                         # it was failing, but it appeared that sub_geom.FlowLink 
                         # actually had all the data, and could have been matched to bc_elt_pos+1.
                         # so try that, but it's possible it will break again when splicing.
-                        link1,fromto=np.nonzero( sub_geom.FlowLink.values==bc_elt_pos+1)
+                        # RH 2024-01-26: operate on FlowLinkSS, which puts sink-source links back
+                        #  in.
+                        link1,fromto=np.nonzero( sub_geom.FlowLinkSS.values==bc_elt_pos+1)
                         if len(link1)!=1:
                             print("Trouble finding the FlowLink which goes with this [src] bc element")
                             print("  link1: %s"%link1)
-                        link1=link1[0]
-                        fromto=fromto[0]
-                        # if all is well, elt_inside from above should match with what's in FlowLink.
-                        # I don't think elt_outside really matters
-                        assert sub_geom.FlowLink.values[link1,1-fromto]-1 == elt_inside,"Sanity comparison on source element failed"
-                        
+                            fail=True
+                            continue # Not sure if this will work...
+                        else:
+                            link1=link1[0]
+                            fromto=fromto[0]
+                            # if all is well, elt_inside from above should match with what's in FlowLink.
+                            # I don't think elt_outside really matters
+                            assert sub_geom.FlowLinkSS.values[link1,1-fromto]-1 == elt_inside,"Sanity comparison on source element failed"
                     else:
                         # print("Horizontal bnd entry")
-                        link1,fromto=np.nonzero( sub_geom.FlowLink.values==bc_elt_pos+1)
+                        # for regular horizontal bnd entries, not necessary to go to FlowLinkSS
+                        # but it shouldn't hurt and hopefully reduces confusion.
+                        link1,fromto=np.nonzero( sub_geom.FlowLinkSS.values==bc_elt_pos+1)
                         if len(link1)!=1:
                             print("Trouble finding the FlowLink which goes with this bc element")
                             print("  link1: %s"%link1)
@@ -5022,8 +5089,8 @@ class DwaqAggregator(Hydro):
                         fromto=fromto[0]
 
                         # this link in terms of local elements, as 0-based
-                        elt_inside=sub_geom.FlowLink.values[link1,1-fromto] - 1 
-                        elt_outside=sub_geom.FlowLink.values[link1,fromto]  - 1
+                        elt_inside=sub_geom.FlowLinkSS.values[link1,1-fromto] - 1 
+                        elt_outside=sub_geom.FlowLinkSS.values[link1,fromto]  - 1
 
                     # this comes as 1-based, based on waq_scenario.py code.
                     elt_inside_global=sub_geom.FlowElemGlobalNr.values[elt_inside] - 1
@@ -5094,6 +5161,9 @@ class DwaqAggregator(Hydro):
                             # this seems wrong -- if we match multiple flow links, that probably means
                             # that the matching code above is too broad.
 
+        if fail:
+            raise Exception("Delayed fail")
+        
         # Reverse that mapping
         bc_ids_for_name=defaultdict(list)
 
@@ -5433,13 +5503,32 @@ class HydroMultiAggregator(DwaqAggregator):
     def sub_dir(self,p):
         return os.path.join(self.path,"DFM_DELWAQ_%s_%04d"%(self.run_prefix,p))
 
+    def sub_hyd(self,p,separate_dir="auto"):
+        """
+        Path to hyd file for the given subdomain.
+        separate_dir:
+          True assumes each processor output is in a separate folder
+          False: all output in one folder.
+          "auto": try True, but if the path does not exist, then try False, then return None
+        """
+        if separate_dir==True:
+            return os.path.join(self.sub_dir(p), "%s_%04d.hyd"%(self.run_prefix,p))
+        elif separate_dir==False:
+            return os.path.join(self.path,"DFM_DELWAQ_%s"%self.run_prefix,"%s_%04d.hyd"%(self.run_prefix,p))
+        elif separate_dir=="auto":
+            for sep in [True,False]:
+                fn=self.sub_hyd(p,sep)
+                if os.path.exists(fn): return fn
+            return None
+
     _hyds=None
     def open_hyd(self,p,force=False):
         if self._hyds is None:
             self._hyds={}
         if force or (p not in self._hyds):
-            self._hyds[p]=HydroFiles(os.path.join(self.sub_dir(p),
-                                                  "%s_%04d.hyd"%(self.run_prefix,p)))
+            fn=self.sub_hyd(p)
+            if fn is None: raise Exception("Failed to find hyd file for subdomain")
+            self._hyds[p]=HydroFiles(fn)
         return self._hyds[p]
     
     def dfm_map_file(self,p):
@@ -5447,23 +5536,35 @@ class HydroMultiAggregator(DwaqAggregator):
         Try to infer the name of the dfm map output for processor p, and
         if it exists, return that path
         """
-        map_fn=os.path.join(self.path,"DFM_OUTPUT_%s"%self.run_prefix,"%s_%04d_map.nc"%(self.run_prefix,p))
-        if os.path.exists(map_fn):
-            return map_fn
+        # map_fn=os.path.join(self.path,"DFM_OUTPUT_%s"%self.run_prefix,"%s_%04d_map.nc"%(self.run_prefix,p))
+        # if os.path.exists(map_fn):
+        #     return map_fn
+        # else:
+        #     return None
+
+        # In some cases there is also a timestamp in the name, between the processor part and _map.nc suffix.
+        # Allow either of these:
+        # short_summer2016_0628_dwaq_0000_map.nc        
+        # short_summer2016_0628_dwaq_0000_20160628_140000_map.nc        
+        map_patt=os.path.join(self.path,"DFM_OUTPUT_%s"%self.run_prefix,"%s_%04d*_map.nc"%(self.run_prefix,p))
+        map_fns=glob.glob(map_patt)
+        map_fns.sort()
+        if len(map_fns)>1:
+            print("CAREFUL! Multiple DFM map files. Might cause problems")
+        if map_fns:
+            return map_fns[0]
         else:
             return None
-
+        
     def infer_nprocs(self):
         max_nprocs=1024
         for p in range(1+max_nprocs):
-            if not os.path.exists(self.sub_dir(p)):
+            if self.sub_hyd(p) is None: # not os.path.exists(self.sub_dir(p)):
                 if p==0:
                     raise WaqException("Failed to find any subdomains -- may be a serial run")
                 return p
         else:
             raise Exception("Really - there are more than %d subdomains?"%max_nprocs)
-
-    # create_bnd() used to have an implementation specific to MultiAggregator, but
 
 class HydroStructured(Hydro):
     """

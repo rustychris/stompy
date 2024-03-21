@@ -39,7 +39,6 @@ Caveats:
   been developed against rev 53925, which is probably ca. late 2017.
 
 """
-
 import logging as log
 import argparse
 import numpy as np
@@ -92,7 +91,7 @@ def main(args=None):
     one_of.add_argument("-a", "--aggregate", help="Path to shapefile definining aggregation polygons",default=None,type=str)
     one_of.add_argument("-c", "--continuity", help="Check continuity by comparing fluxes and volumes", action='store_true')
     one_of.add_argument("-l", "--lowpass", help="Low-pass filter", action='store_true')
-    # TODO: splice output should default to mimicing what a serial run would use.
+    # TODO: splice output should default to mimicking what a serial run would use.
     one_of.add_argument("-s", "--splice", help="Splice an MPI run into a single DWAQ hydro dataset",action='store_true')
     
     parser.add_argument("-o", "--output", help="Path and run name for file output", default="output/output")
@@ -104,6 +103,9 @@ def main(args=None):
                               "output. By default the same regeneration is applied here, but can be disabled"
                               "with this option"),
                         action='store_true')
+    parser.add_argument("--write-only",
+                        help=("Comma-separated list of file types to write. e.g. vol,srf,flo"),
+                        default=None,type=str)
 
     # these options copied in from another script, here just for reference, and possible consistency
     # in how arguments are named and described.
@@ -202,7 +204,37 @@ def main(args=None):
 
             # This step is super slow.  Watch the output directory for progress.
             # Takes ~20 hours on HPC for the full wy2013 run.
-            writer.cmd_write_hydro()
+            if args.write_only is None:
+                writer.cmd_write_hydro()
+            else:
+                for file_type in args.write_only.split(','):
+                    log.info("Writing %s file"%file_type)
+                    if file_type=='hyd':
+                        hydro_out.write_hyd()
+                    elif file_type=='vol':
+                        hydro_out.write_vol()
+                    elif file_type=='poi':
+                        hydro_out.write_poi()
+                    elif file_type=='links':
+                        hydro_out.write_2d_links()
+                    elif file_type=='bnd_links':
+                        hydro_out.write_boundary_links()
+                    elif file_type=='atr':
+                        hydro_out.write_atr()
+                    elif file_type=='srf':
+                        hydro_out.write_srf()
+                    elif file_type=='params':
+                        hydro_out.write_parameters()
+                    elif file_type=='geom':
+                        hydro_out.write_geom()
+                    elif file_type=='are':
+                        hydro_out.write_are()
+                    elif file_type=='flo':
+                        hydro_out.write_flo()
+                    elif file_type=='len':
+                        hydro_out.write_len()
+                    else:
+                        raise Exception("Unknown hydro output file type: %s"%file_type)
         else:
             log.info("No output file given -- will not write out results.")
         
