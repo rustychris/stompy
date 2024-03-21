@@ -4539,10 +4539,15 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         """ if x is inside a cell, delete it.
         if x is inside a potential cell, create it.
         """
+        self.log.info("%s: toggle_cell_at_point()"%self)
         c=self.delete_cell_at_point(x)
+        self.log.info("%s: toggle_cell_at_point() deletion yielded %s"%(self,c))
+
         if c is None:
             c=self.add_cell_at_point(x,**kw)
+            self.log.info("%s: toggle_cell_at_point() add yielded %s"%(self,c))
         return c
+    
     def delete_cell_at_point(self,x):
         c=self.select_cells_nearest(x,inside=True)
         if c is not None:
