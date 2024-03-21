@@ -148,7 +148,7 @@ class UGDataset(Dataset):
         east_vel=None
         north_vel=None
         for v in cell_vars:
-            long_name=self.ds[v].attrs['long_name'].lower()
+            long_name=self.ds[v].attrs.get('long_name',v).lower()
             if long_name=='eastward water velocity component':
                 east_vel=v
             elif long_name=='northward water velocity component':

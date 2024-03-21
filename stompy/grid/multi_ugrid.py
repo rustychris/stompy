@@ -8,6 +8,7 @@ properly distinguish ghost cells along land boundaries.
 
 TODO: handling isel for partitioned dimensions
   handling DFM output with FlowLink vs. NetLink
+  dims should report the merged dimensions sizes, not the first subdomain.
 """
 
 import glob
@@ -693,4 +694,12 @@ class MultiUgrid(object):
         subset.dss=[ds.drop(*args,**kwargs) for ds in self.dss]
         return subset
 
+    
+    def compute(self,vars=None):
+        if vars is None:
+            vars = self.data_vars
+        ds=xr.Dataset()
+        for v in vars:
+            ds[v] = self[v].compute()
+        return ds
     

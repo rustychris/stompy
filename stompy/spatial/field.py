@@ -134,11 +134,12 @@ class Field(object):
     """ Superclass for spatial fields
     """
     _projection=None
-    def __init__(self,projection=None):
+    def __init__(self,projection=None,**kw):
         """
         projection: GDAL/OGR parseable string representation
         """
         self.assign_projection(projection)
+        set_keywords(self,kw)
 
     def assign_projection(self,projection):
         self._projection = projection
@@ -296,11 +297,11 @@ class Field(object):
 #   SimpleGrid - constant dx, dy, data just stored in array.
 
 class XYZField(Field):
-    def __init__(self,X,F,projection=None,from_file=None):
+    def __init__(self,X,F,projection=None,from_file=None,**kw):
         """ X: Nx2 array of x,y locations
             F: N   array of values
         """
-        Field.__init__(self,projection=projection)
+        Field.__init__(self,projection=projection,**kw)
         self.X = X
         self.F = F
         self.index = None
@@ -2472,6 +2473,12 @@ class SimpleGrid(QuadrilateralGrid):
         # and turn the missing values back to nan's
         self.F[~valid] = np.nan
 
+    def xxyy_mask(self,xxyy):
+        mask = np.full(self.F.shape, False)
+        min_row,max_row,min_col,max_col = self.rect_to_indexes(xxyy)
+        mask[min_row:max_row+1, min_col:max_col+1] = True
+        return mask
+
     def polygon_mask(self,poly,crop=True,return_values=False):
         """ similar to mask_outside, but:
         much faster due to outsourcing tests to GDAL
@@ -2500,7 +2507,7 @@ class SimpleGrid(QuadrilateralGrid):
                 return ret # done!
             else:
                 mask_crop=ret
-            full_mask=np.zeros(self.F.shape,np.bool)
+            full_mask=np.zeros(self.F.shape,bool)
             min_row,max_row,min_col,max_col = indexes
             full_mask[min_row:max_row+1,min_col:max_col+1]=mask_crop
             return full_mask

@@ -59,7 +59,7 @@ def memoize_key_str(*args,**kwargs):
     return str(args) + str(kwargs)
 
 def memoize_key_strhash(*args,**kwargs):
-    return hashlib.md5( memoize_key_str(*args,**kwargs))
+    return hashlib.md5( memoize_key_str(*args,**kwargs).encode() ).hexdigest()
 
 def memoize_key_repr(*args,**kwargs):
     # repr is probably more appropriate than str
