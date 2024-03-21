@@ -8,6 +8,7 @@ from __future__ import print_function
 import os
 import re
 import textwrap
+import shlex
 
 import glob
 import sys
@@ -1730,6 +1731,52 @@ class Hydro(object):
                 ngroups+=1
         return groups
 
+    def extract_transect_flow(self,transect,func=False,time_range=None):
+        """
+        Extract time series of discharge through a transect as a function of time.
+        transect is expected to have the same structure as it is configured on
+        a Scenario or WaqModel instance: (name, [+-exchs...])
+        Exchanges are numbered from 1, with sign indicating how they are added to the total.
+
+        if time_range is None, then extract over the full hydro time range.
+        if given, evaluate for all hydro steps within the range and return a xr.DataArray.
+        time_range: [np.datetime64,np.datetime64]
+
+        if func is True, instead return a function that takes a datetime64 and returns flow.
+        """
+        exchs=transect[1]
+
+        def fn(t,exchs=exchs,hydro=self):
+            t_secs = (t - np.datetime64(hydro.time0))/np.timedelta64(1,'s')
+            flo = hydro.flows(t_secs)
+            signs=np.sign(exchs)
+            exch0=np.abs(exchs)-1
+            return np.sum(flo[exch0]*signs)
+        if func:
+            return fn
+
+        if time_range is None:
+            tidx_start=0
+            tidx_stop = len(self.t_secs)
+        else:
+            tidx_start,tidx_stop = [ np.searchsorted( self.t_secs,
+                                                      (t-np.datetime64(self.time0))/np.timedelta64(1,'s'))
+                                     for t in time_range ]
+
+        t_secs=self.t_secs[tidx_start:tidx_stop]
+        times=np.datetime64(self.time0)+t_secs*np.timedelta64(1,'s')
+        
+        Q=np.zeros( len(t_secs), np.float64)
+        for i,t in enumerate(times):
+            Q[i] = fn(t)
+
+        da= xr.DataArray(data=Q, dims=['time'], 
+                         coords=dict( time=times,
+                                      time_seconds=("time",t_secs) ),
+                         attrs=dict(transect=transect[0], units='m3 s-1'))
+        da.name="discharge"
+        return da
+    
     # Data formats on disk
     def flo_dtype(self):
         return np.dtype([ ('tstamp','<i4'),
@@ -10540,6 +10587,7 @@ END_MULTIGRID"""%num_layers
 
         for tran in transects:
             name,exchs=tran
+            name='s_'+name # hopefully doesn't make it too long...
             exch0s = np.abs(exchs) - 1
             links = np.unique(self.hydro.exch_to_2d_link['link'][exch0s])
             elts = np.unique(self.hydro.links[links])
@@ -11245,7 +11293,7 @@ END_MULTIGRID"""%num_layers
         else:
             return False
         
-    def write_binary_map_nc(self):
+    def write_binary_map_nc(self,output_fn=None,overwrite=None):
         """
         Transcribe binary formatted map output from completed dwaq
         run to a ugrid-esque netcdf file.  Currently assumes sigma
@@ -11254,6 +11302,15 @@ END_MULTIGRID"""%num_layers
         if 'binary' not in self.map_formats:
             return False
 
+        if overwrite is None: overwrite=self.overwrite
+
+        if output_fn is None:
+            output_fn=os.path.join(self.base_path,"dwaq_map.nc")
+            
+        if os.path.exists(output_fn) and not overwrite:
+            raise Exception("While writing binary map nc to %s: file exists, overwrite is False"%out_fn)
+        
+
         from . import io as dio
         map_fn=os.path.join(self.base_path,self.name+".map")
         map_ds=dio.read_map(map_fn,self.hydro)
@@ -11261,13 +11318,12 @@ END_MULTIGRID"""%num_layers
         dio.map_add_z_coordinate(map_ds,total_depth='TotalDepth',coord_type='sigma',
                                  layer_dim='layer')
 
-        out_fn=os.path.join(self.base_path,"dwaq_map.nc")
-        if os.path.exists(out_fn):
-            if self.overwrite:
-                os.unlink(out_fn)
+        if os.path.exists(output_fn):
+            if overwrite:
+                os.unlink(output_fn)
             else:
                 raise Exception("While writing binary map nc to %s: file exists, overwrite is False"%out_fn)
-        map_ds.to_netcdf(out_fn)
+        map_ds.to_netcdf(output_fn)
         return True
 
     use_bloom=False
@@ -12023,3 +12079,82 @@ def make_delwaqg_dataset(scen):
     ds['header']="Initial conditions file for DelwaqG"
 
     return ds
+
+
+class InpReader:
+    def __init__(self,fn):
+        self.fn=fn
+        with open(self.fn,'rt') as fp:
+            self.fp = fp
+            self.tok = self.toker()
+            self.read()
+            self.fp = None
+    def skip_to_section(self,sec):
+        while 1:
+            line = self.fp.readline()
+            if line=="": break
+            if line.startswith(f'#{sec}'):
+                return True
+        return False
+    
+    def toker(self):
+        while 1:
+            line=self.fp.readline()
+            if line=="": break
+            line=line.split(';')[0].strip()
+            # break on white space except when inside single or double quotes
+            for t in shlex.split(line): 
+                #print("Token: ",t)
+                yield t
+
+    def next_int(self): return int(next(self.tok))
+    def next_str(self): return next(self.tok)
+    def next_float(self): return float(next(self.tok))
+    
+    def read(self):
+        assert self.skip_to_section(1)
+        self.next_int() ; self.next_str() ; self.next_str()
+        self.next_float()
+        while 1:
+            t=self.next_str()
+            if t[0] in "01232456789": break
+        self.next_str()
+        assert 0==self.next_int() # timestep option
+        self.next_str() # time step value
+        self.read_mon()
+        self.read_transects()
+        
+    def read_mon(self):
+        has_mon=self.next_int()
+        n_mon = self.next_int()
+        self.monitor_areas=[]
+        for mon_idx in range(n_mon):
+            name=self.next_str()
+            count=self.next_int()
+            segs=[self.next_int() for _ in range(count)]
+            self.monitor_areas.append( (name,segs))
+        print(f"{len(self.monitor_areas)} mon areas")
+        
+    def read_transects(self):
+        has_tran=self.next_int()
+        if has_tran>0:
+            n_tran = self.next_int()
+            print("n_tran",n_tran)
+        else:
+            n_tran=0
+        self.monitor_transects=[]
+        for _ in range(n_tran):
+            name=self.next_str()
+            report_net=self.next_int() # we always use 1.
+            count=self.next_int()
+            exchs=[self.next_int() for _ in range(count)]
+            self.monitor_transects.append( (name,exchs))
+        print(f"{len(self.monitor_transects)} transects")
+
+    def get_transect_by_name(self,name):
+        for tran in self.monitor_transects:
+            if name==tran[0]:
+                return tran
+        return None
+    
+        

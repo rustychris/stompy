@@ -5845,6 +5845,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 
         return coll
 
+    def tripcolor_cell_values(self,values,ax=None,refresh=False,**kw):
+        tri,sources = self.mpl_triangulation(return_sources=True,refresh=refresh)
+        if ax is None: ax=plt.gca()
+
+        return ax.tripcolor(tri,values[sources],**kw)
+    
     def edges_length(self,sel=None):
         if sel is None:
             lengths=np.full(self.Nedges(),np.nan,np.float64)
