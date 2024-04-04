@@ -1986,7 +1986,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         nc.close()
         
     @staticmethod
-    def from_shp(shp_fn,**kw):
+    def from_shp(shp_fn,tolerance=0.0,**kw):
         # bit of extra work to find the number of nodes required
         feats=wkb2shp.shp2geom(shp_fn)
 
@@ -2004,11 +2004,11 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 kw['max_sides']=np.max(nsides)
 
         g=UnstructuredGrid(**kw)
-        g.add_from_shp(features=feats)
+        g.add_from_shp(features=feats,tolerance=tolerance)
         return g
     
     def add_from_shp(self,shp_fn=None,features=None,linestring_field=None,
-                     check_degenerate_edges=True):
+                     check_degenerate_edges=True, tolerance=0.0):
         """ Add features in the given shapefile to this grid.
         Limited support: 
         polygons must conform to self.max_sides
@@ -2047,24 +2047,24 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                         coords=coords[::-1]
 
                     # used to always return a new node - bad!
-                    nodes=[self.add_or_find_node(x=x)
+                    nodes=[self.add_or_find_node(x=x,tolerance=tolerance)
                            for x in coords]
                     self.add_cell_and_edges(nodes=nodes)
             elif geo.geom_type=='LineString':
                 coords=np.array(geo.coords)
                 if linestring_field is None:
-                    self.add_linestring(coords)
+                    self.add_linestring(coords,tolerance=tolerance)
                 else:
-                    nA=self.add_or_find_node(coords[0,:])
-                    nB=self.add_or_find_node(coords[-1,:])
+                    nA=self.add_or_find_node(coords[0,:], tolerance=tolerance)
+                    nB=self.add_or_find_node(coords[-1,:], tolerance=tolerance)
                     j=self.add_edge(nodes=[nA,nB],_check_degenerate=check_degenerate_edges)
                     self.edges[linestring_field][j]=coords                    
             else:
                 raise GridException("Not ready for geometry type %s"%geo.geom_type)
         # still need to collapse duplicate nodes
         
-    def add_linestring(self,coords,closed=False):
-        nodes=[self.add_or_find_node(x=x)
+    def add_linestring(self,coords,closed=False, tolerance=0.0):
+        nodes=[self.add_or_find_node(x=x, tolerance=tolerance)
                for x in coords]
         edges=[]
 

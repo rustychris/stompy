@@ -107,6 +107,17 @@ def main(args=None):
                         help=("Comma-separated list of file types to write. e.g. vol,srf,flo"),
                         default=None,type=str)
 
+    parser.add_argument("--tolerance",
+                        help="Distance tolerance for merging vertexes in shapefile input",
+                        default=0.0,type=float)
+    
+    parser.add_argument("--nudging",
+                        help=("Max iterations adjusting cell mapping. 0 disables entirely. Nudging tries to "
+                              "assign input cells to aggregated cells so that the faces in the output also"
+                              "exist in the input aggregation regions. This may not be possible, in which"
+                              "case use a value of 0"),
+                        default=5,type=int)
+    
     # these options copied in from another script, here just for reference, and possible consistency
     # in how arguments are named and described.
     
@@ -142,6 +153,8 @@ def main(args=None):
         #   merged into a single boundary input.  Generally best to keep this as False.
         hydro_out=waq.HydroAggregator(hydro_in=hydro_orig,
                                       agg_shp=agg_shp,
+                                      agg_shp_tolerance=args.tolerance,
+                                      max_nudge_iterations=args.nudging,
                                       sparse_layers=False,
                                       agg_boundaries=False)
     if args.splice:

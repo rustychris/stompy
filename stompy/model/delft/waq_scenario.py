@@ -271,6 +271,12 @@ class Hydro(object):
     overwrite=True
 
     @property
+    def reference_originals(self):
+        # HydroFiles can override, but other Hydro classes cannot
+        # implement this, so force to False.
+        return False
+
+    @property
     def fn_base(self): # base filename for output. typically com-<scenario name>
         return 'com-{}'.format(self.scenario.name)
 
@@ -2697,6 +2703,17 @@ class DwaqAggregator(Hydro):
     # Rather than loading DWAQ flowgeom netcdf, try to load DFM map output, which
     # can have more information.
     flowgeom_use_dfm_map=True
+
+    # When creating aggregated grid from a shapefile use this tolerance for matching
+    # nodes.
+    agg_shp_tolerance=0.0
+
+    # how many times to loop through trying to adjust the mapping of input cells
+    # to aggregated cells, with the goal of avoiding any new aggregated faces.
+    # This isn't always possible even with a perfect method, and the algorithm here
+    # is not particularly clever. Alternatively, nudging can be disabled via
+    # max_nudge_iterations=0.
+    max_nudge_iterations=5
     
     # how many of these can be factor out into above classes?
     # agg_shp: can specify, but if not specified, will try to generate a 1:1 
@@ -2954,11 +2971,16 @@ class DwaqAggregator(Hydro):
                 print("FlowLink near end of open_flowgeom_ds(%d), id(ds)=%s"%(p,id(ds)))
                 print(ds.FlowLink)
 
-                if 'FlowLinkDomain' not in ds:
-                    # use the element domains, grabbing the internal/2nd flow element from
-                    # each link.
-                    # remember that FlowLink has 1-based numbering
-                    ds['FlowLinkDomain']  =(link_dim,),ds['FlowElemDomain'].values[FlowLink[:,1]-start_index]
+            if 'FlowLinkDomain' not in ds:
+                # 2024-04-04: move this out one level -- appears it is possible for FlowLink
+                # to exist, but not FlowLinkDomain
+                # use the element domains, grabbing the internal/2nd flow element from
+                # each link.
+                # remember that FlowLink has 1-based numbering (can't assume that mesh2d_edge_faces
+                # exists, and no obvious metadata for start_index, but it's always 1 with DFM stuff)
+                start_index=1 
+                FlowLink =ds['FlowLink'].values
+                ds['FlowLinkDomain'] = ds['FlowLink'].dims[:1],ds['FlowElemDomain'].values[FlowLink[:,1]-start_index]
 
             if True: # Fabricate FlowLink that includes sink-source links
                 if 'sink-sources' in hyd.hyd_toks:
@@ -3289,23 +3311,16 @@ class DwaqAggregator(Hydro):
             if isinstance(self.agg_shp,unstructured_grid.UnstructuredGrid):
                 agg_g=self.agg_shp
             else:
-                agg_g=unstructured_grid.UnstructuredGrid.from_shp(self.agg_shp)
+                agg_g=unstructured_grid.UnstructuredGrid.from_shp(self.agg_shp,tolerance=self.agg_shp_tolerance)
             
-            for nudge_iter in range(5):
+            for nudge_iter in range(self.max_nudge_iterations):
                 nudge_count=0
                 # First, identify problem edges
                 for proc in range(self.nprocs):
                     self.log.info("Checking proc %d for inconsistent links"%proc)
                     nc=self.open_flowgeom_ds(proc)
                     proc_global_ids=nc.FlowElemGlobalNr.values - 1  # make 0-based
-                    ncg=unstructured_grid.UnstructuredGrid.read_dfm(nc,cleanup=True) # dfm_grid.DFMGrid(nc)
-                    # This is slow, but on the chance that the grid is from a merged
-                    # hydro run, this is necessary (or the code below needs to be rewritten
-                    # to cope with duplicate edges from a merged hydro run).
-                    # now incorporated into cleanup=True above
-                    #self.log.info("Overly conservative cleanup pass on grid")
-                    #dfm_grid.cleanup_multidomains(ncg)
-                    #self.log.info(" ... done with cleanup pass")
+                    ncg=unstructured_grid.UnstructuredGrid.read_dfm(nc,cleanup=True) 
 
                     e2c=ncg.edge_to_cells()
                     for j in np.nonzero(e2c.min(axis=1)>=0)[0]: # only internal edges
@@ -7449,6 +7464,9 @@ class ParameterSpatioTemporal(Parameter):
         if self.reference_originals and self.seg_func_file is not None:
             return self.seg_func_file
         else:
+            # Update this so we know whether or not the returned path
+            # is the original file or the place to write a new file.
+            self.reference_originals=False
             basename=self.scenario.name + "-" + self.safe_name + ".seg"
             return os.path.join(self.scenario.base_path,basename)
     
@@ -7477,6 +7495,8 @@ class ParameterSpatioTemporal(Parameter):
     def write_supporting_try_symlink(self):
         if self.seg_func_file is not None:
             dst=self.supporting_path
+            # With the updated logic in supporting_path(), reference_originals is only
+            # true when the returned path exists, making this assertion redundant.
             if self.reference_originals:
                 assert os.path.exists(dst),"Expected to use existing file, but %s does not exist"%dst
                 return True
@@ -7499,8 +7519,10 @@ class ParameterSpatioTemporal(Parameter):
         if self.write_supporting_try_symlink():
             return
         
-        target=os.path.join(self.scenario.base_path,self.supporting_file)
+        target=self.supporting_path
 
+        assert not self.reference_originals,"Bailing before writing %s as it might be original input"%target
+        
         # limit to the time span of the scenario
         tidxs=np.arange(len(self.times))
         datetimes=self.times*self.scenario.scu + self.scenario.time0
@@ -7516,6 +7538,12 @@ class ParameterSpatioTemporal(Parameter):
 
         # This is split out so that the parallel implementation can jump in just at this
         # point
+        if os.path.lexists(target):
+            if self.scenario.overwrite:
+                os.unlink(target)
+            else:
+                raise Exception("%s exists, and scenario.overwrite is False"%target)
+
         with open(target,'wb') as fp:
             self.write_supporting_loop(tidxs,fp,name=target)
 
@@ -12213,6 +12241,7 @@ class InpReader:
     def next_float(self): return float(next(self.tok))
     
     def read(self):
+        self.read_section0()
         assert self.skip_to_section(1)
         self.next_int() ; self.next_str() ; self.next_str()
         self.next_float()
@@ -12224,6 +12253,35 @@ class InpReader:
         self.next_str() # time step value
         self.read_mon()
         self.read_transects()
+
+    def read_section0(self):
+        header=self.fp.readline() # first line sets comment char, can't be read through toker
+        tokens = header.split()
+        self.max_input_width  = int(tokens[0])
+        self.max_output_width = int(tokens[1])
+        self.comment_char = tokens[2] # still has quotes
+        # ignore trailing comment
+        
+        self.desc=[self.next_str(), self.next_str(), self.next_str()]
+        self.time_string = self.next_str()
+        print("Time string: ",self.time_string)
+        # T0: 2013/08/01-00:00:00  (scu=       1s)
+        self.time0 = np.datetime64(
+            datetime.datetime.strptime(
+                self.time_string[4:23]
+                .replace('/','-').replace('.','-'),
+                "%Y-%m-%d-%H:%M:%S"))
+        self.scu_seconds = int(self.time_string[30:38])
+
+        self.n_active = self.next_int()
+        self.n_passive = self.next_int()
+        self.substances=[]
+        for _ in range(self.n_active):
+            self.next_int() # 1-based index
+            self.substances.append(Substance(name=self.next_str(),active=True))
+        for _ in range(self.n_passive):
+            self.next_int() # 1-based index
+            self.substances.append(Substance(name=self.next_str(),active=False))
         
     def read_mon(self):
         has_mon=self.next_int()
