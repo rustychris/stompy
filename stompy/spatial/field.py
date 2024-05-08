@@ -1968,6 +1968,22 @@ class SimpleGrid(QuadrilateralGrid):
         self.delta() # compute those if unspecified
 
     @classmethod
+    def from_curvilinear(cls, x, y, F):
+        all_dx=np.diff(x,axis=1)
+        if not np.allclose(all_dx[0], all_dx):
+            raise Exception("Not evenly spaced in x")
+        all_dy=np.diff(y,axis=0)
+        if not np.allclose(all_dy[0], all_dy):
+            raise Exception("Not evenly spaced in y")
+        skew_x=np.diff(x,axis=0)
+        if not np.all(skew_x==0.0):
+            raise Exception("Skewed in x")
+        skew_y=np.diff(y,axis=1)
+        if not np.all(skew_y==0.0):
+            raise Exception("Skewed in y")
+        return SimpleGrid(extents=[x.min(), x.max(), y.min(), y.max()], F=F)
+
+    @classmethod
     def zeros(cls,extents,dx,dy,dtype=np.float64):
         nx=int( np.ceil((extents[1] - extents[0])/dx) )
         ny=int( np.ceil((extents[3] - extents[2])/dy) )
