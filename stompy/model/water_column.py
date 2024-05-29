@@ -5,13 +5,23 @@ Water column 'model'
 from scipy import sparse, linalg
 import numpy as np
 from .. import utils
+import matplotlib.pyplot as plt
 
 class WaterColumn:
+    """
+    Simple water column model.
+    constant depth
+    spatially variable verticle velocity, but assumed w >= 0 (upward)
+    no flux BCs at bed and surface.
+    parabolic eddy viscosity.
+    Advection is explicit with TVD.
+    Diffusion is implicit.
+    Constant time step.
+    """
     H=8 # depth of water column.
     # t_spin=np.timedelta64(10,"D") # first 10 days will be repeated
 
     Cd=0.001
-    speed='tide_speed' # field of df
     ws=10.0 # swimming, m/d
 
     tvd='vanLeer'
@@ -24,6 +34,7 @@ class WaterColumn:
     # For explicit stuck around 1s.
     # For implicit can go up to 1500s or so
     dt=np.timedelta64(900,'s')
+    dt_spinup=np.timedelta64(2,"D") # call .spin() to get this spinup
     
     def __init__(self,**kw):
         utils.set_keywords(self,kw)
@@ -48,13 +59,34 @@ class WaterColumn:
         self.w[0]=0.0 # no flux at bed
         self.w[-1]=0.0 # no flux at surface.
         
-    def plot(self,ax=None):
+    def plot(self,ax=None,**kw):
         ax=ax or plt.gca()
-        ax.plot(self.C,self.z_ctr,label=str(self.tvd))
+        ax.plot(self.C,self.z_ctr,**kw)
         #ax.plot(self.nu_t,self.z_int)
 
+    def step_for(self,interval):
+        """ interval: timedelta64 """
+        self.step_until(self.t + interval)
+        
+    def step_until(self,t_stop):
+        """ Step until a given time
+        t_stop: datetime64
+        Stops on or immediately after t_stop
+        """
+        while self.t < t_stop:
+            self.step()
+
+    def spin(self):
+        """ Repeat steps at the current time """
+        t=self.t
+        spin_steps = int(round(self.dt_spinup / self.dt ))
+        
+        for spin_step in range(spin_steps):
+            self.step()
+            self.t = t
+            
     def step(self):
-        # Evaluate
+        """ take a single step """
         self.t_s = (self.t - self.t0)/np.timedelta64(1,'s')
         self.step_viscosity()
         self.step_scalar()
@@ -64,7 +96,7 @@ class WaterColumn:
         self.nu_t = 0.4 * self.u_star() * self.turb_L
 
     def u_star(self):
-        u_star = self.u_mag() * np.sqrt(self.Cd)
+        return self.u_mag() * np.sqrt(self.Cd)
 
     def u_mag(self):
         return 1.0 # placeholder. Override!
@@ -97,9 +129,9 @@ class WaterColumn:
         # Advection:
         w_int=self.w[1:-1] # only for interfaces.
         # flux at interior interfaces. Upwind, assume we know sign of w_s.
-        CFL = w_int*self.dt_s / self.dz
-        assert np.all(CFL>=0.0)
-        assert np.all(CFL<=1.0)
+        #CFL = w_int*self.dt_s / self.dz
+        #assert np.all(CFL>=0.0)
+        #assert np.all(CFL<=1.0)
 
         F[:] += w_int*self.C[:-1] # 1st order upwind           
 

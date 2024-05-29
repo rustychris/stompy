@@ -586,7 +586,18 @@ def pad_pcolormesh(X,Y,Z,ax=None,dx_single=None,dy_single=None,
     dy_single: if there is only one sample in y, use this for height
     fallback: if there are nan's in the coordinate data use pcolor instead.
     """
+    X_date=np.issubdtype(X.dtype,np.datetime64)
+    Y_date=np.issubdtype(Y.dtype,np.datetime64)
+    if X_date:
+        X = utils.to_dnum(X)
+    if Y_date:
+        Y = utils.to_dnum(Y)
+    
     Xpad,Ypad=utils.center_to_edge_2d(X,Y,dx_single=dx_single,dy_single=dy_single)
+    if X_date:
+        Xpad = utils.to_dt64(Xpad)
+    if Y_date:
+        Ypad = utils.to_dt64(Ypad)
     ax=ax or plt.gca()
     if fallback and (np.any(np.isnan(Xpad)) or np.any(np.isnan(Ypad))):
         return ax.pcolor(Xpad,Ypad,Z,**kwargs)

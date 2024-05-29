@@ -471,3 +471,18 @@ def decode_geometry(ds,field,replace=True, on_error='pass'):
         ds[field]=node_counts.dims, geoms
         ds[field].attrs.update(old_attrs)
     return geoms
+
+def xr_open_with_rename(fn,renames,**kw):
+    """
+    Work around netcdf files with variables like z(time,z,lat,lon).
+    These are valid netcdf but break xarray.
+    """
+    import netCDF4
+    ds=xr.open_dataset(fn,drop_variables=renames.keys(),**kw)
+    ds_nc = netCDF4.Dataset(fn)
+    for v in renames:
+        nc_var=ds_nc[v]
+        ds[renames[v]]=nc_var.dimensions,nc_var[...]
+    ds_nc.close()
+    ds=ds.set_coords(renames.values())    
+    return ds

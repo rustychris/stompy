@@ -67,7 +67,11 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         # might assume that self.mdu exists.
         # I don't think there is a downside to setting up a default
         # mdu right here.
-        self.tracers=[] # non-DWAQ tracers. WIP.
+
+        # non-DWAQ tracers. WIP. Setting tracers to empty here is slightly
+        # problematic when a subclass defines self.tracers at the class
+        # level. Try having this in configure instead.
+        #self.tracers=[] 
         
         self.load_default_mdu()
 
@@ -77,6 +81,8 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         return '<DFlowModel: %s>'%self.run_dir
 
     def configure(self):
+        self.tracers=[] # non-DWAQ tracers, init moved here from __init__()
+        
         super(DFlowModel,self).configure()
 
         # This is questionable -- new code in create_restart does this
@@ -1747,7 +1753,10 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         # recent DFM errors if Tlfsmo is set for a restart.
         self.mdu['numerics','Tlfsmo'] = 0.0
         # And at least in tag 140737, restarts from a restart file fail if renumbering is enabled.
-        self.mdu['geometry','RenumberFlowNodes']=0
+        # 2023-12-08: restart is failing for a case with initial run had RenumberFlowNodes=1, and
+        #   restart has RenumberFlowNodes=1.
+        # Maybe we should just leave it??
+        # self.mdu['geometry','RenumberFlowNodes']=0
 
         self.restart=True
         self.restart_from=model # used to be restart_model, but I don't think makes sense

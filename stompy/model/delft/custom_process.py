@@ -3,10 +3,15 @@ import sys
 import os
 from collections import defaultdict
 from stompy import utils
+from . import dflow_model
 
 
 # When including this as a 'mixin', it needs to go first, before
-# DFlowModel
+# DFlowModel.
+
+# Making this work with WaqModel:
+#   .write_inp() hook, and caller should use self.waq_proc_def.
+
 class CustomProcesses:
     # Ideally this would get integrated in waq_scenario. Since this model
     # is online coupled it's awkward to have it here.
@@ -19,12 +24,24 @@ class CustomProcesses:
     # path to where edits, import/export will happen
     @property
     def proc_table_dst_dir(self):
-        return os.path.join(self.run_dir,"proc_tables")
+        if isinstance(self,dflow_model.DFlowModel):
+            run_dir = self.run_dir
+        else:
+            run_dir = self.base_path
+            
+        return os.path.join(run_dir,"proc_tables")
 
+    @property
+    def bin_dir(self):
+        if isinstance(self,dflow_model.DFlowModel):
+            return self.dfm_bin_dir
+        else:
+            return self.delft_bin
+        
     _waqpbexport=None
     @property
     def waqpbexport(self):
-        return self._waqpbexport or os.path.join(self.dfm_bin_dir,'waqpb_export')
+        return self._waqpbexport or os.path.join(self.bin_dir,'waqpb_export')
     @waqpbexport.setter
     def waqpbexport(self,value):
         self._waqpbexport = value
@@ -32,7 +49,7 @@ class CustomProcesses:
     _waqpbimport=None
     @property
     def waqpbimport(self):
-        return self._waqpbimport or os.path.join(self.dfm_bin_dir,'waqpb_import')
+        return self._waqpbimport or os.path.join(self.bin_dir,'waqpb_import')
     @waqpbimport.setter
     def waqpbimport(self,value):
         self._waqpbimport = value
@@ -45,9 +62,20 @@ class CustomProcesses:
         super().__init__(*a,**k)
 
     def write(self):
+        """
+        Hook into DFlowModel initialization
+        """
         super().write()
         if self.custom_procs:
             self.build_process_db()
+
+    def write_inp(self):
+        """
+        Hook into WaqModel initialization
+        """
+        super().write_inp()
+        if self.custom_procs:
+            self.build_process_db() # will update self.waq_proc_def
         
     def build_process_db(self):
         """
@@ -61,7 +89,8 @@ class CustomProcesses:
 
         print("First call to waqpb_export")
         sys.stdout.flush()
-        print( utils.call_with_path(self.waqpbexport,self.proc_table_dst_dir).decode('latin1') )
+        output = utils.call_with_path(self.waqpbexport,self.proc_table_dst_dir).decode('latin1') 
+        print("Suppressed output")
         # That says Normal end, but then goes on to
         # make proces.asc
         sys.stdout.flush()
@@ -90,13 +119,15 @@ class CustomProcesses:
         print("Calling waqpb_import")
         sys.stdout.flush()
         # Pretty sure this is the one that fails.
-        print( utils.call_with_path(self.waqpbimport,self.proc_table_dst_dir).decode('latin1') )
+        output = utils.call_with_path(self.waqpbimport,self.proc_table_dst_dir).decode('latin1') 
+        print("Suppressed output")
         sys.stdout.flush()
         print("Return from waqpb_import")
         sys.stdout.flush()
         print("Second call to waqpb_export")
         sys.stdout.flush()
-        print( utils.call_with_path(self.waqpbexport,self.proc_table_dst_dir).decode('latin1') )
+        output = utils.call_with_path(self.waqpbexport,self.proc_table_dst_dir).decode('latin1') 
+        print( "Suppressed output")
         sys.stdout.flush()
         print("Return from second call to waqpb_export")
         sys.stdout.flush()
@@ -138,7 +169,10 @@ class CustomProcesses:
         p.update(kw)
 
         # Presumably want to enable it, though could be optional
-        self.dwaq.add_process(p['name'])
+        if isinstance(self,dflow_model.DFlowModel):
+            self.dwaq.add_process(p['name'])
+        else: # WaqModel or related
+            self.add_process(p['name'])
         
         n_stoich=1
         if conc_decay!=0.0:
@@ -194,3 +228,82 @@ O2FuncNT1                   x oxygen function for nitrification              (-)
 END
 """
         return process
+
+# NOT YET IMPLEMENTED
+#     def custom_settling(self,**kw):
+#         proc_txt=self.settling(**kw)
+#         self.custom_procs.append(proc_txt)
+
+#      def settling(self, **kw):
+#          idx=self.copy_count['SETTLING']
+#          self.copy_count['SETTLING']+=1
+#          
+#          suffix=str(idx)
+#          p=dict(name="SETTLE"+suffix,
+#                 # FIX BELOW
+#                 zero_order="ZAge"+suffix,
+#                 partial="PartAge"+suffix,
+#                 conc=f"Age{suffix}Conc",
+#                 partial_default=1.0,
+#                 age_conc=f"Age{suffix}AConc",
+#                 flux="dAge"+suffix)
+#          p.update(kw)
+#  
+#          # Presumably want to enable it, though could be optional
+#          self.dwaq.add_process(p['name'])
+#          
+#          n_stoich=1
+#          if conc_decay!=0.0:
+#              n_stoich+=1
+#  
+#          # partial is a rate in d-1, defaults to 1.0.
+#          # flux = partial * conc
+#  
+#          # All of this is to have a pair of tracers that
+#          # integrate this:
+#          
+#          #     d conc / dt = -conc_decay*partial * conc
+#          # d age_conc / dt =             partial * conc
+#  
+#          # partial defaults to 1.0.
+#  
+#          process=f"""
+#  {p['name']:10}                    Reuse nitrification as age                         
+#  NITRIF    ; module name. 
+#  123       ; TRswitch
+#          18; # input items for segments
+#  {p['zero_order']:10}      0.00000     x zeroth-order flux          (g/m3/d)
+#  {p['partial']   :10}      {p['partial_default']: 8g}     x set this to get partial age
+#  RcNit20        0.100000     x ignored (b/c SWVnNit=0)
+#  TcNit           1.00000     x ignored
+#  OXY             10.0000     x ignored
+#  KsAmNit        0.500000     x ignored
+#  KsOxNit         1.00000     x ignored
+#  Temp            15.0000     x ignored
+#  CTNit           3.00000     x ignored
+#  Rc0NitOx        0.00000     x ignored
+#  COXNIT          1.00000     x ignored
+#  Poros           1.00000     x volumetric porosity                            (-)
+#  SWVnNit         0.00000     x switch for old (0), new (1), TEWOR (2) version (-)
+#  {p['conc']    :10}     0.100000     x concentration tracer
+#  OOXNIT          5.00000     x ignored
+#  CFLNIT          0.00000     x ignored
+#  CurvNit         0.00000     x ignored
+#  DELT           -999.000     x timestep for processes                         (d)
+#           0; # input items for exchanges
+#           1; # output items for segments
+#  O2FuncNT1                   x oxygen function for nitrification              (-)
+#           0; # output items for exchanges
+#           1; # fluxes
+#  {p['flux']:10}                  x nitrification flux                       (gN/m3/d)
+#           {n_stoich}; # stoichiometry lines. Could probably drop most of these.
+#  {p['age_conc']:10}  {p['flux']:10}     1.00000
+#  """
+#          if conc_decay!=0.0:
+#              process+=f"{p['conc']:10}  {p['flux']:10}    {-conc_decay:.5f}\n"
+#          process+="""         0; # stoichiometry lines dispersion arrays
+#           0; # stoichiometry lines velocity arrays
+#  END
+#  """
+#          return process
+    

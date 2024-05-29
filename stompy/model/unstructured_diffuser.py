@@ -20,7 +20,7 @@ class Diffuser(object):
     
     def __init__(self,grid,edge_depth=None,cell_depth=None):
         """
-        edge_depth: [Nedges] array of stricly positive flux-face heights
+        edge_depth: [Nedges] array of strictly positive flux-face heights
         for edges.
 
         cell_depth: [Ncells] array of strictly positive cell thicknesses
