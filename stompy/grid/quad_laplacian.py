@@ -224,7 +224,10 @@ class NodeDiscretization(object):
 
         if is_boundary:
             # roll N to start and end on boundary nodes:
-            nbr_boundary=[self.g.is_boundary_node(n)
+            # 
+            #nbr_boundary=[self.g.is_boundary_node(n)
+            #              for n in N]
+            nbr_boundary=[self.g.is_boundary_edge(self.g.nodes_to_edge(n0,n))
                           for n in N]
             while not (nbr_boundary[0] and nbr_boundary[-1]):
                 N=np.roll(N,1)
