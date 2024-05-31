@@ -8563,7 +8563,7 @@ class UGrid(UnstructuredGrid):
 class UnTRIM08Grid(UnstructuredGrid):
     hdr_08 = '&GRD_2008'
     hdr_old = '&LISTGRD'
-    DEPTH_UNKNOWN = np.nan
+    DEPTH_UNKNOWN = np.nan # used when no incoming depth is given, or if incoming depth is nan.
 
     angle = 0.0
     location = "''" # don't use a slash in here!
@@ -9151,7 +9151,8 @@ class UnTRIM08Grid(UnstructuredGrid):
         changes are required, so don't modify the array unless you don't
         care about edges['marks'].
         """
-        e2c=self.edge_to_cells()
+        # Force recalc, as otherwise we'll write everything out as LAND.
+        e2c=self.edge_to_cells(recalc=True)
         boundary=e2c.min(axis=1)<0
         marks=self.edges['mark']
         sel=(marks==0) & boundary
@@ -9244,6 +9245,9 @@ class UnTRIM08Grid(UnstructuredGrid):
                 for i,a in enumerate(values):
                     if i>0 and i%10==0:
                         fp.write("\n")
+
+                    if np.isnan(a): a=self.DEPTH_UNKNOWN
+                    
                     if np.isfinite(a):
                         fp.write("%14.4f "%a)
                     else:
