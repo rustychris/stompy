@@ -9276,12 +9276,15 @@ class UnTRIM08Grid(UnstructuredGrid):
             for e in range(Ninternal+Nflow):
                 try:
                     lengths,depths = self.edges['subgrid'][e]
+                    nis = len(lengths)
                 except TypeError:
                     # GIS editing might leave some edges with no subgrid
-                    lengths=[edge_length[e]]
-                    depths=[0]
+                    nis=0
                     
-                nis = len(lengths)
+                if nis==0: # causes issues to have nothing here...
+                    nis=1
+                    lengths=[edge_lengths[e]]
+                    depths=[self.DEPTH_UNKNOWN]
 
                 fp.write("%10d %9d\n"%(e+1,nis))
                 fmt_wrap_lines(fp,lengths)
