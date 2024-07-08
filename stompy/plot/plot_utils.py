@@ -592,7 +592,13 @@ def pad_pcolormesh(X,Y,Z,ax=None,dx_single=None,dy_single=None,
         X = utils.to_dnum(X)
     if Y_date:
         Y = utils.to_dnum(Y)
-    
+
+    if kwargs.get('shading','flat') != 'flat':
+        print("pad_pcolormesh is for shading='flat', but shading is set to {kwargs['shading']}")
+        
+    # Would like to do this
+    X,Y,Z = np.broadcast_arrays(X,Y,Z) 
+        
     Xpad,Ypad=utils.center_to_edge_2d(X,Y,dx_single=dx_single,dy_single=dy_single)
     if X_date:
         Xpad = utils.to_dt64(Xpad)
