@@ -975,13 +975,18 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         return SchismGrid.read_gr3(fn)
     
     @staticmethod
-    def read_ras2d(hdf_fname, twod_area_name=None, elevations=True):
+    def read_ras2d(hdf_fname, twod_area_name=None, elevations=True, subedges=None):
         """
         Read a RAS2D grid from HDF.
         hdf_fname: path to hdf file
         twod_area_name: string naming the 2D grid in the HDF file.  If omitted,
           attempt to detect this, but will fail if the number of valid names
           is not exactly 1.
+        subedges: check for face internal points and populate coordinate strings in this
+         field. stompy stores the full geometry here. If subedges is None, skip processing.
+         otherwise all edges will get an entry, and faces with no internal points will 
+         just get a copy of the simple face geometry.
+
         Acknowledgements: Original code by Stephen Andrews.
 
         elevations: If elevation-related fields (currently just min elevation in 
@@ -991,30 +996,42 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         h = h5py.File(hdf_fname, 'r')
 
         try:
+            cc_suffixes=None
             if twod_area_name is None:
                 names=list(h['Geometry/2D Flow Areas'].keys())
-                twod_names=[]
+                twod_names={} # name => dict of info
                 for name in names:
-                    try:
-                        h['Geometry/2D Flow Areas/'+name+'/Cells Center Coordinate']
-                    except KeyError:
-                        continue
-                    twod_names.append(name)
+                    for version,suffix in [('v6','Cells Center Coordinate'),
+                                           ('v2025','Cell Coordinates')]:
+                        try:
+                            cc_variable='Geometry/2D Flow Areas/'+name+'/'+suffix
+                            h[cc_variable]
+                            twod_names[name]=dict(cc_variable=cc_variable,version=version)
+                            break
+                        except KeyError:
+                            continue
                 if len(twod_names)==1:
-                    twod_area_name=twod_names[0]
+                    twod_area_name=list(twod_names)[0]
                 elif len(twod_names)>1:
                     raise Exception("Must specify twod_area_name from %s"%( ", ".join(twod_names) ))
                 else:
                     raise Exception("No viable twod_area_name values")
 
-            cell_center_xy = h['Geometry/2D Flow Areas/' + twod_area_name + '/Cells Center Coordinate']
+            twod_info = twod_names[twod_area_name]
+            cell_center_xy = h[twod_info['cc_variable']]
             cell_center_xy=np.array(cell_center_xy) # a bit faster?
 
             ncells = len(cell_center_xy)
             ccx = np.array([cell_center_xy[i,0] for i in range(ncells)])
             ccy = np.array([cell_center_xy[i,1] for i in range(ncells)])
 
-            points_xy = h['Geometry/2D Flow Areas/' + twod_area_name + '/FacePoints Coordinate']
+            if twod_info['version']=='v6':
+                points_xy = h['Geometry/2D Flow Areas/' + twod_area_name + '/FacePoints Coordinate']
+            elif twod_info['version']=='v2025':
+                points_xy = h['Geometry/2D Flow Areas/' + twod_area_name + '/Node Coordinates']
+            else:
+                raise Exception("Unknown version: "+ twod_info['version'])
+                
             points_xy=np.array(points_xy)
 
             npoints = len(points_xy)
@@ -1023,18 +1040,59 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 points[n, 0] = points_xy[n,0]
                 points[n, 1] = points_xy[n,1]
 
-            edge_nodes = h['Geometry/2D Flow Areas/' + twod_area_name + '/Faces FacePoint Indexes']
-            edge_nodes=np.array(edge_nodes)
+            if twod_info['version']=='v6':
+                edge_nodes = h['Geometry/2D Flow Areas/' + twod_area_name + '/Faces FacePoint Indexes']
+                edge_nodes=np.array(edge_nodes)
+            elif twod_info['version']=='v2025':
+                edge_data = np.array(h['Geometry/2D Flow Areas/' + twod_area_name + '/Face Data'])
+                edge_nodes = edge_data[:,2:] # cellA,cellB, facepoint A, facepoint B
+            else:
+                raise Exception("Unknown version: "+ twod_info['version'])
+                
             nedges = len(edge_nodes)
             edges = -1 * np.ones((nedges, 2), dtype=int)
             for j in range(nedges):
                 edges[j][0] = edge_nodes[j,0]
                 edges[j][1] = edge_nodes[j,1]
 
-            cell_nodes = h['Geometry/2D Flow Areas/' + twod_area_name + '/Cells FacePoint Indexes']
-            cell_nodes=np.array(cell_nodes)
-            max_cell_faces=cell_nodes.shape[1]
-            ncells=len(cell_nodes) # can be smaller than len(cell_center_xy) ?
+            if subedges is not None:
+                extra_edge_fields=[(subedges,object)]
+            else:
+                extra_edge_fields=[]
+
+            if twod_info['version']=='v6':
+                cell_nodes = h['Geometry/2D Flow Areas/' + twod_area_name + '/Cells FacePoint Indexes']
+                cell_nodes=np.array(cell_nodes)
+                max_cell_faces=cell_nodes.shape[1]
+                ncells=len(cell_nodes) # can be smaller than len(cell_center_xy) ?
+            elif twod_info['version']=='v2025':
+                # I think this is a list of face indexes
+                # and it has Start and Count attributes giving the data for each cell.
+                # There is also Node Data, similarly formatted, associating nodes to cells.
+                # Neither of these directly give order of nodes within a cell.
+                ragged_cell_faces = h['Geometry/2D Flow Areas/' + twod_area_name + '/Cell Data']
+                cell_face_start = ragged_cell_faces.attrs['Start']
+                cell_face_count = ragged_cell_faces.attrs['Count']
+                # convert to non-ragged.
+                max_cell_faces=cell_face_count.max()
+                ncells=len(cell_face_count)
+                cell_nodes=np.full((ncells,max_cell_faces),-1)
+                # This feels very slow
+                for i in range(ncells):
+                    faces = ragged_cell_faces[cell_face_start[i]:cell_face_start[i]+cell_face_count[i]]
+                    for f in range(len(faces)):
+                        f_this = faces[f]
+                        f_next = faces[(f+1)%len(faces)]
+                        n_this = edge_nodes[f_this]
+                        n_next = edge_nodes[f_next]
+                        if n_this[0] in n_next:
+                            assert n_this[1] not in n_next
+                            cell_nodes[i,f] = n_this[1]
+                        else:
+                            cell_nodes[i,f] = n_this[0]
+            else:
+                raise Exception("Unknown version: "+ twod_info['version'])
+                
             for i in range(len(cell_nodes)):
                 if cell_nodes[i,2] < 0:  # first ghost cell (which are sorted to end of list)
                     ncells=i # don't count ghost cells
@@ -1045,8 +1103,18 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     cells[i][k] = cell_nodes[i][k]
 
             grd = UnstructuredGrid(edges=edges, points=points,
-                                   cells=cells, max_sides=max_cell_faces)
+                                   cells=cells, max_sides=max_cell_faces,
+                                   extra_edge_fields=extra_edge_fields)
             grd.twod_area_name = twod_area_name
+
+            if len(ccx) > grd.Ncells():
+                N=grd.Ncells()
+                print(f"{len(ccx)-N} apparent ghost cell centers")
+                grd.ghost_cc=np.c_[ ccx[N:], ccy[N:]]
+                ccx=ccx[:N]
+                ccy=ccy[:N]
+            grd.cells['_center'][:,0] = ccx
+            grd.cells['_center'][:,1] = ccy
             
             if elevations:
                 cell_key='Geometry/2D Flow Areas/' + twod_area_name + '/Cells Minimum Elevation'
@@ -1058,6 +1126,48 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 if edge_key in h:
                     grd.add_edge_field('edge_z_min',
                                        h[edge_key])
+            if subedges is not None:
+                if twod_info['version']=='v6':
+                    try:
+                        # index,count for each face into perimeter values
+                        internal_info  = h['Geometry/2D Flow Areas/' + twod_area_name + '/Faces Perimeter Info']
+                        internal_start = internal_info[:,0]
+                        internal_count = internal_info[:,1]
+                        # combined array of points, [N,{x,y}]
+                        internal_values= h['Geometry/2D Flow Areas/' + twod_area_name + '/Faces Perimeter Values']
+                    except KeyError:
+                        # File not written with subedge geometry
+                        internal_info=None
+                        internal_values=None
+                elif twod_info['version']=='v2025':
+                    try:
+                        # combined array of points, [N,{x,y}]
+                        internal_values  = h['Geometry/2D Flow Areas/' + twod_area_name + '/Face Internal Points']
+                        internal_count = internal_values.attrs['Count']
+                        internal_start = internal_values.attrs['Start']
+                    except KeyError:
+                        print("Failed to find subedge info")
+                        # File not written with subedge geometry
+                        internal_info=None
+                        internal_values=None
+                else:
+                    raise Exception("Unknown version: "+ twod_info['version'])
+                        
+                    
+                edge_nodes=np.array(edge_nodes)
+                nedges = len(edge_nodes)
+                edges = -1 * np.ones((nedges, 2), dtype=int)
+                for j in range(grd.Nedges()):
+                    points = grd.nodes['x'][grd.edges['nodes'][j]]
+                    if internal_values is not None:
+                        start=internal_start[j]
+                        count=internal_count[j]
+                        if count>0:
+                            points=np.concatenate( [points[:1,:],
+                                                    internal_values[start:start+count],
+                                                    points[1:,:]],axis=0)
+                    grd.edges[subedges][j]=points
+                    
             return grd
         finally:
             h.close()
@@ -2498,6 +2608,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         return node_map
 
     def delete_orphan_edges(self):
+        self.delete_naked_edges()
+    def delete_naked_edges(self):
         """
         Delete edges which have no cell neighbors
         """
@@ -2506,8 +2618,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         to_delete=np.all(e2c<0,axis=1) & (~self.edges['deleted'])
         for j in np.nonzero(to_delete)[0]:
             self.delete_edge(j)
-    
+
     def delete_orphan_nodes(self):
+        self.delete_naked_nodes()
+    def delete_naked_nodes(self):
         """ Scan for nodes not part of an edge, and delete them.
         """
         used=np.zeros( self.Nnodes(),'b1')
@@ -3027,6 +3141,19 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 
         return M
 
+    def cell_gradient(self,cell_values):
+        """
+        Use Perot interp to get cell-centered gradients from cell-centered values.
+        No attempt to be clever at boundaries.
+        """
+        edge_gradient = np.zeros(self.Nedges(),np.float64)
+        cc=self.cells_center()
+        e2c=self.edge_to_cells()
+        c1=np.where(e2c[:,0]>=0,e2c[:,0],e2c[:,1])
+        c2=np.where(e2c[:,1]>=0,e2c[:,1],e2c[:,0])
+        edge_slopes= (cell_values[c2] - cell_values[c1]) / np.where(c1==c2,1.0, mag(cc[c2]-cc[c1]))
+        return self.interp_perot(edge_slopes)
+    
     def cells_to_edge(self,a,b):
         j1=self.cell_to_edges(a)
         j2=self.cell_to_edges(b)
@@ -3350,7 +3477,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     def cell_coords_subedges(self,c,subedges):
         """
         Coordinate sequence [N,2] pulling sub-edge linestring from
-        self.cells[subedges].
+        self.edges[subedges].
         """
         coords=[]
         for j in self.cell_to_edges(c):
@@ -4906,7 +5033,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             values=masked_values
         elif values is not None:
             if isinstance(values,six.string_types):
-                values=self.edges[values]
+                values=self.nodes[values]
             else:
                 values=np.asanyarray(values)
 
@@ -5023,11 +5150,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             for n in np.arange(self.Nedges())[mask]:
                 if subedges is not None:
                     arc=self.edges[subedges][n]
-                    pnt=0.5*( arc[arc.shape[0]//2,:] + arc[arc.shape[0]//2+1,:])
+                    pnt=0.5*( arc[arc.shape[0]//2,:] + arc[arc.shape[0]//2-1,:])
                 else:
                     pnt=ec[n,:]
-                ax.text(ec[n,0], ec[n,1],
-                        labeler(n,self.edges[n]))
+                ax.text(pnt[0], pnt[1], labeler(n,self.edges[n]))
 
         ax.add_collection(lcoll)
         if bounds is not None:
@@ -5826,6 +5952,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             else:
                 plot_polys = [self.cell_coords_subedges(c,subedges)
                               for c in np.nonzero(mask)[0]]
+                if not isinstance(centroid,np.ndarray) and centroid:
+                    # override with representative point
+                    xy = np.concatenate( [geometry.Polygon(poly).representative_point().coords
+                                          for poly in plot_polys])
                 
             coll = PolyCollection(plot_polys,**kwargs)
             ax.add_collection(coll)
@@ -5988,16 +6118,34 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 edge_hits.extend( self.shortest_path(a,b,return_type='edges') )
 
         if return_nodes:
-            nodes=list( self.edges['nodes'][edge_hits[0]] )
-            # Flip first pair of nodes as needed
-            if nodes[-1] not in self.edges['nodes'][edge_hits[1]]:
-                nodes=nodes[::-1]
+            pieces = {} # ending nodes => node string
+            def pop_oriented(n): # remove both entries for pieces[n], return ns starting with n
+                ns = pieces.pop(n)
+                if ns[0]!=n:
+                    ns=ns[::-1]
+                del pieces[ns[-1]]
+                return ns
+                
+            def add_node_string(ns):
+                ns=list(ns)
+                if ns[0] in pieces:
+                    # flips keep the other end of ns at the other end
+                    ns = pop_oriented(ns[0])[::-1] + ns[1:]
+                if ns[-1] in pieces:
+                    ns = ns[:-1] + pop_oriented(ns[-1])
+                pieces[ns[0]]  = ns
+                pieces[ns[-1]] = ns
+                    
+            for j in edge_hits:
+                add_node_string(self.edges['nodes'][j])
 
-            for j in edge_hits[1:]:
-                for n in self.edges['nodes'][j]:
-                    if nodes[-1]!=n:
-                        nodes.append(n)
-                        break
+            if len(edge_hits)==0:
+                return []
+            else:
+                # probably too strict, but caller probably doesn't expect
+                # disconnected segments.
+                assert len(pieces)==2
+                return pieces.popitem()[1]
             return nodes
         
         return edge_hits
@@ -7757,7 +7905,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         # quad centers may be very close to a (typ. LAND) edge
         # this will turn the resulting cells into triangles.
         gr.collapse_short_edges(l_thresh=l_thresh)
-        # which deletes some edges and nodes, so renumber
+        # and drop centers that didn't get used
+        gr.delete_naked_nodes()
+        # make it nice.
         gr.renumber()
 
         return gr
@@ -8413,7 +8563,7 @@ class UGrid(UnstructuredGrid):
 class UnTRIM08Grid(UnstructuredGrid):
     hdr_08 = '&GRD_2008'
     hdr_old = '&LISTGRD'
-    DEPTH_UNKNOWN = np.nan
+    DEPTH_UNKNOWN = np.nan # used when no incoming depth is given, or if incoming depth is nan.
 
     angle = 0.0
     location = "''" # don't use a slash in here!
@@ -9001,7 +9151,8 @@ class UnTRIM08Grid(UnstructuredGrid):
         changes are required, so don't modify the array unless you don't
         care about edges['marks'].
         """
-        e2c=self.edge_to_cells()
+        # Force recalc, as otherwise we'll write everything out as LAND.
+        e2c=self.edge_to_cells(recalc=True)
         boundary=e2c.min(axis=1)<0
         marks=self.edges['mark']
         sel=(marks==0) & boundary
@@ -9094,6 +9245,9 @@ class UnTRIM08Grid(UnstructuredGrid):
                 for i,a in enumerate(values):
                     if i>0 and i%10==0:
                         fp.write("\n")
+
+                    if np.isnan(a): a=self.DEPTH_UNKNOWN
+                    
                     if np.isfinite(a):
                         fp.write("%14.4f "%a)
                     else:
@@ -9122,12 +9276,15 @@ class UnTRIM08Grid(UnstructuredGrid):
             for e in range(Ninternal+Nflow):
                 try:
                     lengths,depths = self.edges['subgrid'][e]
+                    nis = len(lengths)
                 except TypeError:
                     # GIS editing might leave some edges with no subgrid
-                    lengths=[edge_length[e]]
-                    depths=[0]
+                    nis=0
                     
-                nis = len(lengths)
+                if nis==0: # causes issues to have nothing here...
+                    nis=1
+                    lengths=[edge_lengths[e]]
+                    depths=[self.DEPTH_UNKNOWN]
 
                 fp.write("%10d %9d\n"%(e+1,nis))
                 fmt_wrap_lines(fp,lengths)
