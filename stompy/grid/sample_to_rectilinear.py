@@ -94,7 +94,7 @@ class Structurer(object):
         grid = self.global_grid()
 
         # struct array to hold the metadata
-        self.cell_infos = np.zeros( len(self.radii), dtype=[('masked',np.bool8),
+        self.cell_infos = np.zeros( len(self.radii), dtype=[('masked',np.bool_),
                                                             # count of all contributors - for averaging
                                                             ('count',np.int32),
                                                             # hash proc=>array of local indexes

@@ -1615,7 +1615,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                     print('Yuck - duplicate %s names'%coord)
                     mask=[val not in coord_vals[:i]
                           for i,val in enumerate(coord_vals)]
-                    mask=np.array(mask, np.bool8 )
+                    mask=np.array(mask, np.bool_ )
                     his_ds=his_ds.isel(**{coord:mask})
                     coord_vals=np.array(coord_vals)[mask]
                     

@@ -157,7 +157,7 @@ class Diffuser(object):
         # map cells to forced values
         dirichlet = dict( [ (c,v) for c,v,xy in self.dirichlet_bcs])
 
-        self.is_calc_c = is_calc_c = np.ones(N,np.bool8)
+        self.is_calc_c = is_calc_c = np.ones(N,np.bool_)
         for c,v,xy in self.dirichlet_bcs:
             is_calc_c[c] = False
 

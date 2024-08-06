@@ -73,8 +73,8 @@ class StreamlineQuiver(object):
     TRUNC=2
     def init_tri(self):
         self.tri=tri=exact_delaunay.Triangulation()
-        tri.add_cell_field('outside',np.zeros(0,np.bool8))
-        tri.add_node_field('tip',np.zeros(0,np.bool8))
+        tri.add_cell_field('outside',np.zeros(0,np.bool_))
+        tri.add_node_field('tip',np.zeros(0,np.bool_))
         # NOT_STREAM=0: not part of a streamline
         # STREAM=1: streamline without truncation
         # TRUNC=2: streamline that got truncated.

@@ -940,7 +940,7 @@ class Paving(paving_base,OptimizeGridMixin):
         #  4. Add the edges, doctoring up the clists as we go.
 
         if self.slide_internal_guides:
-            valid = np.ones(len(degen),np.bool8)
+            valid = np.ones(len(degen),np.bool_)
             l = self.density(degen[0])
             for i in range(1,len(degen)):
                 if norm(degen[0] - degen[i]) < l:

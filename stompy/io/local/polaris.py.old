@@ -493,7 +493,7 @@ class PolarisCruise(object):
         if clip_dist is not None:
             valid = self.x <= clip_dist
         else:
-            valid = np.ones( self.x.shape,np.bool8)
+            valid = np.ones( self.x.shape,np.bool_)
 
         # In some cases, a location is missing data entirely -
         # punt, and just remove that water column.
