@@ -1,8 +1,6 @@
 cmocean
-future
 gdal
 matplotlib
-pyqt
 netCDF4
 numpy
 pandas
