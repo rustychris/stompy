@@ -26,5 +26,8 @@ Coming soon
 
 ## Documentation
 
-Coming soon
+See the [Documentation pages](https://stompy.readthedocs.io/en/latest/) for descriptions of the various modules.
 
+## Issues
+
+If you run into any bugs using `stompy`, you are encouraged to submit an [Issue](https://github.com/rustychris/stompy/issues) or PR to this repo.
