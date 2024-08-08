@@ -45,6 +45,3 @@ stompy = ["tide_consts.txt"]
 
 [project.urls]
 Homepage = "https://github.com/rustychris/stompy"
-
-[project.scripts]
-realpython = "stompy.__main__:main"
