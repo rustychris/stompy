@@ -349,7 +349,7 @@ class Boundary(object):
     def remove_repeated(self,ring):
         """Remove repeated nodes from an array.
         """
-        mask = np.zeros( len(ring),np.bool8 )
+        mask = np.zeros( len(ring),np.bool_ )
 
         mask[:-1] = np.all(ring[:-1]==ring[1:],axis=1)
         
