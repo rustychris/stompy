@@ -7,7 +7,7 @@ Various python modules related to modeling and oceanographic data analysis.
  `stompy` requires a Python 3 environment with `gdal` installed. There are many ways to set this up. The recommended method would be creating a `mamba` (or `conda`) environment:
 
  ```
-mamba create -n <env-name> python gdal
+mamba create -n <env-name> python "gdal<3.9" "numpy<2.0"
 mamba activate <env-name>
 ```
 
