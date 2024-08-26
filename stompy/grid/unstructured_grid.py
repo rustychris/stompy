@@ -5016,7 +5016,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         return within_2d(self.nodes['x'],clip)
 
     def plot_nodes(self,ax=None,mask=None,values=None,sizes=20,labeler=None,clip=None,
-                   masked_values=None,label_jitter=0.0,
+                   masked_values=None,label_jitter=0.0,text_kw={},
                    **kwargs):
         """ plot nodes as scatter
         labeler: callable taking (node index, node record), return string
@@ -5054,7 +5054,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 x=x+label_jitter*(np.random.random( (self.Nnodes(),2) )-0.5)
             # weirdness to account for mask being indices vs. bitmask
             for n in np.arange(self.Nnodes())[mask]: # np.nonzero(mask)[0]:
-                ax.text(x[n,0],x[n,1], labeler(n,self.nodes[n]))
+                ax.text(x[n,0],x[n,1], labeler(n,self.nodes[n]),**text_kw)
 
         coll=ax.scatter(self.nodes['x'][mask][:,0],
                         self.nodes['x'][mask][:,1],
@@ -5074,7 +5074,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
     def plot_edges(self,ax=None,mask=None,values=None,clip=None,labeler=None,
                    label_jitter=0.0,lw=0.8,return_mask=False,
-                   subedges=None,**kwargs):
+                   subedges=None,text_kw={},**kwargs):
         """
         plot edges as a LineCollection.
         optionally select a subset of edges with boolean array mask.
@@ -5153,7 +5153,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     pnt=0.5*( arc[arc.shape[0]//2,:] + arc[arc.shape[0]//2-1,:])
                 else:
                     pnt=ec[n,:]
-                ax.text(pnt[0], pnt[1], labeler(n,self.edges[n]))
+                ax.text(pnt[0], pnt[1], labeler(n,self.edges[n]),**text_kw)
 
         ax.add_collection(lcoll)
         if bounds is not None:
@@ -7172,7 +7172,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
     def create_dual(self,center='centroid',create_cells=False,
                     remove_disconnected=False,remove_1d=True,
-                    extend_to_boundary=False):
+                    extend_to_boundary=False,**grid_kwargs):
         """
         Return a new grid which is the dual of this grid. This
         is robust for triangle->'hex' grids, and provides reasonable
@@ -7191,7 +7191,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             # anecdotal, but remove_disconnected calls boundary_linestrings,
             # which in turn needs cells.
             raise Exception("Creating the dual without cells is not compatible with removing disconnected")
-        gd=UnstructuredGrid()
+        gd=UnstructuredGrid(**grid_kwargs)
 
         if center=='centroid':
             cc=self.cells_centroid()
@@ -7267,9 +7267,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         if create_cells:
             # to create cells in the dual -- these map to interior nodes
             # of self.
-            max_degree=10 # could calculate this.
+            max_degree=max(gd.max_sides,10) # could calculate this.
             e2c=self.edge_to_cells()
-            gd.modify_max_sides(max_degree)
+            if max_degree>gd.max_sides:
+                gd.modify_max_sides(max_degree)
 
             gd.add_cell_field('source_node',np.zeros(gd.Ncells(),np.int32)-1,
                               on_exists='overwrite')
