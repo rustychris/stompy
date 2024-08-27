@@ -4,6 +4,7 @@ tidal datums
 """
 
 import numpy as np
+import pdb
 
 # constants
 TM2=12.4200*60 # M2 period in minutes. 12h25.2m 745.2 minutes
@@ -54,9 +55,11 @@ def find_tidal_datum(timeseries,stat,daily=False):
     for k in range(57*Nmonths):
         i1=int(i0+np.round(k * nm2)) # index of kth m2
         i2=int(i0+np.round((k+1) * nm2))
-        if stat is 'min':
+        #if stat is 'min':
+        if stat == 'min':
             jm[k] = i1 + np.argmin( h[i1:i2] )
-        elif stat is 'max':
+        #elif stat is 'max':
+        elif stat == 'max':
             jm[k] = i1 + np.argmax( h[i1:i2] )
         else:
             raise Exception("Stat %s not understodd"%stat)
@@ -73,7 +76,8 @@ def find_tidal_datum(timeseries,stat,daily=False):
             h_agg = h_agg[:-1] # trim to even number of M2 periods
         h_agg_by_day = h_agg.reshape( (-1,2) )
 
-        if stat is 'min':
+        #if stat is 'min':
+        if stat == 'min':
             daily_agg = h_agg_by_day.min(axis=1)
         else:
             daily_agg = h_agg_by_day.max(axis=1)

@@ -30,6 +30,8 @@ from matplotlib.tri import Triangulation
 from matplotlib.collections import PolyCollection, LineCollection
 from matplotlib.path import Path
 
+import pdb
+
 from ..spatial import gen_spatial_index, proj_utils
 from ..utils import (mag, circumcenter, circular_pairs,signed_area, poly_circumcenter,
                      orient_intersection,array_append,within_2d, to_unit, progress,
@@ -5569,6 +5571,84 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             return np.nonzero(sel)[0]
         else:
             return sel
+
+    def get_cell_polys(self):
+        cell_polys = []
+        for i,cell in enumerate(self.cells):
+            cell_poly = geometry.Polygon(self.nodes['x'][self.cell_to_nodes(i)])
+            cell_polys.append(cell_poly)
+        return cell_polys
+
+    def area_intersecting(self,polygon,cell_indices):
+        """
+        polygon: a shapely geometry (region)
+        """
+        cell_polys = self.get_cell_polys()
+        area_int = np.zeros(len(self.cells),np.float64)
+        for i in cell_indices:
+            area_int[i] = polygon.intersection(cell_polys[i]).area
+        return area_int
+
+    def area_in_region(self,polygon,cell_indices):
+        """
+        polygon: a shapely geometry (region)
+        """
+        area_sum = 0.0
+        area_int = self.area_intersecting(polygon,cell_indices)
+        area_sum = sum(area_int[cell_indices])
+        return area_sum
+
+    def calc_column_wet_volume_at_wse(self,i,wse,max_depth=999.999):
+        # get vectors of area and bed_depth
+        area_sub,bed_depth_sub = self.cells['subgrid'][i]
+        depth_sub = np.asarray(wse+bed_depth_sub)
+        depth_sub = np.clip(depth_sub,0.0,max_depth)
+        vol = np.multiply(depth_sub,area_sub)
+        vol_column = np.sum(vol)
+        return vol_column
+        
+    def vol_in_region_at_wse(self,polygon,cell_indices,wse=0.0,
+                             subgrid=False,max_depth=None):
+        """
+        polygon: a shapely geometry (region)
+        """
+        vol_sum = 0.0
+
+        cell_polys = self.get_cell_polys()
+        if max_depth is None:
+            max_depth = 999.0 # hardwired large number
+        area_int = self.area_intersecting(polygon,cell_indices)
+        #pdb.set_trace()
+        if subgrid:
+            vol = np.zeros(len(cell_indices), np.float64)
+            for nc,index in enumerate(cell_indices):
+                if (area_int[index]/cell_polys[index].area) > 1.000001:
+                    print("error in area",nc,index,area_int[index],cell_polys[index].area)
+                if (area_int[index]/cell_polys[index].area) < 0.0:
+                    print("error in area",nc,index,area_int[index],cell_polys[index].area)
+                vol[nc] = self.calc_column_wet_volume_at_wse(index,wse,max_depth)
+                vol[nc] = vol[nc]*area_int[index]/cell_polys[index].area
+        else:
+            depth = self.cells['depth'] + wse
+            depth = np.clip(depth,0.0,max_depth)
+            vol = np.multiply(area_int[cell_indices],depth[cell_indices])
+        vol_sum = np.sum(vol)
+        return vol_sum
+
+    def vol_in_region(self,polygon,cell_indices,max_depth=None):
+        """
+        polygon: a shapely geometry (region)
+        """
+        vol_sum = 0.0
+
+        if max_depth is None:
+            max_depth = 999.0 # hardwired large number
+        area_int = self.area_intersecting(polygon,cell_indices)
+        depth = self.cells['depth'] + 1.25
+        depth = np.clip(depth,0.0,max_depth)
+        vol = np.multiply(area_int[cell_indices],depth[cell_indices])
+        vol_sum = np.sum(vol)
+        return vol_sum
 
     def cell_polygon(self,c):
         return geometry.Polygon(self.nodes['x'][self.cell_to_nodes(c)])
