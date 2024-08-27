@@ -6,6 +6,10 @@ TODO:
 """
 import os,shutil,glob,inspect
 import six
+import pdb
+
+import sys
+
 import logging
 log=logging.getLogger('DFlowModel')
 
@@ -14,6 +18,7 @@ import numpy as np
 import xarray as xr
 import pandas as pd
 from shapely import geometry
+from collections import defaultdict
 
 import stompy.model.delft.io as dio
 from stompy import xr_utils
@@ -62,14 +67,22 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         # might assume that self.mdu exists.
         # I don't think there is a downside to setting up a default
         # mdu right here.
+
+        # non-DWAQ tracers. WIP. Setting tracers to empty here is slightly
+        # problematic when a subclass defines self.tracers at the class
+        # level. Try having this in configure instead.
+        #self.tracers=[] 
+        
         self.load_default_mdu()
 
-        super(DFlowModel,self).__init__(*a,**kw)
+        super().__init__(*a,**kw)
 
     def __repr__(self):
         return '<DFlowModel: %s>'%self.run_dir
 
     def configure(self):
+        self.tracers=[] # non-DWAQ tracers, init moved here from __init__()
+        
         super(DFlowModel,self).configure()
 
         # This is questionable -- new code in create_restart does this
@@ -87,6 +100,8 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         # Updated defaults-r53925.mdu by removing settings that 2021.03
         # complains about.
         fn=os.path.join(os.path.dirname(__file__),"data","defaults-2021.03.mdu")
+        # Made some updates to this, but not yet tested:
+        # fn=os.path.join(os.path.dirname(__file__),"data","defaults-2023.02.mdu")
         self.load_mdu(fn)
         
         # And some extra settings to make it compatible with this script
@@ -118,6 +133,10 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             if self.restart_deep:
                 self.set_run_dir(self.run_dir,mode='create')
                 self.update_config()
+                # 2024-07-08: At least some parts of write_config() would be
+                # better handled after copy_files_for_restart(). There is the
+                # danger that write_config() will write a file and copy_files_for
+                # restart will overwrite. This happened with sources.sub.
                 self.write_config()
                 self.copy_files_for_restart()
                                 
@@ -129,6 +148,9 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                 # less sure about these.
                 self.update_config()
                 self.mdu.write()
+
+        if self.dwaq:
+            self.dwaq.write_waq_forcing()
                 
     def copy_files_for_restart(self):
         """
@@ -161,7 +183,8 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             _,suffix = os.path.splitext(fn)
             do_copy = ( (suffix in ['.tim','.pli','.pliz','.ext','.xyz','.ini','.xyn'])
                         or (fn in flowfm_ext)
-                        or (fn in flowfm_mdu)
+                        # sources.sub is explicitly handled in write_config
+                        or (fn in flowfm_mdu and fn !='sources.sub')
                         or (fn==self.mdu['geometry','NetFile']) )
             # a bit kludgey. restart paths often include DFM_OUTPUT_flowfm, but definitely
             # don't want to copy that.
@@ -173,11 +196,15 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                 shutil.copyfile(fn_path, os.path.join(self.run_dir,fn))
                 
     def write_forcing(self,overwrite=True):
+        # Prep external forcing file
         bc_fn=self.ext_force_file()
         assert bc_fn,"DFM script requires old-style BC file.  Set [external forcing] ExtForceFile"
         if overwrite and os.path.exists(bc_fn):
             os.unlink(bc_fn)
         utils.touch(bc_fn)
+
+        # Could compile names of any generic tracers. For now, require user to
+        # add names to self.tracers.
         super(DFlowModel,self).write_forcing()
 
     def set_grid(self,grid):
@@ -270,33 +297,37 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             # no mdu was found
             return None
         # use cls(), so that custom subclasses can be used
-        model=cls()
-        model.load_mdu(fn)
-        model.mdu_basename=os.path.basename(fn)
+        model=cls(configure=False)
+        model.load_from_mdu(fn)
+        return model
+
+    def load_from_mdu(self,fn):
+        self.load_mdu(fn)
+        self.mdu_basename=os.path.basename(fn)
+
         try:
-            model.grid = ugrid.UnstructuredGrid.read_dfm(model.mdu.filepath( ('geometry','NetFile') ))
+            self.grid = ugrid.UnstructuredGrid.read_dfm(self.mdu.filepath( ('geometry','NetFile') ))
         except FileNotFoundError:
             log.warning("Loading model from %s, no grid could be loaded"%fn)
-            model.grid=None
+            self.grid=None
         d=os.path.dirname(fn) or "."
-        model.set_run_dir(d,mode='existing')
+        self.set_run_dir(d,mode='existing')
         # infer number of processors based on mdu files
         # Not terribly robust if there are other files around..
         sub_mdu=glob.glob( fn.replace('.mdu','_[0-9][0-9][0-9][0-9].mdu') )
         if len(sub_mdu)>0:
-            model.num_procs=len(sub_mdu)
+            self.num_procs=len(sub_mdu)
         else:
             # probably better to test whether it has even been processed
-            model.num_procs=1
+            self.num_procs=1
 
-        ref,start,stop=model.mdu.time_range()
-        model.ref_date=ref
-        model.run_start=start
-        model.run_stop=stop
+        ref,start,stop=self.mdu.time_range()
+        self.ref_date=ref
+        self.run_start=start
+        self.run_stop=stop
 
-        model.load_gazetteer_from_run()
-        model.load_structures_from_run()
-        return model
+        self.load_gazetteer_from_run()
+        self.load_structures_from_run()
 
     def load_structures_from_run(self):
         struct_file=self.mdu.filepath( ('geometry','structurefile'))
@@ -347,7 +378,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         fn=self.mdu.filepath(['output','ObsFile'])
         if fn and os.path.exists(fn):
             stations=pd.read_csv(self.mdu.filepath(['output','ObsFile']),
-                                 sep=' ',names=['x','y','name'],quotechar="'")
+                                 sep=r'\s+',names=['x','y','name'],quotechar="'")
             # crude workaround to silence warning. numpy and pandas will attempt
             # to use the array interface to streamline storage of Points.
             # that angers shapely. probably once that interface disappears this
@@ -372,40 +403,73 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         recs=[]
 
         with open(fn,'rt') as fp:
+            stanza=[]
             while 1:
-                line=fp.readline()
-                if line=="": break
-                line=line.split('#')[0].strip()
-                if not line: continue # blank line or comment
+                raw_line=fp.readline()
+                if raw_line=="": break
+                
+                stanza.append(raw_line.strip())
+
+                line=raw_line.split('#')[0].strip()
+                if not line: # blank line or comment
+                    continue 
                 k,v=key_value(line)
 
+                # each tracer starts with a quantity line
                 if k=='QUANTITY':
                     rec={k:v}
                     recs.append(rec)
+                    stanza=[stanza.pop()] # Shift this line to a new stanza
+                    rec['stanza']=stanza
                 else:
                     rec[k]=v
         return recs
 
-    def load_bcs(self):
+    def load_bcs(self,load_data=True,ext_fn=None,keep_anonymous=True):
         """
-        Woefully inadequate parsing of boundary condition data.
-        For now, returns a list of dictionaries.  
-        TODO: populate self.bcs, optionally.
+        Woefully inadequate parsing of external forcing file.
+        Ostensibly boundary conditions, but external forcing file has all sorts of
+        stuff: initial conditions, WAQ mass balance areas, friction coefficients. etc.
+
+        For now, returns a list of dictionaries. Some items have a 'bc' entry pointing
+        to a BC instance.
+
+        If load_data is False avoid potentially expensive file reading operations.
+        
         Handle other BCs like at least flow.
+        Breaks discharge_temperature_sorsin BCs into a SourceSink and child
+        ScalarBCs. If keep_anonymous=False, then child scalar bcs aside from
+        salinity and temperature are discarded. Otherwise they are kept but
+        will get names like 'tmp_val5'
         """
-        ext_fn=self.mdu.filepath(['external forcing','ExtForceFile'])
+        if ext_fn is None:
+            ext_fn=self.mdu.filepath(['external forcing','ExtForceFile'])
         ext_new_fn=self.mdu.filepath(['external forcing','ExtForceFileNew'])
 
         recs=self.parse_old_bc(ext_fn)
+        # translation of source sink BCs can create additional scalar BCs
+        # these are collected in this list and appended to recs on the way
+        # out
+        extra_recs=[]
+
+        # warn of various known shortcomings, but just once.
+        warn_anonymous=True
+        warn_mass_balance_not_parsed=True
+        warn_tracer_no_parent=True
+
+        unhandled=defaultdict(lambda: 0)
 
         for rec in recs:
             if 'FILENAME' in rec:
                 # The ext file doesn't have a notion of name.
                 # punt via the filename
-                rec['name'],ext=os.path.splitext(rec['FILENAME'])
+                rec['name'],ext=os.path.splitext(os.path.basename(rec['FILENAME']))
             else:
                 rec['name']=rec['QUANTITY'].upper()
                 ext=None
+
+            assert 'data' not in rec,"How is there already a data item?"
+            rec['data']=None # will get updated if there is data and load_data=True
                 
             if ext=='.pli':
                 pli_fn=os.path.join(os.path.dirname(ext_fn),
@@ -414,53 +478,168 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                 rec['pli']=pli
 
                 rec['coordinates']=rec['pli'][0][1]
-                geom=geometry.LineString(rec['coordinates'])
+                if rec['coordinates'].ndim==2 and rec['coordinates'].shape[0]>1:
+                    # Could be a polygon, too. Not worrying about that rn
+                    geom=geometry.LineString(rec['coordinates'])
+                else:
+                    # probably a point source
+                    geom=geometry.Point(np.squeeze(rec['coordinates']))
                 rec['geom']=geom
 
-                # timeseries at one or more points along boundary:
-                tims=[]
-                for node_i,node_xy in enumerate(rec['coordinates']):
-                    tim_fn=pli_fn.replace('.pli','_%04d.tim'%(node_i+1))
-                    if os.path.exists(tim_fn):
-                        t_ref,t_start,t_stop=self.mdu.time_range()
-                        tim_ds=dio.read_dfm_tim(tim_fn,t_ref,columns=['stage'])
-                        tim_ds['x']=(),node_xy[0]
-                        tim_ds['y']=(),node_xy[1]
+                data=None
+                tim_fn=None
+                if load_data:
+                    # timeseries at one or more points along boundary:
+                    # DIFFERENT logic if it's a source/sink.
+                    if rec['QUANTITY'].upper()=="DISCHARGE_SALINITY_TEMPERATURE_SORSIN":
+                        tim_fn=pli_fn.replace('.pli','.tim')
+                        if os.path.exists(tim_fn):
+                            t_ref,t_start,t_stop=self.mdu.time_range()
+                            # These have a column for flow and each tracer
+                            # let read_dfm_time figure out the number of columns.
+                            # trying to assign names to the column is too fraught. The order
+                            # depends on the defined tracers, and the order in which they
+                            # are mentioned in boundary conditions, initial conditions and
+                            # the substance file. Punt the complexity to the caller.
+                            data=dio.read_dfm_tim(tim_fn,t_ref)
+                    else:
+                        tims=[]
+                        for node_i,node_xy in enumerate(rec['coordinates']):
+                            tim_fn=pli_fn.replace('.pli','_%04d.tim'%(node_i+1))
+                            if os.path.exists(tim_fn):
+                                t_ref,t_start,t_stop=self.mdu.time_range()
+                                tim_ds=dio.read_dfm_tim(tim_fn,t_ref,columns=['stage'])
+                                tim_ds['x']=(),node_xy[0]
+                                tim_ds['y']=(),node_xy[1]
 
-                        tims.append(tim_ds)
-                data=xr.concat(tims,dim='node')
+                                tims.append(tim_ds)
+                        if len(tims):
+                            data=xr.concat(tims,dim='node')
                 rec['data']=data
             elif ext=='.xyz':
-                xyz_fn=os.path.join(os.path.dirname(ext_fn),
-                                    rec['FILENAME'])
-                df=pd.read_csv(xyz_fn,sep=r'\s+',names=['x','y','z'])
-                ds=xr.Dataset()
-                ds['x']=('sample',),df['x']
-                ds['y']=('sample',),df['y']
-                ds['z']=('sample',),df['z']
-                ds=ds.set_coords(['x','y'])
-                rec['data']=ds.z
+                if load_data:
+                    xyz_fn=os.path.join(os.path.dirname(ext_fn),
+                                        rec['FILENAME'])
+                    df=pd.read_csv(xyz_fn,sep=r'\s+',names=['x','y','z'])
+                    ds=xr.Dataset()
+                    ds['x']=('sample',),df['x']
+                    ds['y']=('sample',),df['y']
+                    ds['z']=('sample',),df['z']
+                    ds=ds.set_coords(['x','y'])
+                    rec['data']=ds.z
             else:
                 pli=geom=pli_fn=None # avoid pollution
                 
             if rec['QUANTITY'].upper()=='WATERLEVELBND':
-                bc=hm.StageBC(name=rec['name'],geom=rec['geom'])
+                bc=hm.StageBC(name=rec['name'],geom=rec['geom'],water_level=rec['data'])
                 rec['bc']=bc
             elif rec['QUANTITY'].upper()=='DISCHARGEBND':
-                bc=hm.FlowBC(name=rec['name'],geom=geom)
-                rec['bc']=bc
-
-                if 'data' in rec:
+                if rec.get('data',None) is not None:
                     # Single flow value, no sense of multiple time series
                     rec['data']=rec['data'].isel(node=0).rename({'stage':'flow'})
+                    bc=hm.FlowBC(name=rec['name'],geom=geom,flow=rec['data'])
                 else:
-                    print("Reading discharge boundary, did not find data (%s)"%tim_fn)
+                    if load_data:
+                        print("Reading discharge boundary, did not find data (%s)"%tim_fn)
+                    bc=hm.FlowBC(name=rec['name'],geom=geom)
+
+                rec['bc']=bc
             elif rec['QUANTITY'].upper()=='FRICTIONCOEFFICIENT':
                 rec['bc']=hm.RoughnessBC(name=rec['name'],data_array=rec['data'])
-            else:
-                print("Not implemented: reading BC quantity=%s"%rec['QUANTITY'])
-        return recs
+            elif rec['QUANTITY'].upper()  in ['SALINITYBND','TEMPERATUREBND']:
+                if warn_tracer_no_parent:
+                    self.log.warning("Parsing external forcing: tracers not yet connected to parents")
+                    warn_tracer_no_parent=False
+                tracer=rec['QUANTITY'].replace('bnd','').lower()
+                rec['bc']=hm.ScalarBC(name=rec['name'],geom=rec['geom'],
+                                      scalar=tracer,data=rec['data'])
+                
+            elif rec['QUANTITY'].upper()=='DISCHARGE_SALINITY_TEMPERATURE_SORSIN':
+                # since we didn't specify names for the tim file, it's val1, val2, val3,
+                # etc.
+                if load_data:
+                    flow=rec['data'].val1.rename('flow')
+                else:
+                    flow=None
+                    
+                rec['bc']=hm.SourceSinkBC(name=rec['name'], geom=rec['geom'], flow=flow)
 
+                if load_data:
+                    var_names=list(rec['data'].data_vars)
+                else:
+                    var_names=[]
+                    
+                def add_scalar_bc(tracer,da):
+                    bc=hm.ScalarBC(parent=rec['bc'],
+                                   scalar=tracer,value=da)
+                    extra_recs.append(dict(bc=bc,name=rec['name'],geom=rec['geom'],
+                                           child=True))
+                tracer_idx=2
+                
+                if float(self.mdu['physics','Salinity'])!=0.0:
+                    vname='val%d'%tracer_idx
+                    if load_data:
+                        salt=rec['data'][vname].rename('salinity')
+                    else:
+                        salt=None
+                    add_scalar_bc('salinity',salt)
+                    tracer_idx+=1
+                if float(self.mdu['physics','Temperature'])!=0.0:
+                    vname='val%d'%tracer_idx
+                    if load_data:
+                        temp=rec['data'][vname].rename('temperature')
+                    else:
+                        temp=None
+                    add_scalar_bc('temperature',temp)
+                    tracer_idx+=1
+                    
+                # The tricky part here is that the number and names of tracers attached to the
+                # BC depends on other parts of the model configuration. Those might
+                # have been changed, or haven't been set yet.
+                if keep_anonymous:
+                    while True:
+                        vname='val%d'%tracer_idx
+                        if vname not in var_names: break
+                        if warn_anonymous:
+                            self.log.warning("Tracers for source/sink BC beyond temp and salinity will be anonymous")
+                            warn_anonymous=False
+                        add_scalar_bc('tmp_'+vname,rec['data'][vname])
+                        tracer_idx+=1
+            elif rec['QUANTITY'].upper().startswith('WAQMASSBALANCEAREA'):
+                if warn_mass_balance_not_parsed:
+                    self.log.warning("Parsing external forcing. WAQ mass balance areas are not parsed")
+                    warn_mass_balance_not_parsed=False
+            else:
+                unhandled[rec['QUANTITY']]+=1
+                #print("Not implemented: reading BC quantity=%s"%rec['QUANTITY'])
+        for k in unhandled:
+            print("Encountered %d BCs with quantity=%s that weren't fully parsed"%
+                  (unhandled[k],k))
+        return recs + extra_recs
+
+    # def tracer_list(self):
+    #     """
+    #     For source/sink BCs DFM requires a single time series file with the full suite
+    #     of tracer concentrations. Note that this relies on the current state of the model.
+    #     May abandon this because it is likely to be fragile. 
+    #     """
+    #     columns=['flow']
+    #     if float(self.mdu['physics','Salinity'])!=0.0:
+    #         columns.append('salinity')
+    #     if float(self.mdu['physics','Temperature'])!=0.0:
+    #         columns.append('temperature')
+    # 
+    #     # 
+    #         
+    #     data=dio.read_dfm_tim(tim_fn,t_ref,columns=self.tracer_list())
+
+    @property
+    def n_layers(self):
+        """
+        Returns 0 for 2D, 1 for 3D with a single layer.
+        """
+        return int(self.mdu['geometry','Kmx'])
+    
     @classmethod
     def to_mdu_fn(cls,path):
         """
@@ -488,6 +667,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         pass
 
     def partition(self,partition_grid=None):
+        print(f"Top of partition: num_procs={self.num_procs}")
         if self.num_procs<=1:
             return
         # precompiled 1.5.2 linux binaries are able to partition the mdu okay,
@@ -505,7 +685,11 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             # here we strip to the basename
             cmd=["--partition:ndomains=%d:icgsolver=6"%self.num_procs,
                  os.path.basename(self.mdu.filename)]
-            self.run_dflowfm(cmd,mpi=False)
+            print(f"About to call {cmd}")
+            output=self.run_dflowfm(cmd,mpi=False)
+            print("-"*80)
+            print(output)
+            print("-"*80)
         else:
             # Copy the partitioned network files:
             if self.restart_deep:
@@ -520,6 +704,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             # not a cross platform solution!
             gen_parallel=os.path.join(self.dfm_bin_dir,"generate_parallel_mdu.sh")
             cmd=[gen_parallel,os.path.basename(self.mdu.filename),"%d"%self.num_procs,'6']
+            print(f"About to call {cmd}")
             return utils.call_with_path(cmd,self.run_dir)
 
     def chain_restarts(self):
@@ -635,13 +820,11 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         else:
             result=False
         return result
-    
-    def is_completed(self):
+
+    def dia_fn(self):
         """
-        return true if the model has been run.
-        this can be tricky to define -- here completed is based on
-        a report in a diagnostic that the run finished.
-        this doesn't mean that all output files are present.
+        Return path to diagnostic filename (rank 0 if mpi run).
+        returns None if file cannot be found.
         """
         root_fn=self.mdu.filename[:-4] # drop .mdu suffix
         # Look in multiple locations for diagnostic file.
@@ -650,22 +833,38 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         # output folder
         dia_fns=[]
         dia_fn_base=os.path.basename(root_fn)
-        if self.num_procs>1:
-            dia_fn_base+='_0000.dia'
-        else:
-            dia_fn_base+=".dia"
-            
-        dia_fns.append(os.path.join(self.run_dir,dia_fn_base))
-        dia_fns.append(os.path.join(self.run_dir,
-                                    "DFM_OUTPUT_%s"%self.mdu.name,
-                                    dia_fn_base))
 
-        for dia_fn in dia_fns:
-            assert dia_fn!=self.mdu.filename,"Probably case issues with %s"%dia_fn
+        # use self.num_procs as a hint, but it's not always reliable so check
+        # for both MPI and serial output.
+        dia_fn_bases=[dia_fn_base+'_0000.dia',
+                      dia_fn_base+'.dia']
 
-            if os.path.exists(dia_fn):
-                break
-        else:
+        if self.num_procs<=1:
+            # check for serial first.
+            dia_fn_bases = dia_fn_bases[::-1]
+
+        dia_paths=[self.run_dir,
+                   os.path.join(self.run_dir, "DFM_OUTPUT_%s"%self.mdu.name)]
+
+        for dia_fn_base in dia_fn_bases:
+            for dia_path in dia_paths:
+                dia_fn=os.path.join(dia_path,dia_fn_base)
+                assert dia_fn!=self.mdu.filename,"Probably case issues with %s"%dia_fn
+
+                if os.path.exists(dia_fn):
+                    return dia_fn
+        return None
+        
+    def is_completed(self):
+        """
+        return true if the model has been run.
+        this can be tricky to define -- here completed is based on
+        a report in a diagnostic that the run finished.
+        this doesn't mean that all output files are present.
+        """
+
+        dia_fn=self.dia_fn()
+        if dia_fn is None:
             return False
         
         # Read the last 1000 bytes
@@ -677,6 +876,40 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             tail=fp.read().decode(errors='ignore')
         return "Computation finished" in tail
 
+    def timing_stats(self):
+        dia_fn=self.dia_fn()
+        if dia_fn is None:
+            return None
+
+        # Read the last 1000 bytes                                                                                                             
+        with open(dia_fn,'rb') as fp:                                                                                                          
+            fp.seek(0,os.SEEK_END)                                                                                                             
+            tail_size=min(fp.tell(),10000)                                                                                                     
+            fp.seek(-tail_size,os.SEEK_CUR)                                                                                                    
+            # This may not be py2 compatible!                                                                                                  
+            tail=fp.read().decode(errors='ignore')
+
+            def parse_time(days,hours):
+                days=np.timedelta64(int(days.strip('d')),'D')
+                seconds=sum( [mult*int(val) for mult,val in zip([3600,60,1],hours.split(':'))])
+                return days+np.timedelta64(seconds,'s')
+
+            result={}
+            for line in tail.split("\n"):
+                parts=line.split()
+                if len(parts)!=14: continue
+
+                result['sim_time_completed']=parse_time(parts[3],parts[4])
+                result['sim_time_remaining']=parse_time(parts[5],parts[6])
+                result['wall_time_completed']=parse_time(parts[7],parts[8])
+                result['wall_time_remaining']=parse_time(parts[9],parts[10])
+                result['percent_complete']=float(parts[12].strip('%'))
+                result['mean_dt']=float(parts[13])
+
+                # Looking for progress lines like
+                # ** INFO   :          12d  0:00:00          0d  0:00:00          1d 15:28:44          0d  0:00:00          0   100.0%     6.12245
+        return result
+    
     def update_config(self):
         """
         Update fields in the mdu object with data from self.
@@ -714,7 +947,9 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             self.dwaq.write_waq()
 
         if self.restart_from is not None:
-            self.set_restart_file()
+            # This really breaks things if we've messed with modified ICs.
+            self.log.warning("SKIPPING self.set_restart_file()")
+            #self.set_restart_file()
         
     def write_config(self):
         # Assumes update_config() already called
@@ -735,6 +970,11 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
     def write_monitor_points(self):
         fn=self.mdu.filepath( ('output','ObsFile') )
         if fn is None: return
+        if not fn.startswith(self.run_dir):
+            # Assume we should just use pre-existing file.
+            if not os.path.exists(fn):
+                self.log.warning("Monitor points file '%s' is outside run directory but does not exist"%fn)
+            return
         with open(fn,'at') as fp:
             for i,mon_feat in enumerate(self.mon_points):
                 try:
@@ -746,6 +986,12 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
     def write_monitor_sections(self,append=True):
         fn=self.mdu.filepath( ('output','CrsFile') )
         if fn is None: return
+        if not fn.startswith(self.run_dir):
+            # Assume we should just use pre-existing file.
+            if not os.path.exists(fn):
+                self.log.warning("Monitor sections file '%s' is outside run directory but does not exist"%fn)
+            return
+        
         if append:
             mode='at'
         else:
@@ -806,8 +1052,10 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                         geom=geometry.LineString(geom)
                 else:
                     geom=self.get_geometry(name=s['name'])
-                    
-                assert geom.type=='LineString'
+
+                if geom.geom_type=='MultiLineString' and len(geom.geoms)==1:
+                    geom=geom.geoms[0] # geojson I think does this.
+                assert geom.geom_type=='LineString'
                 pli_data=[ (s['name'], np.array(geom.coords)) ]
                 dio.write_pli(pli_fn,pli_data)
                 
@@ -893,13 +1141,13 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             if trim_time:
                 # Check for no original data within the time span
                 if times[-1] < start:
-                    times = [start, stop]
-                    values=[values[-1],values[-1]]
                     log.warning(f'{file_path}: data ends ({times.max()}) before simulation period: {start} - {stop}.')
+                    times = np.array([start, stop])
+                    values=np.r_[values[-1],values[-1]]
                 elif times[0] > stop:
-                    times = [start, stop]
-                    values=[values[0],values[0]]
                     log.warning(f'{file_path}: data starts ({times.min()}) after simulation period: {start} - {stop}.')
+                    times = np.array([start, stop])
+                    values=np.r_[values[0],values[0]]
                 else:
                     # common case -- trim and pad out 1 sample
                     i_start,i_stop=np.searchsorted(da.time,[start,stop])
@@ -933,23 +1181,17 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         else:
             log.info("dredging disabled")
 
-    def write_source_bc(self,bc):
-        # DFM source/sinks have salinity and temperature attached
-        # the same data file.
-        # the pli file can have a single entry, and include a z coordinate,
-        # based on lsb setup
-
-        # Source Sink BCs in DFM have to include all of the scalars in one go.
-        # Build a list of scalar names and default BCs, then scan for any specified
-        # scalar BCs to use instead of defaults
+    def default_source_sink_forcing(self,single_ended):
+        """
+        Source Sink BCs in DFM have to include all of the scalars in one go.
+        Build a list of scalar names and default BCs. This will probably
+        have to get smarter w.r.t to tracer order, at least allowing
+        the order of waq tracers to be overridden. It should also
+        get some caching, but that's for another day.
+        """
         scalar_names=[] # forced to lower case
         scalar_das=[]
 
-        # In the case of a single-ended source/sink, these
-        # should pull default value from the model config, instead of
-        # assuming 0.0
-        single_ended=bc.geom.geom_type=='Point'
-        
         if int(self.mdu['physics','Salinity']):
             scalar_names.append('salinity')
             if single_ended:
@@ -968,14 +1210,41 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             else:
                 default=0.0
             scalar_das.append(xr.DataArray(default,name='temp'))
+        for tracer in self.tracers:
+            # TODO: track more information in a small class or dict
+            scalar_names.append(tracer)
+            scalar_das.append(xr.DataArray(0.0,name=tracer))
         if self.dwaq:
-            for sub in self.dwaq.substances:
-                scalar_names.append(sub.lower())
+            for sub_name in self.dwaq.substances:
+                sub=self.dwaq.substances[sub_name]
+                if not sub.active: continue
+                scalar_names.append(sub_name.lower())
                 if single_ended:
-                    default=self.dwaq.substances[sub].initial.default
+                    default=sub.initial.default
                 else:
                     default=0.0
-                scalar_das.append(xr.DataArray(default,name=sub))
+                scalar_das.append(xr.DataArray(default,name=sub_name))
+
+        return scalar_names, scalar_das
+            
+    def write_source_bc(self,bc,**write_opts):
+        """
+        Write a source/sink BC.
+        Start with default then scan for any specified
+        scalar BCs to use instead of defaults.
+        write_opts: e.g. write_data,write_geom,write_ext
+        """
+        # DFM source/sinks have salinity and temperature attached
+        # the same data file.
+        # the pli file can have a single entry, and include a z coordinate,
+        # based on lsb setup
+        
+        # In the case of a single-ended source/sink, these
+        # should pull default value from the model config, instead of
+        # assuming 0.0
+        single_ended=bc.geom.geom_type=='Point'
+        
+        scalar_names,scalar_das = self.default_source_sink_forcing(single_ended=single_ended)
 
         salt_bc=None
         temp_bc=None
@@ -1002,92 +1271,99 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         # from an isel() )
         da_combined=xr.concat(das,dim='component',coords='minimal')
 
-        self.write_gen_bc(bc,quantity='source',da=da_combined)
+        self.write_gen_bc(bc,quantity='source',da=da_combined,**write_opts)
 
-        if (bc.dredge_depth is not None) and (self.restart_from is None):
-            # Additionally modify the grid to make sure there is a place for inflow to
-            # come in.
-            log.info("Dredging grid for source/sink BC %s"%bc.name)
-            # These are now class methods using a generic implementation in HydroModel
-            # may need some tlc
-            self.dredge_discharge(np.array(bc.geom.coords),bc.dredge_depth)
-        else:
-            log.info("dredging disabled")
+        if write_opts.get('write_geom',True):
+            if (bc.dredge_depth is not None) and (self.restart_from is None):
+                # Additionally modify the grid to make sure there is a place for inflow to
+                # come in.
+                log.info("Dredging grid for source/sink BC %s"%bc.name)
+                # These are now class methods using a generic implementation in HydroModel
+                # may need some tlc
+                self.dredge_discharge(np.array(bc.geom.coords),bc.dredge_depth)
+            else:
+                log.info("dredging disabled")
 
-    def write_gen_bc(self,bc,quantity,da=None):
+    def write_gen_bc(self,bc,quantity,da=None,write_ext=True,write_data=True,write_geom=True):
         """
         handle the actual work of writing flow and stage BCs.
         quantity: 'stage','flow','source'
         da: override value for bc.data()
+        write_ext, write_data: optionally disable updating the external forcing
+          file and/or the separate data file.
         """
         # 2019-09-09 RH: the automatic suffix is a bit annoying. it is necessary
         # when adding scalars, but for any one BC, only one of stage, flow or source
         # would be present.  Try dropping the suffix here.
         bc_id=bc.name # +"_" + quantity
 
-        assert isinstance(bc.geom_type,list),"Didn't fully refactor, looks like"
-        if (bc.geom is None) and (None not in bc.geom_type):
-            raise Exception("BC %s, name=%s has no geometry. Maybe missing from shapefiles?"%(bc,bc.name))
-        assert bc.geom.type in bc.geom_type
+        if write_geom:
+            assert isinstance(bc.geom_type,list),"Didn't fully refactor, looks like"
+            if (bc.geom is None) and (None not in bc.geom_type):
+                raise Exception("BC %s, name=%s has no geometry. Maybe missing from shapefiles?"%(bc,bc.name))
+            assert bc.geom.type in bc.geom_type
 
-        coords=np.array(bc.geom.coords)
-        ndim=coords.shape[1] # 2D or 3D geometry
+            coords=np.array(bc.geom.coords)
+            ndim=coords.shape[1] # 2D or 3D geometry
 
-        # Special handling when it's a source/sink, with z/z_src specified
-        if quantity=='source':
-            if ndim==2 and bc.z is not None:
-                # construct z
-                missing=-9999.
-                z_coords=missing*np.ones(coords.shape[0],np.float64)
-                for z_val,idx in [ (bc.z,-1),
-                                   (bc.z_src,0) ]:
-                    if z_val is None: continue
-                    if z_val=='bed':
-                        z_val=-10000
-                    elif z_val=='surface':
-                        z_val=10000
-                    z_coords[idx]=z_val
-                if z_coords[0]==missing:
-                    z_coords[0]=z_coords[-1]
-                # middle coordinates, if any, don't matter
-                coords=np.c_[ coords, z_coords ]
-                ndim=3
-                
-        pli_data=[ (bc_id, coords) ]
-        
-        if ndim==2:
-            pli_fn=bc_id+'.pli'
-        else:
-            pli_fn=bc_id+'.pliz'
-            
-        dio.write_pli(os.path.join(self.run_dir,pli_fn),pli_data)
+            # Special handling when it's a source/sink, with z/z_src specified
+            if quantity=='source':
+                if ndim==2 and bc.z is not None:
+                    # construct z
+                    missing=-9999.
+                    z_coords=missing*np.ones(coords.shape[0],np.float64)
+                    for z_val,idx in [ (bc.z,-1),
+                                       (bc.z_src,0) ]:
+                        if z_val is None: continue
+                        if z_val=='bed':
+                            z_val=-10000
+                        elif z_val=='surface':
+                            z_val=10000
+                        z_coords[idx]=z_val
+                    if z_coords[0]==missing:
+                        z_coords[0]=z_coords[-1]
+                    # middle coordinates, if any, don't matter
+                    coords=np.c_[ coords, z_coords ]
+                    ndim=3
 
-        with open(self.ext_force_file(),'at') as fp:
-            lines=[]
-            method=3 # default
-            if quantity=='stage':
-                lines.append("QUANTITY=waterlevelbnd")
-                tim_path=os.path.join(self.run_dir,bc_id+"_0001.tim")
-            elif quantity=='flow':
-                lines.append("QUANTITY=dischargebnd")
-                tim_path=os.path.join(self.run_dir,bc_id+"_0001.tim")
-            elif quantity=='source':
-                lines.append("QUANTITY=discharge_salinity_temperature_sorsin")
-                method=1 # not sure how this is different
-                tim_path=os.path.join(self.run_dir,bc_id+".tim")
+            pli_data=[ (bc_id, coords) ]
+
+            if ndim==2:
+                pli_fn=bc_id+'.pli'
             else:
-                assert False
-            lines+=["FILENAME=%s"%pli_fn,
-                    "FILETYPE=9",
-                    "METHOD=%d"%method,
-                    "OPERAND=O",
-                    ""]
-            fp.write("\n".join(lines))
+                pli_fn=bc_id+'.pliz'
 
-        if da is None:
-            da=bc.data()
-        # assert len(da.dims)<=1,"Only ready for dimensions of time or none"
-        self.write_tim(da,tim_path)
+            dio.write_pli(os.path.join(self.run_dir,pli_fn),pli_data)
+
+        lines=[]
+        method=3 # default
+        if quantity=='stage':
+            lines.append("QUANTITY=waterlevelbnd")
+            tim_path=os.path.join(self.run_dir,bc_id+"_0001.tim")
+        elif quantity=='flow':
+            lines.append("QUANTITY=dischargebnd")
+            tim_path=os.path.join(self.run_dir,bc_id+"_0001.tim")
+        elif quantity=='source':
+            lines.append("QUANTITY=discharge_salinity_temperature_sorsin")
+            method=1 # not sure how this is different
+            tim_path=os.path.join(self.run_dir,bc_id+".tim")
+        else:
+            assert False
+            
+        if write_ext:
+            with open(self.ext_force_file(),'at') as fp:
+                lines+=["FILENAME=%s"%pli_fn,
+                        "FILETYPE=9",
+                        "METHOD=%d"%method,
+                        "OPERAND=O",
+                        ""]
+                fp.write("\n".join(lines))
+
+        if write_data:
+            if da is None:
+                da=bc.data()
+            # assert len(da.dims)<=1,"Only ready for dimensions of time or none"
+            self.write_tim(da,tim_path)
 
     def write_wind_bc(self,bc):
         assert bc.geom is None,"Spatially limited wind not yet supported"
@@ -1134,21 +1410,23 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             return
         
         assert isinstance(parent_bc, (hm.StageBC,hm.FlowBC)),"Haven't implemented point-source scalar yet"
-        assert parent_bc.geom.type=='LineString'
+        assert parent_bc.geom.geom_type=='LineString'
         
         pli_data=[ (bc_id, np.array(parent_bc.geom.coords)) ]
         pli_fn=bc_id+'.pli'
         dio.write_pli(os.path.join(self.run_dir,pli_fn),pli_data)
 
-        if isinstance(bc, DelwaqScalarBC):
+        is_dwaq=bool(self.dwaq) and (bc.scalar in self.dwaq.substances)
+        
+        if is_dwaq: # DelwaqScalarBC is defunct
             quant=f'tracerbnd{bc.scalar}'
         elif bc.scalar=='salinity':
             quant='salinitybnd'
         elif bc.scalar=='temperature':
             quant='temperaturebnd'
         else:
-            self.log.info("scalar '%s' will be passed to DFM verbatim"%bc.scalar)
-            quant=bc.scalar
+            self.log.info("scalar '%s' will be passed to DFM as generic tracer"%bc.scalar)
+            quant=f'tracerbnd{bc.scalar}'
 
         with open(self.ext_force_file(),'at') as fp:
             lines=["QUANTITY=%s"%quant,
@@ -1211,7 +1489,8 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         return fns
 
     _mu=None
-    def map_dataset(self,force_multi=False,grid=None,chain=False,xr_kwargs={}):
+    def map_dataset(self,force_multi=False,grid=None,chain=False,xr_kwargs={},
+                    clone_from=None):
         """
         Return map dataset. For MPI runs, this will emulate a single, merged
         global dataset via multi_ugrid. For serial runs it directly opens
@@ -1223,16 +1502,27 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         xr_kwargs: options to pass to xarray, whether multi or single.
 
         chain: if True, attempt to chain in time. Experimental!
+
+        clone_from: MultiUgrid instance from a previous call to map_dataset,
+          presumably for a different restart but otherwise matching run.
+          Will pull grid and local<-->global mappings from the provided MultiUgrid
+          which should speedup the loading process. Currently only handled when
+          chain is False.
         """
         if not chain:
             if self.num_procs<=1 and not force_multi:
                 # xarray caches this.
-                return xr.open_dataset(self.map_outputs()[0],**xr_kwargs)
+                ds=xr.open_dataset(self.map_outputs()[0],**xr_kwargs)
+                # put the grid in as an attribute so that the non-multiugrid
+                # and multiugrid return values can be used the same way.
+                ds.attrs['grid'] = ugrid.UnstructuredGrid.read_ugrid(ds)
+                return ds
             else:
                 from ...grid import multi_ugrid
                 # This is slow so cache the result
                 if self._mu is None:
-                    self._mu=multi_ugrid.MultiUgrid(self.map_outputs(),grid=grid,xr_kwargs=xr_kwargs)
+                    self._mu=multi_ugrid.MultiUgrid(self.map_outputs(),grid=grid,xr_kwargs=xr_kwargs,
+                                                    clone_from=clone_from)
                 return self._mu
         else:
             # as with his_dataset(), caching is not aware of options like chain.
@@ -1325,16 +1615,29 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                     print('Yuck - duplicate %s names'%coord)
                     mask=[val not in coord_vals[:i]
                           for i,val in enumerate(coord_vals)]
-                    mask=np.array(mask, np.bool8 )
+                    mask=np.array(mask, np.bool_ )
                     his_ds=his_ds.isel(**{coord:mask})
                     coord_vals=np.array(coord_vals)[mask]
                     
                 his_ds[coord]=(coord,),coord_vals
 
         if decode_geometry:
-            xr_utils.decode_geometry(his_ds,'cross_section_geom',replace=True)
+            if 'cross_section_geom' in his_ds:
+                xr_utils.decode_geometry(his_ds,'cross_section_geom',replace=True)
+            elif 'cross_section_x_coordinate' in his_ds:
+                from shapely import geometry
+                geoms=np.zeros(his_ds.dims['cross_section'],dtype=object)
+                # old-school.
+                for sec_idx in range(his_ds.dims['cross_section']):
+                    x=his_ds['cross_section_x_coordinate'].isel(cross_section=sec_idx)
+                    y=his_ds['cross_section_y_coordinate'].isel(cross_section=sec_idx)
+                    valid=x<1e35 # fill values are 9.9e36
+                    x=x[valid]
+                    y=y[valid]
+                    geoms[sec_idx]=geometry.LineString(np.c_[x,y])
+                his_ds['cross_section_geom']=('cross_section',),geoms
         return his_ds
-    
+
     _his_ds=None
     _his_ds_chain=None
     def his_dataset(self,decode_geometry=True,set_coordinates=True,refresh=False,
@@ -1376,8 +1679,6 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                 his_fns.append(fns[0])
             his_dss=[self.clean_his_dataset(fn,**clean_kwargs)
                      for fn in his_fns]
-            #if prechain:
-            #    his_dss=prechain(his_dss)
             his_dasks=[]
             for ds in his_dss[::-1]:
                 if len(his_dasks)>0:
@@ -1453,6 +1754,15 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         self.mdu=model.mdu.copy()
         self.mdu_basename=os.path.basename( model.mdu_basename.replace('.mdu',mdu_suffix+".mdu") )
         self.mdu.set_filename( os.path.join(self.run_dir, self.mdu_basename) )
+
+        # recent DFM errors if Tlfsmo is set for a restart.
+        self.mdu['numerics','Tlfsmo'] = 0.0
+        # And at least in tag 140737, restarts from a restart file fail if renumbering is enabled.
+        # 2023-12-08: restart is failing for a case with initial run had RenumberFlowNodes=1, and
+        #   restart has RenumberFlowNodes=1.
+        # Maybe we should just leave it??
+        # self.mdu['geometry','RenumberFlowNodes']=0
+
         self.restart=True
         self.restart_from=model # used to be restart_model, but I don't think makes sense
         self.ref_date=model.ref_date
@@ -1473,18 +1783,27 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         """ 
         Update mdu['restart','RestartFile'] based on run_start and self.restart_from
         Should be called when dealing with a restart and self.run_start is modified.
+
+        This is currently fragile and error prone. The entry in the mdu depends on the
+        restart file *and* run_dir. And the common usage is to just specify
+        a DFlowModel instance in self.restart_from, somewhere along the way set the
+        start time of this run to an output restart file time of the restart_from,
+        and this method will take care of getting the path correct.
+
+        The problem is when one or more of these inputs change.
         """
+        self.log.info("set_restart_file: Setting RestartFile based on self.restart_from")
         rst_base=os.path.join(self.restart_from.mdu.output_dir(),
                               (self.restart_from.mdu.name
                                +'_'+utils.to_datetime(self.run_start).strftime('%Y%m%d_%H%M%S')
                                +'_rst.nc'))
         # That gets rst_base relative to the cwd, but we need it relative
         # to the new runs run_dir
+        
         # raise Exception('HERE - this is effectively including an extra basepath I think??')
-        #import pdb
-        #pdb.set_trace()
         self.mdu['restart','RestartFile']=os.path.relpath(rst_base,start=self.run_dir)
-        # Currently rst_base is relative to pwd
+        # Fragile! if run_dir is later updated, this path will be wrong
+        
     def restart_inputs(self):
         """
         Return a list of paths to restart data that will be used as the 
@@ -1502,7 +1821,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             rsts=[ (rst_base[:-23] + '_%04d'%p + rst_base[-23:])
                    for p in range(self.num_procs)]
         else:
-            self.log.warning("Handling restart data with serial run is note tested")
+            self.log.warning("Handling restart data with serial run is not tested")
             rsts=[rst_base]
         return rsts
     
@@ -1517,9 +1836,11 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
 
         it should take **kw, to flexibly allow more information to be passed in
          in the future.
+
+        This updates self.mdu. Should be called after self.write(), since
+        update_config() alters RestartFile. It will make
+        the new model run directory as necessary.
         """
-        #import pdb
-        #pdb.set_trace()
         for proc,rst in enumerate(self.restart_inputs()):
             old_dir=os.path.dirname(rst)  # '../run_dye_test-p06a/DFM_OUTPUT_flowfm'
             # new_rst=os.path.join(self.mdu.output_dir(),os.path.basename(rst)) # 'run_dye_test-p06b/DFM_OUTPUT_flowfm/flowfm_0000_20161210_060000_rst.nc'
@@ -1531,8 +1852,11 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             assert rst!=new_rst
             # Note: rst and new_rst both relative to self.run_dir, but cwd may be something
             # else
-            rst_abs=os.path.join(self.run_dir,rst) 
-            ds=xr.open_dataset(rst_abs)
+            rst_abs=os.path.join(self.run_dir,rst)
+            try:
+                ds=xr.open_dataset(rst_abs)
+            except:
+                pdb.set_trace()
             new_ds=modify_ic(ds,proc=proc,model=self)
             if new_ds is None:
                 new_ds=ds # assume modified in place
@@ -1546,6 +1870,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         old_rst_base=self.mdu['restart','RestartFile']
         new_rst_base=os.path.basename(old_rst_base) # relative to run_dir
         self.mdu['restart','RestartFile']=new_rst_base
+        self.log.info(f"Updating RestartFile to {new_rst_base}")
         
     def extract_section(self,name=None,chain_count=1,refresh=False,
                         xy=None,ll=None,data_vars=None):
@@ -1644,11 +1969,12 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
 
         return self.translate_vars(ds,requested_vars=data_vars)
 
-class DelwaqScalarBC(hm.ScalarBC):
-    # for now just checking if isinstance in write_scalar_bc(), but may want to handle differently than hm.ScalarBC
-    pass
+    
+# Used to be distinct from ScalarBC, but that creates problems. In particular
+# we may not know whether a tracer is specifically for DWAQ or just a DFM tracer
+# at the time of instantiation.
+DelwaqScalarBC=hm.ScalarBC
 
-import sys
 if sys.platform=='win32':
     cls=DFlowModel
     cls.dfm_bin_exe="dflowfm-cli.exe"
@@ -1906,3 +2232,38 @@ def rst_mappers(rst,g,signed=True):
             sgn=1
         M[j,link]=sgn
     return M,Melem
+
+
+def source_sink_add_tracers(model,bc,new_values=[],orig_num_values=3):
+    """
+    model: DFlowModel instance, or the run_dir
+    bc: dictionary for the source/sink entry as returned from load_bcs.
+    
+    Add additional columns to a source/sink data file. Makes a backup of the
+    original tim file. If a backup is already present, it will not be
+    overwritten, and will be read to get the original data. 
+    
+    So if the new run will include two dwaq tracers, pass new_values=[0,1]
+    (which would tag sources with 0 for the first and 1.0 for the second)
+    orig_num_values: 3 for run with salinity and temperature. I think
+    less than that if temperature and/or salinity are disabled. 
+    """
+    if isinstance(model,str):
+        run_dir=model
+    else:
+        run_dir=model.run_dir
+        
+    pli_fn=os.path.join(model.run_dir,bc['FILENAME'])
+    assert pli_fn.lower().endswith('.pli')
+    fn=pli_fn[:-4] + ".tim"
+    assert os.path.exists(fn)
+    fn_orig=fn+".orig"
+    if not os.path.exists(fn_orig):
+        shutil.copyfile(fn,fn_orig)
+    data_orig=np.loadtxt(fn_orig)
+    # drop previous forcing for new tracers. leaving time column and the original Q,S,T values
+    columns=[data_orig[:,:1+orig_num_values]] 
+    for new_val in new_values:
+        columns.append( np.full(data_orig.shape[0],new_val))
+    data=np.column_stack(columns)
+    np.savetxt(fn,data,fmt="%.6g")

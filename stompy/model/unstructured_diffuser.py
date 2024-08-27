@@ -20,7 +20,7 @@ class Diffuser(object):
     
     def __init__(self,grid,edge_depth=None,cell_depth=None):
         """
-        edge_depth: [Nedges] array of stricly positive flux-face heights
+        edge_depth: [Nedges] array of strictly positive flux-face heights
         for edges.
 
         cell_depth: [Ncells] array of strictly positive cell thicknesses
@@ -160,7 +160,7 @@ class Diffuser(object):
         # map cells to forced values
         dirichlet = dict( [ (c,v) for c,v,xy in self.dirichlet_bcs])
 
-        self.is_calc_c = is_calc_c = np.ones(N,np.bool8)
+        self.is_calc_c = is_calc_c = np.ones(N,np.bool_)
         for c,v,xy in self.dirichlet_bcs:
             is_calc_c[c] = False
 
@@ -272,7 +272,8 @@ class Diffuser(object):
             mic=c_map[ic]
             # make mass/time into concentration/step
             # arrived at minus sign by trial and error.
-            b[mic] -= value/(area_c[ic2]*dzc[ic2]) * self.dt
+            # 2023-08-04: there was a bug here that used ic2 instead of ic.
+            b[mic] -= value/(area_c[ic]*dzc[ic]) * self.dt
 
         if meth == 'dok':
             self.A = sparse.coo_matrix(A)

@@ -28,18 +28,28 @@ class ProcessDB(object):
 
         if not (proc_dat and proc_def):
             if not proc:
-                proc=self.scenario.proc_path
+                try:
+                    proc=self.scenario.proc_path
+                except AttributeError:
+                    log.warning("Scenario does not supply proc_path. Process DB unavailable (mostly just affects names)")
+                    self._has_nef=False
+                    return
             proc_dat=proc +".dat"
             proc_def=proc +".def"
             
         self.proc_dat=proc_dat
         self.proc_def=proc_def
-        
+
+    _has_nef=None
     @contextmanager
     def nef(self):
-        nef=nefis.Nefis(self.proc_dat,self.proc_def)
+        if self._has_nef is not False:
+            nef=nefis.Nefis(self.proc_dat,self.proc_def)
+        else:
+            nef=None
         yield nef
-        nef.close()
+        if nef is not None:
+            nef.close()
 
     def p2_idx_by_item_id(self,subst):
         return self.find_item(table='TABLE_P2',column='ITEM_ID',value=subst)
@@ -50,6 +60,8 @@ class ProcessDB(object):
     def find_item(self,table,column,value):
         try:
             with self.nef() as db:
+                if db is None:
+                    return None
                 items=db[table].getelt(column,[0])
         except nefis.NefisException as e:
             log.info("Item lookup failed (%s)"%e)
@@ -64,6 +76,11 @@ class ProcessDB(object):
         return None
     
     def substance_by_id(self,subst):
+        """
+        Populate a SubstanceDef instance from the process database.
+        If the process database cannot be opened return a SubstanceDef()
+        with default values.
+        """
         idx=self.p2_idx_by_item_id(subst)
         if idx is None:
             return None
@@ -71,6 +88,8 @@ class ProcessDB(object):
         sub=SubstanceDef()
 
         with self.nef() as db:
+            if db is None:
+                return sub
             for elt in ['ITEM_ID','ITEM_NM','UNIT','DEFAULT','AGGREGA','DISAGGR',
                         'GROUPID','SEG_EXC','WK']:
                 val=db['TABLE_P2'].getelt(elt,[0,idx])
@@ -84,13 +103,17 @@ class ProcessDB(object):
         return sub
 
     def process_by_id(self,proc_id):
+        """
         # For substances, get a numeric index from p2_idx_by_item_id,
         # then consult TABLE_P2
         # Processes are in TABLE_P4
 
-        # Really just want the process name and description.
-        # name is something like Nitrif_NH4
-        # Currently Kenny's code just leaves description blank
+        If the process is not found or NEFIS is not available return
+        a blank ProcDef instance.
+
+        Really just want the process name and description.
+        name is something like Nitrif_NH4
+        """
         idx=self.p4_idx_by_item_id(proc_id)
         if idx is None:
             return None
@@ -98,6 +121,9 @@ class ProcessDB(object):
         proc=ProcDef()
 
         with self.nef() as db:
+            if db is None:
+                return proc
+            
             for elt in ['PROC_ID','PROC_NAME','PROC_FORT','PROC_TRCO']:
                 val=db['TABLE_P4'].getelt(elt,[0,idx])
                 val=val.item()

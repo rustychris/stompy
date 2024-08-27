@@ -494,7 +494,7 @@ class RbrHex(Rbr):
         bytes=np.fromstring(binary,np.uint8)
 
         # snip out the timestamp entries
-        sel=np.ones(len(bytes),np.bool8)
+        sel=np.ones(len(bytes),np.bool_)
         offset=0
         bytes_per_frame=3*self.Ncolumns
         for tb in self.timebases:

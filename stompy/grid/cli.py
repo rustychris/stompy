@@ -54,7 +54,10 @@ ReadGrid.formats['dfm']=['DFM netCDF (*_net.nc)',
                          lambda fmt,path: unstructured_grid.UnstructuredGrid.read_dfm(fn=path)]
 ReadGrid.formats['sms']=['SMS grd',
                          lambda fmt,path: unstructured_grid.UnstructuredGrid.read_sms(path)]
-        
+ReadGrid.formats['ras2d']=(
+    ['RAS2D h5', lambda fmt,path: unstructured_grid.UnstructuredGrid.read_ras2d(path,subedges='subedges') ]
+)
+
 class Dualify(Op):
     def run(self,args):
         g=stack.pop()

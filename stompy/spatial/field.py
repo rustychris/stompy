@@ -133,11 +133,13 @@ if gdal:
 class Field(object):
     """ Superclass for spatial fields
     """
-    def __init__(self,projection=None):
+    _projection=None
+    def __init__(self,projection=None,**kw):
         """
         projection: GDAL/OGR parseable string representation
         """
         self.assign_projection(projection)
+        set_keywords(self,kw)
 
     def assign_projection(self,projection):
         self._projection = projection
@@ -295,11 +297,11 @@ class Field(object):
 #   SimpleGrid - constant dx, dy, data just stored in array.
 
 class XYZField(Field):
-    def __init__(self,X,F,projection=None,from_file=None):
+    def __init__(self,X,F,projection=None,from_file=None,**kw):
         """ X: Nx2 array of x,y locations
             F: N   array of values
         """
-        Field.__init__(self,projection=projection)
+        Field.__init__(self,projection=projection,**kw)
         self.X = X
         self.F = F
         self.index = None
@@ -1962,8 +1964,33 @@ class SimpleGrid(QuadrilateralGrid):
             self.dx=dx
         if dy is not None:
             self.dy=dy
+
         self.delta() # compute those if unspecified
-            
+
+    @classmethod
+    def from_curvilinear(cls, x, y, F):
+        all_dx=np.diff(x,axis=1)
+        if not np.allclose(all_dx[0], all_dx):
+            raise Exception("Not evenly spaced in x")
+        all_dy=np.diff(y,axis=0)
+        if not np.allclose(all_dy[0], all_dy):
+            raise Exception("Not evenly spaced in y")
+        skew_x=np.diff(x,axis=0)
+        if not np.all(skew_x==0.0):
+            raise Exception("Skewed in x")
+        skew_y=np.diff(y,axis=1)
+        if not np.all(skew_y==0.0):
+            raise Exception("Skewed in y")
+        return SimpleGrid(extents=[x.min(), x.max(), y.min(), y.max()], F=F)
+
+    @classmethod
+    def zeros(cls,extents,dx,dy,dtype=np.float64):
+        nx=int( np.ceil((extents[1] - extents[0])/dx) )
+        ny=int( np.ceil((extents[3] - extents[2])/dy) )
+        
+        F=np.zeros((ny,nx),dtype=dtype)
+        return cls(extents,F=F)
+    
     @property
     def shape(self):
         return self.F.shape
@@ -2022,7 +2049,7 @@ class SimpleGrid(QuadrilateralGrid):
             os.unlink(fname_shp)
             os.close(fd1)
             os.close(fd2)
-            self.write_gdal(fname_tif)
+            self.write_gdal(fname_tif,overwrite=True)
             res=subprocess.run([gdal_contour,"-fl",str(vmin),str(vmax),fname_tif,fname_shp],
                                 capture_output=True)
             print(res.stdout)
@@ -2462,6 +2489,12 @@ class SimpleGrid(QuadrilateralGrid):
         # and turn the missing values back to nan's
         self.F[~valid] = np.nan
 
+    def xxyy_mask(self,xxyy):
+        mask = np.full(self.F.shape, False)
+        min_row,max_row,min_col,max_col = self.rect_to_indexes(xxyy)
+        mask[min_row:max_row+1, min_col:max_col+1] = True
+        return mask
+
     def polygon_mask(self,poly,crop=True,return_values=False):
         """ similar to mask_outside, but:
         much faster due to outsourcing tests to GDAL
@@ -2490,7 +2523,7 @@ class SimpleGrid(QuadrilateralGrid):
                 return ret # done!
             else:
                 mask_crop=ret
-            full_mask=np.zeros(self.F.shape,np.bool)
+            full_mask=np.zeros(self.F.shape,bool)
             min_row,max_row,min_col,max_col = indexes
             full_mask[min_row:max_row+1,min_col:max_col+1]=mask_crop
             return full_mask
@@ -3143,7 +3176,7 @@ class GdalGrid(SimpleGrid):
             self.dx,self.dy = transformed.delta()
 
 def rasterize_grid_cells(g,values,dx=None,dy=None,stretch=True,
-                         cell_mask=slice(None),match=None):
+                         cell_mask=slice(None),match=None,extra_options=[]):
     """ 
     g: UnstructuredGrid
     values: scalar values for each cell of the grid.  Must be uint16.
@@ -3185,7 +3218,7 @@ def rasterize_grid_cells(g,values,dx=None,dy=None,stretch=True,
     target_ds = target_field.write_gdal('Memory')
     
     # write 1000 into the array where the polygon falls.
-    gdal.RasterizeLayer(target_ds,[1],poly_ds.GetLayer(0),options=["ATTRIBUTE=VAL"])
+    gdal.RasterizeLayer(target_ds,[1],poly_ds.GetLayer(0),options=["ATTRIBUTE=VAL"]+extra_options)
     #None,None,[1000],[])
     new_raster=GdalGrid(target_ds)
 
@@ -3915,11 +3948,16 @@ class MultiRasterField(Field):
             if isinstance(patt,tuple):
                 patt,pri=patt
             else:
-                pri=0 # default priority 
-            matches=glob.glob(patt)
-            if len(matches)==0 and self.error_on_null_input=='any':
-                raise Exception("Pattern '%s' got no matches"%patt)
-            raster_files += [ (m,pri) for m in matches]
+                pri=0 # default priority
+            if isinstance(patt,str):
+                matches=glob.glob(patt)
+                if len(matches)==0 and self.error_on_null_input=='any':
+                    raise Exception("Pattern '%s' got no matches"%patt)
+                raster_files += [ (m,pri) for m in matches]
+            elif isinstance(patt,Field):
+                raster_files.append( (patt,pri) )
+            else:
+                raise Exception("Expected a string regexp or a Field instance. Got %s"%patt)
         if len(raster_files)==0 and self.error_on_null_input=='all':
             raise Exception("No patterns got matches")
 
@@ -3949,16 +3987,26 @@ class MultiRasterField(Field):
                                   ('last_used','i4') ] )
 
         for fi,(f,pri) in enumerate(self.raster_files):
-            extent,resolution = GdalGrid.metadata(f)
-            sources['extent'][fi] = extent
-            sources['resolution'][fi] = max(resolution[0],resolution[1])
-            sources['resx'][fi] = resolution[0]
-            sources['resy'][fi] = resolution[1]
-            # negate so that higher priority sorts to the beginning
-            sources['order'][fi] = -pri
-            sources['field'][fi]=None
-            sources['filename'][fi]=f
+            if isinstance(f,str):
+                extent,resolution = GdalGrid.metadata(f)
+                sources['extent'][fi] = extent
+                sources['resolution'][fi] = max(resolution[0],resolution[1])
+                sources['resx'][fi] = resolution[0]
+                sources['resy'][fi] = resolution[1]
+                # negate so that higher priority sorts to the beginning
+                sources['field'][fi]=None
+                sources['filename'][fi]=f
+            else:
+                sources['extent'][fi] = f.extents
+                sources['resolution'][fi] = max(f.dx, f.dy)
+                sources['resx'][fi] = f.dx
+                sources['resy'][fi] = f.dy
+                # negate so that higher priority sorts to the beginning
+                sources['field'][fi]=f
+                sources['filename'][fi]=None
+            # common
             sources['last_used'][fi]=-1
+            sources['order'][fi] = -pri
 
         self.sources = sources
         # -1 means the source isn't loaded.  non-negative means it was last used when serial
@@ -4026,9 +4074,10 @@ class MultiRasterField(Field):
         """
         if self.sources['field'][i] is None:
             if self.open_count >= self.max_count:
-                # Have to choose someone to close.
-                current = np.nonzero(self.sources['last_used']>=0)[0]
-
+                # Have to choose someone to close, ignoring entries with no filename (since 
+                # those represent entries supplied as Fields)
+                current = np.nonzero( (self.sources['last_used']>=0) & (self.sources['filename']!=None))[0]
+                #  - don't close fields that have no filename
                 victim = current[ np.argmin( self.sources['last_used'][current] ) ]
                 # print "Will evict source %d"%victim
                 self.sources['last_used'][victim] = -1

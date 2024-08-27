@@ -8,6 +8,7 @@ from __future__ import print_function
 import os
 import re
 import textwrap
+import shlex
 
 import glob
 import sys
@@ -24,7 +25,11 @@ import logging
 
 import time
 import pandas as pd
-from matplotlib.dates import num2date, date2num
+# 2023-05-23: avoid directly using MPL conversions. Go through
+# stompy.utils, to maintain a single point of control for the definition
+# of dnums.
+#from matplotlib.dates import num2date, date2num
+
 import matplotlib.pyplot as plt
 from itertools import count
 from six import iteritems
@@ -64,6 +69,13 @@ from . import waq_process
 from . import dfm_grid
 from . import process_diagram
 
+DEFAULT='_DEFAULT_'
+
+def normalize_to_str(item):
+    if isinstance(item,str): pass
+    elif isinstance(item,bytes): item=item.decode()
+    return item
+
 def waq_timestep_to_timedelta(s):
     """ parse a delwaq-style timestep (as string or integer) into a python timedelta object.
     """
@@ -99,6 +111,7 @@ def rel_symlink(src, dst, overwrite=False):
     # pwd, create a symlink that includes the right number of
     # ../..'s
     if os.path.lexists(dst):
+        assert not os.path.samefile(src,dst),"Attempt to symlink file to itself"
         if not overwrite:
             raise Exception("%s already exists, and overwrite is False"%dst)
         else:
@@ -258,6 +271,12 @@ class Hydro(object):
     overwrite=True
 
     @property
+    def reference_originals(self):
+        # HydroFiles can override, but other Hydro classes cannot
+        # implement this, so force to False.
+        return False
+
+    @property
     def fn_base(self): # base filename for output. typically com-<scenario name>
         return 'com-{}'.format(self.scenario.name)
 
@@ -278,7 +297,8 @@ class Hydro(object):
         """ convert self.time0 and self.t_secs to datenums
         """
         from matplotlib.dates import num2date, date2num
-        return date2num(self.time0) + self.t_secs/86400.
+        #return date2num(self.time0) + self.t_secs/86400.
+        return utils.to_dnum(self.time0) + self.t_secs/86400.
 
     @property
     def time_step(self):
@@ -472,15 +492,20 @@ class Hydro(object):
         """
         raise WaqException("Implement in subclass")
 
-    flowgeom_filename='flowgeom.nc'
+    @property
+    def flowgeom_filename(self):
+        # This used to return just the basename, but that makes it different
+        # than all other xxx_filename properties.
+        return os.path.join(self.scenario.base_path,'flowgeom.nc')
+    
     def write_geom(self):
         ds=self.get_geom()
         if ds is None:
             self.log.debug("This Hydro class does not support writing geometry")
             
-        dest=os.path.join(self.scenario.base_path,
-                          self.flowgeom_filename)
-        ds.to_netcdf(dest)
+        #dest=os.path.join(self.scenario.base_path,
+        #                  self.flowgeom_filename)
+        ds.to_netcdf(self.flowgeom_filename)
     def get_geom(self):
         # Return the geometry as an xarray / ugrid-ish Dataset.
         return None
@@ -650,6 +675,11 @@ class Hydro(object):
         """
         raise NotImplementedError("Implement in subclass")
 
+    def element_depth(self,t_secs=0):
+        """
+        Returns array of total water column depth per 2d element. 
+        """
+        return self.seg_z_range(t_secs)[1][-self.n_2d_elements:]
     
     def seg_active(self):
         # this is now just a thin wrapper on seg_attrs
@@ -767,6 +797,22 @@ class Hydro(object):
         self.infer_2d_elements()
         return V[self.seg_to_2d_element]
 
+    def seg_z_range(self,t_secs):
+        """
+        Calculate seg_ztop, seg_zbot as depth from water surface to the
+        top and bottom of each segment.
+        """
+        vols=self.volumes(t_secs)
+        areas=self.planform_areas().data # a top-down area for each segment.
+        dzs=vols/areas
+
+        # depth below water surface of the bottom of the segment prism
+        self.infer_2d_elements()
+        n_layer = self.n_seg // self.n_2d_elements
+        dzs_2d=dzs.reshape((n_layer,-1))
+        seg_zbot=np.cumsum(dzs_2d,axis=0).ravel()
+        seg_ztop=seg_zbot-dzs
+        return seg_ztop,seg_zbot
 
     # hash of segment id (0-based) to list of exchanges
     # order by horizontal, decreasing z, then vertical, decreasing z.
@@ -1034,9 +1080,17 @@ class Hydro(object):
                     bdefs['type']=[ bc_lgroups['name'][self.exch_to_2d_link['link'][exch]] 
                                     for exch in bc_exchs]
                 else:
-                    self.log.info("Slowly setting boundary info")
+                    #self.log.info("Slowly setting boundary info")
+                    # Not so slow anymore
+                    boundary_exchs=np.nonzero(self.pointers[:,0]<0)[0] # these are the
+                    boundary_segs = -self.pointers[boundary_exchs,0]
+
                     for bdry0 in range(Nbdry):
-                        exchs=np.nonzero(-self.pointers[:,0] == bdry0+1)[0]
+                        # This scans the whole pointer table
+                        # exchs=np.nonzero(-self.pointers[:,0] == bdry0+1)[0]
+                        # This still scans (meh), but only the boundary exchanges
+                        exchs=boundary_exchs[boundary_segs==bdry0+1]
+
                         assert len(exchs)==1 # may be relaxable.
                         exch=exchs[0]
                         # 2018-11-29: getting some '0' types.
@@ -1207,7 +1261,7 @@ class Hydro(object):
             # here we could reference the filename relative to the hyd file
             "grid-indices-file     '%s.bnd'"%self.fn_base,# lies, damn lies
             "boundaries-file       '%s.bnd'"%self.fn_base, # this one might be true.
-            "grid-coordinates-file '%s'"%self.flowgeom_filename,
+            "grid-coordinates-file '%s'"%os.path.basename(self.flowgeom_filename),
             "attributes-file       '%s.atr'"%self.fn_base,
             "volumes-file          '%s.vol'"%self.fn_base,
             "areas-file            '%s.are'"%self.fn_base,
@@ -1683,6 +1737,52 @@ class Hydro(object):
                 ngroups+=1
         return groups
 
+    def extract_transect_flow(self,transect,func=False,time_range=None):
+        """
+        Extract time series of discharge through a transect as a function of time.
+        transect is expected to have the same structure as it is configured on
+        a Scenario or WaqModel instance: (name, [+-exchs...])
+        Exchanges are numbered from 1, with sign indicating how they are added to the total.
+
+        if time_range is None, then extract over the full hydro time range.
+        if given, evaluate for all hydro steps within the range and return a xr.DataArray.
+        time_range: [np.datetime64,np.datetime64]
+
+        if func is True, instead return a function that takes a datetime64 and returns flow.
+        """
+        exchs=transect[1]
+
+        def fn(t,exchs=exchs,hydro=self):
+            t_secs = (t - np.datetime64(hydro.time0))/np.timedelta64(1,'s')
+            flo = hydro.flows(t_secs)
+            signs=np.sign(exchs)
+            exch0=np.abs(exchs)-1
+            return np.sum(flo[exch0]*signs)
+        if func:
+            return fn
+
+        if time_range is None:
+            tidx_start=0
+            tidx_stop = len(self.t_secs)
+        else:
+            tidx_start,tidx_stop = [ np.searchsorted( self.t_secs,
+                                                      (t-np.datetime64(self.time0))/np.timedelta64(1,'s'))
+                                     for t in time_range ]
+
+        t_secs=self.t_secs[tidx_start:tidx_stop]
+        times=np.datetime64(self.time0)+t_secs*np.timedelta64(1,'s')
+        
+        Q=np.zeros( len(t_secs), np.float64)
+        for i,t in enumerate(times):
+            Q[i] = fn(t)
+
+        da= xr.DataArray(data=Q, dims=['time'], 
+                         coords=dict( time=times,
+                                      time_seconds=("time",t_secs) ),
+                         attrs=dict(transect=transect[0], units='m3 s-1'))
+        da.name="discharge"
+        return da
+    
     # Data formats on disk
     def flo_dtype(self):
         return np.dtype([ ('tstamp','<i4'),
@@ -1714,6 +1814,10 @@ class HydroFiles(Hydro):
     # and potentially renumbers nodes and edges, so it's not always
     # the right thing to do.
     clean_mpi_dfm_grid=True
+
+    # If True, override vol_filename and friends to point to the original
+    # file.
+    reference_originals=False
     
     def __init__(self,hyd_path,**kw):
         self.hyd_path=hyd_path
@@ -1722,8 +1826,8 @@ class HydroFiles(Hydro):
         super(HydroFiles,self).__init__(**kw)
         if sys.platform=='win32' and self.enable_write_symlink:
             self.log.warning("Symlinks disabled on windows")
-            self.enable_write_symlink=False            
-
+            self.enable_write_symlink=False
+            
     def parse_hyd(self):
         self.hyd_toks={}
 
@@ -1746,6 +1850,20 @@ class HydroFiles(Hydro):
                             break
                         layers.append(float(line))
                     self.hyd_toks[tok]=layers
+                elif tok == 'sink-sources':
+                    sink_sources=[]
+                    while 1:
+                        line=fp.readline().strip()
+                        if line=='' or line=='end-'+tok:
+                            break
+                        index1,link_id,elt_id,from_x,from_y,to_x,to_y,name = line.split()
+                        sink_sources.append(dict(index1=int(index1),
+                                                 link_id=int(link_id),
+                                                 elt_id=int(elt_id),
+                                                 from_x=float(from_x), from_y=float(from_y),
+                                                 to_x=float(to_x), to_y=float(to_y),
+                                                 name=name))
+                    self.hyd_toks[tok]=sink_sources
                 else:
                     self.hyd_toks[tok]=rest
 
@@ -1792,6 +1910,15 @@ class HydroFiles(Hydro):
         else:
             return val.strip("'")
 
+    @property
+    def vol_filename(self):
+        if self.reference_originals:
+            return self.get_path('volumes-file')
+        else:
+            # os.path.join(self.scenario.base_path, self.fn_base+".vol")
+            return super().vol_filename
+
+        
     def get_dir(self):
         return os.path.dirname(self.hyd_path)
     
@@ -1909,11 +2036,21 @@ class HydroFiles(Hydro):
             return np.fromfile(fp,'f4',2*self.n_exch).reshape( (self.n_exch,2) )
 
     def write_are(self):
-        if not self.enable_write_symlink:
-            return super(HydroFiles,self).write_are()
-        else:
+        if self.reference_originals:
+            pass
+        elif self.enable_write_symlink:
             rel_symlink(self.get_path('areas-file'),
                         self.are_filename,overwrite=self.overwrite)
+        else:
+            return super(HydroFiles,self).write_are()
+
+    @property
+    def are_filename(self):
+        if self.reference_originals:
+            return self.get_path('areas-file')
+        else:
+            return super().are_filename
+        
 
     _areas_mmap=None
     def areas(self,t,memmap=False):
@@ -1957,12 +2094,15 @@ class HydroFiles(Hydro):
         return np.frombuffer(raw,np.float32)
 
     def write_vol(self):
-        if not self.enable_write_symlink:
-            return super(HydroFiles,self).write_vol()
-        else:
+        if self.reference_originals:
+            pass
+        elif self.enable_write_symlink:
             rel_symlink(self.get_path('volumes-file'),
                         self.vol_filename,
                         overwrite=self.overwrite)
+        else:
+            return super(HydroFiles,self).write_vol()
+
 
     def volumes(self,t,**kw):
         return self.seg_func(t,label='volumes-file',**kw)
@@ -2034,7 +2174,7 @@ class HydroFiles(Hydro):
                         warning=None
                         if ti<0:
                             if t_sec>=0:
-                                warning="WARNING: inferred time index %d is negative!"%ti
+                                warning="WARNING: inferred time index %d is negative in %s!"%(ti,filename)
                             else:
                                 # kludgey - the problem is that something like the temperature field
                                 # can have a different time line, and to be sure that it has data
@@ -2053,8 +2193,6 @@ class HydroFiles(Hydro):
                         if warning is None and tstamp[0]!=t_sec:
                             warning="WARNING: Segment function appears to have unequal steps"
                         if warning:
-                            #import pdb
-                            #pdb.set_trace()
                             print(warning)
 
                 return np.fromfile(fp,'f4',self.n_seg)
@@ -2067,12 +2205,22 @@ class HydroFiles(Hydro):
         return self.seg_func(t_sec,label='vert-diffusion-file')
 
     def write_flo(self):
-        if not self.enable_write_symlink:
-            return super(HydroFiles,self).write_flo()
-        else:
+        if self.reference_originals:
+            pass
+        elif  self.enable_write_symlink:
             rel_symlink(self.get_path('flows-file'),
                         self.flo_filename,
                         overwrite=self.overwrite)
+        else:
+            return super(HydroFiles,self).write_flo()
+        
+    @property
+    def flo_filename(self):
+        if self.reference_originals:
+            return self.get_path('flows-file')
+        else:
+            return super().flo_filename
+        
 
     _flows_mmap=None
     def flows(self,t,memmap=False):
@@ -2288,15 +2436,18 @@ class HydroFiles(Hydro):
             return super(HydroFiles,self).seg_attrs(number)
 
     def write_geom(self):
+        if self.reference_originals:
+            return
+        
         # just copy existing grid geometry
         try:
             orig=self.get_path('grid-coordinates-file',check=True)
         except KeyError:
             return
 
-        dest=os.path.join(self.scenario.base_path,
-                          self.flowgeom_filename)
+        dest=self.flowgeom_filename
         if os.path.exists(dest) or os.path.lexists(dest):
+            assert not os.path.samefile(dest,orig)
             if self.overwrite:
                 self.log.warning("Removing old geom file %s"%dest)
                 os.unlink(dest)
@@ -2307,6 +2458,16 @@ class HydroFiles(Hydro):
             rel_symlink(orig,dest)
         else:
             shutil.copyfile(orig,dest)
+
+    @property
+    def flowgeom_filename(self):
+        if self.reference_originals:
+            return self.get_path('grid-coordinates-file')
+        else:
+            # WIP changing this from a basename to a path.
+            return super().flowgeom_filename
+
+            
     def get_geom(self):
         try:
             return xr.open_dataset( self.get_path('grid-coordinates-file',check=True) )
@@ -2542,6 +2703,17 @@ class DwaqAggregator(Hydro):
     # Rather than loading DWAQ flowgeom netcdf, try to load DFM map output, which
     # can have more information.
     flowgeom_use_dfm_map=True
+
+    # When creating aggregated grid from a shapefile use this tolerance for matching
+    # nodes.
+    agg_shp_tolerance=0.0
+
+    # how many times to loop through trying to adjust the mapping of input cells
+    # to aggregated cells, with the goal of avoiding any new aggregated faces.
+    # This isn't always possible even with a perfect method, and the algorithm here
+    # is not particularly clever. Alternatively, nudging can be disabled via
+    # max_nudge_iterations=0.
+    max_nudge_iterations=5
     
     # how many of these can be factor out into above classes?
     # agg_shp: can specify, but if not specified, will try to generate a 1:1 
@@ -2628,7 +2800,10 @@ class DwaqAggregator(Hydro):
         """ Same as open_flowgeom(), but transitioning to xarray dataset instead of qnc.
 
         This also adds in some fields which can be inferred in the case the original data
-        is missing them, namely FlowElemDomain, FlowElemGlobalNr
+        is missing them, namely FlowElemDomain, FlowElemGlobalNr.
+
+        Also adds a FlowLinkSS field and dimensions that adds sink-source links back in
+        from the hyd file.
         """
         if self._flowgeoms_xr is None:
             self._flowgeoms_xr={}
@@ -2723,7 +2898,7 @@ class DwaqAggregator(Hydro):
                     ds['FlowElemGlobalNr']=(elem_dim,),1+np.arange(n_elem,dtype=np.int32)
                 if 'FlowElemDomain' not in ds:
                     ds['FlowElemDomain']  =(elem_dim,),np.zeros(n_elem,np.int32)
-                    
+                
             # This had been just for nprocs==1.  But it's needed for MPI, too.
             if 'FlowLink' not in ds:
                 link_dim='nFlowLink'
@@ -2796,12 +2971,43 @@ class DwaqAggregator(Hydro):
                 print("FlowLink near end of open_flowgeom_ds(%d), id(ds)=%s"%(p,id(ds)))
                 print(ds.FlowLink)
 
-                if 'FlowLinkDomain' not in ds:
-                    # use the element domains, grabbing the internal/2nd flow element from
-                    # each link.
-                    # remember that FlowLink has 1-based numbering
-                    ds['FlowLinkDomain']  =(link_dim,),ds['FlowElemDomain'].values[FlowLink[:,1]-start_index]
-                        
+            if 'FlowLinkDomain' not in ds:
+                # 2024-04-04: move this out one level -- appears it is possible for FlowLink
+                # to exist, but not FlowLinkDomain
+                # use the element domains, grabbing the internal/2nd flow element from
+                # each link.
+                # remember that FlowLink has 1-based numbering (can't assume that mesh2d_edge_faces
+                # exists, and no obvious metadata for start_index, but it's always 1 with DFM stuff)
+                start_index=1 
+                FlowLink =ds['FlowLink'].values
+                ds['FlowLinkDomain'] = ds['FlowLink'].dims[:1],ds['FlowElemDomain'].values[FlowLink[:,1]-start_index]
+
+            if True: # Fabricate FlowLink that includes sink-source links
+                if 'sink-sources' in hyd.hyd_toks:
+                    sink_srcs= hyd.hyd_toks['sink-sources']
+                    n_sink_src = len(sink_srcs)
+                    extra_FlowLink = np.zeros( (n_sink_src,2), np.int32)
+                    for ss_idx,sink_src in enumerate(sink_srcs):
+                        extra_FlowLink[ss_idx,0]=ds.dims['nFlowElem'] + -sink_src['link_id']
+                        extra_FlowLink[ss_idx,1]=sink_src['elt_id']
+                    FlowLinkSS = np.concatenate( (ds.FlowLink.values, extra_FlowLink), axis=0)
+                    FlowLinkSSDomain = np.concatenate( (ds.FlowLinkDomain.values, np.full(n_sink_src,p)) )
+                    FlowLinkSSType = np.concatenate( (ds.FlowLinkType.values, np.full(n_sink_src,2)) )
+                    # ignore the latu/lonu fields
+                else:
+                    FlowLinkSS = ds.FlowLink.values
+                    FlowLinkSSDomain = ds.FlowLinkDomain.values
+                    FlowLinkSSType = ds.FlowLinkType.values
+                ds['FlowLinkSS'] = ('nFlowLinkSS',ds.FlowLink.dims[1]),FlowLinkSS
+                ds['FlowLinkSSDomain'] = ('nFlowLinkSS',),FlowLinkSSDomain
+                ds['FlowLinkSSType'] = ('nFlowLinkSS',),FlowLinkSSType
+
+                # Make sure we're not double-counting. 
+                sub_bnds = hyd.read_bnd()
+                min_bc_linkid = min( [0] +[sub_bnd[1]['link'].min() for sub_bnd in sub_bnds] )
+                # I think this is fair, but it might be too stringent.
+                assert FlowLinkSS.max() == ds.dims['nFlowElem'] - min_bc_linkid
+                
             self._flowgeoms_xr[p] = ds
             
         return self._flowgeoms_xr[p]
@@ -2907,7 +3113,11 @@ class DwaqAggregator(Hydro):
             else:
                 raise Exception("Could't find face dimension")
             max_elts_2d_per_proc=max(max_elts_2d_per_proc,len(nc[ncell]))
-            if 'nFlowLink' in nc.dims:
+            # If this works, FlowLinkSS should always get populated.
+            assert 'nFlowLinkSS' in nc.dims,"Seems we're not using the new FlowLinkSS code??"
+            if 'nFlowLinkSS' in nc.dims:
+                nlinks_here=len(nc['nFlowLinkSS'])
+            elif 'nFlowLink' in nc.dims:
                 nlinks_here=len(nc['nFlowLink'])
             elif 'mesh2d_face_links' in nc:
                 nlinks_here=nc['mesh2d_face_links'].max()
@@ -2918,6 +3128,14 @@ class DwaqAggregator(Hydro):
                 nlinks_here=nc.dims['nmesh2d_edge']
             else:
                 raise Exception("Couldn't find link dimension")
+            # Since the above is referencing nFlowLinkSS, no need to add them in this way.
+            # hyd = self.open_hyd(p)
+            # if 'sink-sources' in hyd.hyd_toks:
+            #     # 2024-01-26: source/sink pairs might contribute, but it appears
+            #     # that the netcdf information no longer includes them, and instead
+            #     # lists them in the hyd file:
+            #     nlinks_here += len(hyd.hyd_toks['sink-sources'])
+                                   
             max_lnks_2d_per_proc=max(max_lnks_2d_per_proc,nlinks_here)
             # no nc.close(), as it is now cached
 
@@ -3093,23 +3311,16 @@ class DwaqAggregator(Hydro):
             if isinstance(self.agg_shp,unstructured_grid.UnstructuredGrid):
                 agg_g=self.agg_shp
             else:
-                agg_g=unstructured_grid.UnstructuredGrid.from_shp(self.agg_shp)
+                agg_g=unstructured_grid.UnstructuredGrid.from_shp(self.agg_shp,tolerance=self.agg_shp_tolerance)
             
-            for nudge_iter in range(5):
+            for nudge_iter in range(self.max_nudge_iterations):
                 nudge_count=0
                 # First, identify problem edges
                 for proc in range(self.nprocs):
                     self.log.info("Checking proc %d for inconsistent links"%proc)
                     nc=self.open_flowgeom_ds(proc)
                     proc_global_ids=nc.FlowElemGlobalNr.values - 1  # make 0-based
-                    ncg=unstructured_grid.UnstructuredGrid.read_dfm(nc,cleanup=True) # dfm_grid.DFMGrid(nc)
-                    # This is slow, but on the chance that the grid is from a merged
-                    # hydro run, this is necessary (or the code below needs to be rewritten
-                    # to cope with duplicate edges from a merged hydro run).
-                    # now incorporated into cleanup=True above
-                    #self.log.info("Overly conservative cleanup pass on grid")
-                    #dfm_grid.cleanup_multidomains(ncg)
-                    #self.log.info(" ... done with cleanup pass")
+                    ncg=unstructured_grid.UnstructuredGrid.read_dfm(nc,cleanup=True) 
 
                     e2c=ncg.edge_to_cells()
                     for j in np.nonzero(e2c.min(axis=1)>=0)[0]: # only internal edges
@@ -3337,11 +3548,11 @@ class DwaqAggregator(Hydro):
             elem_dom_id=nc.FlowElemDomain.values # domains are numbered from 0
 
             if self.link_ownership=="FlowLinkDomain":
-                if p==0 and 'FlowLinkDomain' not in nc:
-                    self.log.warning("FlowLinkDomain not found, so link ownership will use min element")
+                if p==0 and 'FlowLinkSSDomain' not in nc:
+                    self.log.warning("FlowLinkSSDomain not found, so link ownership will use min element")
                     self.link_ownership="owner_of_min_elem"
                 else:
-                    link_dom_id=nc.FlowLinkDomain.values
+                    link_dom_id=nc.FlowLinkSSDomain.values
             else:
                 # otherwise, don't even load it.  probably means we can't trust it.
                 pass 
@@ -3366,9 +3577,10 @@ class DwaqAggregator(Hydro):
             # should be...
 
             # hmm - with ugrid output do not necessarily have link variable.
-            if 'FlowLink' in nc:
-                links=nc.FlowLink.values # 1-based
+            if 'FlowLinkSS' in nc:
+                links=nc.FlowLinkSS.values # 1-based
             else:
+                raise Exception("Really should have FlowLinkSS")
                 self.log.warning("Danger: faking missing link data with edges")
                 # These are 1-based, with closed, non-computational neighbors
                 # ==0
@@ -3379,14 +3591,14 @@ class DwaqAggregator(Hydro):
                 sela=(links[:,0]==from_2d)&(links[:,1]==to_2d)
                 selb=(links[:,0]==to_2d)  &(links[:,1]==from_2d)
                 idxs=np.nonzero(sela|selb)[0]
-                assert(len(idxs)==1)
+                assert(len(idxs)==1),"Probably need to include source-sinks in links"
                 return idxs[0] # 0-based index
 
             hits=0
             for local_i in range(len(pointers)):
                 # these are *all* 1-based indices
                 local_from,local_to=pointers[local_i,:2]
-                from_2d,to_2d=pointers2d[local_i,:2]
+                from_2d,to_2d=pointers2d[local_i,:2] # Probably have to update pointers2d code.
 
                 if local_i<n_hor:
                     direc='x' # structured grids not supported, no 'y'
@@ -4515,9 +4727,10 @@ class DwaqAggregator(Hydro):
            of the internal segment determines the local/nonlocal status of the
            exchange.
         """
+        # This may need some updating with FlowLinkSS. 
         for p in range(self.nprocs):
             #print "------",p,"------"
-            nc=self.open_flowgeom(p)
+            nc=self.open_flowgeom_ds(p)
             hyd=self.open_hyd(p)
             poi=hyd.pointers
             n_layers=hyd['number-water-quality-layers']
@@ -4532,9 +4745,9 @@ class DwaqAggregator(Hydro):
                 if ab==1:
                     assert(len(idxs)==0)
 
-            link=nc.FlowLink[:]
-            link_domain=nc.FlowLinkDomain[:]
-            elem_domain=nc.FlowElemDomain[:]
+            link=nc.FlowLink.values # Should this be FlowLinkSS?
+            link_domain=nc.FlowLinkDomain.values
+            elem_domain=nc.FlowElemDomain.values
             nelems=len(elem_domain)
 
             for ab in [0,1]:
@@ -4662,7 +4875,7 @@ class DwaqAggregator(Hydro):
             # e.g. self.vol_filename should probably be self.vol_filepath, then
             # here we could reference the filename relative to the hyd file
             "grid-indices-file     '%s.bnd'"%self.fn_base,# lies, damn lies
-            "grid-coordinates-file '%s'"%self.flowgeom_filename,
+            "grid-coordinates-file '%s'"%os.path.basename(self.flowgeom_filename), # hyd files are always relative...
             "attributes-file       '%s.atr'"%self.fn_base,
             "volumes-file          '%s.vol'"%self.fn_base,
             "areas-file            '%s.are'"%self.fn_base,
@@ -4896,7 +5109,7 @@ class DwaqAggregator(Hydro):
         ds.attrs['institution'] = "San Francisco Estuary Institute"
         ds.attrs['references'] = "http://www.deltares.nl" 
         ds.attrs['source'] = "Python/Delft tools, rustyh@sfei.org" 
-        ds.attrs['history'] = "Converted from SUNTANS run" 
+        ds.attrs['history'] = "Generated by stompy" 
         ds.attrs['Conventions'] = "CF-1.5:Deltares-0.1" 
         return ds
 
@@ -4932,23 +5145,28 @@ class DwaqAggregator(Hydro):
         self.infer_2d_links()
         
         # iterate over bnds from each subdomain
+        fail=False
         for proc in range(self.nprocs):
             sub_hyd=self.open_hyd(proc)
             sub_hyd.infer_2d_elements()
 
-            # CHANGE
-            #sub_geom=sub_hyd.get_geom() # for MultiAggregator -
-            sub_geom=self.open_flowgeom_ds(proc) # for DwaqAggregator
+            sub_geom=self.open_flowgeom_ds(proc)
             if 'mesh2d' in sub_geom:
                 face_dim=sub_geom.mesh2d.attrs.get('face_dimension','nFlowElem')
             else:
                 face_dim='nFlowElem'
             sub_nFlowElem=sub_geom.dims[face_dim]
             sub_bnds=sub_hyd.read_bnd()
-            #sub_g=dfm_grid.DFMGrid(sub_geom) # deprecated
             sub_g=unstructured_grid.UnstructuredGrid.read_dfm(sub_geom)
 
             sub_hyd.infer_2d_links()
+
+            if 1: # debugging
+                print(f"[proc={proc}] n_2d_elements={sub_hyd.n_2d_elements} g.Ncells={sub_g.Ncells()}")
+                print(f"              FlowLink min={sub_geom.FlowLink.values.min()} max={sub_geom.FlowLink.values.max()}")
+                min_bc_linkid = min( [0] +[sub_bnd[1]['link'].min() for sub_bnd in sub_bnds] )
+                # Is this 1-off? No, I think it's correct.
+                print(f"              min_bc_link_id={min_bc_linkid} expected max FlowLink {sub_hyd.n_2d_elements-min_bc_linkid}")
 
             for sub_bnd in sub_bnds:
                 name,segs=sub_bnd
@@ -4965,7 +5183,6 @@ class DwaqAggregator(Hydro):
                     # Can we now get back to the local link this belongs to?
                     # Then go from that local link to an aggregated link
                     if np.all( x[0] == x[1] ):
-                        self.log.warning("Vertical/source entry - this is probably outdated code")
                         # Would like figure out which entry in FlowLink to point to
                         # the aggregated output includes these source links in FlowLink
                         # but the source domains do not
@@ -4981,19 +5198,25 @@ class DwaqAggregator(Hydro):
                         # it was failing, but it appeared that sub_geom.FlowLink 
                         # actually had all the data, and could have been matched to bc_elt_pos+1.
                         # so try that, but it's possible it will break again when splicing.
-                        link1,fromto=np.nonzero( sub_geom.FlowLink.values==bc_elt_pos+1)
+                        # RH 2024-01-26: operate on FlowLinkSS, which puts sink-source links back
+                        #  in.
+                        link1,fromto=np.nonzero( sub_geom.FlowLinkSS.values==bc_elt_pos+1)
                         if len(link1)!=1:
                             print("Trouble finding the FlowLink which goes with this [src] bc element")
                             print("  link1: %s"%link1)
-                        link1=link1[0]
-                        fromto=fromto[0]
-                        # if all is well, elt_inside from above should match with what's in FlowLink.
-                        # I don't think elt_outside really matters
-                        assert sub_geom.FlowLink.values[link1,1-fromto]-1 == elt_inside,"Sanity comparison on source element failed"
-                        
+                            fail=True
+                            continue # Not sure if this will work...
+                        else:
+                            link1=link1[0]
+                            fromto=fromto[0]
+                            # if all is well, elt_inside from above should match with what's in FlowLink.
+                            # I don't think elt_outside really matters
+                            assert sub_geom.FlowLinkSS.values[link1,1-fromto]-1 == elt_inside,"Sanity comparison on source element failed"
                     else:
                         # print("Horizontal bnd entry")
-                        link1,fromto=np.nonzero( sub_geom.FlowLink.values==bc_elt_pos+1)
+                        # for regular horizontal bnd entries, not necessary to go to FlowLinkSS
+                        # but it shouldn't hurt and hopefully reduces confusion.
+                        link1,fromto=np.nonzero( sub_geom.FlowLinkSS.values==bc_elt_pos+1)
                         if len(link1)!=1:
                             print("Trouble finding the FlowLink which goes with this bc element")
                             print("  link1: %s"%link1)
@@ -5001,8 +5224,8 @@ class DwaqAggregator(Hydro):
                         fromto=fromto[0]
 
                         # this link in terms of local elements, as 0-based
-                        elt_inside=sub_geom.FlowLink.values[link1,1-fromto] - 1 
-                        elt_outside=sub_geom.FlowLink.values[link1,fromto]  - 1
+                        elt_inside=sub_geom.FlowLinkSS.values[link1,1-fromto] - 1 
+                        elt_outside=sub_geom.FlowLinkSS.values[link1,fromto]  - 1
 
                     # this comes as 1-based, based on waq_scenario.py code.
                     elt_inside_global=sub_geom.FlowElemGlobalNr.values[elt_inside] - 1
@@ -5073,6 +5296,9 @@ class DwaqAggregator(Hydro):
                             # this seems wrong -- if we match multiple flow links, that probably means
                             # that the matching code above is too broad.
 
+        if fail:
+            raise Exception("Delayed fail")
+        
         # Reverse that mapping
         bc_ids_for_name=defaultdict(list)
 
@@ -5412,13 +5638,32 @@ class HydroMultiAggregator(DwaqAggregator):
     def sub_dir(self,p):
         return os.path.join(self.path,"DFM_DELWAQ_%s_%04d"%(self.run_prefix,p))
 
+    def sub_hyd(self,p,separate_dir="auto"):
+        """
+        Path to hyd file for the given subdomain.
+        separate_dir:
+          True assumes each processor output is in a separate folder
+          False: all output in one folder.
+          "auto": try True, but if the path does not exist, then try False, then return None
+        """
+        if separate_dir==True:
+            return os.path.join(self.sub_dir(p), "%s_%04d.hyd"%(self.run_prefix,p))
+        elif separate_dir==False:
+            return os.path.join(self.path,"DFM_DELWAQ_%s"%self.run_prefix,"%s_%04d.hyd"%(self.run_prefix,p))
+        elif separate_dir=="auto":
+            for sep in [True,False]:
+                fn=self.sub_hyd(p,sep)
+                if os.path.exists(fn): return fn
+            return None
+
     _hyds=None
     def open_hyd(self,p,force=False):
         if self._hyds is None:
             self._hyds={}
         if force or (p not in self._hyds):
-            self._hyds[p]=HydroFiles(os.path.join(self.sub_dir(p),
-                                                  "%s_%04d.hyd"%(self.run_prefix,p)))
+            fn=self.sub_hyd(p)
+            if fn is None: raise Exception("Failed to find hyd file for subdomain")
+            self._hyds[p]=HydroFiles(fn)
         return self._hyds[p]
     
     def dfm_map_file(self,p):
@@ -5426,23 +5671,35 @@ class HydroMultiAggregator(DwaqAggregator):
         Try to infer the name of the dfm map output for processor p, and
         if it exists, return that path
         """
-        map_fn=os.path.join(self.path,"DFM_OUTPUT_%s"%self.run_prefix,"%s_%04d_map.nc"%(self.run_prefix,p))
-        if os.path.exists(map_fn):
-            return map_fn
+        # map_fn=os.path.join(self.path,"DFM_OUTPUT_%s"%self.run_prefix,"%s_%04d_map.nc"%(self.run_prefix,p))
+        # if os.path.exists(map_fn):
+        #     return map_fn
+        # else:
+        #     return None
+
+        # In some cases there is also a timestamp in the name, between the processor part and _map.nc suffix.
+        # Allow either of these:
+        # short_summer2016_0628_dwaq_0000_map.nc        
+        # short_summer2016_0628_dwaq_0000_20160628_140000_map.nc        
+        map_patt=os.path.join(self.path,"DFM_OUTPUT_%s"%self.run_prefix,"%s_%04d*_map.nc"%(self.run_prefix,p))
+        map_fns=glob.glob(map_patt)
+        map_fns.sort()
+        if len(map_fns)>1:
+            print("CAREFUL! Multiple DFM map files. Might cause problems")
+        if map_fns:
+            return map_fns[0]
         else:
             return None
-
+        
     def infer_nprocs(self):
         max_nprocs=1024
         for p in range(1+max_nprocs):
-            if not os.path.exists(self.sub_dir(p)):
+            if self.sub_hyd(p) is None: # not os.path.exists(self.sub_dir(p)):
                 if p==0:
                     raise WaqException("Failed to find any subdomains -- may be a serial run")
                 return p
         else:
             raise Exception("Really - there are more than %d subdomains?"%max_nprocs)
-
-    # create_bnd() used to have an implementation specific to MultiAggregator, but
 
 class HydroStructured(Hydro):
     """
@@ -5861,7 +6118,7 @@ class FilterHydroBC(Hydro):
                 assert False
         else:
             selection=np.asarray(selection)
-            if selection.dtype==np.bool8:
+            if selection.dtype==np.bool_:
                 sel=np.nonzero(selection)
             else:
                 sel=selection
@@ -6667,6 +6924,7 @@ class Initial(object):
         else:
             raise Exception("Not sure how to interpret initial value '%s'"%v)
 
+        
 class ModelForcing(object):
     """ 
     holds some common code between BoundaryCondition and 
@@ -6687,8 +6945,13 @@ class ModelForcing(object):
     def __init__(self,items,substances,data):
         if isinstance(substances,str):
             substances=[substances]
-        if isinstance(items,str) or not isinstance(items,Iterable):
+        # items have a tendency to come in as bytes.
+        # ideally support, in both python 2 and 3,
+
+        if isinstance(items,six.string_types+(bytes,)):
             items=[items]
+        items=[normalize_to_str(item) for item in items]
+
         self.items=items
         self.substances=substances
         self.data=data
@@ -6729,7 +6992,7 @@ class ModelForcing(object):
     def text_data(self,write_supporting=True):
         data=self.render_data_to_text()
 
-        if self.separate_data_file:
+        if len(data)>100 and self.separate_data_file:
             if write_supporting:
                 if self.data_file_subdirectory is not None:
                     dir_name=os.path.join(self.scenario.base_path,
@@ -6982,15 +7245,27 @@ class ParameterSpatial(Parameter):
     """ Process parameter which varies only in space - same 
     as DWAQ's 'PARAMETERS'
     """
-    def __init__(self,per_segment=None,par_file=None,scenario=None,name=None,hydro=None):
+    # To support runs with a layered bed or streamlined specification of parameters
+    # If None, should probably specify data for all segments, water and bed.
+    # if '__default__', will use 'water-grid' if n_bottom_layers>0, otherwise the
+    #  same as None.
+    # any other value is used as the name of the input grid directly.
+    grid_name=DEFAULT
+    inline_data=False
+    def __init__(self,per_segment=None,par_file=None,scenario=None,name=None,hydro=None,
+                 grid_name=DEFAULT,inline_data=False):
         super(ParameterSpatial,self).__init__(name=name,scenario=scenario,hydro=hydro)
         if par_file is not None:
             self.par_file=par_file
             with open(par_file,'rb') as fp:
                 fp.read(4) # toss zero timestamp
                 # no checks for proper size....living on the edge
+                # note that with multiple grids, the correct number of elements is not
+                # simply scenario.n_seg
                 per_segment=np.fromfile(fp,'f4')
         self.data=per_segment
+        self.grid_name = grid_name
+        self.inline_data = inline_data
 
     @property
     def supporting_file(self):
@@ -6998,9 +7273,26 @@ class ParameterSpatial(Parameter):
         """
         return self.scenario.name + "-" + self.safe_name + ".par"
     def text(self,write_supporting=True):
-        if write_supporting:
+        if write_supporting and not self.inline_data:
             self.write_supporting()
-        return "PARAMETERS '{self.name}' ALL BINARY_FILE '{self.supporting_file}'".format(self=self)
+            
+        if self.grid_name==DEFAULT:
+            self.grid_name = self.scenario.water_grid
+
+        if self.grid_name is None:
+            grid_text='ALL'
+        else:
+            grid_text="INPUTGRID '{self.grid_name}'"
+
+        if self.inline_data:
+            data_text="DATA " + "\n".join( ["%g"%f for f in self.data])
+        else:
+            data_text="BINARY_FILE '{self.supporting_file}'"
+        # if there is a bottom grid, I think this will expect data for both water segments and
+        # sediment segments unless a specific INPUTGRID is given. Even then, having trouble
+        # using a non-water grid here.
+        return ("PARAMETERS '{self.name}' " + grid_text + " " + data_text).format(self=self)
+        
     def write_supporting(self):
         with open(os.path.join(self.scenario.base_path,self.supporting_file),'wb') as fp:
             # leading 'i4' with value 0.
@@ -7008,7 +7300,8 @@ class ParameterSpatial(Parameter):
             # .par files written by the GUI. probably this is to make the format
             # the same as a segment function with a single time step.
             fp.write(np.array(0,dtype='i4').tobytes())
-            fp.write(self.data.astype('f4').tobytes())
+            fp.write(np.asarray(self.data,dtype=np.float32).tobytes())
+
     def evaluate(self,**kws):
         if 'seg' in kws:
             return ParameterConstant( self.data[kws.pop('seg')] )
@@ -7071,10 +7364,15 @@ class ParameterSpatioTemporal(Parameter):
     """
     interpolation='LINEAR' # or 'BLOCK'
     warned_2d_to_3d=False # track one-time warning when data is supplied as 2D
+    # in case of multiple grids. Note that the input file manual does not explicitly describe
+    # this syntax, but it is used in the sediment manual.
+    grid_name=DEFAULT
 
+    reference_originals=False
+    
     def __init__(self,times=None,values=None,func_t=None,scenario=None,name=None,
                  seg_func_file=None,enable_write_symlink=None,n_seg=None,
-                 hydro=None):
+                 hydro=None,grid_name=DEFAULT,reference_originals=None):
         """
         times: [N] sized array, 'i4', giving times in system clock units
           (typically seconds after time0)
@@ -7091,6 +7389,9 @@ class ParameterSpatioTemporal(Parameter):
         start/stop times of the associated scenario.  Still, on creation, should
         pass the full complement of times for which data exists (of course consistent
         with the shape of data when explicit data is passed)
+
+        reference_originals: override hydro setting. True means that instead of symlinking
+          to an existing file use the full path to it.
         """
         if seg_func_file is None:
             assert(times is not None)
@@ -7109,7 +7410,29 @@ class ParameterSpatioTemporal(Parameter):
                 self.enable_write_symlink=False
         else:
             self.enable_write_symlink=enable_write_symlink
+
+        if reference_originals is None:
+            if hydro is not None:
+                self.reference_originals = hydro.reference_originals
+            else:
+                pass # leave as default from class
+        else:
+            self.reference_originals = reference_originals
+            
         self._n_seg=n_seg # only needed for evaluate() when scenario isn't set
+        self.grid_name=grid_name
+
+    def copy(self):
+        return ParameterSpatioTemporal(times=self._times,
+                                       values=self.values,
+                                       func_t=self.func_t,
+                                       scenario=self.scenario,
+                                       name=self.name,
+                                       seg_func_file=self.seg_func_file,
+                                       enable_write_symlink=self.enable_write_symlink,
+                                       reference_originals=self.reference_originals,
+                                       n_seg = self._n_seg,
+                                       hydro=self.hydro)
 
     # goofy helpers when n_seg or times can only be inferred after instantiation
     @property
@@ -7130,20 +7453,54 @@ class ParameterSpatioTemporal(Parameter):
 
     @property
     def supporting_file(self):
-        """ base name of the supporting binary file, (no dir. name) """
-        return self.scenario.name + "-" + self.safe_name + ".seg"
+        raise Exception("Should be using supporting_path()")
+        if self.reference_originals:
+            HERE
+        else:
+            return self.scenario.name + "-" + self.safe_name + ".seg"
+    
     @property
     def supporting_path(self):
-        return os.path.join(self.scenario.base_path,self.supporting_file)
+        if self.reference_originals and self.seg_func_file is not None:
+            return self.seg_func_file
+        else:
+            # Update this so we know whether or not the returned path
+            # is the original file or the place to write a new file.
+            self.reference_originals=False
+            basename=self.scenario.name + "-" + self.safe_name + ".seg"
+            return os.path.join(self.scenario.base_path,basename)
     
     def text(self,write_supporting=True):
         if write_supporting:
             self.write_supporting()
-        return ("SEG_FUNCTIONS '{self.name}' {self.interpolation}"
-                " ALL BINARY_FILE '{self.supporting_file}'").format(self=self)
+            
+        if self.grid_name==DEFAULT:
+            self.grid_name=self.scenario.water_grid
+
+        # if we're writing a new file, it will be in scen.base_path, and
+        # we just get back to the basename here.
+        # But if we're referencing a file elsewhere, this gives a relative
+        # path for it.
+        supporting_file = os.path.relpath(self.supporting_path, self.scenario.base_path)
+
+        print("Writing paramater spatiotemporal: supporting_file is %s"%supporting_file)
+        
+        if self.grid_name is None:
+            return ("SEG_FUNCTIONS '{self.name}' {self.interpolation}"
+                    " ALL BINARY_FILE '{supporting_file}'").format(self=self,supporting_file=supporting_file)
+        else:
+            return ("SEG_FUNCTIONS '{self.name}' {self.interpolation}"
+                    " INPUTGRID '{self.grid_name}' BINARY_FILE '{supporting_file}'").format(self=self,supporting_file=supporting_file)
+            
     def write_supporting_try_symlink(self):
         if self.seg_func_file is not None:
             dst=self.supporting_path
+            # With the updated logic in supporting_path(), reference_originals is only
+            # true when the returned path exists, making this assertion redundant.
+            if self.reference_originals:
+                assert os.path.exists(dst),"Expected to use existing file, but %s does not exist"%dst
+                return True
+            
             if os.path.lexists(dst):
                 if self.scenario.overwrite:
                     os.unlink(dst)
@@ -7162,8 +7519,10 @@ class ParameterSpatioTemporal(Parameter):
         if self.write_supporting_try_symlink():
             return
         
-        target=os.path.join(self.scenario.base_path,self.supporting_file)
+        target=self.supporting_path
 
+        assert not self.reference_originals,"Bailing before writing %s as it might be original input"%target
+        
         # limit to the time span of the scenario
         tidxs=np.arange(len(self.times))
         datetimes=self.times*self.scenario.scu + self.scenario.time0
@@ -7179,6 +7538,12 @@ class ParameterSpatioTemporal(Parameter):
 
         # This is split out so that the parallel implementation can jump in just at this
         # point
+        if os.path.lexists(target):
+            if self.scenario.overwrite:
+                os.unlink(target)
+            else:
+                raise Exception("%s exists, and scenario.overwrite is False"%target)
+
         with open(target,'wb') as fp:
             self.write_supporting_loop(tidxs,fp,name=target)
 
@@ -7199,17 +7564,22 @@ class ParameterSpatioTemporal(Parameter):
                 values=self.func_t(t)
             fp.write(values.astype('f4').tobytes())
 
-    def load_from_segment_file(self):
+    def load_from_segment_file(self,convert_time=False):
         """
         Set self.values and self._times from the segment function file.
         This uses memmap, so it should be fairly efficient and safe to
         do even when you only want a fraction of the data.
+
+        convert_time: convert times to dt64
         """
         self._mmap_data=np.memmap(self.seg_func_file,
                                   dtype=[('t',np.int32),
                                          ('value',np.float32,self.n_seg)],
                                   mode='r')
         self._times=self._mmap_data['t']
+        if convert_time:
+            self._times = self._times*np.timedelta64(1,'s') + utils.to_dt64(self.hydro.time0)
+            
         self.values=self._mmap_data['value']
 
     def evaluate(self,**kws):
@@ -7300,11 +7670,11 @@ class ParameterSpatioTemporal(Parameter):
         return ParameterSpatioTemporal(times=self.times,
                                        values=values,
                                        enable_write_symlink=False,
+                                       reference_originals=False,
                                        n_seg=self.n_seg,
                                        # these probably get overwritten anyway.
                                        scenario=self.scenario,
                                        name=self.name)
-
 
 def cast_to_parameter(v):
     if isinstance(v,Parameter):
@@ -7487,7 +7857,6 @@ def map_nef_names(nef):
     return elt_map,real_map
 
         
-DEFAULT='_DEFAULT_'
 
 class Scenario(scriptable.Scriptable):
     """
@@ -7523,6 +7892,18 @@ class Scenario(scriptable.Scriptable):
 
     map_formats=['nefis']
     history_formats=['nefis','binary']
+
+    water_grid=None # if using old style layered bed then this should probably be 'water-grid'
+    # if using old style layered bed this should be set to something. None indicates no old-style
+    # bed and disables defining deep BCs. If bottom_grid is None but bottom_layers is set, assume
+    # that DelwaqG will be used and allocate DelwaqG initial conditions accordingly.
+    bottom_grid=None
+    bottom_layers=[] # thickness of layers, used for delwaqg
+    delwaqg_initial=None
+
+    @property
+    def n_bottom_layers(self):
+        return len(self.bottom_layers)
 
     # not fully handled, but generally trying to overwrite
     # a run without setting this to True should fail.
@@ -7566,7 +7947,7 @@ class Scenario(scriptable.Scriptable):
     # These really shouldn't be this large.  in the update WaqModel they all
     # default to 0.0, much more sensible.
     base_x_dispersion=1.0 # m2/s
-    base_y_dispersion=1.0 # m2/s
+    base_y_dispersion=0.0 # m2/s not used in unstructured, but nonzero breaks scheme 24 performance.
     base_z_dispersion=1e-7 # m2/s
 
     # these default to simulation start/stop/timestep
@@ -7581,6 +7962,10 @@ class Scenario(scriptable.Scriptable):
     mon_start_time=None
     mon_stop_time=None
     mon_time_step=None
+
+    # the 'type' of all deep sediment BCs, and the prefix for BC id,
+    # followed by 1-based element number
+    bottom_bc_prefix='deep bed'
 
     def __init__(self,hydro=None,**kw):
         self.log=logging.getLogger(self.__class__.__name__)
@@ -7604,6 +7989,12 @@ class Scenario(scriptable.Scriptable):
                 setattr(self,k,v)
             except AttributeError:
                 raise Exception("Unknown Scenario attribute: %s"%k)
+
+        if len(self.bottom_layers) and not self.bottom_grid:
+            # This can be set to None in which case DelwaqG will end up pulling
+            # depth-uniform initial conditions from water column parameters with
+            # S1* names.
+            self.delwaqg_initial=make_delwaqg_dataset(self)
 
         self.parameters=self.init_parameters()
         if self.hydro is not None:
@@ -7736,6 +8127,51 @@ END_MULTIGRID"""%num_layers
             # conc. defaults to 1.0
             self.add_bc(src_tag['items'],src_tag['tracer'],src_tag.get('value',1.0))
 
+    def deep_sediment_boundary_defs(self):
+        n_2d=self.hydro.n_2d_elements
+        bdefs=np.zeros(n_2d, Hydro.boundary_dtype)
+        prefix=self.bottom_bc_prefix
+        for elt in range(n_2d):
+            bdefs[elt]['id'] ="%s %d"%(prefix, elt+1)
+            bdefs[elt]['name']="%s %d"%(prefix, elt+1)
+            bdefs[elt]['type']=prefix
+        return bdefs
+
+    def set_deep_sediment_bc_from_ic(self, subs, subset=[]):
+        """
+        For the given substances set the deep boundary in a layered sediment bed to the previously
+        configured IC for them.
+        """
+        assert self.bottom_grid is not None,"Trying to set deep BCs, but bottom_grid is not configured"
+        
+        self.hydro.infer_2d_elements()
+        n_2d = self.hydro.n_2d_elements
+                        
+        for scalar in subset:
+            if scalar not in subs: continue
+            sub=subs[scalar]
+
+            if sub.initial.seg_values is not None:
+                # Should be the initial condition in the bottom sediment layer.
+                values = sub.initial.seg_values[-n_2d:]
+                if np.all(values==values[0]):
+                    # Might save some space/work
+                    print("Spatially variable was actually constant for %s"%scalar)
+                    values=values[0]
+            else:
+                values = sub.initial.default
+                
+            if np.isscalar(values):
+                # Can use the 'type' to write a single BC value for all deep sediment BCs
+                # when this gets written out it ends up with 'ITEM 'sunnyvale' 'valero' ... CONCENTRATION <scalar> 
+                self.src_tags.append(dict(tracer=scalar,items=[self.bottom_bc_prefix],value=values))
+            else:
+                # Possible that there is a shorthand here
+                deep_bcs = self.deep_sediment_boundary_defs()
+                assert len(deep_bcs) == len(values)
+                for item,value in zip(deep_bcs,values):
+                    self.src_tags.append(dict(tracer=scalar,items=[item['id'].decode()],value=value))
+
     def add_bc(self,*args,**kws):
         bc=BoundaryCondition(*args,**kws)
         bc.scenario=self
@@ -7858,7 +8294,8 @@ END_MULTIGRID"""%num_layers
         self.monitor_areas = self.monitor_areas + ( new_area, )
 
     def add_transects_from_shp(self,shp_fn,naming='count',clip_to_poly=True,
-                               on_boundary='warn_and_skip',on_edge=False):
+                               on_boundary='warn_and_skip',on_edge=False,
+                               add_station=False):
         """
         Add monitor transects from a shapefile.
         By default transects are named in sequence.  
@@ -7867,6 +8304,8 @@ END_MULTIGRID"""%num_layers
         on_edge: indicates that the shapefile is made up of nodes already following
           edges of the grid.  In theory not needed, but included here for compatibility
           with ZZ code.
+        add_station: if True, select the deepest adjacent cell and add a monitoring station
+          with the same name
         """
         locations=wkb2shp.shp2geom(shp_fn)
         g=self.hydro.grid()
@@ -7913,6 +8352,9 @@ END_MULTIGRID"""%num_layers
                 self.log.warning("Not ready to handle geometry type %s"%geom.type)
         self.log.info("Added %d monitored transects from %s"%(len(new_transects),shp_fn))
         self.monitor_transects = self.monitor_transects + tuple(new_transects)
+
+        if add_station:
+            self.add_station_for_transects(new_transects) # Not yet implement for Scenario
 
     def add_area_boundary_transects(self,exclude='dummy'):
         """
@@ -8008,7 +8450,7 @@ END_MULTIGRID"""%num_layers
         if np.issubdtype(type(t),np.integer):
             return self.time0 + t*self.scu
         elif np.issubdtype(type(t),np.floating):
-            return num2date(t)
+            return utils.to_datetime(t) #num2date(t)
         elif isinstance(t,datetime.datetime):
             return t
         else:
@@ -8507,7 +8949,7 @@ END_MULTIGRID"""%num_layers
         if the data is not around.
         """
         if self._flowgeom is None:
-            fn=os.path.join(self.base_path,self.hydro.flowgeom_filename)
+            fn=self.hydro.flowgeom_filename
             if os.path.exists(fn):
                 self._flowgeom=qnc.QDataset(fn)
         
@@ -8518,7 +8960,7 @@ END_MULTIGRID"""%num_layers
         if the data is not around.  Returns as an xarray Dataset.
         """
         if self._flowgeom_ds is None:
-            fn=os.path.join(self.base_path,self.hydro.flowgeom_filename)
+            fn=self.hydro.flowgeom_filename
             if os.path.exists(fn):
                 self._flowgeom_ds=xr.open_dataset(fn)
         
@@ -8546,6 +8988,11 @@ END_MULTIGRID"""%num_layers
         """
         Copy supporting bloominp file for runs using BLOOM algae
         """
+        if not os.path.exists(self.original_bloominp_path):
+            # pdb.set_trace()
+            self.log.warning("BLOOM not found (%s)! Tread carefully"%self.original_bloominp_path)
+            return
+        
         dst=os.path.join(self.base_path,'bloominp.d09')
         if not self.overwrite:
             assert not os.path.exists(dst)
@@ -8563,6 +9010,12 @@ END_MULTIGRID"""%num_layers
 
         self.cmd_write_bloominp()
         self.cmd_write_runid()
+
+        if self.n_bottom_layers and not self.bottom_grid:
+            self.write_delwaqg()
+
+    def write_delwaqg(self):
+        write_delwaqg_parameters(self) # will check for delwaqg_initials
 
     def cmd_write_hydro(self):
         """
@@ -8584,7 +9037,7 @@ END_MULTIGRID"""%num_layers
     def cmd_write_nc(self):
         """ Transcribe binary or NEFIS to NetCDF for a completed DWAQ run 
         """
-        self.write_nefis_his_nc()
+        self.write_binary_his_nc() or self.write_nefis_his_nc()
         # binary is faster and doesn't require dwaq libraries, but
         # does not know about units.
         self.write_binary_map_nc() or self.write_nefis_map_nc()
@@ -8598,6 +9051,19 @@ END_MULTIGRID"""%num_layers
             return True
         else:
             return False
+
+    def write_binary_his_nc(self):
+        """ If binary history output is present, write that out to netcdf, otherwise
+        return False
+        """
+        his_fn=os.path.join(self.base_path,self.name+".his")
+        his_nc_fn=os.path.join(self.base_path,'dwaq_hist.nc')
+        
+        if not os.path.exists(his_fn): return False
+        ds=dio.his_file_xarray(his_fn)
+        if os.path.exists(his_nc_fn):
+            os.unlink(his_nc_fn)
+        ds.to_netcdf(his_nc_fn)
         
     def write_nefis_map_nc(self):
         nc_fn=os.path.join(self.base_path,'dwaq_map.nc')
@@ -9010,17 +9476,45 @@ class InpFile(object):
     #def act_filename(self):
     #    return "com-{}.act".format(self.scenario.name)
 
+    # when using existing hydro data these are usually symlinks,
+    # but symlinks are not simple on windows filesystems. Support
+    # an option to instead write an absolute or full path
+    
     @property
     def vol_filename(self):
-        return "com-{}.vol".format(self.scenario.name)
+        #return "com-{}.vol".format(self.scenario.name)
+
+        # 1. Hydro objects can write their data out. This can be
+        #    new file, or a symlink to an original file.
+        #    Hydro.vol_filename is the full path to this file.
+        
+        # 2. HydroFiles objects reference existing files, typically by
+        #    reading a hyd file.
+        #    HydroFiles.get_path('volumes-file') is a relative path
+        #
+        # Both of those are either absolute or relative to the working
+        # directory.
+        #
+        # "com-<scenario>.vol" is a default name put in the inp file.
+
+        fn=self.scenario.hydro.vol_filename 
+        abs_fn=os.path.abspath(fn) # easier to compare paths
+        abs_inp_path = os.path.abspath(self.scenario.base_path)
+        rel_vol_path=os.path.relpath(abs_fn,abs_inp_path)
+        return rel_vol_path
 
     @property
     def flo_filename(self):
-        return "com-{}.flo".format(self.scenario.name)
+        return os.path.relpath(os.path.abspath(self.scenario.hydro.flo_filename),
+                               os.path.abspath(self.scenario.base_path))
+        
+        #return "com-{}.flo".format(self.scenario.name)
 
     @property
     def are_filename(self):
-        return "com-{}.are".format(self.scenario.name)
+        #return "com-{}.are".format(self.scenario.name)
+        return os.path.relpath(os.path.abspath(self.scenario.hydro.are_filename),
+                               os.path.abspath(self.scenario.base_path))
 
     @property
     def poi_filename(self):
@@ -9279,10 +9773,19 @@ INCLUDE '{self.atr_filename}'  ; attributes file
         # handled in boundary_defs()
         lines=[]
 
-        for bdry in self.scenario.hydro.boundary_defs():
-            lines.append("'{}' '{}' '{}'".format( bdry['id'].decode(),
-                                                  bdry['name'].decode(),
-                                                  bdry['type'].decode() ) )
+        #boundary_count=0
+        bc_sets=[self.scenario.hydro.boundary_defs()]
+        
+        if self.scenario.bottom_grid is not None: # self.scenario.n_bottom_layers>0:
+            bc_sets.append(self.scenario.deep_sediment_boundary_defs())
+            
+        for bc_set in bc_sets:
+            for bdry in bc_set:
+                #boundary_count+=1
+                lines.append("'{}' '{}' '{}'".format( bdry['id'].decode(),
+                                                      bdry['name'].decode(),
+                                                      bdry['type'].decode() ) )
+                
         # This used to get returned in-line, but maybe cleaner to put into separate
         # file.
         dir_name=self.scenario.base_path                    
@@ -9464,22 +9967,33 @@ INCLUDE '{self.atr_filename}'  ; attributes file
 
         # "{}*1.0 ; no scaling".format(len(subs))] # doesn't work!
 
-        # documentation suggests that all scale factors come at the beginning,
-        # and that it includes one scale per substance. error output suggests
-        # that with TRANSPOSE, we get only one scale factor total.
+        # with TRANSPOSE we get only one scale factor total.
 
+        if self.scenario.bottom_grid is not None:
+            n_seg_sediment=self.scenario.n_bottom_layers * self.scenario.hydro.n_2d_elements
+        else:
+            n_seg_sediment = 0 # might have bed state in DelwaqG, but that is handled elsewhere.
+            
+        # RH: Assuming that old-style ICs with a layered bed need to specify values for both
+        # water segments and bed segments all together.
+        n_seg_total = self.scenario.hydro.n_seg + n_seg_sediment
+        
         for s in subs:
             if s.initial.seg_values is not None:
                 # Write this out to a separate file, and INCLUDE it
                 supporting_fn='initial-%s.dat'%s.name
                 with open(os.path.join(self.scenario.base_path,supporting_fn),'wt') as fp:
                     fp.write(" ; spatially varying for {}\n".format(s.name) )
-                    supp_lines= [" %f"%val for val in s.initial.seg_values]
+                    seg_values=s.initial.seg_values
+                    if len(seg_values) < n_seg_total:
+                        print("Padding %s with zeros for sediment segments"%s.name)
+                        seg_values =np.concatenate( [seg_values, np.zeros(n_seg_total - len(seg_values))])
+                    supp_lines= [" %f"%val for val in seg_values]
                     fp.write("\n".join(supp_lines))
 
                 lines.append("INCLUDE '%s' ; spatially varying for %s"%(supporting_fn,s.name) )
             else:
-                lines.append( " %d*%f ; default for %s"%(self.scenario.hydro.n_seg,
+                lines.append( " %d*%f ; default for %s"%(n_seg_total, 
                                                          s.initial.default,s.name) )
         return lines
 
@@ -9567,12 +10081,45 @@ class WaqModelBase(scriptable.Scriptable):
     WaqModel is the subclass for offline-specific code, and WaqOnlineModel
     handles specifics of running online under a DFlowModel instance.
     """
-    
     name="waqmodel" # this is used for the basename of the various files.
 
     # simplify imports
     Sub=Substance
-    
+
+    # python datetime giving the reference time for the run.
+    # system clock unit. Trying to move away from python datetime, just use
+    # numpy datetime64 to be consistent with pandas, numpy, xarray.
+    scu64=np.timedelta64(1,'s')
+    # but provide a read-only field for queries by Hydro.
+    @property
+    def scu(self):
+        return datetime.timedelta(seconds=self.scu64/np.timedelta64(1,'s'))
+
+    # These should all be np.datetime64, unlike WaqScenario
+    time0=None
+    start_time=None # 
+    stop_time=None  # 
+
+    time_step=None  # taken from hydro, unless specified otherwise
+
+
+    # These are not fully supported for WaqOnlineModel, but included
+    # here to facilitate setup of runs that could be online or offline.
+    mon_output= (DEFAULT,'SURF','LocalDepth') # monitor file
+    grid_output=('SURF','LocalDepth')              # grid topo
+    hist_output=(DEFAULT,'SURF','LocalDepth') # history file
+    map_output =(DEFAULT,'SURF','TotalDepth','LocalDepth')  # map file
+    # Stat output is currently not very configurable, and just allows
+    # specifying which variables to use. See text_block10() above
+    # for the specifics that are used.
+    stat_output=() # defaults to none
+
+    delwaqg_initial=None
+
+    # easier to handle multi-platform read/write with binary, compared to nefis output
+    map_formats=('binary',)
+    history_formats=('binary',)
+
     def __init__(self,**kw):
         self.log=logging.getLogger(self.__class__.__name__)
 
@@ -9583,6 +10130,7 @@ class WaqModelBase(scriptable.Scriptable):
         # online simulations at this time (2021-06-21)
         self.dispersions=NamedObjects(scenario=self)
         self.velocities=NamedObjects(scenario=self)
+        self.processes=[]
         self.parameters=self.init_parameters()
         self.substances=self.init_substances()
         assert self.substances is not None, "init_substances() did not return anything."
@@ -9610,14 +10158,18 @@ class WaqModelBase(scriptable.Scriptable):
     @property
     def n_inactive_substances(self):
         return len( [sub for sub in self.substances.values() if not sub.active] )
+
+    def add_process(self,name):
+        self.processes.append(name)
     
     def init_parameters(self):
         params=NamedObjects(scenario=self,cast_value=cast_to_parameter)
         params['ONLY_ACTIVE']=1 # almost always a good idea.
-        params['ACTIVE_DYNDEPTH']=1 # these make the outputs much easier to visualize,
-        params['ACTIVE_TOTDEPTH']=1 # and some tools depend on these.
+        self.add_process("DYNDEPTH")
+        self.add_process("TOTDEPTH")
         
         return params
+    
     def init_hydro_parameters(self):
         """ parameters which come directly from the hydro, and are
         written out in the same way that process parameters are 
@@ -9704,7 +10256,7 @@ class WaqModelBase(scriptable.Scriptable):
 
     def add_monitor_for_geometry(self,name,geom):
         raise Exception("add_monitor_for_geometry is sub-class dependent, and apparently not implemented")
-
+    
     _pdb=None
     @property
     def process_db(self):
@@ -9720,7 +10272,7 @@ class WaqModelBase(scriptable.Scriptable):
         or a floating point datenum
         """
         if np.issubdtype(type(t),np.integer):
-            return self.time0 + t*self.scu
+            return utils.to_datetime(self.time0 + t*self.scu64)
         else:
             return utils.to_datetime(t)
 
@@ -9744,6 +10296,11 @@ class WaqModelBase(scriptable.Scriptable):
         """
         Copy supporting bloominp file for runs using BLOOM algae
         """
+        if not os.path.exists(self.original_bloominp_path):
+            # pdb.set_trace() 
+            self.log.warning("BLOOM not found (%s)! Tread carefully"%self.original_bloominp_path)
+            return
+        
         dst=os.path.join(self.base_path,'bloominp.d09')
         if os.path.exists(dst) and not self.overwrite:
             raise Exception("%s exists, but overwrite is False"%dst)
@@ -9792,9 +10349,19 @@ class WaqModelBase(scriptable.Scriptable):
     def original_bloominp_path(self):
         # this gets copied into the model run directory
         return os.path.join(self.share_path,'bloominp.d09')
+
+    _waq_proc_def=None
     @property
-    def proc_path(self):
+    def waq_proc_def(self):
+        if self._waq_proc_def is not None:
+            return self._waq_proc_def
         return os.path.join(self.share_path,'proc_def')
+    
+    @waq_proc_def.setter
+    def waq_proc_def(self,value):
+        if value.endswith('.def') or value.endswith('.dat'):
+            raise ValueError("waq_proc_def should not include the extension")
+        self._waq_proc_def=value
 
     # plot process diagrams
     def cmd_plot_process(self,run_name='dwaq'):
@@ -9816,15 +10383,6 @@ class WaqModel(WaqModelBase):
     """
     desc=('DWAQ','n/a','n/a') # 3 arbitrary lines of text for description
 
-    time0=None
-    # system clock unit. 
-    scu=datetime.timedelta(seconds=1)
-    scu64=np.timedelta64(1,'s')
-    
-    time_step=None  # these are taken from hydro, unless specified otherwise
-    start_time=None # 
-    stop_time=None  # 
-
     overwrite=False 
 
     # if set, initial conditions are taken from a restart file given here
@@ -9838,18 +10396,10 @@ class WaqModel(WaqModelBase):
 
     #  add quantities to default
     DEFAULT=DEFAULT
-    mon_output= (DEFAULT,'SURF','LocalDepth') # monitor file
-    grid_output=('SURF','LocalDepth')              # grid topo
-    hist_output=(DEFAULT,'SURF','LocalDepth') # history file
-    map_output =(DEFAULT,'SURF','TotalDepth','LocalDepth')  # map file
-    # Stat output is currently not very configurable, and just allows
-    # specifying which variables to use. See text_block10() above
-    # for the specifics that are used.
-    stat_output=() # defaults to none
 
-    # easier to handle multi-platform read/write with binary, compared to nefis output
-    map_formats=['binary']
-    history_formats=['binary']
+    water_grid=None # from old style layered bed. Leave None
+    bottom_grid=None
+    bottom_layers=[] # thickness of layers, used for delwaqg
 
     # settings related to paths - a little sneaky, to allow for shorthand
     # to select the next non-existing subdirectory by setting base_path to
@@ -10093,7 +10643,8 @@ END_MULTIGRID"""%num_layers
         self.monitor_areas = self.monitor_areas + ( new_area, )
 
     def add_transects_from_shp(self,shp_fn,naming='count',clip_to_poly=True,
-                               on_boundary='warn_and_skip',on_edge=False):
+                               on_boundary='warn_and_skip',on_edge=False,
+                               add_station=False):
         """
         Add monitor transects from a shapefile.
         By default transects are named in sequence.  
@@ -10153,7 +10704,28 @@ END_MULTIGRID"""%num_layers
                 self.log.warning("Not ready to handle geometry type %s"%geom.type)
         self.log.info("Added %d monitored transects from %s"%(len(new_transects),shp_fn))
         self.monitor_transects = self.monitor_transects + tuple(new_transects)
+        if add_station:
+            self.add_station_for_transects(new_transects) # Not yet implement for Scenario
 
+    def add_station_for_transects(self,transects):
+        stations=[]
+
+        self.hydro.infer_2d_links()
+
+        elt_depth=self.hydro.element_depth(t_secs=0)
+
+        for tran in transects:
+            name,exchs=tran
+            name='s_'+name # hopefully doesn't make it too long...
+            exch0s = np.abs(exchs) - 1
+            links = np.unique(self.hydro.exch_to_2d_link['link'][exch0s])
+            elts = np.unique(self.hydro.links[links])
+            elt = elts[ np.argmax( elt_depth[elts] ) ]
+
+            segs=np.nonzero( self.hydro.seg_to_2d_element==elt )[0] # probably slow
+            stations.append( (name,segs) )
+        self.monitor_areas = self.monitor_areas + tuple(stations)
+            
     def add_area_boundary_transects(self,exclude='dummy'):
         """
         create monitor transects for the common boundaries between a subset of
@@ -10227,6 +10799,8 @@ END_MULTIGRID"""%num_layers
         """
         self.ensure_base_path()
         # parameter files are also written along the way
+        for process in self.processes:
+            self.parameters['ACTIVE_'+process]=1
         inp=InpFile(scenario=self)
         inp.write()
 
@@ -10745,7 +11319,7 @@ END_MULTIGRID"""%num_layers
         """
         assert self.hydro,"Must set hydro before requesting flowgeom_ds"
         if self._flowgeom_ds is None:
-            fn=os.path.join(self.base_path,self.hydro.flowgeom_filename)
+            fn=self.hydro.flowgeom_filename
             if os.path.exists(fn):
                 self._flowgeom_ds=xr.open_dataset(fn)
         
@@ -10848,7 +11422,7 @@ END_MULTIGRID"""%num_layers
         else:
             return False
         
-    def write_binary_map_nc(self):
+    def write_binary_map_nc(self,output_fn=None,overwrite=None):
         """
         Transcribe binary formatted map output from completed dwaq
         run to a ugrid-esque netcdf file.  Currently assumes sigma
@@ -10857,6 +11431,15 @@ END_MULTIGRID"""%num_layers
         if 'binary' not in self.map_formats:
             return False
 
+        if overwrite is None: overwrite=self.overwrite
+
+        if output_fn is None:
+            output_fn=os.path.join(self.base_path,"dwaq_map.nc")
+            
+        if os.path.exists(output_fn) and not overwrite:
+            raise Exception("While writing binary map nc to %s: file exists, overwrite is False"%out_fn)
+        
+
         from . import io as dio
         map_fn=os.path.join(self.base_path,self.name+".map")
         map_ds=dio.read_map(map_fn,self.hydro)
@@ -10864,13 +11447,12 @@ END_MULTIGRID"""%num_layers
         dio.map_add_z_coordinate(map_ds,total_depth='TotalDepth',coord_type='sigma',
                                  layer_dim='layer')
 
-        out_fn=os.path.join(self.base_path,"dwaq_map.nc")
-        if os.path.exists(out_fn):
-            if self.overwrite:
-                os.unlink(out_fn)
+        if os.path.exists(output_fn):
+            if overwrite:
+                os.unlink(output_fn)
             else:
                 raise Exception("While writing binary map nc to %s: file exists, overwrite is False"%out_fn)
-        map_ds.to_netcdf(out_fn)
+        map_ds.to_netcdf(output_fn)
         return True
 
     use_bloom=False
@@ -10885,7 +11467,7 @@ END_MULTIGRID"""%num_layers
 
         cmd=[self.delwaq1_path,
              "-waq", bloom_part,
-             "-p",self.proc_path]
+             "-p",self.waq_proc_def]
         self.log.info("Running delwaq1:")
         self.log.info("  "+ " ".join(cmd))
 
@@ -10955,26 +11537,116 @@ END_MULTIGRID"""%num_layers
     @property
     def delwaq2_path(self):
         return os.path.join(self.delft_bin,'delwaq2')
+
+    # Boundary conditions
+    def find_discharge_bc(self,name):
+        """
+        Find a BC by name, if needed create the discharge entry, 
+        and return the text label for the discharge
+        """
+        seg = self.bc_name_to_segment(name,layer='bed')
+
+        # Just a reminder that at least some versions of the DWAQ setup handled multiple
+        # sites dumping into the same segment. If that is still needed, it needs to be
+        # handled either here in add_load().
+        
+        #source_segs={} # name => discharge id
+        #potw_multi = []
+
+        # the same segment can receive multiple loads, so stick to seg-<id>
+        # for naming here, as opposed to naming discharge points after a
+        # specific source.
+        source_seg="seg-%d"%(seg+1)
+    
+        self.add_discharge(seg_id=seg,load_id=source_seg,on_exists='ignore')
+        return source_seg
+
+    def bc_name_to_segment(self,name,layer='bed'):
+        # This stuff should be cached if it's not already:
+        boundaries=self.hydro.boundary_defs()
+        allitems = [boundary.decode("utf-8") for boundary in set(boundaries['type'])]
+        group_boundary_links = self.hydro.group_boundary_links() # read boundary location and name information from DFM .bnd file
+          
+        g=self.hydro.grid()
+        self.hydro.infer_2d_elements()
+
+        bdn = np.nonzero(group_boundary_links['name']==k) #getting index for boundary
+        assert(len(bdn)==1)                
+        bdn = np.asscalar(np.asarray(bdn)) #bdn is in an annoying tuple type
+        line = shapely.wkt.loads(group_boundary_links['attrs'][bdn]['geom'])
+        xutm = line.xy[0][0]
+        yutm = line.xy[1][0]                
+        xy=np.array( [xutm, yutm] )
+        elt=g.select_cells_nearest(xy)
+        if layer=='bed':
+            layer=-1
+        elif layer=='surface':
+            layer=0
+        else:
+            layer=int(layer)
+        seg=np.nonzero( self.hydro.seg_to_2d_element==elt )[0][layer]
+
+        
+class HydroOnlineProxy(Hydro):
+    """
+    Place to put methods that make online coupled hydro look like regular
+    hydro.
+    """
+    def __init__(self, scenario, dflow_model):
+        self.scenario = scenario
+        self.dflow_model = dflow_model
+        
+    def extrude_element_to_segment(self,V):
+        """ V: [n_2d_elements] array
+        returns [n_seg] array
+        """
+        layers = max(1,self.dflow_model.n_layers) # in case it's 2D == 0 layers
+        return np.tile(V,layers)
+
+    def grid(self):
+        return self.dflow_model.grid
     
 class WaqOnlineModel(WaqModelBase):
     """
     code for D-WAQ setup specific to running online, under a
     D-Flow hydro model
     """
-    # Kenny's code used 
-    # waq_proc_def="" # proc_def.def file for delwaq process library
-    # new code should use pre-existing self.proc_path
+    # design is evolving, but probably bcs for an online model
+    # should live in the hydro object.
+    bcs="DO NOT USE"
+
+    # Segment function (spatiotemporal parameters) have to be put onto a curvilinear
+    # grid for online coupling. Currently this is a cartesian grid with constant
+    # resolution, specified here
+    seg_function_resolution=500.0
     
     def __init__(self,model,**k):
         self.model=model
+        self.hydro = HydroOnlineProxy(scenario=self,dflow_model=model)
         super(WaqOnlineModel,self).__init__(**k)
         
         self.sub_file = 'sources.sub'
         self.sub_path = os.path.join(self.model.run_dir, self.sub_file)
-        self.processes=[]
+
+        self.coupled_parameters=self.init_coupled_parameters()
+        
+
+    #time_step=None  # these are taken from hydro, unless specified otherwise
+    
+    @property
+    def start_time(self):
+        return utils.to_dt64(self.model.run_start)
 
     @property
-    def proc_path(self):
+    def stop_time(self):
+        return utils.to_dt64(self.model.run_stop)
+
+    @property
+    def time0(self):
+        return utils.to_dt64(self.model.ref_date)
+
+    @property
+    def waq_proc_def(self):
         if self.model.waq_proc_def:
             # DFlowModel has been assuming that we provide
             # the full proc_def.def, but waq_scenario code
@@ -10986,19 +11658,49 @@ class WaqOnlineModel(WaqModelBase):
         else:
             return os.path.join(self.share_path,'proc_def')
         
-    # considering as properties that pull from self.model:
-    # time0
-    # start_time
-    # stop_time
+    def init_coupled_parameters(self):
+        """
+        For online coupling there are some minor gymnastics needed to
+        get DFM parameters into DWAQ. See the section of the dia file starting
+          ** INFO   : Data from hydrodynamics available for water quality
+        to see which parameters are linked.
 
+        This method sets up self.coupled_parameters, which only serves to
+        add entries in the substances file. That triggers DFM to supply
+        those values.
+        """
+        params=NamedObjects(scenario=self,cast_value=cast_to_parameter)
+        # All of the current known options:
+        # params['Tau']=1
+        # params['TauFlow']=1
+        # params['Velocity']=1
+        if self.model.mdu.get_bool('physics','Salinity'):
+            params['salinity']=1 
+        if self.model.mdu.get_bool('physics','Temperature'):
+            params['temp']=1 
+        params['vwind']=1
+        #params['winddir']=1
+        #params['rain']=1
+        return params
+    
     def write_waq(self):
         """
-        Writes .sub file for Delwaq model, and adds Delwaq params to Dflow .mdu file
+        Writes .sub file for Delwaq model, and adds Delwaq configuration details to Dflow .mdu file.
+        Reorders self.substances
+        Initial conditions, boundary conditions are not [yet] handled here.
+
+        Non-constant parameters are [WIP] handled here by appending to external forcing file. 
+        handled here.
+
+        This is called during DFM.update_config(), since it modifies the MDU.
+        
+        See online_dwaq.py in the proof-of-concept manual setup for a specialization
+        of write_waq() that appends dwaq tracer info to an existing external forcing file.
         """
         self.log.info('Updating mdu with Delwaq settings...')
         # add reference to sub-file in .mdu
         self.model.mdu['processes', 'SubstanceFile'] = self.sub_file
-        self.model.mdu['processes', 'DtProcesses'] = 300  # hard-coded to match DtUser in template .mdu
+        self.model.mdu['processes', 'DtProcesses'] = 300  # TODO hard-coded to match DtUser in template .mdu
         self.model.mdu['processes', 'ProcessFluxIntegration'] = 1  # 1 = Delwaq, 2 = Dflow
 
         # this should be handled by the caller.
@@ -11020,10 +11722,195 @@ class WaqOnlineModel(WaqModelBase):
                         self.log.info("Translating parameter %s to process"%name)
                         self.add_process(name.upper().replace('ACTIVE_',''))
                     continue
-                self.write_param(f, self.parameters[name])
+                # Only constant parameters go in the substances file
+                # Note that this also helps with coupled parameters. If a parameter
+                # like temp is given a non-constant value it will not show
+                # up here (thus not triggering the use of a DFM value), but will just
+                # show up in the external forcing file.
+                if isinstance(self.parameters[name],ParameterConstant):
+                    self.write_param(f, self.parameters[name])
 
+            for name in self.coupled_parameters:
+                # These should only be constant valued, and are here just to request
+                # that DFM fill in the values during the run.
+                self.write_param(f, self.coupled_parameters[name])
+                
             self.write_processes(f)
 
+            # Additional output can be specified in the substance file but affects both map and history files.
+            # Separate outputs can be specified but it requires an extra file and adding an entry to
+            # the MDU.
+            extra_outputs = np.unique( self.hist_output + self.map_output )
+            for out_var in extra_outputs:
+                if out_var==DEFAULT or out_var in self.substances: continue
+                f.write("output '%s'\n"%out_var)
+                # Could fetch description in NEFIS or csvs
+                f.write("  description '%s extra output'\n"%out_var)
+                f.write("end-output\n")
+            
+        for attr in ['mon_output','grid_output','stat_output',
+                     'map_formats','history_formats']:
+            if getattr(self,attr) != getattr(WaqModelBase,attr):
+                self.log.info("WaqOnlineModel: '%s' has been modified, but is not [yet] handled for online coupling"
+                              %attr)
+
+    def write_waq_forcing(self):
+        """
+        Make edits to external forcing file for online waq run. Entries that
+        were added to the model config as BC objects should be added in write_waq(),
+        and will get written out by the DFM driver as part of writing other BCs.
+        This is for 'out-of-band' edits to external forcing file.
+        """
+        # WAQ parameters that go in the external forcing file:
+        with open(self.model.mdu.filepath(('external forcing','ExtForceFile')),'at') as fp:
+            fp.write("\n\n")
+            for name in self.parameters:
+                if isinstance(self.parameters[name],ParameterSpatial):
+                    self.write_parameter_spatial(fp,self.parameters[name])
+                elif isinstance(self.parameters[name],ParameterTemporal):
+                    self.write_parameter_temporal(fp,self.parameters[name])
+                elif isinstance(self.parameters[name],ParameterSpatioTemporal):
+                    self.write_parameter_spatiotemporal(fp,self.parameters[name])
+
+    
+    def write_waq_spatial(self,fp,quantity,data_fn,xyn):
+        """
+        Write an xyz dataset and add as spatial data source in fp (presumably
+        external forcing file).
+        data_fn is expected to be relative to the run directory (not the script
+        directory).
+        """
+        np.savetxt(os.path.join(self.model.run_dir,data_fn),
+                   xyn,fmt="%.6g")
+        fp.write("\n".join(["QUANTITY=%s"%quantity,
+                            "FILENAME=%s"%data_fn,
+                            "FILETYPE=7",
+                            "METHOD=4",
+                            "OPERAND=O\n"]))
+        
+    def write_parameter_spatial(self, fp, param):
+        xy=self.model.grid.cells_centroid()
+        name=param.name
+        assert name!="unnamed"
+        
+        if param.per_segment is not None:
+            pdb.set_trace()
+            # Hopefully seg_values is 2D, with no vertical variation.
+            conc = something
+        else:
+            pdb.set_trace()
+            
+        xyn=np.c_[xy, conc]
+
+        self.write_waq_spatial(fp,
+                               quantity="waqparameter"+name,
+                               data_fn="PARAM-%s.xyn"%name,
+                               xyn=xyn)
+
+    def write_parameter_temporal(self,fp, param):
+        print("Would be writing temporal parameter to external forcing file")
+        # e.g. RadSurf
+        name=param.name
+        tim_fn="%s.tim"%name
+        tim_path = os.path.join(self.model.run_dir,tim_fn)
+
+        # expecting xr.DataArray
+        ds=xr.Dataset()
+        times=np.asarray(param.times)
+        if not np.issubdtype(times.dtype,np.datetime64):
+            print("Whoa hoss. Expected parameter times to be np.datetime64")
+            pdb.set_trace()
+        ds['time']=('time',),times
+        ds[name]=('time',),param.values
+        self.model.write_tim(ds[name],tim_path)
+        
+        fp.write( "\n".join( [
+            "QUANTITY=waqfunction%s"%name,
+            "FILENAME=%s"%tim_fn,
+            "FILETYPE=1",
+            "METHOD=1", # linear interpolation. 0 for block
+            "OPERAND=O\n"
+            ]))
+            
+    def write_parameter_spatiotemporal(self, fp, param):
+        """
+        Convert a segment function to 2D raster netcdf and add to external forcing file.
+        This is not exact! Incoming data is on the grid, but we have to write a curvilinear
+        grid
+        """
+        # assert param.values is not None,"Expected seg function data in param.values"
+        
+        seg_fn="seg-%s.nc"%param.name
+
+        name=param.name
+
+        if 1: # write the cartesian netcdf 
+            # param.values:  2 x 10 x 49996 => time x layer x cell
+
+            # Could be done ahead of time and cached.
+            cell_to_pixels=self.model.grid.interp_cell_to_raster_function(dx=self.seg_function_resolution,
+                                                                          dy=self.seg_function_resolution)
+            template_fld = cell_to_pixels(None)
+
+            segfunc_ds=xr.Dataset()
+
+            times=np.asarray(param._times)
+            if isinstance(times[0],str): # some files comes in with ASCII datetimes
+                times=times.astype(np.datetime64)
+            if not np.issubdtype(times.dtype,np.datetime64):
+                # may get inputs that are in 'dwaq time' (e.g. seconds since reference time)
+                print("Whoa hoss. Expected segment function times to be np.datetime64")
+                pdb.set_trace()
+            segfunc_ds['time']=('time',),times
+
+            # It's possible that DFM would understand a proper SGRID-compliant file. But I know that
+            # it understands this, which is simpler.
+            segfunc_ds.attrs.update(dict(grid_type='IRREGULAR',
+                                         coordinate_system=self.model.projection or 'EPSG:26910',
+                                         Conventions='CF-1.0'))
+            X,Y = template_fld.XY()
+            segfunc_ds['y'] =('M','N'), Y
+            segfunc_ds['x'] =('M','N'), X
+            segfunc_ds['y'].attrs.update(dict(long_name='northing',standard_name='projection_y_coordinate',
+                                              units='m'))
+            segfunc_ds['x'].attrs.update(dict(long_name='easting',standard_name='projection_x_coordinate',
+                                              units='m'))
+
+            data = np.zeros( (segfunc_ds.dims['time'],segfunc_ds.dims['M'], segfunc_ds.dims['N']),
+                             np.float32)
+            n_2d_elts=self.model.grid.Ncells()
+            for tidx,t in utils.progress(enumerate(times)):
+                if param.values is not None:
+                    data_on_grid=param.values[tidx,:]
+                elif param.func_t is not None:
+                    data_on_grid=param.func_t(t)
+                    
+                # param.values is theoretically coming in as n_seg, but can also come in
+                # as n_2d_elements. Either way, make it [layers,elements], and layers might be
+                # 1-long or n_layers long
+                data_on_grid = data_on_grid.reshape([-1,n_2d_elts])
+                    
+                col_range=data_on_grid.max(axis=0) - data_on_grid.min(axis=0)
+                assert np.all(col_range<1e-12),"Segment function has 3D data, but online coupling can only represent 2D"
+                data_2d=data_on_grid[0,:] # or average if we tolerate some variation.
+                data[tidx,:,:] = cell_to_pixels(data_2d).F
+
+            segfunc_ds[name]=('time','M','N'), data
+            segfunc_ds[name].attrs.update(dict(long_name=name,
+                                               grid_mapping='projected_coordinate_system'))
+            seg_path=os.path.join(self.model.run_dir,seg_fn)
+            segfunc_ds.to_netcdf(seg_path)
+            self.log.info("Wrote %s to %s"%(param.name, seg_path))
+
+        fp.write("\n".join([
+            "QUANTITY=waqsegmentfunction%s"%name,
+            "FILENAME=%s"%seg_fn,
+            "VARNAME=%s"%name,
+            "FILETYPE=11",
+            "METHOD=3",
+            "OPERAND=O\n"]) )
+
+                
     def fix_substance_order(self):
         # A bit tricky: we need to know the order of WAQ substances before source/sink
         # BCs can be written, and that order is some unknown function of the order
@@ -11058,7 +11945,7 @@ class WaqOnlineModel(WaqModelBase):
         new_bcs=nonwaq_bcs + waq_bcs
         assert len(new_bcs)==len(self.model.bcs),"Sanity lost"
         self.model.bcs=new_bcs
-            
+
     def write_substance(self, f, substance):
         """Writes to opened .sub file f for a particular substance"""
         item=self.process_db.substance_by_id(substance.name)
@@ -11104,8 +11991,9 @@ class WaqOnlineModel(WaqModelBase):
     def write_processes(self, f):
         """Writes all active processes to .sub file"""
         s=["active-processes"]
+        skip_for_online = ['vertdisp'] 
         for proc_name in self.processes:
-            if proc_name.lower() in ['totdepth','dyndepth']:
+            if proc_name.lower() in skip_for_online:
                 self.log.info("Ignoring process %s for online WAQ configuration (right?)"%proc_name)
                 continue
             proc=self.process_db.process_by_id(proc_name)
@@ -11117,18 +12005,20 @@ class WaqOnlineModel(WaqModelBase):
             s.append( f"\tname '{proc_name}'  '{desc}'" )
         s.append("end-active-processes")
         f.writelines("\n".join(s))
+        f.write("\n")
         return 0
 
+    def add_bc(self,*args,**kws):
+        self.model.add_ScalarBC(*args,**kws)
+    
     def add_bcs(self, bc):
         """Add bcs to DelwaqModel object (currently not used, can just add to DFlowModel)"""
+        raise Exception("Thought this was unused - probably call add_bc() instead")
         if isinstance(bc, list):
             [self.add_bcs(b) for b in bc]
         else:
             assert isinstance(bc, DelwaqScalarBC), f"BC type {type(bc)} cannot be handled by Delwaq model."
             self.bcs.append(bc)
-
-    def add_process(self,name):
-        self.processes.append(name)
         
     def update_command(self,cmd):
         """
@@ -11136,5 +12026,294 @@ class WaqOnlineModel(WaqModelBase):
         invoking dflowfm. This is also where a custom dll would be 
         specified
         """
-        return cmd+["--processlibrary",self.proc_path+".def"]
+        return cmd+["--processlibrary",self.waq_proc_def+".def"]
+
+    def add_monitor_from_shp(self,shp_fn,naming=None,point_layers=None):
+        """
+        For each feature in the shapefile, add a monitor area.
+        shp_fn: path to shapefile.
+        Online output is not configurable in the same ways as offline DWAQ.
+        Online the choices are points, which go into the history file, or non-overlapping
+        regions which go into mass balance areas.
+        
+        naming: field name from the shapefile giving the name of the monitor area.
+          for compatibilty with offline code, naming can be "elt_layer".
+        """
+        if naming=='elt_layer':
+            self.log.warning("monitoring for online waq doesn't support naming='elt_layer'")
+            
+        locations=wkb2shp.shp2geom(shp_fn)
+        
+        for i,rec in enumerate(locations):
+            geom=rec['geom']
+
+            # Default name
+            # This used to name everything mon%d, but for easier use
+            # and compatibility with older code, use geometry type
+            name="%s%d"%(geom.type.lower(),len(self.model.mon_points))
+
+            if naming is not None and naming in rec:
+                name=rec[naming]
+            self.add_monitor_for_geometry(name=name,geom=geom)
+                
+    def add_monitor_for_geometry(self,name,geom):
+        """
+        Add a monitor area for elements intersecting the shapely geometry geom.
+        """
+        # make sure the name is unique
+        for rec in self.model.mon_points:
+            assert name!=rec.get('name','__unnamed')
+            # getting a warning about elementwise comparison...
+            if not isinstance(name,str):
+                import pdb
+                pdb.set_trace()
+
+        self.model.mon_points.append( dict(name=name,geom=geom) )
+    
+    def add_transects_from_shp(self,shp_fn,naming='count',clip_to_poly=None,
+                               on_boundary=None,on_edge=None):
+        """
+        Add monitor transects from a shapefile.
+        By default transects are named in sequence.  
+        Specify a shapefile field name in 'naming' to pull user-specified
+        names for the transects.
+
+        online model punts details to hydro_model and dflow_model.
+        
+        on_edge, on_boundary, clip_to_poly are accepted but ignored
+        """
+        if clip_to_poly is not None:
+            self.log.warning("Online-coupled WAQ does not concern itself with clip_to_poly")
+        if on_boundary is not None:
+            self.log.warning("Online-coupled WAQ does not concern itself with on_boundary")
+        if on_edge is not None:
+            self.log.warning("Online-coupled WAQ does not concern itself with on_edge")
+            
+        locations=wkb2shp.shp2geom(shp_fn)
+
+        new_transects=[] # generate as list, then assign as tuple
+
+        for i,rec in enumerate(locations):
+            geom=rec['geom']
+
+            if naming=='count':
+                name="transect%04d"%i
+            else:
+                name=rec[naming]
+            new_transects.append( dict(name=name,geom=geom) )
+            
+        self.log.info("Added %d monitored transects from %s"%(len(new_transects),shp_fn))
+        self.model.add_monitor_sections(new_transects)
+
+    
+def write_delwaqg_parameters(scen):
+    """
+    scen: a Scenario or WaqModelBase instance
+    layers: list or array of layer thicknesses in meters.
+    """
+    layers = scen.bottom_layers
+    fn = os.path.join(scen.base_path,"delwaqg.parameters")
+
+    if scen.delwaqg_initial is not None:
+        initial_fn="delwaqg.initials"
+        # write a restart file
+        dio.create_restart(res_fn=os.path.join(scen.base_path,initial_fn),
+                           hyd=scen.hydro,
+                           map_net_cdf=True,
+                           map_fn=scen.delwaqg_initial,
+                           state_vars=delwaqg_substances)
+    else:
+        initial_fn="none"
+
+    lines=[]
+    lines.append("'delwaqg.map'   # map file for output of bed concentration")
+    lines.append("'delwaqg.restart' # write restart information to here")
+    # 2023-07-24: Waiting to catch up with Pradeep before getting into generating
+    # initial conditions file.
+    lines.append("'%s'  # separate file for initial conditions"%initial_fn)
+    # 
+    lines.append("%d  # count of layers"%len(layers))
+    for thick in layers:
+        # [m], [m2/s], [m2/s]
+        # lines.append(" %g %g %g"%(thickness[i],diffusion[i],bioturb[i]))
+        # Try specifying only the thickness.
+        lines.append(" %g"%thick)
+
+    # 2023-07-24: Likewise, discuss before worrying about zones and ICs in this file.
+    # Unclear whether zones will work correctly in online coupling. 
+    #lines.append("'zones.dwq'  # file defining zones")
+
+    ## For each relevant substance,
+    #for sub in dwaqg_subs:
+    #    lines.append("'%s'  %g"%(sub.name, sub.ic.value))
+    
+    with open(fn,'wt') as fp:
+        for l in lines:
+            fp.write(l+"\n")
+
+
+# Expected order of delwaqg substances in restart file.
+delwaqg_substances = [
+    'CH4-pore', 'DOC-pore', 'DON-pore', 'DOP-pore', 'DOS-pore', 'NH4-pore', 
+    'NO3-pore', 'OXY-pore', 'PO4-pore', 'Si-pore', 'SO4-pore', 'SUD-pore', 
+    'AAP-bulk', 'APATP-bulk', 'FeIIIpa-bulk', 'Opal-bulk', 'POC1-bulk', 'POC2-bulk', 
+    'POC3-bulk', 'POC4-bulk', 'PON1-bulk', 'PON2-bulk', 'PON3-bulk', 'PON4-bulk', 
+    'POP1-bulk', 'POP2-bulk', 'POP3-bulk', 'POP4-bulk', 'POS1-bulk', 'POS2-bulk', 
+    'POS3-bulk', 'POS4-bulk', 'SUP-bulk', 'VIVP-bulk',
+]
+            
+def make_delwaqg_dataset(scen):
+    """
+    Half of the process for passing 3D initial conditions to delwaqg.
+    Returns a dataset with the grid, layers, and required substances included.
+    Caller can edit that as needed and then pass to write_delwaqg_map()
+    (or maybe as an extra argument to write_delwaqg_parameters()).
+    """
+    layers = scen.bottom_layers
+    grid = scen.hydro.grid()
+
+    ds=grid.write_xarray() # create_restart expects face and layer dimensions
+
+    ds['layer_thickness']=('layer',), layers
+    ds['layer_thickness'].attrs['long_name']="Thickness of sediment layers in DelwaqG"
+    ds['layer_thickness'].attrs['units']='m'
+
+    for sub in delwaqg_substances:
+        # create_restart expects "native" dwaq order of 'layer','face'
+        ds[sub] = ('layer','face'), np.zeros( (ds.dims['layer'], ds.dims['face']), np.float32)
+        if '-pore' in sub:
+            ds[sub].attrs['units']='g/m3 of porewater'
+        else:
+            ds[sub].attrs['units']='g/m3 bulk'
+            
+    # DelwaqG does not use the names.
+    # Must get the order correct
+    
+    # read title
+    # read nosysini, nosegini (substance count, segment count)
+    # read substances names into synameinit array, but they are never used.
+    # read data into sedconc array ~ [layer, substance, segment]
+    # dissolved substances (the first 12) are scaled by porosity.
+    # re units: the code that reads in WC parameters appears to assume
+    #   g/m2 input, which is then divided by total bed thickness to
+    #   get g/m3.
+    # dissolved substances are assumed to come in as a porewater concentration,
+    # and scaling by porisity then gives a bulk concentration.
+
+    # Order:
+    # Names don't matter. For simplicity, use the same names as in the map and restart
+    # files:
+
+    # create_restart() expects this.
+    ds['header']="Initial conditions file for DelwaqG"
+
+    return ds
+
+
+class InpReader:
+    def __init__(self,fn):
+        self.fn=fn
+        with open(self.fn,'rt') as fp:
+            self.fp = fp
+            self.tok = self.toker()
+            self.read()
+            self.fp = None
+    def skip_to_section(self,sec):
+        while 1:
+            line = self.fp.readline()
+            if line=="": break
+            if line.startswith(f'#{sec}'):
+                return True
+        return False
+    
+    def toker(self):
+        while 1:
+            line=self.fp.readline()
+            if line=="": break
+            line=line.split(';')[0].strip()
+            # break on white space except when inside single or double quotes
+            for t in shlex.split(line): 
+                #print("Token: ",t)
+                yield t
+
+    def next_int(self): return int(next(self.tok))
+    def next_str(self): return next(self.tok)
+    def next_float(self): return float(next(self.tok))
+    
+    def read(self):
+        self.read_section0()
+        assert self.skip_to_section(1)
+        self.next_int() ; self.next_str() ; self.next_str()
+        self.next_float()
+        while 1:
+            t=self.next_str()
+            if t[0] in "01232456789": break
+        self.next_str()
+        assert 0==self.next_int() # timestep option
+        self.next_str() # time step value
+        self.read_mon()
+        self.read_transects()
+
+    def read_section0(self):
+        header=self.fp.readline() # first line sets comment char, can't be read through toker
+        tokens = header.split()
+        self.max_input_width  = int(tokens[0])
+        self.max_output_width = int(tokens[1])
+        self.comment_char = tokens[2] # still has quotes
+        # ignore trailing comment
+        
+        self.desc=[self.next_str(), self.next_str(), self.next_str()]
+        self.time_string = self.next_str()
+        print("Time string: ",self.time_string)
+        # T0: 2013/08/01-00:00:00  (scu=       1s)
+        self.time0 = np.datetime64(
+            datetime.datetime.strptime(
+                self.time_string[4:23]
+                .replace('/','-').replace('.','-'),
+                "%Y-%m-%d-%H:%M:%S"))
+        self.scu_seconds = int(self.time_string[30:38])
+
+        self.n_active = self.next_int()
+        self.n_passive = self.next_int()
+        self.substances=[]
+        for _ in range(self.n_active):
+            self.next_int() # 1-based index
+            self.substances.append(Substance(name=self.next_str(),active=True))
+        for _ in range(self.n_passive):
+            self.next_int() # 1-based index
+            self.substances.append(Substance(name=self.next_str(),active=False))
+        
+    def read_mon(self):
+        has_mon=self.next_int()
+        n_mon = self.next_int()
+        self.monitor_areas=[]
+        for mon_idx in range(n_mon):
+            name=self.next_str()
+            count=self.next_int()
+            segs=[self.next_int() for _ in range(count)]
+            self.monitor_areas.append( (name,segs))
+        print(f"{len(self.monitor_areas)} mon areas")
+        
+    def read_transects(self):
+        has_tran=self.next_int()
+        if has_tran>0:
+            n_tran = self.next_int()
+            print("n_tran",n_tran)
+        else:
+            n_tran=0
+        self.monitor_transects=[]
+        for _ in range(n_tran):
+            name=self.next_str()
+            report_net=self.next_int() # we always use 1.
+            count=self.next_int()
+            exchs=[self.next_int() for _ in range(count)]
+            self.monitor_transects.append( (name,exchs))
+        print(f"{len(self.monitor_transects)} transects")
+
+    def get_transect_by_name(self,name):
+        for tran in self.monitor_transects:
+            if name==tran[0]:
+                return tran
+        return None
+    
         

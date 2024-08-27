@@ -35,7 +35,24 @@ import ipywidgets as widgets
 # TODO:
 #  Allow passing a grid into the NBViz constructor for a UGDataset.
 #  Work around not having nc_meta. Maybe a local implementation with heuristics?
-#  Add in the logic for extra sliders, specifically layer.
+
+# Expressions:
+#   Does not seem sufficient to rely on dask here.
+#   Allow for expressions to add/remove dimensions, so
+#     depth_average (remove layer dimension)
+#     tidal_harmonics (remove time, add constituent)
+#   could be implemented as expressions.
+#   probably have TemplateExpression, and BoundExpression.
+#   BoundExpression [for now] is attached to a dataset, and includes
+#     any information on binding the expression inputs to the other
+#     variables of the Dataset.
+#   TemplateExpression, maybe in the future, is the recipe, useful for automatically
+#     creating bound expressions.
+
+#   Don't worry too much at this point about predicting whether a combination
+#   will work.
+
+# Halfway through adding a text plot. Need to show broader set of variables.
 
 class Fig:
     """ Manages a single matplotlib figure
@@ -76,6 +93,20 @@ class Dataset:
     def add_layer(self,variable):
         raise Exception("overload")        
 
+class BoundExpression:
+    name=None
+    dims=None
+
+    def __init__(self,name,dims,func,**kw):
+        self.name=name
+        self.dims=dims
+        self.func=func
+        utils.set_keywords(self,kw)
+
+    def evaluate(self,src,dims):
+        return self.func(src,dims)
+
+
 class UGDataset(Dataset):
     # ccoll=None
     # cell_var=None
@@ -92,42 +123,123 @@ class UGDataset(Dataset):
         if grid is None:
             grid=unstructured_grid.UnstructuredGrid.read_ugrid(ds)            
         self.grid=grid
+        self.nc_meta = self.grid.nc_meta
+        self.nc_meta['vector_dimension']='xy' # ad-hoc
+        self.ds['xy']=('xy',), [0,1] # not sure we're ready for labels here
         
         # select field to plot for cells:
         self.dim_selectors=dict(time=self.ds.dims['time']-5)
         #self.set_cell_var('eta')
+        self.expressions=[]
+
+        self.add_automatic_expressions()
+    def add_automatic_expressions(self):
+        cell_vars=self.available_cell_vars(include_virtual=False)
         
-    def available_vars(self):
-        # To show when creating a new plot
-        return self.available_cell_vars() # + edge_vars ...
-
-    def create_layer(self,variable):
-        if variable in self.available_cell_vars():
-            return UGCellLayer(self,variable)
-        else:
-            print("Not sure how to handle variable for layer: ",variable)
-            return None
-
-    def available_cell_vars(self):
-        meta=self.grid.nc_meta
-        cell_vars=[]
-        for v in self.ds:
-            if meta['face_dimension'] in self.ds[v].dims:
-                cell_vars.append(v)
         # need more generic expression handling.
         if ('eta' in cell_vars) and ('bed_elev' in cell_vars):
-            cell_vars.append('depth')
+            def depth_func(src,dims):
+                return src('eta',dims) - src('bed_elev',dims)
+
+            self.expressions.append(
+                BoundExpression(name='depth',dims=('time','face'),
+                                func=depth_func))
+
+        east_vel=None
+        north_vel=None
+        for v in cell_vars:
+            long_name=self.ds[v].attrs.get('long_name',v).lower()
+            if long_name=='eastward water velocity component':
+                east_vel=v
+            elif long_name=='northward water velocity component':
+                north_vel=v
+                
+        if (east_vel is not None) and (north_vel is not None):
+            vec_dim=self.nc_meta['vector_dimension'] # 'xy'
+            def make_velocity(src,dims):
+                return xr.concat( [src(east_vel,dims), src(north_vel,dims)], dim=vec_dim)
+            self.expressions.append( BoundExpression(name='velocity_cell',
+                                                     dims=self.ds[east_vel].dims+('xy',),
+                                                     func=make_velocity))
+            def make_speed(src,dims):
+                return np.sqrt( src(east_vel,dims)**2 + src(north_vel,dims)**2)
+            print("Speed dims: ", self.ds[east_vel].dims)
+            # xarray gives time, Nk, Nc
+            self.expressions.append( BoundExpression(name='speed_cell',
+                                                     dims=self.ds[east_vel].dims,
+                                                     func=make_speed))
+
+    def available_vars(self):
+        # To show when creating a new plot
+        return self.available_cell_vars() + self.available_edge_vars() # + ...
+
+    def create_layer(self,variable,plot_type='pseudocolor'):
+        # The plot type / geometry type confusion needs refactoring.
+        if plot_type=='text':
+            return UGTextLayer(variable)
+        elif plot_type=='pseudocolor':
+            if variable in self.available_cell_vars():
+                return UGCellLayer(self,variable)
+            elif variable in self.available_edge_vars():
+                return UGEdgeLayer(self,variable)
+            else:
+                print("Not sure how to handle variable for layer: ",variable)
+                return None
+        elif plot_type=='quiver':
+            if variable in self.available_cell_vector_vars():
+                return UGCellQuiverLayer(self, variable)
+            else:
+                print("Not sure how to handle variable for layer: ",variable)
+                return None
+
+
+    def available_cell_vector_vars(self,include_virtual=True):
+        vec_dim = self.nc_meta.get('vector_dimension','N/A')
+        return self.available_cell_vars(include_virtual=include_virtual,
+                                        dim_filter=lambda dims: vec_dim in dims)
+    
+    def available_cell_vars(self,include_virtual=True,dim_filter=lambda dims: True):
+        """
+        this includes expressions, though maybe that could be opt-out with
+        a flag.
+        """
+        meta=self.nc_meta
+        cell_vars=[]
+        for v in self.ds:
+            dims=self.ds[v].dims
+            if (meta['face_dimension'] in dims) and dim_filter(dims):
+                cell_vars.append(v)
+        if include_virtual:
+            for v in self.expressions:
+                dims=v.dims
+                if (meta['face_dimension'] in dims) and dim_filter(dims):
+                    cell_vars.append(v.name)
+                    
         # also should filter out variables that are known to be
         # part of the grid definition.
         return cell_vars
-                
+
+    def available_edge_vars(self):
+        meta=self.nc_meta
+        edge_vars=[]
+        for v in self.ds:
+            if meta['edge_dimension'] in self.ds[v].dims:
+                edge_vars.append(v)
+        # also should filter out variables that are known to be
+        # part of the grid definition.
+        return edge_vars
+    
     def select_cell_data(self,variable,dims):
-        if variable == 'depth': # Will get generalized to Expression
-            return self.select_data('eta',dims) - self.select_data('bed_elev',dims)
+        # can probably drop the specialization here
+        for expr in self.expressions:
+            if expr.name==variable:
+                return expr.evaluate(self.select_data,dims)
         return self.select_data(variable,dims)
+    
     def var_dims(self,v):
-        if v=='depth':
-            return self.ds['eta'].dims
+        for expr in self.expressions:
+            if expr.name==v:
+                return expr.dims
         else:
             return self.ds[v].dims
     def select_data(self,varname,dims):
@@ -139,38 +251,6 @@ class UGDataset(Dataset):
             v=v.isel(**isels)
         return v
     
-    # def update_dim_sliders(self):
-    #     # all dimensions that might need to be indexed:
-    #     active_dims=[]
-    #     for v in [self.cell_var]: # edge var, node var
-    #         if v is None: continue
-    #         for d in self.var_dims(v):
-    #             meta=self.grid.nc_meta
-    #             if d in [meta['face_dimension'],
-    #                      meta['edge_dimension'],
-    #                      meta['node_dimension']]:
-    #                 continue
-    #             if d in active_dims: continue
-    #             active_dims.append(d)
-                
-    #     # HERE: update to manage slider widgets
-    #     #if len(active_dims)>len(self.dim_axs):
-    #     #    print("More dimensions than sliders...")
-    #     # self.widgets=[]
-    #     # for dim_ax,dim in zip(self.dim_axs,active_dims):
-    #     #     dim_ax.cla()
-    #     #     widget=mw.Slider(dim_ax,dim,valmin=0,
-    #     #                      valmax=self.ds.dims[dim]-1,
-    #     #                      valstep=1.0)
-    #     #     if dim in self.dim_selectors:
-    #     #         widget.set_val(self.dim_selectors[dim])
-    #     #     widget.on_changed( lambda val: self.update_dim(dim,val) )
-    #     #     self.widgets.append(widget)
-    #     # for k in list(self.dim_selectors):
-    #     #     if k not in active_dims:
-    #     #         del self.dim_selectors[k]
-        
-
 class Layer(tl.HasTraits):
     # dimensions that this layer would accept from global dimensions.
     # maps dimension name (only guaranteed unique to this layer), to xr.DataArray
@@ -181,44 +261,20 @@ class Layer(tl.HasTraits):
         return str(id(self))
     
     def layer_edit_pane(self):
-        return widgets.Label("Edit layer")
+        return widgets.VBox([widgets.Label("Edit layer")])
 
 class UGLayer(Layer):
     def __init__(self,ds,variable):
         self.ds=ds
         self.variable=variable
         self.global_dims=None # uninitialized.
-        self.local_dims=None # uninitialized.
+        self.local_dims=None # uninitialized.        
     @property
     def label(self):
         return self.variable
-    
-class UGCellLayer(UGLayer):
-    """
-    pseudocolor plot of cell-centered values for unstructured grid
-    dataset.
-    """
-    ccoll=None
-    update_clims=True # autoscale colorbar when coordinates change
 
-    def __init__(self,*a,**k):
-        super().__init__(*a,**k)
-        # local_dims will have all of the dimensions that have to be constrained
-        # in order for the plot to render. when global dim updates come in, the layer
-        # can choose to let those override local_dims.
-
-        self.init_local_dims()
-        
-    def init_local_dims(self,defaults={}):
-        self.local_dims={} # NB: possible that defaults==self.local_dims.
-        ds=self.ds.ds # get the actual xarray dataset
-        grid=self.ds.grid
-        for dim in ds[self.variable].dims:
-            if dim!=grid.nc_meta['face_dimension']:
-                # use a default dim if given, otherwise punt with 0.
-                self.local_dims[dim]=defaults.get(dim,0)
-        # Update the advertised list of dimensions
-        self.update_free_dims()
+    def grid_meta(self):
+        return self.ds.nc_meta
 
     def update_free_dims(self):
         changed=False
@@ -226,27 +282,11 @@ class UGCellLayer(UGLayer):
             if dim not in self.free_dims:
                 self.free_dims[dim] = self.ds.ds[dim] # can we just publish these as xr data arrays?
                 changed=True
-        for dim in self.free_dims:
+        for dim in list(self.free_dims):
             if dim not in self.local_dims:
                 del self.free_dims[dim]
                 changed=True
-        #if changed:
-        #    print("UGCellLayer: free dims changed")
-        
-    def init_plot(self,Fig):
-        # okay if it is an empty dict, just not None
-        assert self.local_dims is not None
-        
-        self.Fig=Fig
-        self.ccoll=self.ds.grid.plot_cells(values=self.get_data(),
-                                           cmap='turbo',ax=self.Fig.ax)
-        self.cax=self.Fig.get_cax()
-        self.ccbar=plot_utils.cbar(self.ccoll,cax=self.cax)
-        self.Fig.ax.axis('equal') # somehow lost the auto zooming. try here.
-        
-    def get_data(self):
-        return self.ds.select_cell_data(self.variable,self.local_dims)
-    
+
     def update_global_dims(self,dims):
         # This part needs some help. signalling
         # that a global dimension has changed.
@@ -264,9 +304,87 @@ class UGCellLayer(UGLayer):
         if update_plot:
             self.update_arrays()
             self.redraw() # maybe too proactive
+
+    update_clims=True # autoscale colorbar when coordinates change
+        
+    def init_local_dims(self,defaults={}):
+        self.local_dims={} # NB: possible that defaults==self.local_dims.
+        #ds=self.ds.ds # get the actual xarray dataset
+        #grid=self.ds.grid
+        grid_meta=self.grid_meta()
+        # map meta_dims (like 'face_dimension') to real dimensions (like 'mesh2d_Face')
+        plot_dims=[grid_meta.get(k,k) for k in self.plot_meta_dims]
+        
+        for dim in self.ds.var_dims(self.variable):
+            if dim not in plot_dims: # !=grid_meta['face_dimension']:
+                # use a default dim if given, otherwise punt with 0.
+                self.local_dims[dim]=defaults.get(dim,0)
+        # Update the advertised list of dimensions
+        self.update_free_dims()
+
+class UGTextLayer(UGLayer):
+    """
+    Show a text label (e.g. for time)
+    """
+    text=None
+    def init_plot(self,Fig):
+        # okay if it is an empty dict, just not None
+        assert self.local_dims is not None
+        
+        self.Fig=Fig
+        data=self.get_data()
+        self.text=self.Fig.ax.text(0.05,0.99,str(data),transform=self.Fig.ax.transAxes,
+                                   va='top')
+
+    def get_data(self):
+        return self.ds.select_data(self.variable,self.local_dims)
+    
+    def available_vars(self):
+        # to show options for changing the variable of an existing layer
+        # will need to also be smarter about updating self.dims, in case
+        # new variable has different dimensions. 
+        return self.ds.available_vars()
+    
+class UGCellLayer(UGLayer):
+    """
+    pseudocolor plot of cell-centered values for unstructured grid
+    dataset.
+    """
+    ccoll=None
+    update_clims=True # autoscale colorbar when coordinates change
+
+    # Dimensions which are covered by the plot itself
+    plot_meta_dims=['face_dimension']
+
+    def __init__(self,*a,**k):
+        super().__init__(*a,**k)
+        # local_dims will have all of the dimensions that have to be constrained
+        # in order for the plot to render. when global dim updates come in, the layer
+        # can choose to let those override local_dims.
+
+        self.init_local_dims()
+        
+    def init_plot(self,Fig):
+        # okay if it is an empty dict, just not None
+        assert self.local_dims is not None
+        
+        self.Fig=Fig
+        data=self.get_data()
+        self.ccoll=self.ds.grid.plot_cells(values=np.ones_like(data),lw=0.4,edgecolor='face',
+                                           cmap='turbo',ax=self.Fig.ax)
+        self.ccoll.set_array(data) # does this help?
+        
+        self.cax=self.Fig.get_cax()
+        self.ccbar=plot_utils.cbar(self.ccoll,cax=self.cax)
+        self.Fig.ax.axis('equal') # somehow lost the auto zooming. try here.
+        
+    def get_data(self):
+        return self.ds.select_cell_data(self.variable,self.local_dims)
+    
     def redraw(self):
         if self.Fig is not None and self.ccoll is not None:
             self.Fig.redraw()
+            
     def update_arrays(self):
         # Would like to be smarter -- have callers figure out who
         # should be updated, and this just becomes the final draw 
@@ -285,6 +403,168 @@ class UGCellLayer(UGLayer):
         return self.ds.available_cell_vars()
     
     def layer_edit_pane(self):
+        vbox=super().layer_edit_pane()
+        
+        var_selector = widgets.Dropdown(options=self.available_vars(),
+                                        value=self.variable,
+                                        description='Var:')
+        var_selector.observe(self.on_change_var, names='value')
+
+        def set_update_clims(change):
+            self.update_clims=change['new']
+        update_clims=widgets.Checkbox(value=True,description='Update clim',
+                                      style = {'description_width': 'initial'},
+                                      layout=Layout(width="40%"))
+        update_clims.observe(set_update_clims, names='value')
+        vbox.children += (var_selector,update_clims)
+
+        return vbox # widgets.VBox([var_selector,update_clims])
+
+    def on_change_var(self,change):
+        self.set_variable(change['new'])
+        
+    def set_variable(self,v):
+        if v==self.variable: return
+        self.variable=v
+        # May need to adjust dimensions
+        self.init_local_dims(defaults=self.local_dims)
+        # This feels a bit too early. Would be nice to be more JIT.
+        if self.ccoll is not None:
+            data=self.get_data()
+            self.ccoll.set_array(data)
+            self.ccoll.set_clim(np.nanmin(data), np.nanmax(data))
+            #self.ccoll.norm.autoscale(data)
+            self.Fig.redraw()
+
+
+class UGCellQuiverLayer(UGLayer):
+    coll=None
+
+    # Dimensions which are covered by the plot itself
+    plot_meta_dims=['face_dimension','vector_dimension']
+
+    def __init__(self,*a,**k):
+        super().__init__(*a,**k)
+        self.init_local_dims()
+        
+    def init_plot(self,Fig):
+        # okay if it is an empty dict, just not None
+        assert self.local_dims is not None
+        
+        self.Fig=Fig
+        data=self.get_data()
+        ax=self.Fig.ax
+        cc=self.ds.grid.cells_center()
+        # TODO: make zorder reflect order in the UI, and provide buttons to move
+        # items around.
+        self.coll=ax.quiver(cc[:,0],cc[:,1],data[...,0],data[...,1],zorder=3)
+
+    def get_data(self):
+        # force components to be last
+        data=self.ds.select_cell_data(self.variable,self.local_dims)
+        dims=data.dims
+        vec_dim=self.grid_meta()['vector_dimension']
+        new_dims=[d for d in dims if d!=vec_dim] + [vec_dim]
+        return data.transpose(*new_dims)
+    
+    def redraw(self):
+        if self.Fig is not None and self.coll is not None:
+            self.Fig.redraw()
+            
+    def update_arrays(self):
+        if self.coll is not None:
+            self.coll.remove()
+            self.init_plot(self.Fig)
+    
+    def available_vars(self):
+        return self.ds.available_cell_vector_vars()
+    
+    def layer_edit_pane(self):
+        vbox=super().layer_edit_pane()
+        
+        var_selector = widgets.Dropdown(options=self.available_vars(),
+                                        value=self.variable,
+                                        description='Var:')
+        var_selector.observe(self.on_change_var, names='value')
+
+        vbox.children += (var_selector,)
+        return vbox
+
+    def on_change_var(self,change):
+        self.set_variable(change['new'])
+        
+    def set_variable(self,v):
+        if v==self.variable: return
+        self.variable=v
+        # May need to adjust dimensions
+        self.init_local_dims(defaults=self.local_dims)
+        # This feels a bit too early. Would be nice to be more JIT.
+        if self.coll is not None:
+            self.update_arrays()
+            self.Fig.redraw()
+            
+class UGEdgeLayer(UGLayer):
+    """
+    pseudocolor plot of edge-centered values for unstructured grid
+    dataset.
+    """
+    ecoll=None
+    update_clims=True # autoscale colorbar when coordinates change
+
+    def __init__(self,*a,**k):
+        super().__init__(*a,**k)
+        # local_dims will have all of the dimensions that have to be constrained
+        # in order for the plot to render. when global dim updates come in, the layer
+        # can choose to let those override local_dims.
+
+        self.init_local_dims()
+        
+    def init_local_dims(self,defaults={}):
+        self.local_dims={} # NB: possible that defaults==self.local_dims.
+        ds=self.ds.ds # get the actual xarray dataset
+        for dim in ds[self.variable].dims:
+            if dim!=self.ds.nc_meta['edge_dimension']:
+                # use a default dim if given, otherwise punt with 0.
+                self.local_dims[dim]=defaults.get(dim,0)
+        # Update the advertised list of dimensions
+        self.update_free_dims()
+        
+    def init_plot(self,Fig):
+        # okay if it is an empty dict, just not None
+        assert self.local_dims is not None
+        
+        self.Fig=Fig
+        self.ecoll=self.ds.grid.plot_edges(values=self.get_data(),
+                                           cmap='turbo',ax=self.Fig.ax)
+        self.cax=self.Fig.get_cax()
+        self.ccbar=plot_utils.cbar(self.ecoll,cax=self.cax)
+        self.Fig.ax.axis('equal') # somehow lost the auto zooming. try here.
+        
+    def get_data(self):
+        return self.ds.select_data(self.variable,self.local_dims)
+    
+    def redraw(self):
+        if self.Fig is not None and self.ecoll is not None:
+            self.Fig.redraw()
+            
+    def update_arrays(self):
+        # Would like to be smarter -- have callers figure out who
+        # should be updated, and this just becomes the final draw 
+        # call. probably keep a list of layers, broadcast dim
+        # changes, and let layers notify of update.
+        if self.ecoll is not None:
+            data=self.get_data()
+            self.ecoll.set_array(data)
+            if self.update_clims:
+                self.ecoll.set_clim(np.nanmin(data), np.nanmax(data))
+    
+    def available_vars(self):
+        # to show options for changing the variable of an existing layer
+        # will need to also be smarter about updating self.dims, in case
+        # new variable has different dimensions. 
+        return self.ds.available_edge_vars()
+    
+    def layer_edit_pane(self):
         var_selector = widgets.Dropdown(options=self.available_vars(),
                                         value=self.variable,
                                         description='Var:')
@@ -296,19 +576,17 @@ class UGCellLayer(UGLayer):
         
     def set_variable(self,v):
         if v==self.variable: return
-        print("set_variable: ",v)
         self.variable=v
 
         # May need to adjust dimensions
         self.init_local_dims(defaults=self.local_dims)
         
         # This feels a bit too early. Would be nice to be more JIT.
-        if self.ccoll is not None:
+        if self.ecoll is not None:
             data=self.get_data()
-            self.ccoll.norm.autoscale(data)
-            self.ccoll.set_array(data)
+            self.ecoll.norm.autoscale(data)
+            self.ecoll.set_array(data)
             self.Fig.redraw()
-
 
 # use while debugging to see how layouts are working
 def create_expanded_button(description, button_style):
@@ -329,11 +607,17 @@ class NBViz(widgets.AppLayout):
     active_layer=None
     new_layer="--new--"
     
-    def __init__(self,datasets=None):
+    def __init__(self,datasets=None,expressions=[]):
+        """
+        datasets: list of ugrid-ish xr.Dataset
+        expressions: expressions to add to first dataset (hack)
+        """
         # at the moment datasets can only be ugrid-ish xr.Dataset,
         # to be wrapped in UGDataset
         if datasets is not None:
             self.datasets=[self.data_to_Dataset(d) for d in datasets]
+            for expr in expressions:
+                self.datasets[0].expressions.append(expr)
         else:
             self.datasets=[]
         assert len(self.datasets)==1,"Not ready for 0 or multiple datasets"
@@ -414,7 +698,8 @@ class NBViz(widgets.AppLayout):
             
             if dim=='time':
                 # special handling for 'time'
-                self.time_slider = widgets.IntSlider(min=vmin,max=vmax,value=value)
+                self.time_slider = widgets.IntSlider(min=vmin,max=vmax,value=value,
+                                                     continuous_update=False)
                 self.play = widgets.Play(
                     value=value,
                     min=vmin,
@@ -481,12 +766,14 @@ class NBViz(widgets.AppLayout):
     def var_options(self):
         return self.active_dataset().available_vars()
     # dummy
-    plt_options=['pseudocolor','quiver']
+    plt_options=['pseudocolor','text','quiver']
     def new_layer_pane(self):
         plt_selector=widgets.Dropdown(options=self.plt_options)
         var_selector=widgets.Dropdown(options=self.var_options())
         button=widgets.Button(description="Add layer")
-        button.on_click(lambda b: self.add_layer(var_selector.value))
+        def on_new_layer(b):
+            self.add_layer(variable=var_selector.value, plot_type=plt_selector.value)
+        button.on_click(on_new_layer)
         # How to slim up this thing?
         # width=50% leaves the center pane very wide, but just uses 50%
         # of the area.
@@ -504,10 +791,10 @@ class NBViz(widgets.AppLayout):
     def do_tight_layout(self,b):
         self.Fig.do_tight_layout()
         
-    def add_layer(self,variable,ds=None):
+    def add_layer(self,variable,plot_type='pseudocolor',ds=None):
         if ds is None: ds=self.active_dataset()
         
-        layer=ds.create_layer(variable)
+        layer=ds.create_layer(variable,plot_type=plot_type)
         if layer is None:
             print("Could not create layer")
             return
@@ -542,7 +829,7 @@ class NBViz(widgets.AppLayout):
             if dim not in new_global_dims:
                 del self.global_dims[dim] 
                 has_changed=True
-            elif new_global_dims[dim] != self.global_dims[dim]:
+            elif np.any( new_global_dims[dim] != self.global_dims[dim]):
                 self.global_dims[dim] = new_global_dims[dim]
                 has_changed=True
         # And newly added dims

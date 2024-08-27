@@ -381,7 +381,9 @@ class Nefis(object):
                                            (self.def_fn or self.dat_fn).encode(),
                                            byref(endian), access))
     def close(self):
-        self.with_err( nef_lib().Clsnef(byref(self.fd)) )
+        nlib=nef_lib()
+        if nlib is not None:
+            self.with_err( nlib.Clsnef(byref(self.fd)) )
         self.fd=None
 
     def __del__(self):

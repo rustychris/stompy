@@ -3,6 +3,8 @@ import six
 import time
 import os
 import logging
+from contextlib import contextmanager
+
 log=logging.getLogger('utils')
 
 try:
@@ -468,7 +470,7 @@ def select_increasing(x):
     Return a bitmask over x removing any samples which are
     less than or equal to the largest preceding sample
     """
-    mask=np.ones(len(x),np.bool8)
+    mask=np.ones(len(x),np.bool_)
     last=None # -np.inf doesn't work for weird types that can't compare to float
     for i in range(len(x)):
         if last is not None and x[i] <= last:
@@ -638,6 +640,18 @@ def nearest_val(A,x):
     """
     return A[nearest(A,x)]
 
+def nearest_2d(X,Y,x,y):
+    """
+    return row,col indexing X and Y (both assumed 2D), that is closest to the
+    point(s) given by x,y
+    For starters this makes no attempt to be fast or handle non-scalar x,y inputs.
+    """
+    dx=X-x
+    dy=Y-y
+    dists=dx**2+dy**2
+    rows,cols=np.nonzero(dists==dists.min())
+    return rows[0],cols[0]
+    
 def mag(vec):
     vec = np.asarray(vec)
     return np.sqrt( (vec**2).sum(axis=-1))
@@ -1166,7 +1180,9 @@ def murphy_skill(xmodel,xobs,xref=None,ignore_nan=True):
     o=xobs[sel]
     if xref is None:
         xref=o.mean()
-        
+
+    # so 1=>perfect
+    #    0=>same as predicting the mean of the observations 
     ms=1 - np.mean( (m-o)**2 )/np.mean( (xref-o)**2 )
     
     return ms
@@ -1589,7 +1605,10 @@ def dnum_py_to_mat(x):
 def dt64_to_dnum(dt64):
     # get some reference points:
 
-    dt1=datetime.datetime.fromordinal(1) # same as num2date(1)
+    # RH: 2023-05-22: resolve datetime.datetime vs num2date divergence
+    # by going with MPL. 
+    #dt1=datetime.datetime.fromordinal(1) # same as num2date(1)
+    dt1=num2date(1)
 
     for reftype,ref_to_days in [('M8[us]',86400000000),
                                 ('M8[D]',1)]:
@@ -1608,15 +1627,18 @@ def dt64_to_dnum(dt64):
     return dnum
 
 def dnum_to_dt64(dnum,units='us'):
-    reftype='m8[%s]'%units
+    # reftype='m8[%s]'%units
+    # 
+    # # how many units are in a day?
+    # units_per_day=np.timedelta64(1,'D').astype(reftype)
+    # # datetime for the epoch
+    # dt_ref=datetime.datetime(1970,1,1,0,0)
+    # 
+    # offset = ((dnum-dt_ref.toordinal())*units_per_day).astype(reftype)
+    # return np.datetime64(dt_ref) + offset
 
-    # how many units are in a day?
-    units_per_day=np.timedelta64(1,'D').astype(reftype)
-    # datetime for the epoch
-    dt_ref=datetime.datetime(1970,1,1,0,0)
-
-    offset = ((dnum-dt_ref.toordinal())*units_per_day).astype(reftype)
-    return np.datetime64(dt_ref) + offset
+    # 2023-05-22 RH: punt this to matplotlib in order to maintain consistency.
+    return np.datetime64(num2date(dnum))
 
 def dnum_jday0(dnum):
     # return a dnum for the first of the year
@@ -2261,7 +2283,7 @@ def remove_repeated(A,axis=0):
         return np.concatenate( ( A[:1], A[1:][ np.diff(A)!=0 ] ) )
     else:
         # too lazy to be efficient right now.
-        valid=np.ones(A.shape[0],np.bool8)
+        valid=np.ones(A.shape[0],np.bool_)
         for i in range(1,A.shape[0]):
             if np.all( A[i,...]==A[i-1,...] ):
                 valid[i]=False
@@ -2347,18 +2369,22 @@ def download_url(url,local_file,log=None,on_abort='pass',on_exists='pass',
                 os.unlink(local_file)
         raise
 
-def call_with_path(cmd,path):
-    import subprocess
+@contextmanager
+def working_dir(path):
     pwd=os.getcwd()
     try:
         os.chdir(path)
-        shell=(type(cmd) in six.string_types)
-        # return subprocess.call(cmd,shell=shell)
-        output=subprocess.check_output(cmd,shell=shell)
-        return output
+        yield None
     finally:
         os.chdir(pwd)
 
+def call_with_path(cmd,path):
+    import subprocess
+    with working_dir(path):
+        shell=(type(cmd) in six.string_types)
+        output=subprocess.check_output(cmd,shell=shell)
+        return output
+        
 def progress(a,interval_s=5.0,msg="%s",func=log.info,count=0):
     """
     Print progress messages while iterating over a sequence a.
@@ -2396,6 +2422,8 @@ def is_stale(target,srcs,ignore_missing=False,tol_s=0):
     tol_s: allow a source to be up to tol_s newer than target. Useful if 
     sources are constantly updating but you only want to recompute
     when something is really old.
+
+    src timestamps are the newer of stat and lstat
     """
     if not os.path.exists(target): return True
     for src in srcs:
@@ -2404,7 +2432,9 @@ def is_stale(target,srcs,ignore_missing=False,tol_s=0):
                 continue
             else:
                 raise Exception("Dependency %s does not exist"%src)
-        if os.stat(src).st_mtime > os.stat(target).st_mtime + tol_s:
+        src_mtime=max(os.stat(src).st_mtime,
+                      os.lstat(src).st_mtime)
+        if src_mtime > os.stat(target).st_mtime + tol_s:
             return True
     return False
 
@@ -2546,3 +2576,116 @@ def dominant_period(h,t,uniform=True,guess=None):
     #breakpoint()
     result = fmin(cost,[float(guess)])
     return result[0]
+
+def ideal_solar_rad(t,Imax=1000,lat=37.775,lon=-122.419, declination=True):
+    """ 
+    Return time series of idealized solar radiation.
+    t: array of np.datetime64 in UTC.
+    Imax: maximum solar radiation (i.e. noon on equator at equinox).
+    lat, lon: location, in degrees. Defaults to San Francisco.
+    returns dataset including sol_rad.
+    """
+    if isinstance(t,xr.DataArray):
+        t_da=t
+        t=t.values
+    else:
+        t_da=None
+        
+    lat_rad=lat*np.pi/180.
+
+    lst=t+np.timedelta64(int(86400*lon/360.),'s') # local solar time.
+    doy=(t-t.astype('M8[Y]'))/np.timedelta64(1,'D')
+    if declination:
+        decl=(np.pi/180) * 23.45 * np.sin(2*np.pi/365 * (doy-81))  # declination
+    else:
+        # Omit seasonal cycle. Locked to doy=81
+        decl=0.0
+        
+    hour=(lst - lst.astype('M8[D]'))/np.timedelta64(1,'h')
+    hour_angle=(hour-12)*np.pi/12. # 0 at solar noon, +-180 at solar midnight
+    zenith=np.arccos(np.sin(lat_rad)*np.sin(decl) + np.cos(lat_rad)*np.cos(decl)*np.cos(hour_angle))
+
+    I = Imax*np.cos(zenith).clip(0)
+    if t_da is None:
+        return I
+    else:
+        ds=xr.Dataset()
+        ds['time']=t_da
+        ds.attrs['latitude']=lat
+        ds.attrs['longitude']=lon
+        ds.attrs['Imax']=Imax
+        ds['sol_rad']=ds['time'].dims, I
+        return ds
+
+def fill_curvilinear(xy,xy_valid=None):
+    """
+    Extrapolate missing values of a curvilinear mesh.
+    Currently very limited: fits a plane to each coordinate and
+    evaluates plane equation at missing points. This is okay for
+    very well-behaved cases and handles extrapolation.
+
+    A more general approach might fill areas inside the convex hull
+    by linear interpolation, and define local extrapolation functions.
+    
+    xy: array with shape [M,N,{x,y}]
+    xy_valid: bitmask [M,N] of which values should be assumed valid.
+    defaults to finite values of xy.
+    """
+    if xy_valid is None:
+        xy_valid=np.isfinite(xy[:,:,0]) & np.isfinite(xy[:,:,1])
+    #if np.all(xy_valid):
+    #    return
+    rows=np.arange(xy.shape[0])
+    cols=np.arange(xy.shape[1])
+    C,R=np.meshgrid(cols,rows)
+
+    # looking for a,b,c such that a*x+b*y = c approximates the plane defined
+    # by valid points
+    # this contains both valid and invalid points:
+    M=np.array(np.c_[R.ravel(), C.ravel(), np.ones_like(R.ravel())])
+
+    Mvalid=M[xy_valid.ravel(),:]
+    abc_x,_,_,_=np.linalg.lstsq(Mvalid,xy[xy_valid,0],rcond=None)
+    abc_y,_,_,_=np.linalg.lstsq(Mvalid,xy[xy_valid,1],rcond=None)
+    
+    Minvalid=M[~xy_valid.ravel(),:]
+    fill_x = Minvalid.dot(abc_x)
+    fill_y = Minvalid.dot(abc_y)
+
+    xy[~xy_valid,0] = fill_x
+    xy[~xy_valid,1] = fill_y
+
+def weighted_median(values, weights):
+    # credit to https://stackoverflow.com/questions/20601872/numpy-or-scipy-to-calculate-weighted-median
+    i = np.argsort(values)
+    c = np.cumsum(weights[i])
+    return values[i[np.searchsorted(c, 0.5 * c[-1])]]
+
+def sigma_median(C):
+    # C is assumed to be cell-constant
+    # assume vertical coordinate is the last dimension
+    sigma=np.linspace(0,1,1+C.shape[-1])
+    accum = np.cumsum(C,axis=-1)
+    accum = np.concatenate( [ 0*accum[...,:1], accum], axis=-1)
+    if C.ndim==1:
+        return np.interp(0.5, accum/accum[-1], sigma)
+    else:
+        results = np.zeros( C.shape[:-1], np.float64)
+        for idx in np.ndindex(*results.shape):
+            results[idx] = np.interp( 0.5, accum[idx][:]/accum[idx][-1], sigma)
+        return results # np.interp(0.5, accum/accum[-1], sigma)
+
+def windowed_slope(x,y,lp_function):
+    """
+    Calculate a running estimate of the slope y' ~ m*x'
+    using the given lowpass filter.
+
+    This specific code has not been tested, and is more of a place to 
+    put some notes on how it was implemented in a specific application.
+    """
+    xp = x-lp_function(x)
+    yp = y-lp_function(y)
+    sigXY = lp_function(xp*yp)
+    sigXX = lp_function(xp*xp)
+    return sigXY / sigXX
+

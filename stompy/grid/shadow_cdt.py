@@ -28,6 +28,12 @@ class ShadowCDT(exact_delaunay.Triangulation):
         
         self.nodemap_g_to_local={}
 
+        self.connect()
+        if not ignore_existing and g.Nnodes():
+            self.init_from_grid(g)
+            
+    def connect(self):
+        g=self.g
         g.subscribe_before('add_node',self.before_add_node)
         g.subscribe_after('add_node',self.after_add_node)
         g.subscribe_before('modify_node',self.before_modify_node)
@@ -37,8 +43,16 @@ class ShadowCDT(exact_delaunay.Triangulation):
         g.subscribe_before('delete_edge',self.before_delete_edge)
         g.subscribe_before('modify_edge',self.before_modify_edge)
 
-        if not ignore_existing and g.Nnodes():
-            self.init_from_grid(g)
+    def disconnect(self):
+        g=self.g
+        g.unsubscribe_before('add_node',self.before_add_node)
+        g.unsubscribe_after('add_node',self.after_add_node)
+        g.unsubscribe_before('modify_node',self.before_modify_node)
+        g.unsubscribe_before('delete_node',self.before_delete_node)
+        
+        g.unsubscribe_before('add_edge',self.before_add_edge)
+        g.unsubscribe_before('delete_edge',self.before_delete_edge)
+        g.unsubscribe_before('modify_edge',self.before_modify_edge)
 
     def init_from_grid(self,g): # ShadowCDT
         # Nodes:
@@ -46,7 +60,7 @@ class ShadowCDT(exact_delaunay.Triangulation):
         points=g.nodes['x'][n_valid]
         self.bulk_init(points)
 
-        pidxs=np.arange(g.Nnodes())[n_valid]
+        pidxs=np.nonzero(n_valid)[0] # np.arange(g.Nnodes())[n_valid]
         self.nodes['g_n']=pidxs
 
         for n in range(self.Nnodes()):
@@ -64,10 +78,7 @@ class ShadowCDT(exact_delaunay.Triangulation):
     def after_add_node(self,g,func_name,return_value,**k):
         n=return_value
         my_k={}
-        # re: _index
-        # as long as there aren't Steiner vertices and the like, then
-        # it's safe to force node index here to match the parent
-        self.nodemap_g_to_local[n]=self.add_node(x=k['x'],g_n=n,_index=n)
+        self.nodemap_g_to_local[n]=self.add_node(x=k['x'],g_n=n)
     def before_modify_node(self,g,func_name,n,**k):
         if 'x' in k:
             my_n=self.nodemap_g_to_local[n]
@@ -76,19 +87,22 @@ class ShadowCDT(exact_delaunay.Triangulation):
         self.delete_node(self.nodemap_g_to_local[n])
         del self.nodemap_g_to_local[n]
     def before_add_edge(self,g,func_name,**k):
-        nodes=k['nodes']
-        self.add_constraint(nodes[0],nodes[1])
+        g_nodes=k['nodes']
+        self.add_constraint(self.nodemap_g_to_local[g_nodes[0]],
+                            self.nodemap_g_to_local[g_nodes[1]])
     def before_modify_edge(self,g,func_name,j,**k):
         if 'nodes' not in k:
             return
         old_nodes=g.edges['nodes'][j]
         new_nodes=k['nodes']
-        self.remove_constraint( old_nodes[0],old_nodes[1])
-        self.add_constraint( new_nodes[0],new_nodes[1] )
+        self.remove_constraint( self.nodemap_g_to_local[old_nodes[0]],
+                                self.nodemap_g_to_local[old_nodes[1]])
+        self.add_constraint( self.nodemap_g_to_local[new_nodes[0]],
+                             self.nodemap_g_to_local[new_nodes[1]] )
     def before_delete_edge(self,g,func_name,j,**k):
         nodes=g.edges['nodes'][j]
-        self.remove_constraint(nodes[0],nodes[1])
-
+        self.remove_constraint(self.nodemap_g_to_local[nodes[0]],
+                               self.nodemap_g_to_local[nodes[1]])
     def delaunay_neighbors(self,gn):
         n=self.nodemap_g_to_local[gn]
         local_nbrs=self.node_to_nodes(n)
@@ -426,9 +440,10 @@ class ShadowCGALCDT(object):
         
         if len(to_remove) != len(g.node_to_edges(n)):
             # Usually means that there is an inconsistency in the CDT
-            log.error("WARNING: modify_node len(DT constraints) != len(pnt2edges(i))")
-            import pdb
-            pdb.set_trace()
+            log.error("WARNING: modify_node len(DT constraints) != len(pnt2edges(i)) at %s"%k['x'])
+            #import pdb
+            # pdb.set_trace()
+            return
             
         # remove all of the constraints in one go:
         self.DT.remove_incident_constraints(vh)
