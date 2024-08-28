@@ -104,7 +104,7 @@ class Diffuser(object):
 
         j_valid=~self.grid.edges['deleted']
 
-        print("Checking finite geometry")
+        # print("Checking finite geometry")
         assert np.all( np.isfinite(self.d_j[j_valid]))
         assert np.all( np.isfinite(self.l_j[j_valid]))
         assert np.all( np.isfinite(self.area_c))

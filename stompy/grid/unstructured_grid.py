@@ -1109,7 +1109,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
             if len(ccx) > grd.Ncells():
                 N=grd.Ncells()
-                print(f"{len(ccx)-N} apparent ghost cell centers")
+                #print(f"{len(ccx)-N} apparent ghost cell centers")
                 grd.ghost_cc=np.c_[ ccx[N:], ccy[N:]]
                 ccx=ccx[:N]
                 ccy=ccy[:N]
