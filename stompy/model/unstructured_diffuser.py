@@ -101,6 +101,9 @@ class Diffuser(object):
         self.area_c = self.grid.cells_area()
 
         self.K_j = 100*np.ones(self.grid.Nedges())
+        bad_dj_idx = np.where(self.d_j == 0.0)[0]
+        for idx in bad_dj_idx:
+            self.d_j[idx] = .001
 
         j_valid=~self.grid.edges['deleted']
 
