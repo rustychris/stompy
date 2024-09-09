@@ -613,7 +613,7 @@ def process_layer(orig_layer,output_name,tolerance=0.0,
 
         for fi in range(len(new_features)):
             pnts = new_features[fi]
-            valid = np.ones( len(pnts), np.bool8)
+            valid = np.ones( len(pnts), np.bool_)
             # go with a slower but safer loop here -
             last_valid=0
             for i in range(1,len(pnts)):

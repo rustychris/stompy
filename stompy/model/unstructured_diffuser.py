@@ -101,10 +101,13 @@ class Diffuser(object):
         self.area_c = self.grid.cells_area()
 
         self.K_j = 100*np.ones(self.grid.Nedges())
+        bad_dj_idx = np.where(self.d_j == 0.0)[0]
+        for idx in bad_dj_idx:
+            self.d_j[idx] = .001
 
         j_valid=~self.grid.edges['deleted']
 
-        print("Checking finite geometry")
+        # print("Checking finite geometry")
         assert np.all( np.isfinite(self.d_j[j_valid]))
         assert np.all( np.isfinite(self.l_j[j_valid]))
         assert np.all( np.isfinite(self.area_c))
@@ -157,7 +160,7 @@ class Diffuser(object):
         # map cells to forced values
         dirichlet = dict( [ (c,v) for c,v,xy in self.dirichlet_bcs])
 
-        self.is_calc_c = is_calc_c = np.ones(N,np.bool8)
+        self.is_calc_c = is_calc_c = np.ones(N,np.bool_)
         for c,v,xy in self.dirichlet_bcs:
             is_calc_c[c] = False
 

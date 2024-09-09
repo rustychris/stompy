@@ -163,7 +163,7 @@ class MergeUgridSubgrids(UgridTranscriber):
             mesh_var = self.nc_in.variables[mesh]
             fn_con = self.nc_in.variables[ mesh_var.edge_node_connectivity ][...]
             fn_con.sort(axis=1)
-            select_edges_from_submesh[meshi] = selected = np.zeros( len(fn_con), np.bool8 )
+            select_edges_from_submesh[meshi] = selected = np.zeros( len(fn_con), np.bool_ )
 
             tupes = [tuple(nnn) for nnn in fn_con]
             max_edges_per_submesh = max(max_edges_per_submesh,len(tupes))
@@ -214,7 +214,7 @@ class MergeUgridSubgrids(UgridTranscriber):
             mesh_var = self.nc_in.variables[mesh]
             fn_con = self.nc_in.variables[ mesh_var.face_node_connectivity ][...]
             fn_con.sort(axis=1)
-            select_from_submesh[meshi] = selected = np.zeros( len(fn_con), np.bool8 )
+            select_from_submesh[meshi] = selected = np.zeros( len(fn_con), np.bool_ )
 
             tupes = [tuple(nnn) for nnn in fn_con]
             max_faces_per_submesh = max(max_faces_per_submesh,len(tupes))

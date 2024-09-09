@@ -133,6 +133,10 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             if self.restart_deep:
                 self.set_run_dir(self.run_dir,mode='create')
                 self.update_config()
+                # 2024-07-08: At least some parts of write_config() would be
+                # better handled after copy_files_for_restart(). There is the
+                # danger that write_config() will write a file and copy_files_for
+                # restart will overwrite. This happened with sources.sub.
                 self.write_config()
                 self.copy_files_for_restart()
                                 
@@ -179,7 +183,8 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             _,suffix = os.path.splitext(fn)
             do_copy = ( (suffix in ['.tim','.pli','.pliz','.ext','.xyz','.ini','.xyn'])
                         or (fn in flowfm_ext)
-                        or (fn in flowfm_mdu)
+                        # sources.sub is explicitly handled in write_config
+                        or (fn in flowfm_mdu and fn !='sources.sub')
                         or (fn==self.mdu['geometry','NetFile']) )
             # a bit kludgey. restart paths often include DFM_OUTPUT_flowfm, but definitely
             # don't want to copy that.
@@ -1610,7 +1615,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                     print('Yuck - duplicate %s names'%coord)
                     mask=[val not in coord_vals[:i]
                           for i,val in enumerate(coord_vals)]
-                    mask=np.array(mask, np.bool8 )
+                    mask=np.array(mask, np.bool_ )
                     his_ds=his_ds.isel(**{coord:mask})
                     coord_vals=np.array(coord_vals)[mask]
                     

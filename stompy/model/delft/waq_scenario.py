@@ -6118,7 +6118,7 @@ class FilterHydroBC(Hydro):
                 assert False
         else:
             selection=np.asarray(selection)
-            if selection.dtype==np.bool8:
+            if selection.dtype==np.bool_:
                 sel=np.nonzero(selection)
             else:
                 sel=selection

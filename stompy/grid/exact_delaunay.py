@@ -93,7 +93,7 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
     post_check=False # enables [expensive] checks after operations
     
     edge_dtype=(unstructured_grid.UnstructuredGrid.edge_dtype +
-                [ ('constrained',np.bool8) ] )
+                [ ('constrained',np.bool_) ] )
 
     def add_node(self,**kwargs):
         # will eventually need some caching or indexing to make
@@ -1865,7 +1865,7 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
         'insert': at intersecting edges construct and insert a new node.
         """
         if set_valid:
-            self.add_cell_field('valid',np.zeros(self.Ncells(),np.bool8),
+            self.add_cell_field('valid',np.zeros(self.Ncells(),np.bool_),
                                 on_exists='pass')
 
         # Seems that the indices will get misaligned if there are

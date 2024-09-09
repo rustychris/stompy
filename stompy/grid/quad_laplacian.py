@@ -1220,7 +1220,7 @@ class QuadGen(object):
 
         last_angle=None
 
-        gen.add_node_field('fixed',np.zeros(gen.Nnodes(),np.bool8))
+        gen.add_node_field('fixed',np.zeros(gen.Nnodes(),np.bool_))
         
         for a,b in zip( cycle, np.roll(cycle,-1) ):
             j=gen.nodes_to_edge(a,b)
@@ -2209,8 +2209,8 @@ class QuadGen(object):
         # --- Compile Swaths ---
         e2c=g_final2.edge_to_cells(recalc=True)
 
-        i_adj=np.zeros( (g_final2.Ncells(), g_final2.Ncells()), np.bool8)
-        j_adj=np.zeros( (g_final2.Ncells(), g_final2.Ncells()), np.bool8)
+        i_adj=np.zeros( (g_final2.Ncells(), g_final2.Ncells()), np.bool_)
+        j_adj=np.zeros( (g_final2.Ncells(), g_final2.Ncells()), np.bool_)
 
         # tag ragged cells
         j_ragged=g_final2.edges['angle']%90 != 0.0
@@ -2957,7 +2957,7 @@ class SimpleSingleQuadGen(QuadGen):
                 # use a precalculated density continuous along the linestring,
                 # dens_pc=density(pnts) # old usage
                 seg=linestring_utils.resample_linearring(pnts,dens_pc,closed_ring=0)
-                rigid=np.zeros(len(seg),np.bool8)
+                rigid=np.zeros(len(seg),np.bool_)
                 rigid[0]=rigid[-1]=True
             else:
                 pnt_a=self.gen.nodes['x'][a]
@@ -2980,7 +2980,7 @@ class SimpleSingleQuadGen(QuadGen):
                     if self.gen.edges['nodes'][j,1]==a:
                         seg=seg[::-1]
 
-                rigid=np.ones(len(seg),np.bool8)
+                rigid=np.ones(len(seg),np.bool_)
             result.append(seg[:-1])
             rigids.append(rigid[:-1])
         result.append( seg[-1:] )
@@ -3071,7 +3071,7 @@ class SimpleSingleQuadGen(QuadGen):
         and return the cell/node map, too.
         """
         patch=unstructured_grid.UnstructuredGrid(max_sides=4,
-                                                 extra_node_fields=[('rigid',np.bool8),
+                                                 extra_node_fields=[('rigid',np.bool_),
                                                                     ('pp',np.float64,2)],
                                                  extra_edge_fields=[('orient',np.float32)])
         elts=patch.add_rectilinear( [0,0],

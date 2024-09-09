@@ -28,7 +28,12 @@ class ProcessDB(object):
 
         if not (proc_dat and proc_def):
             if not proc:
-                proc=self.scenario.proc_path
+                try:
+                    proc=self.scenario.proc_path
+                except AttributeError:
+                    log.warning("Scenario does not supply proc_path. Process DB unavailable (mostly just affects names)")
+                    self._has_nef=False
+                    return
             proc_dat=proc +".dat"
             proc_def=proc +".def"
             
@@ -43,7 +48,8 @@ class ProcessDB(object):
         else:
             nef=None
         yield nef
-        nef.close()
+        if nef is not None:
+            nef.close()
 
     def p2_idx_by_item_id(self,subst):
         return self.find_item(table='TABLE_P2',column='ITEM_ID',value=subst)

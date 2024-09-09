@@ -204,7 +204,7 @@ def nwis_dataset(station,start_date,end_date,products,
             
     # occasional errors with repeated timestamps. Not sure how this comes about,
     # but it frustrates combine_first
-    datasets=[ds.isel(time=np.r_[True, ds.time.values[1:]>ds.time.values[:-1]])
+    datasets=[ds.isel(time=np.r_[True, ds.time.values[1:]>ds.time.values[:-1]]) if len(ds.time) > 1 else ds
               for ds in datasets]
     
     if len(datasets)>1:
