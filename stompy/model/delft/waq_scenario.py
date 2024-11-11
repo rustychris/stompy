@@ -11696,6 +11696,26 @@ class WaqOnlineModel(WaqModelBase):
         
         See online_dwaq.py in the proof-of-concept manual setup for a specialization
         of write_waq() that appends dwaq tracer info to an existing external forcing file.
+
+        Typical control flow for a new run:
+        
+        model.__init__()
+        application-specific code (update model.mdu, add waq tracers, etc)
+        model.write()
+          HydroModel.write()
+            set_run_dir()
+            update_config()
+            write_config()
+            write_extra_files()
+            write_forcing()
+            write_grid()
+          [CustomProcesses.write() => CustomProcesses.build_process_db()]
+        model.partition()
+        model.run_simulation()
+
+
+        Control flow for a restart:
+        TBD
         """
         self.log.info('Updating mdu with Delwaq settings...')
         # add reference to sub-file in .mdu

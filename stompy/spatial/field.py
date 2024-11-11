@@ -2347,16 +2347,20 @@ class SimpleGrid(QuadrilateralGrid):
         # use a really naive downsampling for now:
         if method=='decimate':
             new_F = np.array(self.F[::factor,::factor])
-        elif method=='ma_mean':
+        elif method in ('ma_mean','mean'):
             # if not isinstance(self.F,np.ma.core.MaskedArray):
             F=self.F
             nr,nc=F.shape
             nr+=(-nr)%factor # pad to even multiple
             nc+=(-nc)%factor # pad...
-            F2=np.ma.zeros((nr,nc))
+            if method=='ma_mean':
+                F2=np.ma.zeros((nr,nc))
+            else:
+                F2=np.zeros((nr,nc))
             F2[:]=np.nan
             F2[:F.shape[0],:F.shape[1]]=F
-            F2=np.ma.masked_invalid(F2)
+            if method=='ma_mean':
+                F2=np.ma.masked_invalid(F2)
             F2=F2.reshape([nr//factor,factor,nc//factor,factor]) 
             F2=F2.transpose([0,2,1,3]).reshape([nr//factor,nc//factor,factor*factor])
             new_F=F2.mean(axis=2)

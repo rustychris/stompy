@@ -2577,6 +2577,15 @@ def dominant_period(h,t,uniform=True,guess=None):
     result = fmin(cost,[float(guess)])
     return result[0]
 
+def eqn_of_time(t):
+    # Adjustment of solar time to account for elliptical orbit
+    #  https://en.wikipedia.org/wiki/Equation_of_time
+    D=6.24004077 + 0.01720197*( (t-np.datetime64("2000-01-01 00:00"))/np.timedelta64(1,'D'))
+    delta_t_minutes = -7.659*np.sin(D) + 9.863 * np.sin(2*D+3.5932)
+    # For 2022-08-07 this is -5.7 minutes
+    delta_t = delta_t_minutes * 60 * np.timedelta64(1,'s')
+    return delta_t
+    
 def ideal_solar_rad(t,Imax=1000,lat=37.775,lon=-122.419, declination=True):
     """ 
     Return time series of idealized solar radiation.
@@ -2584,12 +2593,18 @@ def ideal_solar_rad(t,Imax=1000,lat=37.775,lon=-122.419, declination=True):
     Imax: maximum solar radiation (i.e. noon on equator at equinox).
     lat, lon: location, in degrees. Defaults to San Francisco.
     returns dataset including sol_rad.
+
+    When compared to NOAA sunrise/sunset, this does include
+    adjustment for equation of time, but does not include atmospheric refraction
+    which extends the day by a few minutes on both ends
     """
     if isinstance(t,xr.DataArray):
         t_da=t
         t=t.values
     else:
         t_da=None
+
+    t=t+eqn_of_time(t)
         
     lat_rad=lat*np.pi/180.
 

@@ -63,13 +63,13 @@ Limtyphu                          = 0                   # Limiter type for water
 Limtypmom                         = 4                   # Limiter type for cell center advection velocity (0: none, 1: minmod, 2: van Leer, 3: Kooren, 4: monotone central)
 Limtypsa                          = 4                   # Limiter type for salinity transport (0: none, 1: minmod, 2: van Leer, 3: Kooren, 4: monotone central)
 # DEPRECATED TransportMethod                   = 1                   # Transport method (0: Herman's method, 1: transport module)
-TransportTimestepping             = 0                   # Timestepping method in Transport module, 0 = global (default) , 1 = local
+# TransportTimestepping             = 0                   # Timestepping method in Transport module, 0 = global (default) , 1 = local
 Vertadvtypsal                     = 6                   # Vertical advection type for salinity (0: none, 1: upwind explicit, 2: central explicit, 3: upwind implicit, 4: central implicit, 5: central implicit but upwind for neg. stratif., 6: higher order explicit, no Forester)
 Vertadvtyptem                     = 6                   # Vertical advection type for temperature (0: none, 1: upwind explicit, 2: central explicit, 3: upwind implicit, 4: central implicit, 5: central implicit but upwind for neg. stratif., 6: higher order explicit, no Forester)
 Cffacver                          = 0.                  # Factor for including (1-CFL) in HO term vertical   (0d0: no, 1d0: yes)
 Jarhoxu                           = 0                   # Inlcude density gradient in advection term (0: no, 1: yes, 2: Also in barotrop and baroclin pressure term)
 Horadvtypzlayer                   = 0                   # Horizontal advection treatment of z-layers (1: default, 2: sigma-like)
-Zlayeratubybob                    = 0                   # Lowest connected cells governed by bob instead of by bL L/R
+# Zlayeratubybob                    = 0                   # Lowest connected cells governed by bob instead of by bL L/R
 Icgsolver                         = 4                   # Solver type (1: sobekGS_OMP, 2: sobekGS_OMPthreadsafe, 3: sobekGS, 4: sobekGS + Saadilud, 5: parallel/global Saad, 6: parallel/Petsc, 7: parallel/GS)
 Maxdegree                         = 3                   # Maximum degree in Gauss elimination
 FixedWeirScheme                   = 0                   # Fixed weir scheme (0: none, 1: compact stencil, 2: whole tile lifted, full subgrid weir + factor)
@@ -227,9 +227,9 @@ RstInterval                       = 86400. 				# Restart file output times, give
 # S1incinterval          = 0.                  # Interval (m) in incremental file for water levels S1
 WaqInterval                       = 0. 					# DELWAQ output times, given as "interval" "start period" "end period" (s)
 StatsInterval                     = -600.               # Interval (in s) between simulation statistics output.
-WriteBalancefile                  = 0                   # Write balance file (1: yes, 0: no)
+# WriteBalancefile                  = 0                   # Write balance file (1: yes, 0: no)
 TimingsInterval                   = 0.                  # Timings statistics output interval
-TimeSplitInterval                 = 0X                  # Time splitting interval, after which a new output file is started. value+unit, e.g. '1 M', valid units: Y,M,D,h,m,s.
+TimeSplitInterval                 = 0                   # Time splitting interval, after which a new output file is started. value+unit, e.g. '1 M', valid units: Y,M,D,h,m,s.
 MapFormat                         = 1                   # Map file format, 1: netCDF, 2: Tecplot, 3: netCFD and Tecplot, 4: NetCDF-UGRID
 Wrihis_balance                    = 1                   # Write mass balance totals to his file (1: yes, 0: no)
 Wrihis_sourcesink                 = 1                   # Write sources-sinks statistics to his file (1=yes, 0=no)
