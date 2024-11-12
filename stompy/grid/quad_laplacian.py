@@ -81,7 +81,8 @@ RIGID=front.AdvancingFront.RIGID
 class NodeDiscretization(object):
     # original code set gradients by forcing the normal of the gradient
     # to zero. This doesn't force a sign or magnitude on the gradient.
-    # If this is False, gradients are directly enforced.
+    # If this is False, gradients are directly enforced, but requires
+    # a lot of care in getting the magnitude to match
     gradient_by_normal=True
     def __init__(self,g,**kw):
         self.g=g
@@ -184,6 +185,8 @@ class NodeDiscretization(object):
                 # So if vec = [1,0]
                 # mag= sqrt(vec[0]**2 + vec[1]**2)
                 # I want dx*vec[0]+dy*vec[1] = vec[0]**2 + vec[1]**2
+                # I don't think this works -- assumes dx**2+dy**2==1,
+                # but in practice that's never true.
                 alphas=np.array(dx_alphas)*vec[0] + np.array(dy_alphas)*vec[1]
                 B[row]=vec[0]**2 + vec[1]**2
                 
@@ -1217,7 +1220,7 @@ class QuadGen(object):
 
         last_angle=None
 
-        gen.add_node_field('fixed',np.zeros(gen.Nnodes(),np.bool8))
+        gen.add_node_field('fixed',np.zeros(gen.Nnodes(),np.bool_))
         
         for a,b in zip( cycle, np.roll(cycle,-1) ):
             j=gen.nodes_to_edge(a,b)
@@ -1736,11 +1739,11 @@ class QuadGen(object):
         ax.axis('off')
 
         for i_d in self.i_dirichlet_nodes:
-            ax.annotate( f"$\psi$={self.i_dirichlet_nodes[i_d]}",
+            ax.annotate( f"$\\psi$={self.i_dirichlet_nodes[i_d]}",
                          self.g_int.nodes['x'][i_d], va='top',
                          arrowprops=dict(arrowstyle='simple',alpha=0.4))
         for j_d in self.j_dirichlet_nodes:
-            ax.annotate( f"$\phi$={self.j_dirichlet_nodes[j_d]}",
+            ax.annotate( f"$\\phi$={self.j_dirichlet_nodes[j_d]}",
                          self.g_int.nodes['x'][j_d], va='bottom' ,
                          arrowprops=dict(arrowstyle='simple',alpha=0.4))
 
@@ -1805,8 +1808,8 @@ class QuadGen(object):
         ax.axis('tight')
         ax.axis('equal')
 
-        ax.clabel(cset_psi, fmt="$\psi$=%g", fontsize=10, inline=False, use_clabeltext=True)
-        ax.clabel(cset_phi, fmt="$\phi$=%g", fontsize=10, inline=False, use_clabeltext=True)
+        ax.clabel(cset_psi, fmt="$\\psi$=%g", fontsize=10, inline=False, use_clabeltext=True)
+        ax.clabel(cset_phi, fmt="$\\phi$=%g", fontsize=10, inline=False, use_clabeltext=True)
 
     def plot_result(self,num=5):
         plt.figure(num).clf()
@@ -2206,8 +2209,8 @@ class QuadGen(object):
         # --- Compile Swaths ---
         e2c=g_final2.edge_to_cells(recalc=True)
 
-        i_adj=np.zeros( (g_final2.Ncells(), g_final2.Ncells()), np.bool8)
-        j_adj=np.zeros( (g_final2.Ncells(), g_final2.Ncells()), np.bool8)
+        i_adj=np.zeros( (g_final2.Ncells(), g_final2.Ncells()), np.bool_)
+        j_adj=np.zeros( (g_final2.Ncells(), g_final2.Ncells()), np.bool_)
 
         # tag ragged cells
         j_ragged=g_final2.edges['angle']%90 != 0.0
@@ -2954,7 +2957,7 @@ class SimpleSingleQuadGen(QuadGen):
                 # use a precalculated density continuous along the linestring,
                 # dens_pc=density(pnts) # old usage
                 seg=linestring_utils.resample_linearring(pnts,dens_pc,closed_ring=0)
-                rigid=np.zeros(len(seg),np.bool8)
+                rigid=np.zeros(len(seg),np.bool_)
                 rigid[0]=rigid[-1]=True
             else:
                 pnt_a=self.gen.nodes['x'][a]
@@ -2977,7 +2980,7 @@ class SimpleSingleQuadGen(QuadGen):
                     if self.gen.edges['nodes'][j,1]==a:
                         seg=seg[::-1]
 
-                rigid=np.ones(len(seg),np.bool8)
+                rigid=np.ones(len(seg),np.bool_)
             result.append(seg[:-1])
             rigids.append(rigid[:-1])
         result.append( seg[-1:] )
@@ -3068,7 +3071,7 @@ class SimpleSingleQuadGen(QuadGen):
         and return the cell/node map, too.
         """
         patch=unstructured_grid.UnstructuredGrid(max_sides=4,
-                                                 extra_node_fields=[('rigid',np.bool8),
+                                                 extra_node_fields=[('rigid',np.bool_),
                                                                     ('pp',np.float64,2)],
                                                  extra_edge_fields=[('orient',np.float32)])
         elts=patch.add_rectilinear( [0,0],

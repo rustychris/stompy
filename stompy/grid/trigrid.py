@@ -522,7 +522,7 @@ class TriGrid(object):
         ghost_edge = self.edges[:,2] == 6
         ghost_cells = self.edges[ghost_edge,3:5].ravel()
 
-        bitmap = np.zeros( self.Ncells(), np.bool8 )
+        bitmap = np.zeros( self.Ncells(), np.bool_ )
         bitmap[ ghost_cells ] = True
         return bitmap
 

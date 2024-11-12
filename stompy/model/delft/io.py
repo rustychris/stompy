@@ -115,7 +115,7 @@ def his_file_xarray(fn,region_exclude=None,region_include=None):
         region_mask=np.array( [bool(re.match(region_include,region))
                                for region in region_names] )
     else:
-        region_mask=np.ones(len(region_names),np.bool8)
+        region_mask=np.ones(len(region_names),np.bool_)
 
     if region_exclude:
         skip=[bool(re.match(region_exclude,region))

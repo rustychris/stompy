@@ -470,7 +470,7 @@ def select_increasing(x):
     Return a bitmask over x removing any samples which are
     less than or equal to the largest preceding sample
     """
-    mask=np.ones(len(x),np.bool8)
+    mask=np.ones(len(x),np.bool_)
     last=None # -np.inf doesn't work for weird types that can't compare to float
     for i in range(len(x)):
         if last is not None and x[i] <= last:
@@ -2283,7 +2283,7 @@ def remove_repeated(A,axis=0):
         return np.concatenate( ( A[:1], A[1:][ np.diff(A)!=0 ] ) )
     else:
         # too lazy to be efficient right now.
-        valid=np.ones(A.shape[0],np.bool8)
+        valid=np.ones(A.shape[0],np.bool_)
         for i in range(1,A.shape[0]):
             if np.all( A[i,...]==A[i-1,...] ):
                 valid[i]=False

@@ -30,6 +30,8 @@ from matplotlib.tri import Triangulation
 from matplotlib.collections import PolyCollection, LineCollection
 from matplotlib.path import Path
 
+import pdb
+
 from ..spatial import gen_spatial_index, proj_utils
 from ..utils import (mag, circumcenter, circular_pairs,signed_area, poly_circumcenter,
                      orient_intersection,array_append,within_2d, to_unit, progress,
@@ -342,18 +344,18 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     # just consequences of the rest of the topology, the assumed invariant is that
     # (outside of initialization or during modification), they are kept consistent.
 
-    node_dtype = [ ('x',(np.float64,2)),('deleted',np.bool8) ]
+    node_dtype = [ ('x',(np.float64,2)),('deleted',np.bool_) ]
     node_defaults=None
     cell_dtype  = [ # edges/nodes are set dynamically in __init__ since max_sides can change
                     ('_center',(np.float64,2)),  # typ. voronoi center
                     ('mark',np.int32),
                     ('_area',np.float64),
-                    ('deleted',np.bool8)]
+                    ('deleted',np.bool_)]
     cell_defaults=None
     edge_dtype = [ ('nodes',(np.int32,2)),
                    ('mark',np.int32),
                    ('cells',(np.int32,2)),
-                   ('deleted',np.bool8)]
+                   ('deleted',np.bool_)]
     edge_defaults=None
 
     ##
@@ -1109,7 +1111,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
             if len(ccx) > grd.Ncells():
                 N=grd.Ncells()
-                print(f"{len(ccx)-N} apparent ghost cell centers")
+                #print(f"{len(ccx)-N} apparent ghost cell centers")
                 grd.ghost_cc=np.c_[ ccx[N:], ccy[N:]]
                 ccx=ccx[:N]
                 ccy=ccy[:N]
@@ -3208,7 +3210,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     # handle e=[1,45,321], e=[True,False,True, True,...]
                     e=np.asarray(e)
                     L=len(e)
-                    if L==self.Nedges() and np.issubdtype(np.bool,e.dtype):
+                    if L==self.Nedges() and np.issubdtype(np.bool_,e.dtype):
                         js=np.nonzero(e)[0]
                     else:
                         js=e
@@ -3575,7 +3577,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 do_update=True
             else:
                 to_update=np.asarray(to_update)
-                if to_update.dtype==np.bool8:
+                if to_update.dtype==np.bool_:
                     do_update=to_update.sum()
                 else:
                     do_update=len(to_update)
@@ -5018,7 +5020,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         return within_2d(self.nodes['x'],clip)
 
     def plot_nodes(self,ax=None,mask=None,values=None,sizes=20,labeler=None,clip=None,
-                   masked_values=None,label_jitter=0.0,
+                   masked_values=None,label_jitter=0.0,text_kw={},
                    **kwargs):
         """ plot nodes as scatter
         labeler: callable taking (node index, node record), return string
@@ -5056,7 +5058,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 x=x+label_jitter*(np.random.random( (self.Nnodes(),2) )-0.5)
             # weirdness to account for mask being indices vs. bitmask
             for n in np.arange(self.Nnodes())[mask]: # np.nonzero(mask)[0]:
-                ax.text(x[n,0],x[n,1], labeler(n,self.nodes[n]))
+                ax.text(x[n,0],x[n,1], labeler(n,self.nodes[n]),**text_kw)
 
         coll=ax.scatter(self.nodes['x'][mask][:,0],
                         self.nodes['x'][mask][:,1],
@@ -5076,7 +5078,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
     def plot_edges(self,ax=None,mask=None,values=None,clip=None,labeler=None,
                    label_jitter=0.0,lw=0.8,return_mask=False,
-                   subedges=None,**kwargs):
+                   subedges=None,text_kw={},**kwargs):
         """
         plot edges as a LineCollection.
         optionally select a subset of edges with boolean array mask.
@@ -5155,7 +5157,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     pnt=0.5*( arc[arc.shape[0]//2,:] + arc[arc.shape[0]//2-1,:])
                 else:
                     pnt=ec[n,:]
-                ax.text(pnt[0], pnt[1], labeler(n,self.edges[n]))
+                ax.text(pnt[0], pnt[1], labeler(n,self.edges[n]),**text_kw)
 
         ax.add_collection(lcoll)
         if bounds is not None:
@@ -5617,7 +5619,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             cell_mask=np.nonzero( ~self.cells['deleted'] )[0]
         else:
             cell_mask=np.asarray(cell_mask)
-            if np.issubdtype(cell_mask.dtype,np.bool8):
+            if np.issubdtype(cell_mask.dtype,np.bool_):
                 cell_mask=np.nonzero(cell_mask)[0]
 
         if self.max_sides>3:
@@ -6163,7 +6165,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         those in the mask
         by_center: test the midpoint, rather than the line segment
         """
-        sel = np.zeros(self.Nedges(),np.bool8) # initialized to False
+        sel = np.zeros(self.Nedges(),np.bool_) # initialized to False
         if by_center:
             centers=self.edges_center()
             
@@ -6182,6 +6184,84 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             return np.nonzero(sel)[0]
         else:
             return sel
+
+    def get_cell_polys(self):
+        cell_polys = []
+        for i,cell in enumerate(self.cells):
+            cell_poly = geometry.Polygon(self.nodes['x'][self.cell_to_nodes(i)])
+            cell_polys.append(cell_poly)
+        return cell_polys
+
+    def area_intersecting(self,polygon,cell_indices):
+        """
+        polygon: a shapely geometry (region)
+        """
+        cell_polys = self.get_cell_polys()
+        area_int = np.zeros(len(self.cells),np.float64)
+        for i in cell_indices:
+            area_int[i] = polygon.intersection(cell_polys[i]).area
+        return area_int
+
+    def area_in_region(self,polygon,cell_indices):
+        """
+        polygon: a shapely geometry (region)
+        """
+        area_sum = 0.0
+        area_int = self.area_intersecting(polygon,cell_indices)
+        area_sum = sum(area_int[cell_indices])
+        return area_sum
+
+    def calc_column_wet_volume_at_wse(self,i,wse,max_depth=999.999):
+        # get vectors of area and bed_depth
+        area_sub,bed_depth_sub = self.cells['subgrid'][i]
+        depth_sub = np.asarray(wse+bed_depth_sub)
+        depth_sub = np.clip(depth_sub,0.0,max_depth)
+        vol = np.multiply(depth_sub,area_sub)
+        vol_column = np.sum(vol)
+        return vol_column
+        
+    def vol_in_region_at_wse(self,polygon,cell_indices,wse=0.0,
+                             subgrid=False,max_depth=None):
+        """
+        polygon: a shapely geometry (region)
+        """
+        vol_sum = 0.0
+
+        cell_polys = self.get_cell_polys()
+        if max_depth is None:
+            max_depth = 999.0 # hardwired large number
+        area_int = self.area_intersecting(polygon,cell_indices)
+        #pdb.set_trace()
+        if subgrid:
+            vol = np.zeros(len(cell_indices), np.float64)
+            for nc,index in enumerate(cell_indices):
+                if (area_int[index]/cell_polys[index].area) > 1.000001:
+                    print("error in area",nc,index,area_int[index],cell_polys[index].area)
+                if (area_int[index]/cell_polys[index].area) < 0.0:
+                    print("error in area",nc,index,area_int[index],cell_polys[index].area)
+                vol[nc] = self.calc_column_wet_volume_at_wse(index,wse,max_depth)
+                vol[nc] = vol[nc]*area_int[index]/cell_polys[index].area
+        else:
+            depth = self.cells['depth'] + wse
+            depth = np.clip(depth,0.0,max_depth)
+            vol = np.multiply(area_int[cell_indices],depth[cell_indices])
+        vol_sum = np.sum(vol)
+        return vol_sum
+
+    def vol_in_region(self,polygon,cell_indices,max_depth=None):
+        """
+        polygon: a shapely geometry (region)
+        """
+        vol_sum = 0.0
+
+        if max_depth is None:
+            max_depth = 999.0 # hardwired large number
+        area_int = self.area_intersecting(polygon,cell_indices)
+        depth = self.cells['depth'] + 1.25
+        depth = np.clip(depth,0.0,max_depth)
+        vol = np.multiply(area_int[cell_indices],depth[cell_indices])
+        vol_sum = np.sum(vol)
+        return vol_sum
 
     def cell_polygon(self,c,subedges=None):
         if subedges is None:
@@ -6217,7 +6297,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         # so use any()
         boundary_edges=(np.any(e2c<0,axis=1))&(~self.edges['deleted'])
 
-        marked=np.zeros(self.Nedges(),np.bool8)
+        marked=np.zeros(self.Nedges(),np.bool_)
         lines=[]
         for j in np.nonzero(boundary_edges)[0]:
             if marked[j]:
@@ -6340,7 +6420,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         #  mid: break features at nodes with degree>2.
         # go with mid
         strings=[]
-        edge_marks=np.zeros(self.Nedges(), np.bool8)
+        edge_marks=np.zeros(self.Nedges(), np.bool_)
 
         def degree2_predicate(n,js):
             """
@@ -6586,7 +6666,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         return boundary_nodes
 
     def select_nodes_intersecting(self,geom=None,xxyy=None,invert=False,as_type='mask'):
-        sel = np.zeros(self.Nnodes(),np.bool8) # initialized to False
+        sel = np.zeros(self.Nnodes(),np.bool_) # initialized to False
 
         assert (geom is not None) or (xxyy is not None)
 
@@ -6621,7 +6701,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             as_type='indices'
 
         if isinstance(as_type,str) and as_type=='mask':
-            sel = np.zeros(self.Ncells(),np.bool8) # initialized to False
+            sel = np.zeros(self.Ncells(),np.bool_) # initialized to False
         else:
             sel = []
 
@@ -6781,7 +6861,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         delta: size of finite difference used in determining the orientation
         of the cut.
         """
-        marks=np.zeros(self.Ncells(),np.bool8)
+        marks=np.zeros(self.Ncells(),np.bool_)
 
         def test_edge(j):
             cells=self.edges['cells'][j]
@@ -7120,7 +7200,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
           certainly want to supply max_distance.
         """
 
-        if np.issubdtype(nodes.dtype,np.bool8):
+        if np.issubdtype(nodes.dtype,np.bool_):
             nodes=np.nonzero(nodes)[0]
 
         dists=np.zeros(self.Nnodes(),np.float64)
@@ -7174,7 +7254,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
     def create_dual(self,center='centroid',create_cells=False,
                     remove_disconnected=False,remove_1d=True,
-                    extend_to_boundary=False):
+                    extend_to_boundary=False,**grid_kwargs):
         """
         Return a new grid which is the dual of this grid. This
         is robust for triangle->'hex' grids, and provides reasonable
@@ -7193,7 +7273,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             # anecdotal, but remove_disconnected calls boundary_linestrings,
             # which in turn needs cells.
             raise Exception("Creating the dual without cells is not compatible with removing disconnected")
-        gd=UnstructuredGrid()
+        gd=UnstructuredGrid(**grid_kwargs)
 
         if center=='centroid':
             cc=self.cells_centroid()
@@ -7210,7 +7290,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             e2c=self.edge_to_cells()
             boundary_edge_mask=e2c.min(axis=1)<0
             boundary_nodes=np.unique(self.edges['nodes'][boundary_edge_mask])
-            boundary_node_mask=np.zeros(self.Nnodes(),np.bool8)
+            boundary_node_mask=np.zeros(self.Nnodes(),np.bool_)
             boundary_node_mask[boundary_nodes]=True
             # below, if a cell's nodes are all True in boundary_node_mask,
             # it will be skipped
@@ -7269,9 +7349,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         if create_cells:
             # to create cells in the dual -- these map to interior nodes
             # of self.
-            max_degree=10 # could calculate this.
+            max_degree=max(gd.max_sides,10) # could calculate this.
             e2c=self.edge_to_cells()
-            gd.modify_max_sides(max_degree)
+            if max_degree>gd.max_sides:
+                gd.modify_max_sides(max_degree)
 
             gd.add_cell_field('source_node',np.zeros(gd.Ncells(),np.int32)-1,
                               on_exists='overwrite')
@@ -7341,7 +7422,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         n_comps,labels=csgraph.connected_components(graph,directed=False)
 
         if cell_mask is None:
-            cell_mask=np.ones(self.Ncells(), np.bool8)
+            cell_mask=np.ones(self.Ncells(), np.bool_)
 
         labels[~cell_mask]=-1 # mark dry cells as -1
         unique_labels=np.unique( labels[cell_mask] )
@@ -8583,7 +8664,7 @@ class UnTRIM08Grid(UnstructuredGrid):
         # NB: these depths are as soundings - positive down.
         super(UnTRIM08Grid,self).__init__( extra_cell_fields = extra_cell_fields + [('depth_mean',np.float64),
                                                                                     ('depth_max',np.float64),
-                                                                                    ('red',np.bool8),
+                                                                                    ('red',np.bool_),
                                                                                     ('subgrid',object)],
                                            extra_edge_fields = extra_edge_fields + [('depth_mean',np.float64),
                                                                                     ('depth_max',np.float64),
@@ -8891,7 +8972,7 @@ class UnTRIM08Grid(UnstructuredGrid):
             else:
                 overwrite=True
                 selector = np.asarray(selector)
-                if selector.dtype == np.bool8:
+                if selector.dtype == np.bool_:
                     selector = np.nonzero( selector )[0]
 
             # so now selector is iterable, but still doesn't account for deleted elements

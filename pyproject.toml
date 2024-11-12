@@ -1,0 +1,47 @@
+# pyproject.toml
+
+[build-system]
+requires = ["setuptools>=67.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stompy-ocean"
+version = "0.0.5"
+description = "Various python modules related to modeling and oceanographic data analysis."
+readme = {file = "README.md", content-type = "text/markdown"}
+authors = [{ name = "Rusty Holleman", email = "rustychris@gmail.com" }]
+license = { file = "LICENSE" }
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+]
+keywords = ["modeling", "oceanography", "grid"]
+dependencies = ["cmocean",
+"matplotlib",
+"netCDF4",
+"pandas",
+"requests",
+"scipy",
+"Shapely",
+"six",
+"xarray",
+"seawater",
+"gdal<3.9",
+"numpy<2.0",
+"cgal"
+]
+requires-python = ">=3.0"
+
+[tool.setuptools]
+packages=['stompy', 'stompy.grid', 'stompy.io', 'stompy.io.local',
+              'stompy.model', 'stompy.model.delft', 'stompy.model.fvcom',
+              'stompy.model.pypart', 'stompy.model.suntans',
+              'stompy.plot', 'stompy.plot.cmaps',
+              'stompy.spatial']
+
+[tool.setuptools.package-data]
+stompy = ["tide_consts.txt"]
+
+[project.urls]
+Homepage = "https://github.com/rustychris/stompy"

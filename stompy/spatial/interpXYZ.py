@@ -225,7 +225,7 @@ class Interp4D(object):
         # Create a 3D mask
         self.szxy = xin.shape
         if mask==None:
-            self.mask = np.zeros((self.nz,)+self.szxy,np.bool)
+            self.mask = np.zeros((self.nz,)+self.szxy,np.bool_)
         else:
             self.mask=mask
 

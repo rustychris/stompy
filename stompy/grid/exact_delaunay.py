@@ -93,7 +93,7 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
     post_check=False # enables [expensive] checks after operations
     
     edge_dtype=(unstructured_grid.UnstructuredGrid.edge_dtype +
-                [ ('constrained',np.bool8) ] )
+                [ ('constrained',np.bool_) ] )
 
     def add_node(self,**kwargs):
         # will eventually need some caching or indexing to make
@@ -492,7 +492,7 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
                 return (self.INF_CELL,self.IN_EDGE,j)
 
     def tri_insert(self,n,loc):
-        self.log.info("%s: tri_insert"%self)
+        #self.log.info("%s: tri_insert"%self)
         
         # n: index for newly inserted node.
         # note that loc must already be computed -
@@ -701,9 +701,10 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
         side).
         """
         c_left,c_right=self.edges['cells'][j,:]
-        self.log.info("Flipping edge %d, with cells %d, %d   nodes %d,%d"%(j,c_left,c_right,
-                                                                           self.edges['nodes'][j,0],
-                                                                           self.edges['nodes'][j,1]) )
+        #self.log.info("Flipping edge %d, with cells %d, %d   nodes %d,%d"%(j,c_left,c_right,
+        #                                                                   self.edges['nodes'][j,0],
+        #                                                                   self.edges['nodes'][j,1]) )
+        
         assert c_left>=0 # could be relaxed, at the cost of some complexity here
         assert c_right>=0
         # could work harder to preserve extra info:
@@ -734,7 +735,7 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
         self.delete_cell(c_left)
         self.delete_cell(c_right)
 
-        self.log.info("%s: calling self.modify_edge which is %s"%(self,self.modify_edge))
+        #self.log.info("%s: calling self.modify_edge which is %s"%(self,self.modify_edge))
         self.modify_edge(j,nodes=[nb,nd])
         new_left =self.add_cell(nodes=[na,nb,nd])
         new_right=self.add_cell(nodes=[nc,nd,nb])
@@ -1034,7 +1035,7 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
         """ n: node that was just inserted and may have adjacent cells
         which do not meet the Delaunay criterion
         """
-        self.log.info("%s: call to exact_delaunay.restore_delaunay()"%self)
+        # self.log.info("%s: call to exact_delaunay.restore_delaunay()"%self)
         # n is node for Vertex_handle v
         if self.dim() <= 1:
             return
@@ -1864,7 +1865,7 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
         'insert': at intersecting edges construct and insert a new node.
         """
         if set_valid:
-            self.add_cell_field('valid',np.zeros(self.Ncells(),np.bool8),
+            self.add_cell_field('valid',np.zeros(self.Ncells(),np.bool_),
                                 on_exists='pass')
 
         # Seems that the indices will get misaligned if there are
