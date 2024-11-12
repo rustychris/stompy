@@ -452,8 +452,6 @@ class MultiUgrid(object):
                                       on_exists='overwrite')
             generate=False
 
-        print(f"create_global_grid_and_mapping: generate={generate}")
-        
         # A mapping per subdomain, array mapping local index to global index.
         self.node_l2g=[]
         self.edge_l2g=[]
