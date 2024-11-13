@@ -386,7 +386,6 @@ class StreamlineQuiver(object):
         polys[...,1] += y[:,None]
         pcoll_args=dict(self.coll_args)
         pcoll_args.update(kw)
-        print(pcoll_args)
         pcoll=collections.PolyCollection(polys,**pcoll_args)
         return pcoll
 
@@ -442,3 +441,73 @@ class StreamlineQuiver(object):
                va='center')
         return self.plot_segs_and_speeds(segs=segs,speeds=speeds,ax=ax,**kw)
 
+class RegularStreamlineQuiver(StreamlineQuiver):
+    dt=10.0
+    dx=100.0
+    
+    def __init__(self,g,U,**kw):
+        self.coll_args={}
+        utils.set_keywords(self,kw)
+
+        self.g=g
+        self.U=U
+        self.island_points=[]
+        self.Umag=utils.mag(U)
+        self.boundary=g.boundary_polygon()
+        self.calculate_streamlines()
+        
+    def cart_samples(self,zoom,dx):
+        x=np.arange(zoom[0], zoom[1], dx)
+        y=np.arange(zoom[2], zoom[3], dx)
+        X,Y=np.meshgrid(x,y)
+        xy=np.c_[X.ravel(), Y.ravel()]
+        def neg(i): return i if i is not None else -1
+        cells=np.array([neg(self.g.select_cells_nearest(p,inside=True)) for p in utils.progress(xy)])        
+        valid=cells>=0
+        samples = np.zeros( valid.sum(), dtype=[('x',float,2),('c',int)])
+        samples['x']=xy[valid]
+        samples['c']=cells[valid]
+        return samples
+
+    def segments_and_speeds(self,include_truncated=True):
+        segments=[t[:,:2] for t in self.streamlines]
+        speeds = [utils.mag(t[-1,2:]) for t in self.streamlines]
+        return segments,speeds
+    def calculate_streamlines(self):
+        samples = self.cart_samples(self.clip,self.dx)
+        self.streamlines=[self.streamline(sample['x'],sample['c'],self.U,self.max_t,self.dt)
+                          for sample in utils.progress(samples)]
+        
+    def streamline(self,p,c,U,duration,dt):
+        #return self.streamline_simple(p,c,U,duration,dt)
+        return self.streamline_tracer(p,c,U,duration,dt)
+    def streamline_tracer(self,p,c,U,duration,dt):
+        ds = stream_tracer.steady_streamline_oneway(self.g,U,p,max_t=duration)
+        xy = ds['x'].values
+        uv = U[ds['cell'].values]
+        return np.hstack( (xy,uv) )
+        
+    def streamline_simple(self,p,C,U,duration,dt):
+        # slow and dirty
+        t=0
+        track=[]
+        def record(): track.append((p[0],p[1],self.U[c,0],self.U[c,1]))
+        record()
+        while t<duration:
+            t_next = min(t+dt,duration)
+            dt_next=t_next-t
+            t=t_next
+            p += U[c] * dt_next
+            c_next=self.g.select_cells_nearest(p,inside=True)
+            if c_next is None:
+                c_next=self.g.select_cells_nearest(p)
+                # Force inside the grid
+                c_poly=self.g.cell_polygon(c_next)
+                p_geo = geometry.Point(p)
+                if not c_poly.contains(p_geo):
+                    _,p_geo = nearest_points(c_poly,p_geo)
+                    p[:] = p_geo.coords[0]
+            c=c_next
+            record()
+        return np.array(track) # x,y,u,v
+        

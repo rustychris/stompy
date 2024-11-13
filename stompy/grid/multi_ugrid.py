@@ -150,7 +150,7 @@ class MultiVar(object):
             if self.mu.rev_meta.get(dim,None)=='face_dimension':
                 shape.append( self.mu.grid.Ncells() )
                 assert l2g is None,"Can only concatenate on one parallel dimension"
-                l2g=self.mu.cell_l2g[proc]
+                l2g=self.mu.cell_l2g
                 # without ghost-handling:
                 # left=lambda proc: self.mu.cell_l2g[proc]
                 # With ghost-handling:
