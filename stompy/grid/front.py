@@ -1254,7 +1254,7 @@ class TriangleSite(FrontSite):
                     n_res=n
 
                 if n!=n_res:
-                    log.info("resample_neighbors changed a node")
+                    #log.info("resample_neighbors changed a node")
                     if n==a:
                         self.abc[0]=n_res
                     else:

@@ -41,10 +41,10 @@ class MultiVar(object):
         self.sv_dims=self.dims=self.sub_vars[0].dims
         self.part_dims={}
         for dim in self.dims:
-            if self.mu.rev_meta.get(dim,None) in ['face_dimension','node_dimension','edge_dimension']:
+            if self.mu.rev_meta.get(dim,None) in ['face_dimension','node_dimension','edge_dimension',
+                                                  'flowlink_dimension']:
                 self.part_dims[dim]=slice(None)
         
-    # Still possible to request
     def __repr__(self):
         return "MultiVar wrapper around %s"%repr(self.sub_vars[0])
     def __str__(self):
@@ -68,8 +68,7 @@ class MultiVar(object):
                 part_kwargs[key]=val
 
         # Apply the nonpartitioned selections:
-        mv=MultiVar(self.mu,                                                                                                                      
-                    [da.isel(**nonpart_kwargs) for da in self.sub_vars])
+        mv=MultiVar(self.mu,                                                                                                            [da.isel(**nonpart_kwargs) for da in self.sub_vars])
 
         if len(part_kwargs)==0:
             return mv
@@ -84,11 +83,13 @@ class MultiVar(object):
                 g2l=self.mu.node_g2l
             elif self.mu.rev_meta[key]=='edge_dimension':
                 g2l=self.mu.edge_g2l
+            elif self.mu.rev_meta[key]=='flowlink_dimension':
+                g2l=self.mu.flowlink_g2l
             else:
                 raise Exception("Mapping global-to-local not implemented for %s"%key)
 
             # val could be an int, a sequence of ints, or a slice.
-            # while numpy allows a multidimension index array, xarray does
+            # while numpy allows a multidimensional index array, xarray does
             # not, and we'll follow that same constraint.
             if isinstance(val,slice):
                 # Slices can be no-copy on a regular dataset, but here we 
@@ -149,6 +150,7 @@ class MultiVar(object):
             if self.mu.rev_meta.get(dim,None)=='face_dimension':
                 shape.append( self.mu.grid.Ncells() )
                 assert l2g is None,"Can only concatenate on one parallel dimension"
+                l2g=self.mu.cell_l2g
                 # without ghost-handling:
                 # left=lambda proc: self.mu.cell_l2g[proc]
                 # With ghost-handling:
@@ -166,11 +168,18 @@ class MultiVar(object):
             elif self.mu.rev_meta.get(dim,None)=='edge_dimension':
                 shape.append( self.mu.grid.Nedges() )
                 assert l2g is None,"Can only concatenate on one parallel dimension"
-                left=lambda proc: self.mu.edge_l2g[proc]
+                l2g = self.mu.edge_l2g
+                left=lambda proc: l2g[proc]
+            elif self.mu.rev_meta.get(dim,None)=='flowlink_dimension':
+                shape.append( self.mu.grid.Nedges() )
+                assert l2g is None,"Can only concatenate on one parallel dimension"
+                l2g = self.mu.flowlink_l2g
+                left=lambda proc: l2g[proc]
             elif self.mu.rev_meta.get(dim,None)=='node_dimension':
                 shape.append( self.mu.grid.Nnodes() )
                 assert l2g is None,"Can only concatenate on one parallel dimension"
-                left=lambda proc: self.mu.node_l2g[proc]
+                l2g = self.mu.node_l2g
+                left=lambda proc: l2g[proc]
             else:
                 # Check for differing lengths across sub vars
                 sv_lengths =[sv.shape[dim_i] for sv in self.sub_vars]
@@ -291,20 +300,24 @@ class MultiUgrid(object):
     Generate a global grid, and provide an interface approximating
     xarray.Dataset that performs the subdomain->global domain translation
     on the fly.
+
+    Special handling for DFM output:
+     - some variables are dropped because they interfere with the merging.
+     - FlowLink variables (unorm, turbulence quantities) are remapped to
+       global NetLinks. This makes plotting and any checks against the grid
+       much easier (and makes the code simpler since we don't have to construct
+       a global record of FlowLinks), but does mean that the merged result
+       is not consistent with a serial DFM output file.
     """
-    # HERE:
-    # Need to figure these out so that at the very least
-    # .values can invoked the right mappings.
-    # one step better is to figure out that sometimes a variable doesn't
-    # have any Multi-dimensions, and we can return a proper xr result
-    # straight away.
-    node_dim=None
-    edge_dim=None
-    cell_dim=None
 
     # Unclear if there is a situation where subdomains have to be merged with
     # a nonzero tolerance
     merge_tol=0.0
+
+    # FlowLink fields will be translated and merged to become netlink
+    # fields. Probably more useful for plotting, but means the output
+    # doesn't match what a serial DFM run might look like.
+    flowlink_mode = 'netlink' # will become netlink in the merged output
     
     def __init__(self,paths,cleanup_dfm='auto',xr_kwargs={},grid=None,
                  match_grid_tol=1e-3,clone_from=None,
@@ -323,7 +336,9 @@ class MultiUgrid(object):
           to an existing grid. Caveat emptor -- be sure the supplied grid is an
           exact match!  match_grid_tol gives the tolerance in matching up nodes.
           note that edges may not preserve orientation, and cells may not preserve
-          exact node order.
+          exact node order. If loading a DFM grid that was merged by DFM from subdomains,
+          strongly consider cleanup_dfm_multidomain() before passing in here.  Those
+          DFM merges can have duplicate edges at subdomain boundaries.
 
         clone_from: a MultiUgrid object with exactly matching structure (same number
           of subdomains, identical subdomain grids). In this case just copy the
@@ -357,13 +372,19 @@ class MultiUgrid(object):
         meta=self.grids[0].nc_meta
         self.rev_meta={meta[k]:k for k in meta} # Reverse that
 
+        is_dfm = ('Deltares' in self.dss[0].attrs.get('Conventions',"")
+                  or 'D-Flow FM' in self.dss[0].attrs.get('source',""))
         if cleanup_dfm=='auto':
-            cleanup_dfm=('Deltares' in self.dss[0].attrs.get('Conventions',"")
-                          or 'D-Flow FM' in self.dss[0].attrs.get('source',""))
+            cleanup_dfm=is_dfm
             
         if cleanup_dfm:
             for g in self.grids:
-                unstructured_grid.cleanup_dfm_multidomains(g)
+                # These should already be subdomain grids, and do not need
+                # cleaning.
+                # If at some point we load a global grid that DFM merged, apply
+                # this cleaning.
+                # unstructured_grid.cleanup_dfm_multidomains(g)
+                
                 # Also remove extra fields that depend on max_sides but that we
                 # don't use.
                 # Would be better to either support these, or detect them based on
@@ -372,7 +393,7 @@ class MultiUgrid(object):
                     if f in g.cells.dtype.names:
                         log.warning("Dropping extra cell field %s to avoid max_sides issues"%f)
                         g.delete_cell_field(f)
-                    
+        if is_dfm:
             # kludge DFM output (ver. 2021.03) has nNetElem and nFlowElem, which appear to
             # both be for the cell dimension
             for ds in self.dss:
@@ -386,6 +407,10 @@ class MultiUgrid(object):
             else:
                 self.rev_meta['nFlowElem']='face_dimension'
 
+        if self.flowlink_mode=='netlink' or self.flowlink_mode=='flowlink':
+            # for mode=='netlink' might have to be smarter?
+            self.rev_meta['nFlowLink']='flowlink_dimension'
+                
         self.create_global_grid_and_mapping(grid=grid,match_grid_tol=match_grid_tol)
         # make the dimension mapping available
         self.grid.nc_meta=meta
@@ -426,10 +451,13 @@ class MultiUgrid(object):
             self.grid.add_cell_field( 'proc', np.zeros( self.grid.Ncells(), np.int32)-1,
                                       on_exists='overwrite')
             generate=False
-            
+
+        # A mapping per subdomain, array mapping local index to global index.
         self.node_l2g=[]
         self.edge_l2g=[]
         self.cell_l2g=[]
+        
+        self.flowlink_l2g=[] # DFM-specific, subset of faces with flow.
 
         # initialize 
         for gnum,g in enumerate(self.grids):
@@ -481,6 +509,19 @@ class MultiUgrid(object):
             self.edge_l2g.append(j_map)
             self.cell_l2g.append(c_map)
 
+            # FlowLink handling
+            if self.flowlink_mode=='netlink':
+                ds=self.dss[gnum]
+                if 'nFlowLink' in ds.dims and 'FlowLink_xu' in ds:
+                    netlink_xy_map = { (x,y):i
+                                       for i,(x,y)
+                                       in enumerate(zip(ds.NetLink_xu.values,ds.NetLink_yu.values)) }
+                    # praying that orientation is consistent between netlink and flowlinks.
+                    flowlink_to_netlink=[ netlink_xy_map[(x,y)]
+                                          for (x,y)
+                                          in zip(ds.FlowLink_xu.values,ds.FlowLink_yu.values)]
+                    self.flowlink_l2g.append(j_map[flowlink_to_netlink])
+
     # TODO: likely abstract out commonality here
     _cell_g2l=None
     @property
@@ -518,6 +559,23 @@ class MultiUgrid(object):
             self._edge_g2l=edge_g2l
         return self._edge_g2l
 
+    _flowlink_g2l=None
+    @property
+    def flowlink_g2l(self):
+        if self._flowlink_g2l is None:
+            # Using global grid edges assumes flowlink_mode=='netlink'
+            # For flowlink_mode=='flowlink', would need a canonical list
+            # of flowlinks at the global level.
+            assert self.flowlink_mode=='netlink'
+            # 
+            flowlink_g2l=np.zeros((self.grid.Nedges(),2),np.int32)
+            for proc,l2g in enumerate(self.flowlink_l2g):
+                valid=l2g>=0
+                flowlink_g2l[l2g[valid],0]=proc
+                flowlink_g2l[l2g[valid],1]=np.arange(len(l2g))[valid]
+            self._flowlink_g2l=flowlink_g2l
+        return self._flowlink_g2l
+
     def __iter__(self):
         """ iterate over variable names
         """
@@ -551,6 +609,8 @@ class MultiUgrid(object):
                     return np.arange(self.edge_g2l.shape[0])
                 elif meta=='node_dimension':
                     return np.arange(self.node_g2l.shape[0])
+                elif meta=='flowlink_dimension':
+                    return np.arange(self.flowlink_g2l.shape[0])
                 else:
                     raise KeyError("Not ready for on-the-fly coordinate for partitioned dimension...")
             else:
@@ -603,7 +663,24 @@ class MultiUgrid(object):
 
     @property
     def dims(self):
-        return self.dss[0].dims
+        g_dims={}
+        for k in self.dss[0].dims:
+            if k in self.rev_meta:
+                if self.rev_meta[k] == 'face_dimension':
+                    size=self.cell_g2l.shape[0]
+                elif self.rev_meta[k] == 'edge_dimension':
+                    size=self.edge_g2l.shape[0]
+                elif self.rev_meta[k] == 'node_dimension':
+                    size=self.node_g2l.shape[0]
+                elif self.rev_meta[k] == 'flowlink_dimension':
+                    size=self.flowlink_g2l.shape[0]
+                else:
+                    size = self.dss[0].dims[k] # punt
+                g_dims[k] = size
+            else:
+                g_dims[k] = self.dss[0].dims[k]
+
+        return g_dims
 
     def __setstate__(self,state):
         for k in state:
@@ -689,11 +766,11 @@ class MultiUgrid(object):
         subset=copy.copy(self)
         subset.dss=[ds.sel(**kwargs) for ds in self.dss]
         return subset
+    
     def drop(self,*args,**kwargs):
         subset=copy.copy(self)
         subset.dss=[ds.drop(*args,**kwargs) for ds in self.dss]
         return subset
-
     
     def compute(self,vars=None):
         if vars is None:

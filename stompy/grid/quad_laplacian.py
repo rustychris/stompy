@@ -81,7 +81,8 @@ RIGID=front.AdvancingFront.RIGID
 class NodeDiscretization(object):
     # original code set gradients by forcing the normal of the gradient
     # to zero. This doesn't force a sign or magnitude on the gradient.
-    # If this is False, gradients are directly enforced.
+    # If this is False, gradients are directly enforced, but requires
+    # a lot of care in getting the magnitude to match
     gradient_by_normal=True
     def __init__(self,g,**kw):
         self.g=g
@@ -184,6 +185,8 @@ class NodeDiscretization(object):
                 # So if vec = [1,0]
                 # mag= sqrt(vec[0]**2 + vec[1]**2)
                 # I want dx*vec[0]+dy*vec[1] = vec[0]**2 + vec[1]**2
+                # I don't think this works -- assumes dx**2+dy**2==1,
+                # but in practice that's never true.
                 alphas=np.array(dx_alphas)*vec[0] + np.array(dy_alphas)*vec[1]
                 B[row]=vec[0]**2 + vec[1]**2
                 
@@ -1736,11 +1739,11 @@ class QuadGen(object):
         ax.axis('off')
 
         for i_d in self.i_dirichlet_nodes:
-            ax.annotate( f"$\psi$={self.i_dirichlet_nodes[i_d]}",
+            ax.annotate( f"$\\psi$={self.i_dirichlet_nodes[i_d]}",
                          self.g_int.nodes['x'][i_d], va='top',
                          arrowprops=dict(arrowstyle='simple',alpha=0.4))
         for j_d in self.j_dirichlet_nodes:
-            ax.annotate( f"$\phi$={self.j_dirichlet_nodes[j_d]}",
+            ax.annotate( f"$\\phi$={self.j_dirichlet_nodes[j_d]}",
                          self.g_int.nodes['x'][j_d], va='bottom' ,
                          arrowprops=dict(arrowstyle='simple',alpha=0.4))
 
@@ -1805,8 +1808,8 @@ class QuadGen(object):
         ax.axis('tight')
         ax.axis('equal')
 
-        ax.clabel(cset_psi, fmt="$\psi$=%g", fontsize=10, inline=False, use_clabeltext=True)
-        ax.clabel(cset_phi, fmt="$\phi$=%g", fontsize=10, inline=False, use_clabeltext=True)
+        ax.clabel(cset_psi, fmt="$\\psi$=%g", fontsize=10, inline=False, use_clabeltext=True)
+        ax.clabel(cset_phi, fmt="$\\phi$=%g", fontsize=10, inline=False, use_clabeltext=True)
 
     def plot_result(self,num=5):
         plt.figure(num).clf()

@@ -493,7 +493,7 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
                 return (self.INF_CELL,self.IN_EDGE,j)
 
     def tri_insert(self,n,loc):
-        self.log.info("%s: tri_insert"%self)
+        #self.log.info("%s: tri_insert"%self)
         
         # n: index for newly inserted node.
         # note that loc must already be computed -
@@ -702,9 +702,10 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
         side).
         """
         c_left,c_right=self.edges['cells'][j,:]
-        self.log.info("Flipping edge %d, with cells %d, %d   nodes %d,%d"%(j,c_left,c_right,
-                                                                           self.edges['nodes'][j,0],
-                                                                           self.edges['nodes'][j,1]) )
+        #self.log.info("Flipping edge %d, with cells %d, %d   nodes %d,%d"%(j,c_left,c_right,
+        #                                                                   self.edges['nodes'][j,0],
+        #                                                                   self.edges['nodes'][j,1]) )
+        
         assert c_left>=0 # could be relaxed, at the cost of some complexity here
         assert c_right>=0
         # could work harder to preserve extra info:
@@ -735,7 +736,7 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
         self.delete_cell(c_left)
         self.delete_cell(c_right)
 
-        self.log.info("%s: calling self.modify_edge which is %s"%(self,self.modify_edge))
+        #self.log.info("%s: calling self.modify_edge which is %s"%(self,self.modify_edge))
         self.modify_edge(j,nodes=[nb,nd])
         new_left =self.add_cell(nodes=[na,nb,nd])
         new_right=self.add_cell(nodes=[nc,nd,nb])
@@ -1035,7 +1036,7 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
         """ n: node that was just inserted and may have adjacent cells
         which do not meet the Delaunay criterion
         """
-        self.log.info("%s: call to exact_delaunay.restore_delaunay()"%self)
+        # self.log.info("%s: call to exact_delaunay.restore_delaunay()"%self)
         # n is node for Vertex_handle v
         if self.dim() <= 1:
             return

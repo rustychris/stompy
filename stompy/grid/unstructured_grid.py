@@ -2024,10 +2024,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             wgs.value = "value is equal to EPSG code"
 
         if node_elevation is None:
-            if 'node_z_bed' in self.nodes.dtype.names:
-                node_elevation='node_z_bed'
-            elif 'depth' in self.nodes.dtype.names:
-                node_elevation='depth'
+            for node_field in ['node_z_bed','z_bed','depth']:
+                if node_field in self.nodes.dtype.names:
+                    node_elevation = node_field
+                    break
+            else:
+                raise Exception("Failed to discern where node-centered bathymetry is on grid")
 
         if check_depth:
             # DFM does not gracefully deal with nan depths -- preemptively fail

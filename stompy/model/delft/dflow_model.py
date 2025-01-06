@@ -99,9 +99,9 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         """
         # Updated defaults-r53925.mdu by removing settings that 2021.03
         # complains about.
-        fn=os.path.join(os.path.dirname(__file__),"data","defaults-2021.03.mdu")
-        # Made some updates to this, but not yet tested:
-        # fn=os.path.join(os.path.dirname(__file__),"data","defaults-2023.02.mdu")
+        # fn=os.path.join(os.path.dirname(__file__),"data","defaults-2021.03.mdu")
+        # Deprecate wavenikuradse, maybe some other changes
+        fn=os.path.join(os.path.dirname(__file__),"data","defaults-2023.02.mdu")
         self.load_mdu(fn)
         
         # And some extra settings to make it compatible with this script

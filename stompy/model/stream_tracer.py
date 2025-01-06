@@ -1,7 +1,7 @@
 import numpy as np
 import xarray as xr
-from stompy.grid import unstructured_grid
-from stompy import utils
+from ..grid import unstructured_grid
+from .. import utils
 from shapely import geometry
 # Then a Perot-like calculation on each cell in the dual
 def U_perot(g,Q,V):
