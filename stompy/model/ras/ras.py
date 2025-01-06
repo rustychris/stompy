@@ -8,22 +8,23 @@ import h5py
 import numpy as np
 from ...grid import unstructured_grid
 
-def ras62d_to_dataset(ras6_out_fn,area_name=None,load_full=False):
+def ras2d_to_dataset(ras_out_fn,area_name=None,load_full=False,subedges='subedges'):
     """
-    Load RAS6-esque model output into an xarray Dataset resembling ugrid
+    Load RAS6 or RAS2025 2D model output into an xarray Dataset resembling ugrid
     output.
     
-    ras6_out_fn: path to HDF5 output in RAS6-esque format.
+    ras_out_fn: path to HDF5 output in RAS6-esque format.
     area_name: 2D area name, defaults to first area and raises exception
     if there are multiple areas.
     load_full: when False, leave HDF data lazily loaded when possible. 
       Otherwise load all data into memory and close the HDF handle.
     """
-    ras6_grid=unstructured_grid.UnstructuredGrid.read_ras2d(ras6_out_fn,
-                                                            twod_area_name=area_name)
+    ras6_grid=unstructured_grid.UnstructuredGrid.read_ras2d(ras_out_fn,
+                                                            twod_area_name=area_name,
+                                                            subedges=subedges)
 
     # Come back and get some results:
-    ras6_h5 = h5py.File(ras6_out_fn, 'r')
+    ras6_h5 = h5py.File(ras_out_fn, 'r')
     area_name=ras6_grid.twod_area_name # in case we're using the default.
     
     ras6_ds=ras6_grid.write_to_xarray()
@@ -72,7 +73,7 @@ def ras62d_to_dataset(ras6_out_fn,area_name=None,load_full=False):
             ras6_ds[var_name]=('time','face'),np.asanyarray(LD(v))[:,:n_nonvirtual]
         elif v.attrs.get('Columns','n/a')==b'Faces':
             data = LD(v)
-            if data.shape[1] > ras6_ds.dims['edge']:
+            if data.shape[1] > ras6_ds.sizes['edge']:
                 print(f"Truncating {var_name}")
                 data = data[:,:ras6_ds.dims['edge']]
             ras6_ds[var_name]=('time','edge'),data

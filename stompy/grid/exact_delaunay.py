@@ -271,7 +271,8 @@ class Triangulation(unstructured_grid.UnstructuredGrid):
             return 0
         else:
             return -1
-    def angle_sort_adjacent_nodes(self,n,ref_nbr=None,topo=True):
+    def angle_sort_adjacent_nodes(self,n,ref_nbr=None,topo=True,subedges=None):
+        assert subedges is None
         if topo:
             return self.topo_sort_adjacent_nodes(n,ref_nbr)
         else:
