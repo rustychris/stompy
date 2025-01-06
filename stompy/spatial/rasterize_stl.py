@@ -47,11 +47,13 @@ def rasterize_triangle(fld,X,Y,triple,op=np.fmax):
     
     fld.F[msk] = op(fld.F[msk],z)
 
-def stl_to_field(fp_stl,R,dx=None,dy=None,max_dim=None):
+def stl_to_field(fp_stl,R,translate=[0,0,0],dx=None,dy=None,max_dim=None,pad=[0,0],nodata=np.nan):
+    translate=np.asarray(translate)
     xyz = fp_stl.points.copy().reshape([-1,3,3])
     xyz=np.tensordot(xyz,R,[2,0])
-    xxyy=[xyz[...,0].min(), xyz[...,0].max(),
-          xyz[...,1].min(), xyz[...,1].max()]
+    xyz=xyz + translate
+    xxyy=[xyz[...,0].min()-pad[0], xyz[...,0].max()+pad[0],
+          xyz[...,1].min()-pad[1], xyz[...,1].max()+pad[1]]
         
     normals = fp_stl.normals.dot(R)
 
@@ -64,7 +66,7 @@ def stl_to_field(fp_stl,R,dx=None,dy=None,max_dim=None):
         dx=max( xxyy[1]-xxyy[0], xxyy[3]-xxyy[2] ) / float(max_dim)
         dy=dx
         
-    Z = np.full( (int( (xxyy[3]-xxyy[2])/dx),int( (xxyy[1]-xxyy[0])/dx)), np.nan)
+    Z = np.full( (int( (xxyy[3]-xxyy[2])/dx),int( (xxyy[1]-xxyy[0])/dx)), np.float64(nodata))
     print("Output shape will be ",Z.shape)
 
     fld = field.SimpleGrid(extents=xxyy,F=Z)
@@ -91,6 +93,7 @@ def main():
     parser.add_argument("--plot","-p",help="Plot result after conversion",action='store_true')
     parser.add_argument("--res",help="Resolution of output",type=float)
     parser.add_argument("--size",help="Number of pixels in largest dimension",type=int,default=1000)
+    
     parser.add_argument("--force","-f",help="Overwrite existing file",action='store_true')
     parser.add_argument("--proj",help="Spatial reference in GDAL text format, like EPSG:26910",default="")
 
@@ -99,6 +102,14 @@ def main():
     parser.add_argument("--ry",help="Rotate around y axis, degrees",type=float)
     parser.add_argument("--rz",help="Rotate around z axis, degrees",type=float)
             
+    parser.add_argument("--tx",help="Translate along x axis, post-scale units",type=float)
+    parser.add_argument("--ty",help="Translate along y axis, post-scale units",type=float)
+    parser.add_argument("--tz",help="Translate along z axis, post-scale units",type=float)
+
+    parser.add_argument("--pad",nargs=2,help="Pad the extent of the output DEM",type=float,default=[0,0])
+
+    parser.add_argument("--nodata",help="Value for missing pixels",default=np.nan, type=float)
+    
     args = parser.parse_args()
 
     # Using an existing stl file:
@@ -107,7 +118,8 @@ def main():
     R = np.array( [[1,0,0],
                    [0,1,0],
                    [0,0,1]], np.float64)
-
+    translate = np.array([0.0,0.0,0.0])
+    
     # Arbitrary scaling and rotation. Switch y and z so it's more geographic
     if args.scale is not None:
         scale=args.scale
@@ -135,14 +147,22 @@ def main():
                           [-np.sin(theta),np.cos(theta),0],
                           [0,0,1]])
         R = R @ Rrot    
-    
+
+    if args.tx is not None:
+        translate[0] = args.tx
+    if args.ty is not None:
+        translate[1] = args.ty
+    if args.tz is not None:
+        translate[2] = args.tz
+        
     kwargs={}
     if args.res is not None:
         kwargs['dx']=args.res
         kwargs['dy']=args.res
     else:
         kwargs['max_dim']=args.size
-    fld = stl_to_field(fp_stl,R,**kwargs)
+    fld = stl_to_field(fp_stl, R, translate=translate, nodata=args.nodata,
+                       pad=args.pad, **kwargs)
     fld.assign_projection(args.proj)
     fld.write_gdal(args.tif_file,overwrite=args.force)
     
