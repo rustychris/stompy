@@ -45,7 +45,7 @@ except ImportError:
     from matplotlib import delaunay
 
 from . import wkb2shp
-from ..utils import array_append, isnat, circumcenter, dist, set_keywords
+from ..utils import array_append, isnat, circumcenter, dist, set_keywords, progress
 
 try:
     from matplotlib import cm
@@ -90,6 +90,11 @@ except ImportError:
     except ImportError:
         gdal=osr=ogr=None
         log.warning("GDAL not loaded")
+
+try:
+    gdal.UseExceptions()
+except:
+    pass
 
 try:
     from shapely import geometry, wkb
@@ -1984,11 +1989,14 @@ class SimpleGrid(QuadrilateralGrid):
         return SimpleGrid(extents=[x.min(), x.max(), y.min(), y.max()], F=F)
 
     @classmethod
-    def zeros(cls,extents,dx,dy,dtype=np.float64):
+    def zeros(cls,extents,dx,dy,dtype=np.float64,n_components=None):
         nx=int( np.ceil((extents[1] - extents[0])/dx) )
         ny=int( np.ceil((extents[3] - extents[2])/dy) )
-        
-        F=np.zeros((ny,nx),dtype=dtype)
+
+        if n_components is None:
+            F=np.zeros((ny,nx),dtype=dtype)
+        else: 
+            F=np.zeros((ny,nx,n_components),dtype=dtype)
         return cls(extents,F=F)
     
     @property
@@ -2300,11 +2308,15 @@ class SimpleGrid(QuadrilateralGrid):
         if result.ndim>0:
             result[bad] = np.nan
         elif bad:
-            result = np.nan
+            result = np.array(np.nan) # retains ndim and friends
 
         # let linear interpolation fall back to nearest at the borders:
         if interpolation=='linear' and fallback and np.any(bad):
-            result[bad] = self.interpolate(X[bad],interpolation='nearest',fallback=False)
+            fallback_result=self.interpolate(X[bad],interpolation='nearest',fallback=False)
+            if result.ndim>0:
+                result[bad] = fallback_result 
+            else:
+                result = fallback_result
 
         return result
 
@@ -2468,6 +2480,35 @@ class SimpleGrid(QuadrilateralGrid):
         # and turn the missing values back to nan's
         newF[~bin_valid] = np.nan
 
+
+    def fill_by_local_convolution(self, size_max=1024*1024,
+                                  kernel_size=3,iterations=7):
+
+        # faster filling on large image with relatively small missing areas
+        missing = np.isnan(self.F)
+        labels,n_features = ndimage.label(missing)
+
+        obj_slices = ndimage.find_objects(labels,n_features)
+
+        for label,obj_slice in progress(enumerate(obj_slices)):
+            nrow = (obj_slice[0].stop - obj_slice[0].start)
+            ncol = (obj_slice[1].stop - obj_slice[1].start)
+            size = nrow * ncol
+            if size>size_max:
+                print(f"Skipping hole of size {nrow} x {ncol} = {size} > {size_max}")
+                continue
+
+            indexes = [max(0,obj_slice[0].start-1),
+                       min(self.F.shape[0],obj_slice[0].stop+1),
+                       max(0,obj_slice[1].start-1),
+                       min(self.F.shape[1],obj_slice[1].stop+1)]
+            crop = self.crop(indexes=indexes)
+            labels_crop = labels[indexes[0]:indexes[1]+1,indexes[2]:indexes[3]+1]
+            crop_copy = crop.copy()
+            crop_copy.fill_by_convolution(kernel_size=kernel_size,iterations=iterations)
+            mask = labels_crop==1+label
+            crop.F[mask] = crop_copy.F[mask] # That's a view, so will modify self.F
+        
     def smooth_by_convolution(self,kernel_size=3,iterations=1):
         """
         Repeatedly apply a 3x3 average filter (or other size: kernel_size).
@@ -3146,7 +3187,7 @@ class GdalGrid(SimpleGrid):
         if nodata is not None:
             if A.dtype in (np.int16,np.int32):
                 A[ A==nodata ] = self.int_nan
-            elif A.dtype in (np.uint16,np.uint32):
+            elif A.dtype in (np.uint8,np.uint16,np.uint32):
                 A[ A==nodata ] = 0 # not great...
             elif np.issubdtype(A.dtype,np.float32):
                 # Oddly, it's possible for nodata to be a float64,

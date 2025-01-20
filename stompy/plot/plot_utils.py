@@ -326,18 +326,21 @@ def scalebar(xy,L=None,aspect=0.05,unit_factor=1,fmt="%.0f",label_txt=None,fract
     return objs,txts
         
 
-def north_arrow(xy,L,ax=None,decl_east=0.0,transform=None,angle=0.0,width=0.1):
+def north_arrow(xy,L,ax=None,decl_east=0.0,transform=None,angle=0.0,width=0.1,
+                shaft=0.2):
     ax=ax or plt.gca()
     transform=transform or ax.transData
 
     w=width*L
+    s=0.5*shaft*w
 
     xy=np.asarray(xy)
 
-    pnts=np.array( [[0,0], # base of arrow
-                    [0,L], # vertical stroke
-                    [w,0.5*L], # outer hypotenuse
-                    [0,0.55*L]] ) # barb
+    pnts=np.array( [[-s,0], # base of arrow
+                    [-s,L], # vertical stroke
+                    [s+w,0.5*L], # outer hypotenuse
+                    [s,0.55*L], # barb
+                    [s,0]] )
     tot_rot=angle-decl_east
     pnts=utils.rot(tot_rot*np.pi/180,pnts)
     pnts=pnts+xy
