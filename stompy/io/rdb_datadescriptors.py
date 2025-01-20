@@ -14,7 +14,7 @@ import re
 
 def dd_to_synonyms(code):
     # print "Looking for synonyms of ",code
-    m = re.match('\d\d_(.+)',code) 
+    m = re.match(r'\d\d_(.+)',code) 
     if m:
         short_code = m.group(1)
         # print "Got a short code ",short_code
