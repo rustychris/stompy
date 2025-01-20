@@ -1737,7 +1737,7 @@ class Hydro(object):
                 ngroups+=1
         return groups
 
-    def extract_transect_flow(self,transect,func=False,time_range=None):
+    def extract_transect_flow(self, transect, func=False, time_range=None, quantity='Q'):
         """
         Extract time series of discharge through a transect as a function of time.
         transect is expected to have the same structure as it is configured on
@@ -1749,15 +1749,24 @@ class Hydro(object):
         time_range: [np.datetime64,np.datetime64]
 
         if func is True, instead return a function that takes a datetime64 and returns flow.
+
+        quantity: Q or area, determines the variable to extract
         """
         exchs=transect[1]
 
         def fn(t,exchs=exchs,hydro=self):
             t_secs = (t - np.datetime64(hydro.time0))/np.timedelta64(1,'s')
-            flo = hydro.flows(t_secs)
-            signs=np.sign(exchs)
             exch0=np.abs(exchs)-1
-            return np.sum(flo[exch0]*signs)
+            signs=np.sign(exchs)
+
+            if quantity=='Q':
+                flo = hydro.flows(t_secs)
+                return np.sum(flo[exch0]*signs)
+            elif quantity=='area':
+                area = hydro.areas(t_secs)
+                return np.sum(area[exch0])
+            else:
+                raise Exception("Only Q and area are supported outputs")
         if func:
             return fn
 
@@ -1772,15 +1781,20 @@ class Hydro(object):
         t_secs=self.t_secs[tidx_start:tidx_stop]
         times=np.datetime64(self.time0)+t_secs*np.timedelta64(1,'s')
         
-        Q=np.zeros( len(t_secs), np.float64)
-        for i,t in enumerate(times):
-            Q[i] = fn(t)
+        data=np.zeros( len(t_secs), np.float64)
+        for i,t in utils.progress(enumerate(times)):
+            data[i] = fn(t)
 
-        da= xr.DataArray(data=Q, dims=['time'], 
+        da= xr.DataArray(data=data, dims=['time'], 
                          coords=dict( time=times,
                                       time_seconds=("time",t_secs) ),
-                         attrs=dict(transect=transect[0], units='m3 s-1'))
-        da.name="discharge"
+                         attrs=dict(transect=transect[0]))
+        if quantity=='Q':
+            da.name="discharge"
+            da.attrs['units']='m3 s-1'
+        elif quantity=='area':
+            da.name="area"
+            da.attrs['units']='m2'
         return da
     
     # Data formats on disk
