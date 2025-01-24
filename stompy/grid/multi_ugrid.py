@@ -15,6 +15,7 @@ import glob
 import copy
 import xarray as xr
 import numpy as np
+from .. import utils
 from . import unstructured_grid
 import logging
 log=logging.getLogger('multi_ugrid')
@@ -417,7 +418,7 @@ class MultiUgrid(object):
         
     def load(self,**xr_kwargs):
         if isinstance(self.paths[0],str):
-            return [xr.open_dataset(p,**xr_kwargs) for p in self.paths]
+            return [xr.open_dataset(p,**xr_kwargs) for p in utils.progress(self.paths)]
         elif isinstance(self.paths[0],xr.Dataset):
             return self.paths
         else:

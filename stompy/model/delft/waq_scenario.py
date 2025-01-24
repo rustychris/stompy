@@ -2447,7 +2447,12 @@ class HydroFiles(Hydro):
 
         dest=self.flowgeom_filename
         if os.path.exists(dest) or os.path.lexists(dest):
-            assert not os.path.samefile(dest,orig)
+            # RH: originally checked for not samefile
+            # then it was commented out, but that seems dangerous
+            # If this check is somehow problematic update comments here
+            # to explain
+            assert dest != orig
+#            assert not os.path.samefile(dest,orig)
             if self.overwrite:
                 self.log.warning("Removing old geom file %s"%dest)
                 os.unlink(dest)
