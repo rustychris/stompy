@@ -636,7 +636,7 @@ class XYZField(Field):
                           F=newF,projection=self.projection())
 
     def to_grid(self,nx=2000,ny=2000,interp='linear',bounds=None,dx=None,dy=None,
-                aspect=1.0,max_radius=None,clean=False):
+                aspect=1.0,max_radius=None,clean=False,strict_dx=False):
         """ use the delaunay based griddata() to interpolate this field onto
         a rectilinear grid.  In theory interp='linear' would give bilinear
         interpolation, but it tends to complain about grid spacing, so best to stick
@@ -649,6 +649,8 @@ class XYZField(Field):
         interp='qhull': use scipy's delaunay/qhull interface.  this can
         additionally accept a radius which limits the output to triangles
         with a smaller circumradius.
+
+        strict_dx: adjust bounds to match dx/dy
         """
         if bounds is None:
             xmin,xmax,ymin,ymax = self.bounds()
@@ -665,12 +667,20 @@ class XYZField(Field):
             # xmin = xmin - (xmin%dx)
             # ymin = ymin - (ymin%dy)
 
+            # used to truncate and always add 1, but this seems
+            # better since it does the right thing on an exact
+            # result.
+            nx=int( np.ceil((xmax - xmin)/dx) )
+            ny=int( np.ceil((ymax - ymin)/dy) )
+            # Previous approach:
             # The 1+, -1, stuff feels a bit sketch.  But this is how
             # CompositeField calculates sizes
-            nx = 1 + int( (xmax-xmin)/dx )
-            ny = 1 + int( (ymax-ymin)/dy )
-            xmax = xmin + (nx-1)*dx
-            ymax = ymin + (ny-1)*dy
+            # nx = 1 + int( (xmax-xmin)/dx )
+            # ny = 1 + int( (ymax-ymin)/dy )
+            if strict_dx:
+                xmax = xmin + (nx-1)*dx
+                ymax = ymin + (ny-1)*dy
+            # otherwise the user doesn't quite get the requested dx and dy
 
         # hopefully this is more compatible between versions, also exposes more of what's
         # going on
