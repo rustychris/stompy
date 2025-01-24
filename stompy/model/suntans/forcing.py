@@ -31,7 +31,9 @@ from ...spatial import wkb2shp
 
 
 try:
-    if netCDF4.__version__ >= '1.2.6':
+    # 2025-01-09: seems very outdated, netcdftime does not exist.
+    # Try ignoring
+    if netCDF4.__version__ >= '1.2.6' and netCDF4.__version__ < '1.7.1':
         # kludge:
         # recent netCDF4 isn't compatible with cfunits due to renaming
         # some datetime internals, which cfunits tries to reach in and grab.

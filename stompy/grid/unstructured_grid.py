@@ -150,7 +150,7 @@ class HalfEdge(object):
     def __repr__(self):
         return self.__str__()
 
-    def nbr(self,direc):
+    def nbr(self,direc,subedges=None):
         """ direc: 0 means fwd, 1 is reverse
         This returns an adjacent half-edge
         """
@@ -168,7 +168,7 @@ class HalfEdge(object):
             rev_node = n2
             fwd_node = n1
         # tmp:
-        nbrs=self.grid.angle_sort_adjacent_nodes(fwd_node,ref_nbr=rev_node)
+        nbrs=self.grid.angle_sort_adjacent_nodes(fwd_node,ref_nbr=rev_node,subedges=subedges)
         if direc==0:
             fwdfwd_node=nbrs[-1] # the most ccw, or first cw neighbor
             return HalfEdge.from_nodes(self.grid,fwd_node,fwdfwd_node)
@@ -177,10 +177,10 @@ class HalfEdge(object):
             # the weird modulo is because nbrs may have only 1 item.
             fwdfwd_node=nbrs[1%len(nbrs)] # next ccw neighbor
             return HalfEdge.from_nodes(self.grid,fwdfwd_node,fwd_node)
-    def fwd(self):
-        return self.nbr(direc=0)
-    def rev(self):
-        return self.nbr(direc=1)
+    def fwd(self,subedges=None):
+        return self.nbr(direc=0,subedges=subedges)
+    def rev(self,subedges=None):
+        return self.nbr(direc=1,subedges=subedges)
 
     def cell(self):
         # the cell (or a <0 flag) which this half-edge faces
@@ -251,49 +251,46 @@ def rec_to_dict(r):
 class Listenable(object):
     def __init__(self,*a,**k):
         super(Listenable,self).__init__(*a,**k)
-        self.__post_listeners=defaultdict(list) # func_name => list of functions
-        self.__pre_listeners =defaultdict(list) # ditto
+        self._post_listeners=defaultdict(list) # func_name => list of functions
+        self._pre_listeners =defaultdict(list) # ditto
 
     def subscribe_after(self,func_name,callback):
-        if callback not in self.__post_listeners[func_name]:
-            self.__post_listeners[func_name].append(callback)
+        if callback not in self._post_listeners[func_name]:
+            self._post_listeners[func_name].append(callback)
     def subscribe_before(self,func_name,callback):
-        if callback not in self.__pre_listeners[func_name]:
-            self.__pre_listeners[func_name].append(callback)
+        if callback not in self._pre_listeners[func_name]:
+            self._pre_listeners[func_name].append(callback)
     def unsubscribe_after(self,func_name,callback):
-        if callback in self.__post_listeners[func_name]:
-            self.__post_listeners[func_name].remove(callback)
+        if callback in self._post_listeners[func_name]:
+            self._post_listeners[func_name].remove(callback)
     def unsubscribe_before(self,func_name,callback):
-        if callback in self.__pre_listeners[func_name]:
-            self.__pre_listeners[func_name].remove(callback)
+        if callback in self._pre_listeners[func_name]:
+            self._pre_listeners[func_name].remove(callback)
 
     def fire_after(self,func_name,*a,**k):
-        for func in self.__post_listeners[func_name]:
+        for func in self._post_listeners[func_name]:
             func(self,func_name,*a,**k)
     def fire_before(self,func_name,*a,**k):
-        for func in self.__pre_listeners[func_name]:
+        for func in self._pre_listeners[func_name]:
             func(self,func_name,*a,**k)
 
     def __getstate__(self):
-        # awkward, verbose code to get around the 'hiding' when attributes
-        # start with __
-        save_pre=self.__pre_listeners
-        save_post=self.__post_listeners
-        self.__pre_listeners=defaultdict(list)
-        self.__post_listeners=defaultdict(list)
-
         try:
             d=super(Listenable,self).__getstate__()
         except AttributeError:
             d = dict(self.__dict__)
 
-        self.__pre_listeners=save_pre
-        self.__post_listeners=save_post
+        d['_pre_listeners'] = defaultdict(list)
+        d['_post_listeners'] = defaultdict(list)
 
         return d
 
-    #def __setstate__(self,state):
-    #    self.__dict__.update(state)
+    def __setstate__(self,state):
+        
+        # In case we're reading an old pickle that used dunder names
+        self._pre_listeners = defaultdict(list)
+        self._post_listeners = defaultdict(list)
+        self.__dict__.update(state)
 
 from functools import wraps
 def listenable(f):
@@ -999,19 +996,19 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         try:
             cc_suffixes=None
+            names=list(h['Geometry/2D Flow Areas'].keys())
+            twod_names={} # name => dict of info
+            for name in names:
+                for version,suffix in [('v6','Cells Center Coordinate'),
+                                       ('v2025','Cell Coordinates')]:
+                    try:
+                        cc_variable='Geometry/2D Flow Areas/'+name+'/'+suffix
+                        h[cc_variable]
+                        twod_names[name]=dict(cc_variable=cc_variable,version=version)
+                        break
+                    except KeyError:
+                        continue
             if twod_area_name is None:
-                names=list(h['Geometry/2D Flow Areas'].keys())
-                twod_names={} # name => dict of info
-                for name in names:
-                    for version,suffix in [('v6','Cells Center Coordinate'),
-                                           ('v2025','Cell Coordinates')]:
-                        try:
-                            cc_variable='Geometry/2D Flow Areas/'+name+'/'+suffix
-                            h[cc_variable]
-                            twod_names[name]=dict(cc_variable=cc_variable,version=version)
-                            break
-                        except KeyError:
-                            continue
                 if len(twod_names)==1:
                     twod_area_name=list(twod_names)[0]
                 elif len(twod_names)>1:
@@ -2868,7 +2865,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 best=(A,pc)
         return np.array(best[1][::-1]) # reverse, to return a CCW, positive area string.
 
-    def find_cycles(self,max_cycle_len='auto',starting_edges=None,check_area=True):
+    def find_cycles(self,max_cycle_len='auto',starting_edges=None,check_area=True,
+                    subedges=None):
         """ traverse edges, returning a list of lists, each list giving the
         CCW-ordered node indices which make up a 'facet' or cycle in the graph
         (i.e. potentially a cell).
@@ -2907,7 +2905,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 while trav.node_fwd() != he.node_rev() and len(cycle)<=max_cycle_len:
                     cycle.append(trav.node_fwd())
                     visited.add((trav.node_rev(),trav.node_fwd()))
-                    trav=trav.fwd()
+                    trav=trav.fwd(subedges=subedges)
                 visited.add((trav.node_rev(),trav.node_fwd()))
                     
                 if len(cycle)<=max_cycle_len:
@@ -3676,7 +3674,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         # return np.setdiff1d(all_nodes,[n]) # significantly slower than lists
         return np.array( [nbr for nbr in all_nodes if nbr!=n] )
 
-    def angle_sort_adjacent_nodes(self,n,ref_nbr=None):
+    def angle_sort_adjacent_nodes(self,n,ref_nbr=None,subedges=None):
         """
         return array of node indices for nodes connected to n by an
         edge, sorted CCW by angle.
@@ -3686,6 +3684,21 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         if len(nbrs)==0:
             return []
         diffs=self.nodes['x'][nbrs] - self.nodes['x'][n]
+        if subedges is not None:
+            for i,nbr in enumerate(nbrs):
+                j=self.nodes_to_edge(n,nbr)
+                subedge=self.edges[subedges][j]
+                if subedge is None or len(subedge)<=2:
+                    continue # node-based from above is good
+                else:
+                    if self.edges['nodes'][j,0]==n:
+                        first_point = subedge[1,:]
+                    elif self.edges['nodes'][j,1]==n:
+                        first_point = subedge[-2,:]
+                    else:
+                        assert False
+                    diffs[i] = first_point - self.nodes['x'][n]
+
         angles=np.arctan2(diffs[:,1],diffs[:,0])
         nbrs=nbrs[np.argsort(angles)]
         if ref_nbr is not None:
@@ -5870,7 +5883,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     
     def plot_cells(self,ax=None,mask=None,values=None,clip=None,centers=False,labeler=None,
                    masked_values=None,ragged_edges=None,
-                   centroid=False,subedges=None,**kwargs):
+                   centroid=False,subedges=None,text_kw={},**kwargs):
         """
         values: color cells based on the given values.  can also be
           the name of a field in self.cells.
@@ -5988,7 +6001,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 labeler=lambda i,r: str(r[field])
                 
             for c in np.nonzero(mask)[0]:
-                ax.text(xy[c,0],xy[c,1],labeler(c,self.cells[c]))
+                ax.text(xy[c,0],xy[c,1],labeler(c,self.cells[c]),**text_kw)
 
         
         if (bounds[0]<bounds[1]) and (bounds[2]<bounds[3]):
@@ -6263,12 +6276,16 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         vol_sum = np.sum(vol)
         return vol_sum
 
-    def cell_polygon(self,c,subedges=None):
+    def cell_polygon(self,c,subedges=None,islands=None):
         if subedges is None:
             coords=self.nodes['x'][self.cell_to_nodes(c)]
         else:
             coords=self.cell_coords_subedges(c,subedges=subedges)
-        return geometry.Polygon(coords)
+
+        if islands is not None and self.cells[islands][c] is not None:
+            return geometry.Polygon(coords,self.cells[islands][c])
+        else:
+            return geometry.Polygon(coords)
 
     def edge_line(self,e):
         return geometry.LineString(self.nodes['x'][self.edges['nodes'][e]])
@@ -7780,11 +7797,13 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             # some readers hang on to a file point and that won't pickle.
             d['fp']=None
 
+        logging.info("get state for unstructured grid, keys are")
+        for k in d:
+            logging.info(f"{k}: {type(d[k])}")
         return d
     def __setstate__(self,state):
-        self.__dict__.update(state)
+        super(UnstructuredGrid,self).__setstate__(state)
         self.init_log()
-
         logging.debug( "May need to rewire any internal listeners" )
 
     def init_log(self):
@@ -8006,7 +8025,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         ptm_sides[:,4] = self.edges['mark']
         return ptm_sides
 
-    def write_cells_shp(self,shpname,extra_fields=[],overwrite=False):
+    def write_cells_shp(self,shpname,extra_fields=[],overwrite=False,islands=None):
         """ extra_fields is a list of lists,
             with either 3 items:
               # this way is obsolete.
@@ -8014,6 +8033,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
               field type must be a numpy type - int32,float64, etc.
             or 2 items:
               extra_fields[i] = (field_name,numpy array)
+            or a string, which pulls from cells[string]
         """
         # assemble a numpy struct array with all of the info
         # seems that having an object references in there is unstable,
@@ -8029,15 +8049,21 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         except:
             pass
 
-        for efi in range(len(extra_fields)):
-            fname,fdata=extra_fields[efi]
-            base_dtype.append( (fname,fdata.dtype) )
+        for extra_field in extra_fields:
+            if isinstance(extra_field,str):
+                base_dtype.append( (extra_field, self.cells[extra_field].dtype) )
+            else:
+                fname,fdata=extra_field
+                base_dtype.append( (fname,fdata.dtype) )
 
         cell_data = np.zeros(self.Ncells(), dtype=base_dtype)
 
-        for efi in range(len(extra_fields)):
-            fname,fdata=extra_fields[efi]
-            cell_data[fname]=fdata
+        for extra_field in extra_fields:
+            if isinstance(extra_field,str):
+                cell_data[extra_field] = self.cells[extra_field]
+            else:
+                fname,fdata=extra_field
+                cell_data[fname]=fdata
 
         self.update_cell_edges()
 
@@ -8053,7 +8079,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 print( "%0.2g%%"%(100.*poly_id/self.Ncells()) )
 
             # older code put this together manually.
-            cell_geoms[poly_id]=self.cell_polygon(poly_id)
+            cell_geoms[poly_id]=self.cell_polygon(poly_id,islands=islands)
 
         print( cell_data.dtype )
         result=wkb2shp.wkb2shp(shpname,input_wkbs=cell_geoms,fields=cell_data,
@@ -8088,9 +8114,11 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         return new_ds,new_layer
 
 
-    def write_edges_shp(self,shpname,extra_fields=[],overwrite=False):
+    def write_edges_shp(self,shpname,extra_fields=[],overwrite=False, subedges=None):
         """ Write a shapefile with each edge as a polyline.
         see write_cells_shp for description of extra_fields
+        items in extra_fields can also be a simple string, in which case the data 
+        is taken from self.edges[name]
         """
         base_dtype = [('edge_id1',np.int32),
                       ('length',np.float64),
@@ -8104,10 +8132,18 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         except:
             pass
 
-        for efi in range(len(extra_fields)):
-            fname,ftype,ffunc = extra_fields[efi]
-            if ftype == int:
-                ftype = np.int32
+        func_fields=[]
+        array_fields=[]
+        for extra_field in extra_fields:
+            if isinstance(extra_field,str):
+                fname=extra_field
+                ftype = self.edges[fname].dtype
+                array_fields.append(extra_field)
+            else:
+                fname,ftype,ffunc = extra_field
+                if ftype == int:
+                    ftype = np.int32
+                func_fields.append(extra_field)
             base_dtype.append( (fname,ftype) )
 
         edges = self.edges_as_nodes_cells_mark()
@@ -8120,15 +8156,20 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             if edge_id % 5000 == 0:
                 print("%0.3g%%"%(100.*edge_id/edges.shape[0]))
 
-            nodes = vertices[edges[edge_id,:2]]
+            if subedges is None:
+                nodes = vertices[edges[edge_id,:2]]
+            else:
+                nodes = self.get_subedge(edge_id,subedges)
             g = geometry.LineString(nodes)
             edge_geoms[edge_id] = g
             edge_data[edge_id]['length'] = g.length
             edge_data[edge_id]['edge_id1'] = edge_id + 1
             edge_data[edge_id]['depth_mean'] = side_depths_mean[edge_id]
 
-            for fname,ftype,ffunc in extra_fields:
+            for fname,ftype,ffunc in func_fields:
                 edge_data[edge_id][fname] = ffunc(edge_id)
+        for fname in array_fields:
+            edge_data[fname] = self.edges[fname]
 
         wkb2shp.wkb2shp(shpname,input_wkbs=edge_geoms,fields=edge_data,
                         overwrite=overwrite)

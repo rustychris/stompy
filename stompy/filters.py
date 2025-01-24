@@ -7,7 +7,13 @@ provided. (this is a generalization of the code in tidal_filter.py)
 from __future__ import print_function
 
 import numpy as np
-from scipy.signal.filter_design import butter
+try:
+    # prep for scipy 2.0.0
+    from scipy.signal import butter
+except ImportError:
+    # old location
+    from scipy.signal.filter_design import butter
+    
 import scipy.signal
 
 from scipy.signal import filtfilt, lfilter

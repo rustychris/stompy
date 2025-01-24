@@ -23,7 +23,7 @@ class Op(argparse.Action):
 class ReadGrid(Op):
     formats={}
     def run(self,args):
-        fmt,path=args[0].split(':')
+        fmt,path=args[0].split(':',1)
         log.info("Reading %s as %s"%(path,fmt))
 
         if fmt in self.formats:
