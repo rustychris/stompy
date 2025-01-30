@@ -1040,7 +1040,7 @@ class Hydro(object):
                     ('type','S20')]
     @property
     def n_boundaries(self):
-        return -self.pointers[:,:2].min()
+        return max(0,-self.pointers[:,:2].min())
 
     # for a while, was using 'grouped', but that relies on boundary segments,
     # which didn't transfer well to aggregated domains which usually have many

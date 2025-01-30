@@ -87,12 +87,10 @@ class CustomProcesses:
             shutil.rmtree(self.proc_table_dst_dir)
         shutil.copytree(self.proc_table_src_dir,self.proc_table_dst_dir)
 
-        print("First call to waqpb_export")
+        print("First call to waqpb_export - creating procesm.asc from decomposed tables")
         sys.stdout.flush()
         output = utils.call_with_path(self.waqpbexport,self.proc_table_dst_dir).decode('latin1') 
         print("Suppressed output")
-        # That says Normal end, but then goes on to
-        # make proces.asc
         sys.stdout.flush()
         print("First call to waqpb_export DONE")
         sys.stdout.flush()
@@ -101,6 +99,7 @@ class CustomProcesses:
         # First line of proces_asc includes a process count. Rewrite that line, shove in
         # our new process, and copy the rest of the file.
 
+        print(f"Transcribing procesm.asc -> proces.asc, adding {len(self.custom_procs)} custom processes")
         procesm_asc=os.path.join(self.proc_table_dst_dir,'procesm.asc')
         proces_asc=os.path.join(self.proc_table_dst_dir,'proces.asc')
 
@@ -116,18 +115,22 @@ class CustomProcesses:
                     fp.write(line)
         sys.stdout.flush()
                     
-        print("Calling waqpb_import")
+        print("Calling waqpb_import to convert proces.asc back to tables")
         sys.stdout.flush()
-        # Pretty sure this is the one that fails.
+        # This is the one likely to fail.
         output = utils.call_with_path(self.waqpbimport,self.proc_table_dst_dir).decode('latin1') 
         print("Suppressed output")
+        #print(output) # uncomment this line to diagnose Fatal Error 
         sys.stdout.flush()
         print("Return from waqpb_import")
         sys.stdout.flush()
-        print("Second call to waqpb_export")
+
+        print("Second call to waqpb_export to take the updated tables and write compiled form of tables")
         sys.stdout.flush()
         output = utils.call_with_path(self.waqpbexport,self.proc_table_dst_dir).decode('latin1') 
         print( "Suppressed output")
+        #print("Output from waqpb_export")
+        #print(output)
         sys.stdout.flush()
         print("Return from second call to waqpb_export")
         sys.stdout.flush()
@@ -284,4 +287,63 @@ dFall{suffix}                      x sedimentation flux algae type 04           
 END
 """
         return process
+
+    def custom_DynDen(self,**kw):
+        idx=self.copy_count['DynDen']
+        self.copy_count['DynDen']+=1
+        if self.copy_count['DynDyn']>1:
+            raise Exception("custom_DynDen can only be used once")
+        
+        p=dict(name="DynDen")
+        p.update(kw)
+
+        # Presumably want to enable it, though could be optional
+        if isinstance(self,dflow_model.DFlowModel):
+            self.dwaq.add_process(p['name'])
+        else: # WaqModel or related
+            self.add_process(p['name'])
+        
+        # With SW_Uitz=0.0:
+        # SD = PAConstant / ExtVl
+        process=f"""
+{p['name']:10}                    Reuse Secchi depth for denit rate
+SECCHI    ; module name
+123       ; TRswitch
+        22; # input items for segments
+InvDenRate     -999.000     x POC                                                    (1/m)               
+IM1             0.00000       inorganic matter (IM1)                                 (gDM/m3)            
+IM2             0.00000       inorganic matter (IM2)                                 (gDM/m3)            
+IM3             0.00000       inorganic matter (IM3)                                 (gDM/m3)            
+POC1            0.00000       POC1 (fast decomposing fraction)                       (gC/m3)             
+POC2            0.00000       POC2 (medium decomposing fraction)                     (gC/m3)             
+POC3            0.00000       POC3 (slow decomposing fraction)                       (gC/m3)             
+POC4            0.00000       POC4 (particulate refractory fraction)                 (gC/m3)             
+ExtVlODS        0.00000       VL extinction by DOC                                   (1/m)               
+Chlfa           0.00000       Chlorophyll-a concentration                            (mg/m3)             
+SW_Uitz         0.00000       Extinction by Uitzicht On (1) or Off (0)               (-)                 
+UitZDEPT1       1.20000       Z1 (depth)                                             (m)                 
+UitZDEPT2       1.00000       Z2 (depth)                                             (m)                 
+UitZCORCH       2.50000       CORa correction factor                                 (-)                 
+UitZC_DET      0.260000E-01   C3 coeff. absorption ash weight & detritus             (-)                 
+UitZC_GL1      0.730000       C1 coeff. absorption ash weight & detritus             (-)                 
+UitZC_GL2       1.00000       C2 coeff. absorption ash weight & detritus             (-)                 
+UitZHELHM      0.140000E-01   Hel_h constant                                         (1/nm)              
+UitZTAU         7.80000       Tau constant calculation transparency                  (-)                 
+UitZangle       30.0000       Angle of incidence solar radiation                     (degrees)           
+DMCFDetC        2.50000       DM:C ratio DetC                                        (gDM/gC)            
+DetCS1          1.70000     x Poole-Atkins constant                                  (-)                 
+         0; # input items for exchanges
+         1; # output items for segments
+RcDenSed                    x 1st order denit m/d                                    (m)                 
+         0; # output items for exchanges
+         1; # fluxes
+dDumDynDen                  x dummy flux to access Secchi                            (-)                 
+         2; # stoichiometry lines
+IM1         dDumDynDen     0.00000
+POC1        dDumDynDen     0.00000
+         0; # stoichiometry lines dispersion arrays
+         0; # stoichiometry lines velocity arrays
+END
+"""
+        self.custom_procs.append(process)
 
