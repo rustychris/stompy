@@ -348,7 +348,7 @@ def north_arrow(xy,L,ax=None,decl_east=0.0,transform=None,angle=0.0,width=0.1,
     tip=xy+utils.rot(tot_rot*np.pi/180,np.array( [0,1.02*L] ))
 
     obj=ax.fill( pnts[:,0],pnts[:,1],'k',transform=transform)
-    txt=ax.text(tip[0],tip[1]," $\mathcal{N}$",transform=transform,ha='center',rotation=tot_rot)
+    txt=ax.text(tip[0],tip[1],r" $\mathcal{N}$",transform=transform,ha='center',rotation=tot_rot)
     return obj,txt
 
 def show_slopes(ax=None,slopes=[-5./3,-1],xfac=5,yfac=3):
