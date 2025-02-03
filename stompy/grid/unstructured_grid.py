@@ -986,14 +986,19 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
          otherwise all edges will get an entry, and faces with no internal points will 
          just get a copy of the simple face geometry.
 
-        Acknowledgements: Original code by Stephen Andrews.
+        Acknowledgements: Original code by Stephen Andrews, add'l code from Scott Burdick
 
         elevations: If elevation-related fields (currently just min elevation in 
           cells and faces) are found, add them to the grid.
         """
         import h5py # import here, since most of stompy does not rely on h5py
-        h = h5py.File(hdf_fname, 'r')
-
+        if isinstance(hdf_fname,h5py.File):
+            h=hdf_fname
+            close_h5 = False
+        else:
+            h = h5py.File(hdf_fname, 'r')
+            close_h5 = True
+            
         try:
             cc_suffixes=None
             names=list(h['Geometry/2D Flow Areas'].keys())
@@ -1042,17 +1047,19 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             if twod_info['version']=='v6':
                 edge_nodes = h['Geometry/2D Flow Areas/' + twod_area_name + '/Faces FacePoint Indexes']
                 edge_nodes=np.array(edge_nodes)
+                edge_cells = np.array(h['Geometry/2D Flow Areas/' + twod_area_name + '/Faces Cell Indexes'])
             elif twod_info['version']=='v2025':
                 edge_data = np.array(h['Geometry/2D Flow Areas/' + twod_area_name + '/Face Data'])
                 edge_nodes = edge_data[:,2:] # cellA,cellB, facepoint A, facepoint B
+                edge_cells = edge_data[:,:2]
             else:
                 raise Exception("Unknown version: "+ twod_info['version'])
                 
             nedges = len(edge_nodes)
-            edges = -1 * np.ones((nedges, 2), dtype=int)
-            for j in range(nedges):
-                edges[j][0] = edge_nodes[j,0]
-                edges[j][1] = edge_nodes[j,1]
+            #edges = np.full((nedges, 2), -1, dtype=int)
+            #for j in range(nedges):
+            #    edges[j][0] = edge_nodes[j,0]
+            #    edges[j][1] = edge_nodes[j,1]
 
             if subedges is not None:
                 extra_edge_fields=[(subedges,object)]
@@ -1096,25 +1103,38 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 if cell_nodes[i,2] < 0:  # first ghost cell (which are sorted to end of list)
                     ncells=i # don't count ghost cells
                     break
-            cells = -1 * np.ones((ncells, max_cell_faces), dtype=int)
+            cells = np.full((ncells, max_cell_faces), -1, dtype=int)
             for i in range(ncells):
                 for k in range(max_cell_faces):
                     cells[i][k] = cell_nodes[i][k]
 
-            grd = UnstructuredGrid(edges=edges, points=points,
+            grd = UnstructuredGrid(edges=edge_nodes, points=points,
                                    cells=cells, max_sides=max_cell_faces,
                                    extra_edge_fields=extra_edge_fields)
+            grd.edges['cells'][:,:] = edge_cells
             grd.twod_area_name = twod_area_name
 
+            N=grd.Ncells()
             if len(ccx) > grd.Ncells():
-                N=grd.Ncells()
                 #print(f"{len(ccx)-N} apparent ghost cell centers")
                 grd.ghost_cc=np.c_[ ccx[N:], ccy[N:]]
                 ccx=ccx[:N]
                 ccy=ccy[:N]
             grd.cells['_center'][:,0] = ccx
             grd.cells['_center'][:,1] = ccy
+
+            # def ragged_to_sparse(start_count,values,missing=np.nan):
+            #     result = np.full( (len(start_count),values.shape[1]), missing, dtype=values.dtype)
+            #     for i,(start,count) in start_count:
+            #         result[i,:count] = values[start:start+count]
+            #     return result
             
+            def ragged_to_object(start_count,values):
+                result = np.full( len(start_count), None, dtype=object)
+                for i,(start,count) in enumerate(start_count):
+                    result[i] = values[start:start+count]
+                return result
+                
             if elevations:
                 cell_key='Geometry/2D Flow Areas/' + twod_area_name + '/Cells Minimum Elevation'
                 edge_key='Geometry/2D Flow Areas/' + twod_area_name + '/Faces Minimum Elevation'
@@ -1125,6 +1145,40 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 if edge_key in h:
                     grd.add_edge_field('edge_z_min',
                                        h[edge_key])
+
+                # elevation tables:
+                edge_info_key='Geometry/2D Flow Areas/' + twod_area_name + '/Faces Area Elevation Info'
+                edge_value_key='Geometry/2D Flow Areas/' + twod_area_name + '/Faces Area Elevation Values'
+                if (edge_info_key in h) and (edge_value_key in h):
+                    edge_values_start_count = h[edge_info_key][:]
+                    edge_values = h[edge_value_key][:] # z, area, wet perim, manning
+                    edge_structured = np.zeros(edge_values.shape[0], dtype=[ ('z',edge_values.dtype),
+                                                                            ('area',edge_values.dtype),
+                                                                            ('wet_perimeter',edge_values.dtype),
+                                                                            ('mannings_n',edge_values.dtype) ])
+                    edge_structured['z'] = edge_values[:,0]
+                    edge_structured['area'] = edge_values[:,1]
+                    edge_structured['wet_perimeter'] = edge_values[:,2]
+                    edge_structured['mannings_n'] = edge_values[:,3]
+                    grd.add_edge_field('area_table',ragged_to_object(edge_values_start_count,edge_structured))
+
+                cell_info_key='Geometry/2D Flow Areas/' + twod_area_name + '/Cells Volume Elevation Info'
+                cell_value_key='Geometry/2D Flow Areas/' + twod_area_name + '/Cells Volume Elevation Values'
+                if (cell_info_key in h) and (cell_value_key in h):
+                    cell_values_start_count = h[cell_info_key][:N] # drop ghosts/virtual
+                    cell_values = h[cell_value_key][:] # z, area, wet perim, manning
+                    cell_structured = np.zeros(cell_values.shape[0], dtype=[('z',cell_values.dtype),
+                                                                            ('volume',cell_values.dtype)])
+                    cell_structured['z'] = cell_values[:,0]
+                    cell_structured['volume'] = cell_values[:,1]
+                    grd.add_cell_field('volume_table',ragged_to_object(cell_values_start_count,cell_structured))
+
+            edge_normal_length_key='Geometry/2D Flow Areas/' + twod_area_name + '/Faces NormalUnitVector and Length'
+            if edge_normal_length_key in h:
+                edge_normal_length = h[edge_normal_length_key][:]
+                grd.add_edge_field('normal',edge_normal_length[:,:2])
+                grd.add_edge_field('length_normal',edge_normal_length[:,2])
+                    
             if subedges is not None:
                 if twod_info['version']=='v6':
                     try:
@@ -1169,7 +1223,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     
             return grd
         finally:
-            h.close()
+            if close_h5:
+                h.close()
 
     @staticmethod
     def read_dfm(nc=None,fn=None,

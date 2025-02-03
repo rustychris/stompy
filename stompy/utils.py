@@ -700,6 +700,11 @@ def dist_along(x,y=None):
     return np.concatenate( ( [0],
                              np.cumsum(steps) ) )
 
+def dist_total(x,y=None):
+    if y is None:
+        x,y = x[:,0],x[:,1]
+    steps=np.sqrt(np.diff(x)**2 + np.diff(y)**2)
+    return np.sum(steps)
 
 def point_line_distance(point,line):
     """
