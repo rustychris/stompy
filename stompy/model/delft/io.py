@@ -104,7 +104,7 @@ def his_file_xarray(fn,region_exclude=None,region_include=None):
 
     time0,time_unit = parse_time0(time_meta)
     times=time0 + time_unit*frames['tsec']
-    ds['time']=( ('time',), times)
+    ds['time']=( ('time',), times.astype('M8[ns]'))
     ds['tsec']=( ('time',), frames['tsec'])
 
     region_names=[decstrip(s) for s in regions['name']]

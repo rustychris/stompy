@@ -10,6 +10,7 @@ import numpy as np
 import os
 import hashlib, pickle
 from multiprocessing import Pool
+import subprocess
 from collections import defaultdict
 
 # import matplotlib.pyplot as plt
@@ -19,6 +20,7 @@ from ... import utils
 from ...spatial import field
 
 from scipy import sparse
+from scipy.spatial import KDTree
 import pandas as pd
 import scipy.spatial as ss # only for calc_volume=True
 
@@ -76,10 +78,16 @@ class PostFoam:
     Caveats: Relies on cell centers that were written by openfoam. Does not 
      handle faces between processors. This can leave some missing points that will
      get interpolated over.
+
+
+    Note: The code here implicitly transposes y and z in the output. It expects
+    y to be the vertical coordinate, and x/z are in the horizontal plane. The 
+    transposition is possibly changing the coordinate system from right-handed to
+    left-handed. Caveat emptor.
     """
 
     sim_dir = None
-    verbose = True
+    verbose = False
     raster_mode = 'clipping' # or 'bbox'
     
     max_n_procs=1024 # just to bound the search, no inf loops
@@ -98,11 +106,20 @@ class PostFoam:
 
         self.init_mesh()
 
-    def available_times(self):
-        times = [float(t) for t in os.listdir(self.proc_dir(0)) if t!='constant']
+    def available_times(self,omit_zero=True):
+        times=[]
+        
+        for t in os.listdir(self.proc_dir(0)):
+            try:
+                float(t) # make sure it's a number, but keep string representation
+            except ValueError:
+                continue
+            if omit_zero and float(t)==0.0: continue
+            times.append(t)
+            
         # parsing to float then converting back in read_timestep() may lead to
         # roundoff issues, but so far not a problem.
-        times.sort()
+        times.sort(key=float) # sort numerically, represent as string
         return times
     
     def fmt_timename(self,timename):
@@ -249,17 +266,27 @@ class PostFoam:
             return cell_bounds
 
     def set_raster_parameters(self,dx,dy=None,xxyy=None):
-        self.raster_dx = dx
-        self.raster_dy = dy or dx
         if xxyy is None:
             xxyy = [self.bboxes[:,0].min(),self.bboxes[:,1].max(),
                     self.bboxes[:,2].min(),self.bboxes[:,3].max()]
         self.raster_xxyy = xxyy
+        if dx<0:
+            dx=int((xxyy[1] - xxyy[0])/-dx)
+        self.raster_dx = dx
+        if dy is None:
+            dy=dx
+        elif dy<0:
+            dy=int((xxyy[3] - xxyy[2])/-dy)
+        else:
+            dy=dx
+        self.raster_dy = dy
         
         if self.bboxes is None:
             raise Exception("set_raster_parameters() must be called after initializing mesh")
 
         self.raster_precalc=None # calculate on-demand
+
+        return dict(dx=dx,dy=dy,xxyy=xxyy,nx=int((xxyy[1]-xxyy[0])/dx),ny=int((xxyy[3]-xxyy[2])/dy))
 
     def precalc_raster_info(self,fld):
         if self.raster_mode=='clipping':
@@ -324,7 +351,7 @@ class PostFoam:
                 else:
                     raster_weights = sparse.hstack( (raster_weights,proc_raster_weights) )
         self.raster_precalc = raster_weights
-        
+
     def to_raster(self, variable, timename):
         if variable=='wse':
             return self.raster_wse(timename)
@@ -352,7 +379,11 @@ class PostFoam:
                 num = raster_weights.dot(self.alphas*self.vels[:,comp])
                 den = raster_weights.dot(self.alphas)
 
-                u = num/den                
+                # seems like division by zero should be handled by 'divide', but
+                # so far it trips 'invalid'
+                with np.errstate(divide='ignore',invalid='ignore'):
+                    u = num/den
+                    u[ np.abs(den)<1e-10 ] = np.nan
                 
                 fld.F[:,:,comp] = u.reshape( (fld.F.shape[0],fld.F.shape[1]) )                
             elif variable=='depth_bad':
@@ -390,10 +421,20 @@ class PostFoam:
             center_fn = os.path.join(self.proc_dir(proc),'meshCellCentres_constant.obj')
 
         if not os.path.exists(center_fn):
-            raise Exception(f"Cell center file {center_fn} not found. Generate with writeMeshObj")            
+            if not self.compute_cell_centers(center_fn):
+                raise Exception(f"Cell center file {center_fn} not found. Generate with writeMeshObj")            
         df = pd.read_csv(center_fn,sep=r'\s+',names=['type','x','y','z'])
         return df[ ['x','y','z'] ].values
-    
+
+    def compute_cell_centers(self,center_fn):
+        case = os.path.dirname(center_fn)
+        completed = subprocess.run([self.writeMeshObj,"-constant","-time","none"], cwd=case)
+        if completed.returncode!=0:
+            return False
+        if not os.path.exists(center_fn):
+            print(f"After writeMeshObj failed to find {center_fn}")
+            return False
+        return True
     def contour_points_proc(self, scalar, contour_value, proc):
         centers = self.cell_centers(proc)    
         owner =self.read_owner(proc)
@@ -441,7 +482,48 @@ class PostFoam:
         # interpolate
         pnts,faces = self.contour_points(timename,contour_value=0.5, scalar_name='alpha.water')
         fld_pnts = field.XYZField(X=pnts[:,::2], F=pnts[:,1])
-        fld_wse = fld_pnts.to_grid(bounds=self.raster_xxyy, dx=self.raster_dx,dy=self.raster_dy)
+
+        # In some unfortunate situations can end up with duplicate points. Filter out via KDTree
+        tol = 0.001*self.raster_dx
+
+        for finite in range(5): # really shouldn't take multiple iterations
+            kdt = KDTree(fld_pnts.X)
+            remapped = np.full(fld_pnts.X.shape[0],-1) 
+            pairs = kdt.query_pairs(tol) # set of pairs (i,j) i<j
+            if pairs:
+                for i,j in pairs:
+                    # Average i and j, make j point to i
+                    # Make both canonical:
+                    i_can=i
+                    while remapped[i_can]>=0:
+                        i_can=remapped[i_can]
+                    j_cans=[j]
+                    while remapped[j_cans[-1]]>=0:
+                        j_cans.append(remapped[j_cans[-1]])
+                    if i_can==j_cans[-1]: continue
+                    can_dist = utils.mag(fld_pnts.X[i_can] - fld_pnts.X[j_cans[-1]])
+                    if can_dist>tol: continue
+                    j_can=j_cans[-1]
+                    # ideally have counts so this can be weighted.
+                    # Moving i_can around causes problems.
+                    #fld_pnts.X[i_can] = 0.5*(fld_pnts.X[i_can] + fld_pnts.X[j_can])
+                    fld_pnts.F[i_can] = 0.5*(fld_pnts.F[i_can] + fld_pnts.F[j_can])
+                    fld_pnts.X[j_can] = np.nan
+                    fld_pnts.F[j_can] = np.nan
+                    for j_can in j_cans:
+                        remapped[j_can] = i_can
+
+                valid = remapped<0
+                print(f"Combining { (~valid).sum() } point pairs that were too close together (iteration {1+finite})")
+                fld_pnts.X = fld_pnts.X[ valid ]
+                fld_pnts.F = fld_pnts.F[ valid ]
+            else:
+                break
+
+        # clean: openfoam domains tend to have a lot of regular grid, boundaries of which can
+        # run into floating point issues. Try to clean out problem triangles.
+        fld_wse = fld_pnts.to_grid(bounds=self.raster_xxyy, dx=self.raster_dx,dy=self.raster_dy,
+                                   clean=True)
         
         if 1: # trim raster to valid parts of the slice.
             face_polys = []
@@ -518,8 +600,12 @@ def volume_cell_edges(edges):
         # succeeds but has a volume that is biased high.
         print("Degenerate clipped cell")
         return 0.0
-    return ss.ConvexHull(cell_vertices).volume
-
+    try:
+        return ss.ConvexHull(cell_vertices).volume
+    except ss.QhullError:
+        print("Degenerate clipped cell (qhull error)")
+        return 0.0
+    
 def clipped_volume(edges, xmin=None, xmax=None, ymin=None, ymax=None,
                    zmin=None, zmax=None):
     # Clip the given cell to the specified ranges. Coordinates are native
@@ -558,7 +644,7 @@ def precalc_raster_weights_proc(meshpath, fld, precision=15, force=False):
     Apixel = fld.dx*fld.dy
 
     # Load proc mesh                    
-    verbose=True
+    verbose=False
     meshpath = os.path.join(meshpath,'constant/polyMesh')
     # owner.nb_faces, boundary, values, nb_cell
     owner = OpenFoamFile(meshpath, name="owner", verbose=verbose)
@@ -652,7 +738,9 @@ def cell_as_edges(cIdx, cell_faces, facefile, pointfile):
     xyz=pointfile.values.reshape([-1,3])
     edges = [xyz[list(edge_node)] for edge_node in edge_nodes]
     return edges
-    
+
+
+
 if __name__ == '__main__':
     import matplotlib.pyplot as plt
     #timename = '34'

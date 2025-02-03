@@ -29,6 +29,7 @@ class StreamlineQuiver(object):
     max_dist=60.
     size=1.0
     lw=0.8
+    min_speed=0.1
 
     # don't start traces outside this xxyy bounding box.
     clip=None
@@ -380,7 +381,7 @@ class StreamlineQuiver(object):
 
         polys=[ utils.rot(angle,self.sym) for angle in angles]
         polys=np.array(polys)
-        polys[speeds<0.1,:]=self.diam
+        polys[speeds<self.min_speed,:]=self.diam
         polys *= size
         polys[...,0] += x[:,None]
         polys[...,1] += y[:,None]
@@ -431,7 +432,7 @@ class StreamlineQuiver(object):
         """
         Add a basic key for the quiver
         """
-        ax=kw.get('ax',None) or plt.gca()
+        ax=kw.pop('ax',plt.gca())
 
         segs=[ [ [X,Y],[X+self.max_t*U,Y]] ]
         speeds=[U]
@@ -450,10 +451,12 @@ class RegularStreamlineQuiver(StreamlineQuiver):
         utils.set_keywords(self,kw)
 
         self.g=g
-        self.U=U
         self.island_points=[]
-        self.Umag=utils.mag(U)
         self.boundary=g.boundary_polygon()
+        self.update_U(U)
+    def update_U(self,U):
+        self.U=U
+        self.Umag=utils.mag(U)
         self.calculate_streamlines()
         
     def cart_samples(self,zoom,dx):
@@ -482,7 +485,7 @@ class RegularStreamlineQuiver(StreamlineQuiver):
         #return self.streamline_simple(p,c,U,duration,dt)
         return self.streamline_tracer(p,c,U,duration,dt)
     def streamline_tracer(self,p,c,U,duration,dt):
-        ds = stream_tracer.steady_streamline_oneway(self.g,U,p,max_t=duration)
+        ds = stream_tracer.steady_streamline_oneway(self.g,U,p,max_t=duration,u_min=1e-4)
         xy = ds['x'].values
         uv = U[ds['cell'].values]
         return np.hstack( (xy,uv) )

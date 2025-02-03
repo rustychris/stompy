@@ -45,7 +45,7 @@ except ImportError:
     from matplotlib import delaunay
 
 from . import wkb2shp
-from ..utils import array_append, isnat, circumcenter, dist, set_keywords, progress
+from ..utils import array_append, isnat, circumcenter, dist, set_keywords, progress, signed_area
 
 try:
     from matplotlib import cm
@@ -358,7 +358,20 @@ class XYZField(Field):
 
     # an XYZ Field of our voronoi points
     _tri = None
-    def tri(self,aspect=1.0):
+    def tri(self,aspect=1.0,clean=False):
+        """
+        clean: optionally check/remove sliver and negative area triangles, useful 
+        if interpolation fails due to floating point issues with collinear points.
+        """
+        if clean:
+            t_raw = self.tri(aspect,clean=False)
+            # clean_tri:
+            pnts=np.c_[ t_raw.x, t_raw.y]
+            faces = pnts[t_raw.triangles]
+            areas = np.array([signed_area(face) for face in faces])
+            valid = areas>=1e-10
+            return delaunay.Triangulation(t_raw.x, t_raw.y, t_raw.triangles[valid])
+
         if aspect!=1.0:
             return delaunay.Triangulation(self.X[:,0],
                                           aspect*self.X[:,1])
@@ -385,7 +398,7 @@ class XYZField(Field):
                 raise Exception("Request for nearest-neighbors, which was discontinued by mpl")
         return self._nn_interper
     _lin_interper = None
-    def lin_interper(self,aspect=1.0):
+    def lin_interper(self,aspect=1.0,clean=False):
         def get_lin_interp(t,z):
             try:
                 return t.linear_interpolator(z)
@@ -393,9 +406,9 @@ class XYZField(Field):
                 from matplotlib.tri import LinearTriInterpolator
                 return LinearTriInterpolator(t,z)
         if aspect!=1.0:
-            return get_lin_interp(self.tri(aspect=aspect),self.F)
+            return get_lin_interp(self.tri(aspect=aspect,clean=clean),self.F)
         if self._lin_interper is None:
-            self._lin_interper = get_lin_interp(self.tri(),self.F)
+            self._lin_interper = get_lin_interp(self.tri(clean=clean),self.F)
         return self._lin_interper
 
     #_voronoi = None
@@ -623,7 +636,7 @@ class XYZField(Field):
                           F=newF,projection=self.projection())
 
     def to_grid(self,nx=2000,ny=2000,interp='linear',bounds=None,dx=None,dy=None,
-                aspect=1.0,max_radius=None):
+                aspect=1.0,max_radius=None,clean=False,strict_dx=False):
         """ use the delaunay based griddata() to interpolate this field onto
         a rectilinear grid.  In theory interp='linear' would give bilinear
         interpolation, but it tends to complain about grid spacing, so best to stick
@@ -636,6 +649,8 @@ class XYZField(Field):
         interp='qhull': use scipy's delaunay/qhull interface.  this can
         additionally accept a radius which limits the output to triangles
         with a smaller circumradius.
+
+        strict_dx: adjust bounds to match dx/dy
         """
         if bounds is None:
             xmin,xmax,ymin,ymax = self.bounds()
@@ -652,19 +667,27 @@ class XYZField(Field):
             # xmin = xmin - (xmin%dx)
             # ymin = ymin - (ymin%dy)
 
+            # used to truncate and always add 1, but this seems
+            # better since it does the right thing on an exact
+            # result.
+            nx=int( np.ceil((xmax - xmin)/dx) )
+            ny=int( np.ceil((ymax - ymin)/dy) )
+            # Previous approach:
             # The 1+, -1, stuff feels a bit sketch.  But this is how
             # CompositeField calculates sizes
-            nx = 1 + int( (xmax-xmin)/dx )
-            ny = 1 + int( (ymax-ymin)/dy )
-            xmax = xmin + (nx-1)*dx
-            ymax = ymin + (ny-1)*dy
+            # nx = 1 + int( (xmax-xmin)/dx )
+            # ny = 1 + int( (ymax-ymin)/dy )
+            if strict_dx:
+                xmax = xmin + (nx-1)*dx
+                ymax = ymin + (ny-1)*dy
+            # otherwise the user doesn't quite get the requested dx and dy
 
         # hopefully this is more compatible between versions, also exposes more of what's
         # going on
         if interp == 'nn':
             interper = self.nn_interper(aspect=aspect)
         elif interp=='linear':
-            interper = self.lin_interper(aspect=aspect)
+            interper = self.lin_interper(aspect=aspect,clean=clean)
         elif interp=='qhull':
             interper = self.qhull_interper(max_radius=max_radius)
             
@@ -2781,7 +2804,11 @@ class SimpleGrid(QuadrilateralGrid):
                 options=[]
 
         gtype = numpy_type_to_gdal[self.F.dtype.type]
-        dst_ds = driver.Create(output_file, self.F.shape[1], self.F.shape[0], 1, gtype,
+        if self.F.ndim==2:
+            nband=1
+        else:
+            nband=self.F.shape[2]
+        dst_ds = driver.Create(output_file, self.F.shape[1], self.F.shape[0], nband, gtype,
                                options)
         raster = self.F
 
@@ -2811,13 +2838,17 @@ class SimpleGrid(QuadrilateralGrid):
             dst_ds.SetProjection( srs.ExportToWkt() )
 
         # write the band
-        b1 = dst_ds.GetRasterBand(1)
-        if nodata is not None:
-            b1.SetNoDataValue(nodata)
-        else:
-            # does this work?
-            b1.SetNoDataValue(np.nan)
-        b1.WriteArray(raster)
+        if self.F.ndim==2: # add singleton band dimension
+            raster=raster[...,None]
+
+        for band in range(nband):
+            b = dst_ds.GetRasterBand(1+band)
+            if nodata is not None:
+                b.SetNoDataValue(nodata)
+            else:
+                # does this work?
+                b.SetNoDataValue(np.nan)
+            b.WriteArray(raster[:,:,band])
         if not in_memory:
             dst_ds.FlushCache()
         else:
