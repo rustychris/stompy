@@ -6026,8 +6026,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                               for c in np.nonzero(mask)[0]]
                 if not isinstance(centroid,np.ndarray) and centroid:
                     # override with representative point
-                    xy = np.concatenate( [geometry.Polygon(poly).representative_point().coords
-                                          for poly in plot_polys])
+                    # Note: xy is expected to be for all cells, and may be
+                    # a shared array coming into this point...
+                    # Not the most efficient.
+                    xy=xy.copy()
+                    xy[mask] = np.concatenate( [geometry.Polygon(poly).representative_point().coords
+                                                for poly in plot_polys])
                 
             coll = PolyCollection(plot_polys,**kwargs)
             ax.add_collection(coll)

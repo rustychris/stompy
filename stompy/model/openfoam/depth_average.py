@@ -242,7 +242,7 @@ class PostFoam:
         if calc_volume:
             VolCell_all = np.empty(owner.nb_cell, dtype=float)
     
-        # bounds of each cell, xxyyzz
+        # bounds of each cell, xxyyzz, in original OF reference frame
         cell_bounds = np.full( (owner.nb_cell,6), np.nan )
         
         for i in range(owner.nb_cell):
@@ -267,8 +267,10 @@ class PostFoam:
 
     def set_raster_parameters(self,dx,dy=None,xxyy=None):
         if xxyy is None:
+            # Note this pulls the z coordinate for bounds which
+            # we implicitly convert to y.
             xxyy = [self.bboxes[:,0].min(),self.bboxes[:,1].max(),
-                    self.bboxes[:,2].min(),self.bboxes[:,3].max()]
+                    self.bboxes[:,4].min(),self.bboxes[:,5].max()]
         self.raster_xxyy = xxyy
         if dx<0:
             dx=int((xxyy[1] - xxyy[0])/-dx)
@@ -310,6 +312,7 @@ class PostFoam:
         for row in utils.progress(range(fld.shape[0])):
             ymin=fld_y[row]-fld.dy/2
             ymax=fld_y[row]+fld.dy/2
+            # Note implicit z->y change of coodinates
             dy = (np.minimum(ymax,self.bboxes[:,5]) - np.maximum(ymin,self.bboxes[:,4])).clip(0)
             for col in range(fld.shape[1]):
                 pix = row*fld.shape[1] + col # row-major ordering of pixels
@@ -673,7 +676,7 @@ def precalc_raster_weights_proc(meshpath, fld, precision=15, force=False):
                   pnts[:,1].max(),
                   pnts[:,2].min(),
                   pnts[:,2].max()]
-        bboxes[cIdx] = xxyyzz
+        bboxes[cIdx] = xxyyzz # OF native reference frame
 
     raster_weights = sparse.dok_matrix((fld.F.shape[0]*fld.F.shape[1],
                                         bboxes.shape[0]),
@@ -738,6 +741,22 @@ def cell_as_edges(cIdx, cell_faces, facefile, pointfile):
     xyz=pointfile.values.reshape([-1,3])
     edges = [xyz[list(edge_node)] for edge_node in edge_nodes]
     return edges
+
+
+def cell_center_py(cell_faces, facefile, pointfile):
+    assert False,"Not ready"
+    # HERE - process as full mesh, not one cell at a time
+    # facefile....
+    # replicate cell center calculation
+    xyz=pointfile.values.reshape([-1,3])
+    faces=[] # [N,{xyz}] array per face
+    for fIdx in cell_faces[cIdx]:
+        face_nodes = facefile.faces[fIdx]["id_pts"][:]
+        face = xyz[list(face_nodes)]
+        faces.append(face)
+
+    # HERE: 
+    return 
 
 
 
