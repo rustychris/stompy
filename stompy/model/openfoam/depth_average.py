@@ -12,6 +12,9 @@ import hashlib, pickle
 from multiprocessing import Pool
 import subprocess
 from collections import defaultdict
+from numba.typed import List
+from numba import jit,njit
+from scipy.spatial import KDTree
 
 # import matplotlib.pyplot as plt
 #from fluidfoam.readof import getVolumes
@@ -98,6 +101,8 @@ class PostFoam:
     # command, with path as needed, to openfoam writeMeshObj
     writeMeshObj="writeMeshObj"
 
+    _local_to_global = None
+
     def __init__(self,**kw):
         """
         
@@ -126,7 +131,21 @@ class PostFoam:
         if not isinstance(timename,str):
             return "%g"%timename
         return timename
-        
+
+    def map_local_to_global(self):
+        global_centers = self.cell_centers(proc=None)
+        self.ncell_global = global_centers.shape[0]
+        kdt = KDTree(global_centers)
+        self._local_to_global = [None]*self.n_procs
+        for proc in range(self.n_procs):
+            proc_centers = self.cell_centers(proc=proc)
+            dists,self._local_to_global[proc] = kdt.query(proc_centers,distance_upper_bound=1e-5)
+
+    def local_to_global(self,proc):
+        if self._local_to_global is None:
+            self.map_local_to_global()
+        return self._local_to_global[proc]
+            
     def read_timestep(self,timename):
         timename=self.fmt_timename(timename)
         if timename==self.current_timename:
@@ -143,6 +162,19 @@ class PostFoam:
         self.vels = np.concatenate( vels,axis=1 ).transpose()
         self.alphas = np.concatenate(alphas)
 
+    def read_scalar(self,proc,timename,scalar_name):
+        if proc is not None:
+            return readscalar(self.proc_dir(proc), timename, scalar_name)
+        else:
+            # need some global cell information
+            self.local_to_global(0) # Trigger mapping during DEV
+            result = np.full( self.ncell_global, np.nan)
+            for lproc in range(self.n_procs):
+                proc_scalar = self.read_scalar(lproc,timename,scalar_name)
+                l2g = self.local_to_global(lproc)
+                result[l2g] = proc_scalar
+            return result
+        
     def read_n_procs(self):
         for n_procs in range(self.max_n_procs):
             if not os.path.exists(self.proc_dir(n_procs)):
@@ -223,7 +255,6 @@ class PostFoam:
         
         Calculating volumes increases run time by a factor of 4 or so
         """
-    
         owner = self.read_owner(proc) 
         facefile = self.read_facefile(proc) 
         pointfile = self.read_pointfile(proc)
@@ -425,10 +456,24 @@ class PostFoam:
 
         if not os.path.exists(center_fn):
             if not self.compute_cell_centers(center_fn):
-                raise Exception(f"Cell center file {center_fn} not found. Generate with writeMeshObj")            
+                print("Fall back to python cell center computation")
+                self.compute_cell_centers_py(proc,center_fn)
         df = pd.read_csv(center_fn,sep=r'\s+',names=['type','x','y','z'])
         return df[ ['x','y','z'] ].values
 
+    def face_centers(self,proc=None):
+        # see cell_centers
+        if proc is None:
+            center_fn = os.path.join(self.sim_dir,'meshFaceCentres_constant.obj')
+        else:
+            center_fn = os.path.join(self.proc_dir(proc),'meshFaceCentres_constant.obj')
+
+        if not os.path.exists(center_fn):
+            if not self.compute_cell_centers(center_fn):
+                raise Exception(f"Face center file {center_fn} not found. Generate with writeMeshObj")
+        df = pd.read_csv(center_fn,sep=r'\s+',names=['type','x','y','z'])
+        return df[ ['x','y','z'] ].values
+    
     def compute_cell_centers(self,center_fn):
         case = os.path.dirname(center_fn)
         completed = subprocess.run([self.writeMeshObj,"-constant","-time","none"], cwd=case)
@@ -438,6 +483,21 @@ class PostFoam:
             print(f"After writeMeshObj failed to find {center_fn}")
             return False
         return True
+    
+    def compute_cell_centers_py(self,proc,center_fn):
+        owner = self.read_owner(proc) 
+        facefile = self.read_facefile(proc) 
+        pointfile = self.read_pointfile(proc)
+        neigh = self.read_neighbor(proc)
+
+        ctrs,vols = cell_center_volume_py(facefile, pointfile.values.reshape([-1,3]), owner.values, neigh.values)
+        df=pd.DataFrame()
+        df['t']=["v"] * len(ctrs)
+        df['x']=ctrs[:,0]
+        df['y']=ctrs[:,1]
+        df['z']=ctrs[:,2]
+        df.to_csv(center_fn,sep=' ',header=False,index=False,float_format="%.15f")
+                  
     def contour_points_proc(self, scalar, contour_value, proc):
         centers = self.cell_centers(proc)    
         owner =self.read_owner(proc)
@@ -471,14 +531,20 @@ class PostFoam:
         return pnts,face_pnts
     
     def contour_points(self, timename, contour_value=0.5, scalar_name='alpha.water'):
-        pntss=[]
-        facess=[]
-        for proc in range(self.n_procs):
-            scalar = readscalar(self.proc_dir(proc), timename, scalar_name)
-            pnts,face_pnts = self.contour_points_proc(scalar, 0.5, proc=proc)
-            pntss.append(pnts)
-            facess += face_pnts
-        return np.concatenate(pntss,axis=0), facess
+        if 0: # per-subdomain
+            pntss=[]
+            facess=[]
+            for proc in range(self.n_procs):
+                scalar = readscalar(self.proc_dir(proc), timename, scalar_name)
+                pnts,face_pnts = self.contour_points_proc(scalar, 0.5, proc=proc)
+                pntss.append(pnts)
+                facess += face_pnts
+            return np.concatenate(pntss,axis=0), facess
+        else: # global - should avoid missing patches
+            scalar = self.read_scalar(None,timename,scalar_name)
+            pnts,face_pnts = self.contour_points_proc(scalar, 0.5, proc=None)
+            return pnts, face_pnts
+    
     
     def raster_wse(self,timename):
         timename=self.fmt_timename(timename)
@@ -533,7 +599,10 @@ class PostFoam:
             for i,pnts in enumerate(faces):
                 # convex hull gets around occasional warped, invalid polygons.
                 geom = convex_hull(geometry.MultiPoint(pnts[:,::2]))
-                face_polys.append(geom)
+                if geom.geom_type=='Polygon':
+                    # vertical cells end up with a LineString here that infects
+                    # the union.
+                    face_polys.append(geom)
                     
             face_poly = ops.unary_union( face_polys )
             
@@ -742,21 +811,162 @@ def cell_as_edges(cIdx, cell_faces, facefile, pointfile):
     edges = [xyz[list(edge_node)] for edge_node in edge_nodes]
     return edges
 
+@njit
+def calc_face_center(face):
+    VSMALL=1e-14
+    if len(face)==3:
+        ctr = (face[0] + face[1] + face[2]) / 3.0
+        area = 0.5*np.cross(face[1]-face[0],face[2]-face[0])
+    else:    
+        sumN=np.zeros(3,np.float64)
+        sumA=0.0
+        sumAc=np.zeros(3,np.float64)
 
-def cell_center_py(cell_faces, facefile, pointfile):
-    assert False,"Not ready"
-    # HERE - process as full mesh, not one cell at a time
-    # facefile....
-    # replicate cell center calculation
-    xyz=pointfile.values.reshape([-1,3])
+        fCentre = face.sum(axis=0) / face.shape[0]
+
+        nPoints=face.shape[0]
+        for pi in range(nPoints):
+            p1=face[pi]
+            p2=face[(pi+1)%nPoints]
+
+            centroid3 = p1 + p2 + fCentre
+            area_norm = np.cross( p2 - p1, fCentre - p1)
+            area = np.sqrt(np.sum(area_norm**2)) # utils.mag(area_norm)
+
+            sumN += area_norm;
+            sumA += area;
+            sumAc += area*centroid3;
+
+        ctr = (1.0/3.0)*sumAc/(sumA + VSMALL)
+        area = 0.5*sumN
+    return ctr,area
+
+# @njit
+def face_center_area_py(face_id_pts, xyz):
+    """
+    face_id_pts: list( array(point ids for a face), ...)
+    """
+    VSMALL=1e-14
+    # 20 s for one domain w/o numba
+    # 4s with numba just in calc_face_center
+    # 6s with njit on face_center_area_py, calling calc_face_center (?!)
+    # 5.5s with njit on face_center_area_py and inline calc_face_center
+    nfaces=len(face_id_pts)
+    face_ctr=np.zeros((nfaces,3),np.float64)
+    face_area=np.zeros((nfaces,3),np.float64)
+
+    for fIdx in range(nfaces):
+        face_nodes = face_id_pts[fIdx]
+        face = xyz[face_nodes]
+
+        if 0:
+            ctr,area = calc_face_center(face)
+        else:
+            if len(face)==3:
+                ctr = (face[0] + face[1] + face[2]) / 3.0
+                area = 0.5*np.cross(face[1]-face[0],face[2]-face[0])
+            else:    
+                sumN=np.zeros(3,np.float64)
+                sumA=0.0
+                sumAc=np.zeros(3,np.float64)
+
+                fCentre = face.sum(axis=0) / face.shape[0]
+
+                nPoints=face.shape[0]
+                for pi in range(nPoints):
+                    p1=face[pi]
+                    p2=face[(pi+1)%nPoints]
+
+                    centroid3 = p1 + p2 + fCentre
+                    area_norm = np.cross( p2 - p1, fCentre - p1)
+                    area = np.sqrt(np.sum(area_norm**2)) # utils.mag(area_norm)
+
+                    sumN += area_norm;
+                    sumA += area;
+                    sumAc += area*centroid3;
+
+                ctr = (1.0/3.0)*sumAc/(sumA + VSMALL)
+                area = 0.5*sumN
+        face_ctr[fIdx] = ctr
+        face_area[fIdx] = area
+
+    return face_ctr, face_area
+
+
+def cell_center_volume_py(facefile, xyz, owner, neigh):
+    """
+    facefile:
+    xyz: pointfile.values.reshape([-1,3])
+    owner: [Nfaces] index of face's owner cell
+    neigh: [NInternalFaces]  index of faces's neighbor cell
+
+    e.g.
+    ctrs,vols = cell_center_volume_py(facefile, pointfile.values.reshape([-1,3]), owner.values, neigh.values)
+    """
+    # replicate cell center calculation from openfoam-master/src/meshTools/primitiveMeshGeometry.C
     faces=[] # [N,{xyz}] array per face
-    for fIdx in cell_faces[cIdx]:
-        face_nodes = facefile.faces[fIdx]["id_pts"][:]
-        face = xyz[list(face_nodes)]
-        faces.append(face)
 
-    # HERE: 
-    return 
+    VSMALL=1e-14
+    nfaces = facefile.nfaces
+    ncells = 1+max(owner.max(),neigh.max()) # or get it from owner file
+    n_internal = neigh.shape[0]        
+
+    if 1: # get face centers
+        face_id_pts=[ facefile.faces[fIdx]["id_pts"] for fIdx in range(nfaces)]
+        t=time.time()
+        if 0:
+            # oddly, this is slower than the outer loop being in python
+            # probably because even with List, the contents are individual
+            # arrays, each having to be checked.
+            # solution is to convert to a pure numpy ragged array (data,start,count)
+            face_id_pts_numba = List(face_id_pts)
+            face_ctr,face_area = face_center_area_py(face_id_pts_numba,xyz)
+        else:
+            face_ctr,face_area = face_center_area_py(face_id_pts,xyz)
+        print("Time for face_center call: ", time.time()-t)
+
+    if 1: # estimated cell centers
+        cell_est_centers = np.zeros( (ncells,3), np.float64)
+        cell_n_faces = np.zeros( ncells, np.int32)
+
+        for j,ctr in enumerate(face_ctr):
+            c_own = owner[j]
+            cell_est_centers[c_own] += ctr
+            cell_n_faces[c_own] += 1
+
+        for j,ctr in enumerate(face_ctr[:n_internal]):
+            c_nbr = neigh[j]
+            cell_est_centers[c_nbr] += ctr
+            cell_n_faces[c_nbr] += 1
+
+        cell_est_centers[:] /= cell_n_faces[:,None]
+
+    if 1: # refined cell centers
+        cell_centers=np.zeros_like(cell_est_centers)
+        cell_volumes=np.zeros(ncells,np.float64)
+
+        def mydot(a,b): # fighting with numpy to get vectorized dot product
+            return (a*b).sum(axis=-1)
+
+        pyr3Vol_own = mydot(face_area, face_ctr - cell_est_centers[owner]).clip(VSMALL)
+        pyrCtr_own = (3.0/4.0)*face_ctr + (1.0/4.0)*cell_est_centers[owner]
+        for j in range(nfaces):
+            cell_centers[owner[j]] += pyr3Vol_own[j,None] * pyrCtr_own[j]
+            cell_volumes[owner[j]] += pyr3Vol_own[j]
+
+        # note sign flip to account for nbr normal
+        pyr3Vol_nbr = mydot(face_area[:n_internal], cell_est_centers[neigh] - face_ctr[:n_internal]).clip(VSMALL)
+        pyrCtr_nbr = (3.0/4.0)*face_ctr[:n_internal] + (1.0/4.0)*cell_est_centers[neigh]
+
+        for j in range(n_internal):
+            cell_centers[neigh[j]] += pyr3Vol_nbr[j,None] * pyrCtr_nbr[j]
+            cell_volumes[neigh[j]] += pyr3Vol_nbr[j]
+
+        cell_centers /= cell_volumes[:,None]
+        cell_volumes *= 1.0/3.0
+
+    return cell_centers, cell_volumes
+    
 
 
 
