@@ -63,10 +63,17 @@ def stl_to_field(fp_stl,R,translate=[0,0,0],dx=None,dy=None,max_dim=None,pad=[0,
     else:
         # with rounding there's some one-off in here, but I'm not worrying
         # about that right now.
-        dx=max( xxyy[1]-xxyy[0], xxyy[3]-xxyy[2] ) / float(max_dim)
+        # try to be consistent with SimpleGrid.delta()
+        # dx = (xmax-xmin)/(self.F.shape[1]-1.0)
+        # i.e. xmin and xmax reference pixel centers
+        # 
+        dx=max( xxyy[1]-xxyy[0], xxyy[3]-xxyy[2] ) / (float(max_dim)-1.0)
         dy=dx
-        
-    Z = np.full( (int( (xxyy[3]-xxyy[2])/dx),int( (xxyy[1]-xxyy[0])/dx)), np.float64(nodata))
+
+    # 1.0 to account for pixel centers, and 0.5 so int() will round to nearest 
+    Z = np.full( (int(1.5 + (xxyy[3]-xxyy[2])/dx),
+                  int(1.5 + (xxyy[1]-xxyy[0])/dx)),
+                 np.float64(nodata))
     print("Output shape will be ",Z.shape)
 
     fld = field.SimpleGrid(extents=xxyy,F=Z)
@@ -161,10 +168,13 @@ def main():
         kwargs['dy']=args.res
     else:
         kwargs['max_dim']=args.size
-    fld = stl_to_field(fp_stl, R, translate=translate, nodata=args.nodata,
+    fld = stl_to_field(fp_stl, R, translate=translate, 
                        pad=args.pad, **kwargs)
     fld.assign_projection(args.proj)
-    fld.write_gdal(args.tif_file,overwrite=args.force)
+    fld.F = fld.F.astype(np.float32) # RAS2025 doesn't like doubles
+    # RAS 6.6 defaults to DEFLATE. Stick with that for better compatibility
+    fld.write_gdal(args.tif_file,overwrite=args.force, nodata=args.nodata,
+                   options=["COMPRESS=DEFLATE"])
     
     if args.plot:    
         import matplotlib.pyplot as plt
@@ -181,3 +191,6 @@ def main():
 if __name__ == '__main__':
     main()
     
+
+
+

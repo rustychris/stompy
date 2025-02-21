@@ -6,9 +6,11 @@ Created on Fri Jan 31 19:09:21 2025
 """
 
 from ...grid import unstructured_grid
-from ... import utils
+from ... import utils, memoize
 import h5py
 import numpy as np
+import datetime
+import glob, os
 
 # Would like to replicate what RAS does
 # technically that requires the terrain
@@ -61,6 +63,54 @@ def face_interp_ben(wse_j1, wse_j2, z_j1, z_j2, face_min_z):
           face_wse = min(face_wse, max_wse)
     return face_wse
 
+class RasProject:
+    def __init__(self,prj_fn):
+        self.prj_fn = prj_fn
+        self.prj_dir = os.path.dirname(prj_fn)
+        self.prj_name = os.path.basename(prj_fn).replace(".prj","")
+        
+    def getPlanFile(self, plan_name):
+        '''
+        reads the plan file from the plan HDF5 file and finds correct corresponding plan file to the short ID
+        '''
+        plan_files = self.getPlanFiles()
+        h=None
+        for plf in plan_files:
+            if plf.endswith('.tmp.hdf'):
+                continue
+            try:
+                h = h5py.File(os.path.join(self.prj_dir, plf), 'r')
+                try:
+                    short_title = h['Results/Unsteady'].attrs['Short ID'].decode('utf-8')
+                finally:
+                    h.close()
+                if short_title == plan_name:
+                    print(f'Found plan file {plf} for plan: {plan_name}')
+                    return plf
+            except Exception as e:
+                print('Error reading plan file:', plf)
+                # print(e)
+                continue
+
+        print('Unable to find plan file for plan:', plan_name)
+        #print('Please specficy plan file using variable plan_file=... in inputs.')
+        return None
+    
+    def getPlanFiles(self):
+        '''
+        gets all the plan files in the project directory
+        '''
+        plan_file_form = f'{self.prj_name}.p*.hdf' # "*.p[!*.]*"
+        plan_files = glob.glob(os.path.join(self.prj_dir, plan_file_form))
+        return plan_files
+
+    @memoize.imemoize()
+    def get_results(self,plan_name,area_name=None):
+        plan_file = self.getPlanFile(plan_name)
+        if plan_file is None:
+            return None
+        return RasReader(plan_file, area_name=area_name)
+
 class RasReader:
     # Where to find results within h5 file
     unsteady_base_ras6=('/Results/Unsteady/Output/Output Blocks/'
@@ -73,6 +123,10 @@ class RasReader:
         
         self.load_h5()
         self.load_grid()
+        
+    def short_title(self):
+        return self.h5['Results/Unsteady'].attrs['Short ID'].decode('utf-8')
+        
     def load_h5(self):
         self.h5 = h5py.File(self.results_fn,'r')
         # Is this RAS6 or RAS2025?
@@ -81,6 +135,10 @@ class RasReader:
             self.version="RAS6"
         except KeyError:
             self.version="RAS2025"
+            
+    def close(self):
+        self.h5.close()
+        self.h5 = None
         
     def terrain_file(self):
         key = f"/Geometry/2D Flow Areas/{self.area_name}"
@@ -113,8 +171,19 @@ class RasReader:
         else:
             raise Exception("Bad version: "+self.version)
 
-    def time_days(self):
+    def time_relative_days(self):
         return self.h5[self.unsteady_base+'/Time']
+
+    def time_start(self):
+        t = self.h5['Plan Data/Plan Information'].attrs['Simulation Start Time'].decode('ascii')
+        # '22Aug2022 02:00:00'
+        t_datetime = datetime.datetime.strptime(t,"%d%b%Y %H:%M:%S")
+        return np.datetime64(t_datetime)
+
+    def times(self):
+        t0 = self.time_start()
+        offset_days = self.time_relative_days()[:]
+        return t0 + np.array(offset_days*86400,np.int64)*np.timedelta64(1,'s')
         
     def cell_wse(self,time_step,trim_virtual=True):
         key=self.area_base+'Water Surface'

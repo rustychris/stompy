@@ -7,7 +7,7 @@ Created on Fri Jan  3 13:25:56 2025
 @author: chrhol4587
 """
 import numpy as np
-import os
+import os, time
 import hashlib, pickle
 from multiprocessing import Pool
 import subprocess
@@ -364,7 +364,6 @@ class PostFoam:
                     raster_weights[pix,cell] = A[cell]/Apixel
         self.raster_precalc = raster_weights
        
-        
     def precalc_raster_info_clipping(self, fld, force=False):
         # weights is a matrix with columns corresponding to openfoam cells
         # and rows corresponding to output pixels in row-major order
@@ -372,18 +371,23 @@ class PostFoam:
         raster_weights = None
         tasks = [ (self.proc_dir(proc),fld) 
                  for proc in range(self.n_procs) ]
-              
-        with Pool(self.n_tasks) as pool: 
+
+        # fallback to serial...       
+        if 0:
+            with Pool(self.n_tasks) as pool: 
+                
+                results = pool.starmap(precalc_raster_weights_proc,tasks)
+        else:
+            results = [precalc_raster_weights_proc(*t)
+                       for t in tasks]
             
-            results = pool.starmap(precalc_raster_weights_proc,tasks)
-            
-            for proc,proc_raster_weights in enumerate(results):
-                print(f"Assembling from processor {proc}")
-                # Want to stack these left-to-right
-                if raster_weights is None:
-                    raster_weights = proc_raster_weights
-                else:
-                    raster_weights = sparse.hstack( (raster_weights,proc_raster_weights) )
+        for proc,proc_raster_weights in enumerate(results):
+            print(f"Assembling from processor {proc}")
+            # Want to stack these left-to-right
+            if raster_weights is None:
+                raster_weights = proc_raster_weights
+            else:
+                raster_weights = sparse.hstack( (raster_weights,proc_raster_weights) )
         self.raster_precalc = raster_weights
 
     def to_raster(self, variable, timename):
@@ -476,7 +480,10 @@ class PostFoam:
     
     def compute_cell_centers(self,center_fn):
         case = os.path.dirname(center_fn)
-        completed = subprocess.run([self.writeMeshObj,"-constant","-time","none"], cwd=case)
+        try:
+            completed = subprocess.run([self.writeMeshObj,"-constant","-time","none"], cwd=case)
+        except FileNotFoundError:
+            return False
         if completed.returncode!=0:
             return False
         if not os.path.exists(center_fn):
