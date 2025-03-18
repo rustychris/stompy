@@ -236,7 +236,7 @@ def plot_tri(tri,**kwargs):
 
 def scalebar(xy,L=None,aspect=0.05,unit_factor=1,fmt="%.0f",label_txt=None,fractions=[0,0.5,1.0],
              divisions=None,
-             ax=None,xy_transform=None,dy=None,lw=0.5,
+             ax=None,xy_transform=None,dy=None,lw=0.5,ypad=0.25,
              style='altboxes'):
     """ Draw a simple scale bar with labels - bottom left
     is given by xy.
@@ -244,6 +244,8 @@ def scalebar(xy,L=None,aspect=0.05,unit_factor=1,fmt="%.0f",label_txt=None,fract
 
     The divisions are either inferred from the max length L and fractions of it, or
     by specify a list of lengths in divisions
+
+    ypad: fraction of dy, the bar thickness, to offset text above the bar
     """
     ax = ax or plt.gca()
 
@@ -308,7 +310,7 @@ def scalebar(xy,L=None,aspect=0.05,unit_factor=1,fmt="%.0f",label_txt=None,fract
         objs.append(lcoll)
         ax.add_collection(lcoll)
         
-    baseline=ymax + 0.25*dy
+    baseline=ymax + ypad*dy
     for div in divisions:
         div_txt=fmt%(unit_factor* div)
         txts.append( ax.text(xmin+div,baseline,

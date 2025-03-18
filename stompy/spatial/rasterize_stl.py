@@ -10,9 +10,11 @@ try:
 except ImportError:
     raise Exception("Need STL library, e.g. 'conda install numpy-stl'")
 from shapely import geometry
+
 import argparse
 from .. import utils
 from . import field
+from ..grid import unstructured_grid
 
 
 def rasterize_triangle(fld,X,Y,triple,op=np.fmax):
@@ -47,16 +49,20 @@ def rasterize_triangle(fld,X,Y,triple,op=np.fmax):
     
     fld.F[msk] = op(fld.F[msk],z)
 
-def stl_to_field(fp_stl,R,translate=[0,0,0],dx=None,dy=None,max_dim=None,pad=[0,0],nodata=np.nan):
+
+def transform(fp_stl,translate,R):
     translate=np.asarray(translate)
     xyz = fp_stl.points.copy().reshape([-1,3,3])
     xyz=np.tensordot(xyz,R,[2,0])
     xyz=xyz + translate
+    normals = fp_stl.normals.dot(R)
+    return xyz, normals
+
+def stl_to_field(fp_stl,R,translate=[0,0,0],dx=None,dy=None,max_dim=None,pad=[0,0],nodata=np.nan):
+    xyz, normals = transform(fp_stl, translate, R)
     xxyy=[xyz[...,0].min()-pad[0], xyz[...,0].max()+pad[0],
           xyz[...,1].min()-pad[1], xyz[...,1].max()+pad[1]]
         
-    normals = fp_stl.normals.dot(R)
-
     if dx is not None:
         if dy is None: 
             dy=dx
@@ -89,22 +95,38 @@ def stl_to_field(fp_stl,R,translate=[0,0,0],dx=None,dy=None,max_dim=None,pad=[0,
         
     return fld
 
+def stl_to_grid(fp_stl,R,translate=[0,0,0],dx=None,dy=None,max_dim=None,pad=[0,0],nodata=np.nan):
+    xyz,normals = transform(fp_stl,translate,R)
+
+    # shove them into a grid to help with uniqueifying edges
+    g=unstructured_grid.UnstructuredGrid()
+    
+    for norm, triple in utils.progress(zip(normals,xyz)):
+        if norm[2]<=1e-4: 
+            continue
+        nodes,edges=g.add_linestring(triple[...,:2],closed=True,tolerance=1e-2) # handles unique nodes, edges
+        
+    print(f"Grid has {g.Nnodes()} nodes, {g.Nedges()} edges")
+    # 0.0 tolerance: 60 165
+    # 1e-2 58, 161
+    # Further bump up the normal tolerance to 1e-8, 58 nodes, 160 edges
+
+    return g
+
 
 def main():
     parser = argparse.ArgumentParser(
         prog="rasterize_stl.py",
-        description="Convert STL to georeferenced raster")
+        description="Convert STL to georeferenced raster or shapefile")
     
     parser.add_argument("stl_file",help="Filename for STL input")
-    parser.add_argument("tif_file",help="Filename for GeoTIFF output")
+    parser.add_argument("out_file",help="Filename for GeoTIFF or shapefile output")
     parser.add_argument("--plot","-p",help="Plot result after conversion",action='store_true')
-    parser.add_argument("--res",help="Resolution of output",type=float)
-    parser.add_argument("--size",help="Number of pixels in largest dimension",type=int,default=1000)
     
     parser.add_argument("--force","-f",help="Overwrite existing file",action='store_true')
     parser.add_argument("--proj",help="Spatial reference in GDAL text format, like EPSG:26910",default="")
 
-    parser.add_argument("--scale",nargs='+',help="Scale x [y [z]]",type=float)
+    parser.add_argument("--scale",nargs='+',help="Scale x [y z]",type=float)
     parser.add_argument("--rx",help="Rotate around x axis, degrees",type=float)
     parser.add_argument("--ry",help="Rotate around y axis, degrees",type=float)
     parser.add_argument("--rz",help="Rotate around z axis, degrees",type=float)
@@ -113,9 +135,10 @@ def main():
     parser.add_argument("--ty",help="Translate along y axis, post-scale units",type=float)
     parser.add_argument("--tz",help="Translate along z axis, post-scale units",type=float)
 
-    parser.add_argument("--pad",nargs=2,help="Pad the extent of the output DEM",type=float,default=[0,0])
-
-    parser.add_argument("--nodata",help="Value for missing pixels",default=np.nan, type=float)
+    parser.add_argument("--res",help="Resolution of output (tif output)",type=float)
+    parser.add_argument("--size",help="Number of pixels in largest dimension (tif output)",type=int,default=1000)
+    parser.add_argument("--pad",nargs=2,help="Pad the extent of the output DEM (tif output)",type=float,default=[0,0])
+    parser.add_argument("--nodata",help="Value for missing pixels (tif output)",default=np.nan, type=float)
     
     args = parser.parse_args()
 
@@ -132,8 +155,10 @@ def main():
         scale=args.scale
         if len(scale)==1:
             s=np.r_[scale[0],scale[0],scale[0]]
-        else:
+        elif len(scale)==3:
             s=np.array(args.scale)
+        else:
+            raise Exception("Scale only accepts 1 or 3 values.")
         R=R @ np.diag(s) 
         
     if args.rx is not None:
@@ -168,26 +193,48 @@ def main():
         kwargs['dy']=args.res
     else:
         kwargs['max_dim']=args.size
-    fld = stl_to_field(fp_stl, R, translate=translate, 
-                       pad=args.pad, **kwargs)
-    fld.assign_projection(args.proj)
-    fld.F = fld.F.astype(np.float32) # RAS2025 doesn't like doubles
-    # RAS 6.6 defaults to DEFLATE. Stick with that for better compatibility
-    fld.write_gdal(args.tif_file,overwrite=args.force, nodata=args.nodata,
-                   options=["COMPRESS=DEFLATE"])
+
+    if args.out_file.lower().endswith('.tif'):
+        output_type='tif'
+    elif args.out_file.lower().endswith('.shp'):
+        output_type='shp'
+    else:
+        raise Exception("Expected output to end with .tif or .shp")
+
+    if output_type=='tif':
+        fld = stl_to_field(fp_stl, R, translate=translate, 
+                           pad=args.pad, **kwargs)
+        fld.assign_projection(args.proj)
+        fld.F = fld.F.astype(np.float32) # RAS2025 doesn't like doubles
+        # RAS 6.6 defaults to DEFLATE. Stick with that for better compatibility
+        fld.write_gdal(args.out_file,overwrite=args.force, nodata=args.nodata,
+                       options=["COMPRESS=DEFLATE"])
     
-    if args.plot:    
-        import matplotlib.pyplot as plt
-        fig,ax=plt.subplots(num=1,clear=1)
-        ax.set_adjustable('datalim')
-        img = fld.plot(ax=ax,interpolation='nearest')
-        plt.colorbar(img)
-        txt=[f"Input: {args.stl_file}",
-             f"Output: {args.tif_file}",
-             f"Raster size: {fld.F.shape}"]
-        ax.text(0.04,0.98,"\n".join(txt),va='top',size=7,transform=ax.transAxes)
-        plt.show()
-        
+        if args.plot:    
+            import matplotlib.pyplot as plt
+            fig,ax=plt.subplots(num=1,clear=1)
+            ax.set_adjustable('datalim')
+            img = fld.plot(ax=ax,interpolation='nearest')
+            plt.colorbar(img)
+            txt=[f"Input: {args.stl_file}",
+                 f"Output: {args.out_file}",
+                 f"Raster size: {fld.F.shape}"]
+            ax.text(0.04,0.98,"\n".join(txt),va='top',size=7,transform=ax.transAxes)
+            plt.show()
+    elif output_type=='shp':
+        g=stl_to_grid(fp_stl, R, translate=translate)
+        g.write_edges_shp(args.out_file,srs_text=args.proj,overwrite=args.force)
+        if args.plot:
+            import matplotlib.pyplot as plt
+            fig,ax=plt.subplots(num=1,clear=1)
+            ax.set_adjustable('datalim')
+            coll = g.plot_edges(color='k',lw=1.0,alpha=0.8)
+            txt=[f"Input: {args.stl_file}",
+                 f"Output: {args.out_file}"]
+            ax.text(0.04,0.98,"\n".join(txt),va='top',size=7,transform=ax.transAxes)
+            ax.axis('equal')
+            plt.show()
+
 if __name__ == '__main__':
     main()
     

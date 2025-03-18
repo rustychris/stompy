@@ -101,12 +101,23 @@ class PostFoam:
     # command, with path as needed, to openfoam writeMeshObj
     writeMeshObj="writeMeshObj"
 
+    # transform OF coordinates to z-up coordinates via
+    #  output_z_up=np.tensordot(input_point_xyz,R,[-1,0])
+    # where {x,y,z} is assumed to be the last dimension of the input
+    # this is what it had been hard-coded to do before, but note that it
+    # does not preserver a right-handed coordinate system.
+    # TODO: do this properly. Code was originally written for y-up
+    # coordinate system, and implicitly transposed y and z. This flipped
+    # the handedness of the coordinate system, but was expedient in
+    # getting the desired plots. For the moment, rot should be a matrix
+    # to be applied that will put "up" in y, with x and z in the horizontal
+    rot=np.array( [[1,0,0],
+                   [0,1,0],
+                   [0,0,1]])
+
     _local_to_global = None
 
     def __init__(self,**kw):
-        """
-        
-        """
         utils.set_keywords(self,kw)
 
         self.init_mesh()
@@ -273,7 +284,8 @@ class PostFoam:
         if calc_volume:
             VolCell_all = np.empty(owner.nb_cell, dtype=float)
     
-        # bounds of each cell, xxyyzz, in original OF reference frame
+        # bounds of each cell, xxyyzz, in XXoriginal OFXX reference frame
+        # TMP: in y-up frame
         cell_bounds = np.full( (owner.nb_cell,6), np.nan )
         
         for i in range(owner.nb_cell):
@@ -283,6 +295,8 @@ class PostFoam:
     
             # Add 3D elements into the empty array
             pointsCell=np.array(pointsCell)
+            pointsCell = np.tensordot(pointsCell,self.rot,[-1,0]) # ROTATE
+            
             if calc_volume:
                 # Note that cells are not necessarily convex, and faces
                 # are not necessarily planar, so this is not exact.
@@ -302,6 +316,7 @@ class PostFoam:
             # we implicitly convert to y.
             xxyy = [self.bboxes[:,0].min(),self.bboxes[:,1].max(),
                     self.bboxes[:,4].min(),self.bboxes[:,5].max()]
+            
         self.raster_xxyy = xxyy
         if dx<0:
             dx=int((xxyy[1] - xxyy[0])/-dx)
@@ -339,12 +354,18 @@ class PostFoam:
             
         fld_x,fld_y = fld.xy()
         Apixel = fld.dx*fld.dy
-            
+
         for row in utils.progress(range(fld.shape[0])):
             ymin=fld_y[row]-fld.dy/2
             ymax=fld_y[row]+fld.dy/2
+
+            # Updated handling of coordinates:
+            # Here the loops are on raster coordinates
+            # what are dy and dx used for? upper bound on projected area of OF cells
+            
             # Note implicit z->y change of coodinates
             dy = (np.minimum(ymax,self.bboxes[:,5]) - np.maximum(ymin,self.bboxes[:,4])).clip(0)
+            
             for col in range(fld.shape[1]):
                 pix = row*fld.shape[1] + col # row-major ordering of pixels
                 
@@ -369,13 +390,12 @@ class PostFoam:
         # and rows corresponding to output pixels in row-major order
 
         raster_weights = None
-        tasks = [ (self.proc_dir(proc),fld) 
-                 for proc in range(self.n_procs) ]
+        tasks = [ (self.proc_dir(proc),fld,self.rot) 
+                  for proc in range(self.n_procs) ]
 
         # fallback to serial...       
         if 0:
             with Pool(self.n_tasks) as pool: 
-                
                 results = pool.starmap(precalc_raster_weights_proc,tasks)
         else:
             results = [precalc_raster_weights_proc(*t)
@@ -497,7 +517,9 @@ class PostFoam:
         pointfile = self.read_pointfile(proc)
         neigh = self.read_neighbor(proc)
 
-        ctrs,vols = cell_center_volume_py(facefile, pointfile.values.reshape([-1,3]), owner.values, neigh.values)
+        points = pointfile.values.reshape([-1,3])
+        points = np.tensordot(points,self.rot,[-1,0]) # ROTATE
+        ctrs,vols = cell_center_volume_py(facefile, points, owner.values, neigh.values)
         df=pd.DataFrame()
         df['t']=["v"] * len(ctrs)
         df['x']=ctrs[:,0]
@@ -506,7 +528,12 @@ class PostFoam:
         df.to_csv(center_fn,sep=' ',header=False,index=False,float_format="%.15f")
                   
     def contour_points_proc(self, scalar, contour_value, proc):
-        centers = self.cell_centers(proc)    
+        centers = self.cell_centers(proc)
+
+        print(f"proc:{proc} centers x:{centers[:,0].min()} to {centers[:,0].max()}")
+        print(f"                    y:{centers[:,1].min()} to {centers[:,1].max()}")
+        print(f"                    z:{centers[:,2].min()} to {centers[:,2].max()}")
+        
         owner =self.read_owner(proc)
         nbr   =self.read_neighbor(proc)
         
@@ -529,6 +556,7 @@ class PostFoam:
         facefile = self.read_facefile(proc)
         pointfile = self.read_pointfile(proc)
         points_xyz=pointfile.values.reshape([-1,3])
+        points_xyz=np.tensordot(points_xyz,self.rot,[-1,0]) # ROTATE
     
         face_pnts=[]
         for fIdx in np.nonzero(sel)[0]:    
@@ -707,8 +735,8 @@ def clipped_volume(edges, xmin=None, xmax=None, ymin=None, ymax=None,
     else:
         return volume_cell_edges(edges)
     
-def precalc_raster_weights_proc(meshpath, fld, precision=15, force=False):
-    hash_input=[fld.extents,fld.F.shape]
+def precalc_raster_weights_proc(meshpath, fld, rot, precision=15, force=False):
+    hash_input=[fld.extents,fld.F.shape,rot]
     hash_out = hashlib.md5(pickle.dumps(hash_input)).hexdigest()
     cache_dir=os.path.join(meshpath,"cache")
     cache_fn=os.path.join(cache_dir,
@@ -740,10 +768,13 @@ def precalc_raster_weights_proc(meshpath, fld, precision=15, force=False):
 
     n_cell = owner.nb_cell
     cells_as_edges=[None]*n_cell
-    
+
+    xyz=pointfile.values.reshape([-1,3])
+    xyz=np.tensordot(xyz,rot,[-1,0])
+
     bboxes=np.zeros((n_cell,6),np.float64)
     for cIdx in range(n_cell):
-        edges = cell_as_edges(cIdx, cell_faces, facefile, pointfile)
+        edges = cell_as_edges(cIdx, cell_faces, facefile, xyz)
         cells_as_edges[cIdx] = edges
         pnts = np.array(edges).reshape( (-1,3) )
         xxyyzz = [pnts[:,0].min(),
@@ -795,7 +826,7 @@ def precalc_raster_weights_proc(meshpath, fld, precision=15, force=False):
     return raster_weights
 
 
-def cell_as_edges(cIdx, cell_faces, facefile, pointfile):
+def cell_as_edges(cIdx, cell_faces, facefile, xyz):
     # translate a set of faces into a set of edges
     edge_nodes=set()
     for fIdx in cell_faces[cIdx]:
@@ -814,7 +845,6 @@ def cell_as_edges(cIdx, cell_faces, facefile, pointfile):
             edge_nodes.add( (b,a) )
         
     # Convert the edges from point index to 3D point:
-    xyz=pointfile.values.reshape([-1,3])
     edges = [xyz[list(edge_node)] for edge_node in edge_nodes]
     return edges
 

@@ -476,7 +476,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         # this takes care of allocation, and setting the most basic topology
         cell_nodes=grid.cells['nodes']
         if self.max_sides < grid.max_sides:
-            assert np.all(cell_nodes[:,self.max_sides:]<0),"Trying to copy from grid with greater max_sides"
+            if not np.all(cell_nodes[:,self.max_sides:]<0):
+                max_sides_source = (cell_nodes>=0).sum(axis=1).max()
+                raise Exception(f"Trying to copy to grid with max sides={self.max_sides}, but source grid has cells with {max_sides_source}")
             cell_nodes=cell_nodes[:,:self.max_sides]
         
         self.from_simple_data(points=grid.nodes['x'],
@@ -2240,6 +2242,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             ABs=zip(nodes, np.roll(nodes,-1))
             
         for a,b in ABs:
+            if a==b:
+                continue # skip repeats if tolerance collapsed them
             j=self.nodes_to_edge(a,b)
             if j is None:
                 j=self.add_edge(nodes=[a,b])
@@ -8173,7 +8177,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         return new_ds,new_layer
 
 
-    def write_edges_shp(self,shpname,extra_fields=[],overwrite=False, subedges=None):
+    def write_edges_shp(self,shpname,extra_fields=[],overwrite=False, subedges=None, srs_text=None):
         """ Write a shapefile with each edge as a polyline.
         see write_cells_shp for description of extra_fields
         items in extra_fields can also be a simple string, in which case the data 
@@ -8231,7 +8235,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             edge_data[fname] = self.edges[fname]
 
         wkb2shp.wkb2shp(shpname,input_wkbs=edge_geoms,fields=edge_data,
-                        overwrite=overwrite)
+                        overwrite=overwrite,srs_text=srs_text)
 
     def write_node_shp(self,*a,**kw):
         """

@@ -142,8 +142,11 @@ class RasReader:
         
     def terrain_file(self):
         key = f"/Geometry/2D Flow Areas/{self.area_name}"
-        return self.h5[key].attrs['Terrain Filename']
-    
+        return self.h5[key].attrs['Terrain Filename'].decode('ascii')
+
+    def terrain_path(self):
+        return os.path.join(os.path.dirname(self.results_fn),self.terrain_file())
+
     def load_grid(self):
         self.grid=unstructured_grid.UnstructuredGrid.read_ras2d(self.h5,
                                                                 twod_area_name=self.area_name,
