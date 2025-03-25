@@ -19,7 +19,7 @@ from scipy.spatial import KDTree
 # import matplotlib.pyplot as plt
 #from fluidfoam.readof import getVolumes
 #from fluidfoam import readmesh
-from ... import utils
+from ... import utils, memoize
 from ...spatial import field
 
 from scipy import sparse
@@ -32,6 +32,7 @@ from fluidfoam import readvector, readscalar
 
 from shapely import geometry, ops, convex_hull
 
+from . import mesh_ops
 
 class PostFoam:
     """
@@ -195,31 +196,68 @@ class PostFoam:
         self.n_procs = n_procs
 
     def init_mesh(self):
-        print("Reading openfoam mesh")        
+        print("Reading openfoam mesh")
 
         self.read_n_procs()
         self._bboxes=None
-        self._volumes=None
+        self._volumes_centers=None
+        
     @property
     def bboxes(self):
+        # Get bounding boxes for the whole domain
         if self._bboxes is None:
-            self.read_mesh()
+            bboxes=[]
+            for proc in range(self.n_procs):
+                print(f"Calculating bboxes for processor {proc}")
+                mesh_state = self.read_mesh_state(proc)
+                bbox = mesh_ops.mesh_cell_bboxes(*mesh_state)
+                bboxes.append(bbox)
+                
+            # Appears there are no ghost cells,
+            # so it's valid to just concatenate results from each processor when 
+            # only considering cell-centered quantities.
+            self._bboxes = np.concatenate(bboxes, axis=0)
         return self._bboxes
+    
     @property
     def volumes(self):
-        if self._volumes is None:
-            self.read_mesh(read_volumes=True)
-        return self._volumes
-    
+        if self._volumes_centers is None:
+            self._volumes_centers = self.calc_volumes_centers()
+        return self._volumes_centers[0]
+
+    def calc_volumes_centers(self):
+        volumes=[]
+        centers=[]
+        for proc in range(self.n_procs):
+            mesh_state = self.read_mesh_state(proc)
+            vol,ctr = mesh_ops.mesh_cell_volume_centers(*mesh_state)
+            volumes.append(vol)
+            centers.append(ctr)
+
+        # Appears there are no ghost cells,
+        # so it's valid to just concatenate results from each processor when 
+        # only considering cell-centered quantities.
+        volumes = np.concatenate(volumes, axis=0)
+        centers = np.concatenate(centers, axis=0)
+        return (volumes,centers)
+
+    @memoize.imemoize(lru=100)
+    def read_mesh_state(self,proc=None):
+        if proc is None:
+            case_dir = self.sim_dir
+        else:
+            case_dir = self.proc_dir(proc)
+        return mesh_ops.load_mesh_state(case_dir)
+
     def read_mesh(self, read_volumes=False):
         # Get bounding boxes for the whole domain
         bboxes=[]
         volumes=[]
         
         for proc in range(self.n_procs):
-            print(f"Reading mesh for processor {proc}")
+            print(f"Reading mesh for processor {proc}, volumes={read_volumes}")
             if read_volumes:
-                bbox,vol = self.read_cell_bbox(self.proc_dir(proc))
+                bbox,vol = self.read_cell_bbox(proc=proc,calc_volume=True)
                 volumes.append(vol)
             else:
                 bbox = self.read_cell_bbox(proc=proc)
@@ -329,16 +367,13 @@ class PostFoam:
             dy=dx
         self.raster_dy = dy
         
-        if self.bboxes is None:
-            raise Exception("set_raster_parameters() must be called after initializing mesh")
-
         self.raster_precalc=None # calculate on-demand
 
         return dict(dx=dx,dy=dy,xxyy=xxyy,nx=int((xxyy[1]-xxyy[0])/dx),ny=int((xxyy[3]-xxyy[2])/dy))
 
-    def precalc_raster_info(self,fld):
+    def precalc_raster_info(self,fld,force=False):
         if self.raster_mode=='clipping':
-            self.precalc_raster_info_clipping(fld)
+            self.precalc_raster_info_clipping(fld,force=force)
         elif self.raster_mode=='bbox':
             self.precalc_raster_info_bbox(fld)
         else:
@@ -396,9 +431,9 @@ class PostFoam:
         # fallback to serial...       
         if 0:
             with Pool(self.n_tasks) as pool: 
-                results = pool.starmap(precalc_raster_weights_proc,tasks)
+                results = pool.starmap(precalc_raster_weights_proc_by_faces,tasks,15,force)
         else:
-            results = [precalc_raster_weights_proc(*t)
+            results = [precalc_raster_weights_proc_by_faces(*t,force=force)
                        for t in tasks]
             
         for proc,proc_raster_weights in enumerate(results):
@@ -410,7 +445,7 @@ class PostFoam:
                 raster_weights = sparse.hstack( (raster_weights,proc_raster_weights) )
         self.raster_precalc = raster_weights
 
-    def to_raster(self, variable, timename):
+    def to_raster(self, variable, timename, force_precalc=False):
         if variable=='wse':
             return self.raster_wse(timename)
         
@@ -423,7 +458,7 @@ class PostFoam:
                                      n_components=n_components)
         
         if self.raster_precalc is None:
-            self.precalc_raster_info(fld)
+            self.precalc_raster_info(fld,force=force_precalc)
             
         raster_weights = self.raster_precalc
             
@@ -483,7 +518,9 @@ class PostFoam:
                 print("Fall back to python cell center computation")
                 self.compute_cell_centers_py(proc,center_fn)
         df = pd.read_csv(center_fn,sep=r'\s+',names=['type','x','y','z'])
-        return df[ ['x','y','z'] ].values
+        points = df[ ['x','y','z'] ].values
+        points = np.tensordot(points,self.rot,[-1,0]) # ROTATE
+        return points
 
     def face_centers(self,proc=None):
         # see cell_centers
@@ -496,7 +533,9 @@ class PostFoam:
             if not self.compute_cell_centers(center_fn):
                 raise Exception(f"Face center file {center_fn} not found. Generate with writeMeshObj")
         df = pd.read_csv(center_fn,sep=r'\s+',names=['type','x','y','z'])
-        return df[ ['x','y','z'] ].values
+        points = df[ ['x','y','z'] ].values
+        points = np.tensordor(points,self.rot,[-1,0]) # ROTATE
+        return points
     
     def compute_cell_centers(self,center_fn):
         case = os.path.dirname(center_fn)
@@ -518,7 +557,9 @@ class PostFoam:
         neigh = self.read_neighbor(proc)
 
         points = pointfile.values.reshape([-1,3])
-        points = np.tensordot(points,self.rot,[-1,0]) # ROTATE
+        # Do not rotate here - this writes native OF transform points to
+        # disk, and needs to be consistent with what writeMeshObj would
+        # write.
         ctrs,vols = cell_center_volume_py(facefile, points, owner.values, neigh.values)
         df=pd.DataFrame()
         df['t']=["v"] * len(ctrs)
@@ -534,13 +575,19 @@ class PostFoam:
         print(f"                    y:{centers[:,1].min()} to {centers[:,1].max()}")
         print(f"                    z:{centers[:,2].min()} to {centers[:,2].max()}")
         
-        owner =self.read_owner(proc)
-        nbr   =self.read_neighbor(proc)
+        #owner =self.read_owner(proc)
+        #nbr   =self.read_neighbor(proc)
+        mesh_state = self.read_mesh_state(proc)
+        xyz,face_nodes,face_cells,cell_faces = mesh_state
+        internal = face_cells[:,1]>=0
+        owner=face_cells[internal,0]
+        nbr  =face_cells[internal,1]
         
-        n_face_int = len(nbr.values) # assuming that boundary faces are omitted from nbr
+        # n_face_int = len(nbr.values) # assuming that boundary faces are omitted from nbr
         # per-internal-face values
-        scalar_owner = scalar[owner.values[:n_face_int]]
-        scalar_nbr = scalar[nbr.values[:n_face_int]]
+        
+        scalar_owner = scalar[owner]
+        scalar_nbr = scalar[nbr]
         
         # (1-frac)*scalar_owner + frac*scalar_nbr = contour_value
         # frac*(scalar_nbr-scalar_owner) = contour_value - scalar_owner
@@ -549,19 +596,26 @@ class PostFoam:
         
         frac = (contour_value-scalar_owner[sel]) / (scalar_nbr[sel] - scalar_owner[sel])
         
-        pnts = ( (1-frac[:,None])*centers[owner.values[:n_face_int][sel]]
-                +frac[:,None]*centers[nbr.values[:n_face_int][sel]])
+        pnts = ( (1-frac[:,None])*centers[owner[sel]]
+                +frac[:,None]*centers[nbr[sel]])
         
         # Also need selected faces to clip interpolation
-        facefile = self.read_facefile(proc)
-        pointfile = self.read_pointfile(proc)
-        points_xyz=pointfile.values.reshape([-1,3])
-        points_xyz=np.tensordot(points_xyz,self.rot,[-1,0]) # ROTATE
+        #facefile = self.read_facefile(proc)
+        #pointfile = self.read_pointfile(proc)
+        #points_xyz=pointfile.values.reshape([-1,3])
+        #points_xyz=np.tensordot(points_xyz,self.rot,[-1,0]) # ROTATE
+        points_xyz=np.tensordot(xyz,self.rot,[-1,0]) # ROTATE
     
         face_pnts=[]
-        for fIdx in np.nonzero(sel)[0]:    
-            id_pts = facefile.faces[fIdx]["id_pts"][:]
-            face_pnts.append( points_xyz[id_pts,:] )
+        internal_faces = np.nonzero(internal)[0]
+        # sel is only over the internal faces
+        for int_fIdx in np.nonzero(sel)[0]:
+            # map back to face index over all faces
+            fIdx = internal_faces[int_fIdx]
+            # id_pts = facefile.faces[fIdx]["id_pts"][:]
+            f_nodes = face_nodes[fIdx]
+            f_nodes = f_nodes[f_nodes>=0]
+            face_pnts.append( points_xyz[f_nodes,:] )
         
         return pnts,face_pnts
     
@@ -675,7 +729,7 @@ def clip_cell_edges(edges, cut_normal, cut_point):
             clipped_edges.append(edge)
 
     if new_points:
-        if len(new_points)>3:
+        if len(new_points)>3: # RH: reorder >3 points so they are ordered in a ring. Unnecessary for <=3
             new_points=np.array(new_points)
 
             # Orient new points, add edges
@@ -712,6 +766,28 @@ def volume_cell_edges(edges):
     except ss.QhullError:
         print("Degenerate clipped cell (qhull error)")
         return 0.0
+
+# volume_cell_edges is a substantial time sink
+# Options for a non-qhull approach:
+#   change the representation to track faces in addition to edges,
+#     and use the cell volume code.
+#   reconstruct faces from the edges, then use the cell volume code
+#   write a python convex hull code (!)
+# How hard is it to reconstruct the faces?
+#  Say it gets processed into nodes and edges that reference the nodes,
+#  each each must be adjacent to two faces
+#  at each vertex, the adjacent edges can be enumerated. Need to establish
+#  the CCW order of the edges when looking from outside the cell towards the
+#  inside of the cell.
+#  For each edge, get a unit vector in that direction.
+#  if the edges are not all coplanar, I think that gives a good normal for
+#  a plane on which to project the vectors and sort order. If the edges
+#  are close to coplanar it's not going to work. Might happen in some octree
+#  cells
+# HERE: trying to figure out how to orient edges at a vertex.
+#  with that it becomes possible to walk the edges, construct faces, which
+#  can then be passed to volume code
+
     
 def clipped_volume(edges, xmin=None, xmax=None, ymin=None, ymax=None,
                    zmin=None, zmax=None):
@@ -820,7 +896,109 @@ def precalc_raster_weights_proc(meshpath, fld, rot, precision=15, force=False):
                 raster_weights[pix,cIdx] = vol/Apixel
                 
     if cache_fn is not None:
-        os.makedirs(cache_dir)
+        if not os.path.exists(cache_dir):
+            os.makedirs(cache_dir)
+        with open(cache_fn,'wb') as fp:
+            pickle.dump(raster_weights,fp,-1)
+    return raster_weights
+
+def precalc_raster_weights_proc_by_faces(meshpath, fld, rot, precision=15, force=False):
+    """
+    This version should be much faster. It avoids qhull, slices faces rather than clipping
+    cells, and uses a padded array mesh representation that's faster for both python and
+    numba
+    """
+    hash_input=[fld.extents,fld.F.shape,rot]
+    hash_out = hashlib.md5(pickle.dumps(hash_input)).hexdigest()
+    cache_dir=os.path.join(meshpath,"cache")
+    cache_fn=os.path.join(cache_dir,
+                          f"raster_weights-{fld.dx:.3g}x_{fld.dy:.3g}y-{hash_out}")
+    print(f"Weights for {meshpath}: cache file is {cache_fn}")
+    
+    if os.path.exists(cache_fn) and not force:
+        with open(cache_fn,'rb') as fp:
+            return pickle.load(fp)
+    
+    mesh_state = mesh_ops.load_mesh_state(mesh_path)
+    
+    #  base operation is to slice the mesh
+    
+    #  Slice by y=n*dy planes and x=n*dx planes
+    #  compute volumes and centers
+    #  assign to pixel via centers
+    #  compile into matrix
+    
+    fld_x,fld_y = fld.xy() # I think these are pixel centers
+
+    for col in utils.progress(range(fld.shape[1])):
+        if col==0: continue
+        xmin=fld_x[col]-fld.dx/2
+        xmax=fld_x[col]+fld.dx/2
+
+        # probably have to sort out rotations here
+        mesh_state = mesh_ops.mesh_slice(np.r_[1,0,0], xmin, *mesh_state)
+
+    if 0: # debugging checks
+        print("Checking cells")
+        for cIdx in utils.progress(range(len(mesh_state[3])), func=print):
+            assert mesh_ops.mesh_check_cell(cIdx,False,mesh_state)
+        print("Check complete")
+
+    # Slice the mesh so all cells are in exactly one pixel
+    for row in utils.progress(range(fld.shape[0])):
+        if row==0: continue
+        ymin=fld_y[row]-fld.dy/2
+        ymax=fld_y[row]+fld.dy/2
+
+        # probably have to sort out rotations here
+        mesh_state = mesh_ops.mesh_slice(np.r_[0,1,0], ymin, *mesh_state)
+
+    if 0: # debugging checks
+        print("Checking cells after all slicing")
+        for cIdx in utils.progress(range(len(mesh_state[3])), func=print):
+            assert mesh_ops.mesh_check_cell(cIdx,False,mesh_state)
+        print("Check complete")
+
+    print("Calculate volume")
+    volumes,centers = mesh_ops.mesh_cell_volume_centers(*mesh_state)
+
+    # total_volume_pre = volumes_pre.sum()
+    # total_volume_post = volumes.sum()
+    # print(f"Volume before slicing: {total_volume_pre}")
+    # print(f" Volume after slicing: {total_volume_post}")
+    # return # DEV
+
+    # Come back to this once we actually have the cells.
+    raster_weights = sparse.dok_matrix((fld.F.shape[0]*fld.F.shape[1],
+                                        centers.shape[0]),
+                                       np.float64)
+        
+    # check bounds, then compute clipped volume.
+    Apixel = fld.dx*fld.dy
+
+    # OPT: would be faster to instead map each cell center to a pixel, loop
+    # over cells
+    for row in utils.progress(range(fld.shape[0])):
+        ymin=fld_y[row]-fld.dy/2
+        ymax=fld_y[row]+fld.dy/2
+        for col in range(fld.shape[1]):
+            pix = row*fld.shape[1] + col # row-major ordering of pixels
+            
+            xmin=fld_x[col]-fld.dx/2
+            xmax=fld_x[col]+fld.dx/2
+         
+            # Implicit transposition - switch openfoam z to raster y
+            sel = ( (centers[:,0]<xmax)&(centers[:,0]>xmin) &
+                    (centers[:,2]<ymax)&(centers[:,2]>ymin) )
+            
+            for cIdx in np.nonzero(sel)[0]:
+                # alpha-weighting is included per timestep
+                # Implicit transposition - switch openfoam z to raster y
+                raster_weights[pix,cIdx] = volumes[cIdx]/Apixel
+                
+    if cache_fn is not None:
+        if not os.path.exists(cache_dir):
+            os.makedirs(cache_dir)
         with open(cache_fn,'wb') as fp:
             pickle.dump(raster_weights,fp,-1)
     return raster_weights
