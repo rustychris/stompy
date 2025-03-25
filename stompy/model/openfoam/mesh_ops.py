@@ -2,6 +2,7 @@ import os
 import numpy as np
 from numba import njit
 from fluidfoam.readof import OpenFoamFile
+from ... import utils
 
 FACE_MAX_NODES=20
 CELL_MAX_FACES=20

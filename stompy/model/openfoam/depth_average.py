@@ -84,10 +84,8 @@ class PostFoam:
      get interpolated over.
 
 
-    Note: The code here implicitly transposes y and z in the output. It expects
-    y to be the vertical coordinate, and x/z are in the horizontal plane. The 
-    transposition is possibly changing the coordinate system from right-handed to
-    left-handed. Caveat emptor.
+    Note: The code here used to implicitly transposes y and z in the output. 
+    Now that must be handled via rot matrix specified during instantiona
     """
 
     sim_dir = None
@@ -100,21 +98,14 @@ class PostFoam:
     n_tasks=8 # parallelism for cell-clipping step
     
     # command, with path as needed, to openfoam writeMeshObj
-    writeMeshObj="writeMeshObj"
+    # writeMeshObj="writeMeshObj"
 
     # transform OF coordinates to z-up coordinates via
     #  output_z_up=np.tensordot(input_point_xyz,R,[-1,0])
-    # where {x,y,z} is assumed to be the last dimension of the input
-    # this is what it had been hard-coded to do before, but note that it
-    # does not preserver a right-handed coordinate system.
-    # TODO: do this properly. Code was originally written for y-up
-    # coordinate system, and implicitly transposed y and z. This flipped
-    # the handedness of the coordinate system, but was expedient in
-    # getting the desired plots. For the moment, rot should be a matrix
-    # to be applied that will put "up" in y, with x and z in the horizontal
-    rot=np.array( [[1,0,0],
-                   [0,1,0],
-                   [0,0,1]])
+    # Default value is to avoid having to change all of Ben's scripts
+    rot=np.array( [[1, 0, 0],
+                   [0, 0, 1],
+                   [0,-1, 0]])
 
     _local_to_global = None
 
@@ -247,8 +238,10 @@ class PostFoam:
             case_dir = self.sim_dir
         else:
             case_dir = self.proc_dir(proc)
-        return mesh_ops.load_mesh_state(case_dir)
-
+        mesh_state = mesh_ops.load_mesh_state(case_dir,precision=self.precision)
+        mesh_state = mesh_ops.mesh_rotate(self.rot,*mesh_state)
+        return mesh_state # Note that this does make any cached information within depth_average a fn of rot
+    
     def read_mesh(self, read_volumes=False):
         # Get bounding boxes for the whole domain
         bboxes=[]
@@ -296,64 +289,62 @@ class PostFoam:
             )
         return OpenFoamFile(meshpath, name=filetype, verbose=self.verbose)
                                     
-    def read_cell_bbox(self, proc=None, calc_volume=False):
-        """
-        Get the axis-aligned extents of each cell. Limited to 
-        constant meshes. path can be self.sim_dir for the global mesh,
-        or a processor path for a submesh
-        
-        Calculating volumes increases run time by a factor of 4 or so
-        """
-        owner = self.read_owner(proc) 
-        facefile = self.read_facefile(proc) 
-        pointfile = self.read_pointfile(proc)
-        neigh = self.read_neighbor(proc)
-        
-        face = {}
-        for i in range(neigh.nb_faces):
-            if not neigh.values[i] in face:
-                face[neigh.values[i]] = list()
-            face[neigh.values[i]].append(facefile.faces[i]["id_pts"][:])
-        for i in range(owner.nb_faces):
-            if not owner.values[i] in face:
-                face[owner.values[i]] = list()
-            face[owner.values[i]].append(facefile.faces[i]["id_pts"][:])
-    
-        if calc_volume:
-            VolCell_all = np.empty(owner.nb_cell, dtype=float)
-    
-        # bounds of each cell, xxyyzz, in XXoriginal OFXX reference frame
-        # TMP: in y-up frame
-        cell_bounds = np.full( (owner.nb_cell,6), np.nan )
-        
-        for i in range(owner.nb_cell):
-            pointsCell=[]
-            for k in zip(np.unique(np.concatenate(face[i])[:])):
-                pointsCell.append([pointfile.values_x[k],pointfile.values_y[k],pointfile.values_z[k]])
-    
-            # Add 3D elements into the empty array
-            pointsCell=np.array(pointsCell)
-            pointsCell = np.tensordot(pointsCell,self.rot,[-1,0]) # ROTATE
-            
-            if calc_volume:
-                # Note that cells are not necessarily convex, and faces
-                # are not necessarily planar, so this is not exact.
-                VolCell_all[i]=ss.ConvexHull(pointsCell).volume
-            for dim in range(3):
-                cell_bounds[i,2*dim  ] = np.min(pointsCell[:,dim])
-                cell_bounds[i,2*dim+1] = np.max(pointsCell[:,dim])
-            
-        if calc_volume:
-            return cell_bounds, VolCell_all
-        else:
-            return cell_bounds
+    # def read_cell_bbox(self, proc=None, calc_volume=False):
+    #     """
+    #     Get the axis-aligned extents of each cell. Limited to 
+    #     constant meshes. path can be self.sim_dir for the global mesh,
+    #     or a processor path for a submesh
+    #     
+    #     Calculating volumes increases run time by a factor of 4 or so
+    #     """
+    #     owner = self.read_owner(proc) 
+    #     facefile = self.read_facefile(proc) 
+    #     pointfile = self.read_pointfile(proc)
+    #     neigh = self.read_neighbor(proc)
+    #     
+    #     face = {}
+    #     for i in range(neigh.nb_faces):
+    #         if not neigh.values[i] in face:
+    #             face[neigh.values[i]] = list()
+    #         face[neigh.values[i]].append(facefile.faces[i]["id_pts"][:])
+    #     for i in range(owner.nb_faces):
+    #         if not owner.values[i] in face:
+    #             face[owner.values[i]] = list()
+    #         face[owner.values[i]].append(facefile.faces[i]["id_pts"][:])
+    # 
+    #     if calc_volume:
+    #         VolCell_all = np.empty(owner.nb_cell, dtype=float)
+    # 
+    #     # bounds of each cell, xxyyzz, in XXoriginal OFXX reference frame
+    #     # TMP: in y-up frame
+    #     cell_bounds = np.full( (owner.nb_cell,6), np.nan )
+    #     
+    #     for i in range(owner.nb_cell):
+    #         pointsCell=[]
+    #         for k in zip(np.unique(np.concatenate(face[i])[:])):
+    #             pointsCell.append([pointfile.values_x[k],pointfile.values_y[k],pointfile.values_z[k]])
+    # 
+    #         # Add 3D elements into the empty array
+    #         pointsCell=np.array(pointsCell)
+    #         pointsCell = np.tensordot(pointsCell,self.rot,[-1,0]) # ROTATE
+    #         
+    #         if calc_volume:
+    #             # Note that cells are not necessarily convex, and faces
+    #             # are not necessarily planar, so this is not exact.
+    #             VolCell_all[i]=ss.ConvexHull(pointsCell).volume
+    #         for dim in range(3):
+    #             cell_bounds[i,2*dim  ] = np.min(pointsCell[:,dim])
+    #             cell_bounds[i,2*dim+1] = np.max(pointsCell[:,dim])
+    #         
+    #     if calc_volume:
+    #         return cell_bounds, VolCell_all
+    #     else:
+    #         return cell_bounds
 
     def set_raster_parameters(self,dx,dy=None,xxyy=None):
         if xxyy is None:
-            # Note this pulls the z coordinate for bounds which
-            # we implicitly convert to y.
             xxyy = [self.bboxes[:,0].min(),self.bboxes[:,1].max(),
-                    self.bboxes[:,4].min(),self.bboxes[:,5].max()]
+                    self.bboxes[:,2].min(),self.bboxes[:,3].max()]
             
         self.raster_xxyy = xxyy
         if dx<0:
@@ -398,8 +389,8 @@ class PostFoam:
             # Here the loops are on raster coordinates
             # what are dy and dx used for? upper bound on projected area of OF cells
             
-            # Note implicit z->y change of coodinates
-            dy = (np.minimum(ymax,self.bboxes[:,5]) - np.maximum(ymin,self.bboxes[:,4])).clip(0)
+            # No more implicit z->y change of coodinates
+            dy = (np.minimum(ymax,self.bboxes[:,3]) - np.maximum(ymin,self.bboxes[:,2])).clip(0)
             
             for col in range(fld.shape[1]):
                 pix = row*fld.shape[1] + col # row-major ordering of pixels
@@ -425,16 +416,14 @@ class PostFoam:
         # and rows corresponding to output pixels in row-major order
 
         raster_weights = None
-        tasks = [ (self.proc_dir(proc),fld,self.rot) 
-                  for proc in range(self.n_procs) ]
 
-        # fallback to serial...       
-        if 0:
-            with Pool(self.n_tasks) as pool: 
-                results = pool.starmap(precalc_raster_weights_proc_by_faces,tasks,15,force)
-        else:
-            results = [precalc_raster_weights_proc_by_faces(*t,force=force)
-                       for t in tasks]
+        # fallback to serial... had issues with multiprocessing at this level
+        #    tasks = [ (self.proc_dir(proc),fld,self.rot) 
+        #              for proc in range(self.n_procs) ]
+        #    with Pool(self.n_tasks) as pool: 
+        #        results = pool.starmap(precalc_raster_weights_proc_by_faces,tasks,15,force)
+        results = [self.precalc_raster_weights_proc_by_faces(proc,fld,force=force)
+                   for proc in range(self.n_procs)]
             
         for proc,proc_raster_weights in enumerate(results):
             print(f"Assembling from processor {proc}")
@@ -445,6 +434,28 @@ class PostFoam:
                 raster_weights = sparse.hstack( (raster_weights,proc_raster_weights) )
         self.raster_precalc = raster_weights
 
+    def precalc_raster_weights_proc_by_faces(self,proc,fld,force=False):
+        hash_input=[fld.extents,fld.F.shape,self.rot]
+        hash_out = hashlib.md5(pickle.dumps(hash_input)).hexdigest()
+        
+        cache_dir=os.path.join(self.proc_dir(proc),"cache")
+        cache_fn=os.path.join(cache_dir,
+                              f"raster_weights-{fld.dx:.3g}x_{fld.dy:.3g}y-{hash_out}")
+        print(f"Weights for {proc}: cache file is {cache_fn}")
+    
+        if os.path.exists(cache_fn) and not force:
+            with open(cache_fn,'rb') as fp:
+                return pickle.load(fp)
+        
+        mesh_state = self.read_mesh_state(proc)
+        raster_weights = precalc_raster_weights_proc_by_faces(fld, *mesh_state)
+        if cache_fn is not None:
+            if not os.path.exists(cache_dir):
+                os.makedirs(cache_dir)
+            with open(cache_fn,'wb') as fp:
+                pickle.dump(raster_weights, fp, -1)
+        return raster_weights
+    
     def to_raster(self, variable, timename, force_precalc=False):
         if variable=='wse':
             return self.raster_wse(timename)
@@ -496,7 +507,22 @@ class PostFoam:
                 
         return fld
 
-    
+    def rot_name(self):
+        # summarize rotation matrix for cache naming
+        # not worrying about the specifics too much
+        rot = self.rot
+        if np.all( (rot==0) | (np.abs(rot)==1)):
+            s=""
+            for row in range(3):
+                for col,comp in enumerate('xyz'):
+                    if rot[row,col]==1:
+                        s+=comp
+                    elif rot[row,col]==-1:
+                        s+=comp.upper()
+        else:
+            s = hashlib.md5(pickle.dumps(rot)).hexdigest()
+        return s
+                
     # Contour-based approach for WSE
     # First get it working for one proc, then figure out how to glue them
     # together (or have openfoam do the merge)
@@ -508,65 +534,49 @@ class PostFoam:
 
         # for global mesh, no guarantee this mesh is in the same order
         # as reading the subdomains and concatenating
+
+        base=f'meshCellCentres_constant_{self.rot_name()}.obj'
+        
         if proc is None:
-            center_fn = os.path.join(self.sim_dir,'meshCellCentres_constant.obj')
+            center_fn = os.path.join(self.sim_dir,base)
         else:
-            center_fn = os.path.join(self.proc_dir(proc),'meshCellCentres_constant.obj')
+            center_fn = os.path.join(self.proc_dir(proc),base)
 
         if not os.path.exists(center_fn):
-            if not self.compute_cell_centers(center_fn):
-                print("Fall back to python cell center computation")
-                self.compute_cell_centers_py(proc,center_fn)
+            df = self.compute_cell_centers_py(proc)
+            df.to_csv(center_fn,sep=' ',header=False,index=False,float_format="%.15f")
+
         df = pd.read_csv(center_fn,sep=r'\s+',names=['type','x','y','z'])
         points = df[ ['x','y','z'] ].values
-        points = np.tensordot(points,self.rot,[-1,0]) # ROTATE
         return points
 
     def face_centers(self,proc=None):
         # see cell_centers
+        base = f'meshFaceCentres_constant_{self.rot_name()}.obj'
         if proc is None:
-            center_fn = os.path.join(self.sim_dir,'meshFaceCentres_constant.obj')
+            center_fn = os.path.join(self.sim_dir,base)
         else:
-            center_fn = os.path.join(self.proc_dir(proc),'meshFaceCentres_constant.obj')
+            center_fn = os.path.join(self.proc_dir(proc),base)
 
+        assert False,"Needs to switch to using mesh_state"
         if not os.path.exists(center_fn):
             if not self.compute_cell_centers(center_fn):
                 raise Exception(f"Face center file {center_fn} not found. Generate with writeMeshObj")
         df = pd.read_csv(center_fn,sep=r'\s+',names=['type','x','y','z'])
         points = df[ ['x','y','z'] ].values
-        points = np.tensordor(points,self.rot,[-1,0]) # ROTATE
         return points
     
-    def compute_cell_centers(self,center_fn):
-        case = os.path.dirname(center_fn)
-        try:
-            completed = subprocess.run([self.writeMeshObj,"-constant","-time","none"], cwd=case)
-        except FileNotFoundError:
-            return False
-        if completed.returncode!=0:
-            return False
-        if not os.path.exists(center_fn):
-            print(f"After writeMeshObj failed to find {center_fn}")
-            return False
-        return True
-    
-    def compute_cell_centers_py(self,proc,center_fn):
-        owner = self.read_owner(proc) 
-        facefile = self.read_facefile(proc) 
-        pointfile = self.read_pointfile(proc)
-        neigh = self.read_neighbor(proc)
+    def compute_cell_centers_py(self,proc):
+        mesh_state = self.read_mesh_state(proc)
 
-        points = pointfile.values.reshape([-1,3])
-        # Do not rotate here - this writes native OF transform points to
-        # disk, and needs to be consistent with what writeMeshObj would
-        # write.
-        ctrs,vols = cell_center_volume_py(facefile, points, owner.values, neigh.values)
+        vols,ctrs = mesh_ops.mesh_cell_volume_centers(*mesh_state)
+
         df=pd.DataFrame()
         df['t']=["v"] * len(ctrs)
         df['x']=ctrs[:,0]
         df['y']=ctrs[:,1]
         df['z']=ctrs[:,2]
-        df.to_csv(center_fn,sep=' ',header=False,index=False,float_format="%.15f")
+        return df
                   
     def contour_points_proc(self, scalar, contour_value, proc):
         centers = self.cell_centers(proc)
@@ -604,7 +614,6 @@ class PostFoam:
         #pointfile = self.read_pointfile(proc)
         #points_xyz=pointfile.values.reshape([-1,3])
         #points_xyz=np.tensordot(points_xyz,self.rot,[-1,0]) # ROTATE
-        points_xyz=np.tensordot(xyz,self.rot,[-1,0]) # ROTATE
     
         face_pnts=[]
         internal_faces = np.nonzero(internal)[0]
@@ -615,7 +624,7 @@ class PostFoam:
             # id_pts = facefile.faces[fIdx]["id_pts"][:]
             f_nodes = face_nodes[fIdx]
             f_nodes = f_nodes[f_nodes>=0]
-            face_pnts.append( points_xyz[f_nodes,:] )
+            face_pnts.append( xyz[f_nodes,:] )
         
         return pnts,face_pnts
     
@@ -639,7 +648,7 @@ class PostFoam:
         timename=self.fmt_timename(timename)
         # interpolate
         pnts,faces = self.contour_points(timename,contour_value=0.5, scalar_name='alpha.water')
-        fld_pnts = field.XYZField(X=pnts[:,::2], F=pnts[:,1])
+        fld_pnts = field.XYZField(X=pnts[:,:2], F=pnts[:,2])
 
         # In some unfortunate situations can end up with duplicate points. Filter out via KDTree
         tol = 0.001*self.raster_dx
@@ -687,7 +696,7 @@ class PostFoam:
             face_polys = []
             for i,pnts in enumerate(faces):
                 # convex hull gets around occasional warped, invalid polygons.
-                geom = convex_hull(geometry.MultiPoint(pnts[:,::2]))
+                geom = convex_hull(geometry.MultiPoint(pnts[:,:2]))
                 if geom.geom_type=='Polygon':
                     # vertical cells end up with a LineString here that infects
                     # the union.
@@ -811,122 +820,112 @@ def clipped_volume(edges, xmin=None, xmax=None, ymin=None, ymax=None,
     else:
         return volume_cell_edges(edges)
     
-def precalc_raster_weights_proc(meshpath, fld, rot, precision=15, force=False):
-    hash_input=[fld.extents,fld.F.shape,rot]
-    hash_out = hashlib.md5(pickle.dumps(hash_input)).hexdigest()
-    cache_dir=os.path.join(meshpath,"cache")
-    cache_fn=os.path.join(cache_dir,
-                          f"raster_weights-{fld.dx:.3g}x_{fld.dy:.3g}y-{hash_out}")
-    print(f"Weights for {meshpath}: cache file is {cache_fn}")
-    
-    if os.path.exists(cache_fn) and not force:
-        with open(cache_fn,'rb') as fp:
-            return pickle.load(fp)
-    
-    fld_x,fld_y = fld.xy()
-    Apixel = fld.dx*fld.dy
+# def precalc_raster_weights_proc(fld, force, xyz, face_nodes, face_cells, cell_faces):
+#     raise Exception("Outdated - implicit rotation and slow calc")
+#     hash_input=[fld.extents,fld.F.shape,rot]
+#     hash_out = hashlib.md5(pickle.dumps(hash_input)).hexdigest()
+#     cache_dir=os.path.join(meshpath,"cache")
+#     cache_fn=os.path.join(cache_dir,
+#                           f"raster_weights-{fld.dx:.3g}x_{fld.dy:.3g}y-{hash_out}")
+#     print(f"Weights for {meshpath}: cache file is {cache_fn}")
+#     
+#     if os.path.exists(cache_fn) and not force:
+#         with open(cache_fn,'rb') as fp:
+#             return pickle.load(fp)
+#     
+#     fld_x,fld_y = fld.xy()
+#     Apixel = fld.dx*fld.dy
+# 
+#     # Load proc mesh                    
+#     verbose=False
+#     meshpath = os.path.join(meshpath,'constant/polyMesh')
+#     # owner.nb_faces, boundary, values, nb_cell
+#     owner = OpenFoamFile(meshpath, name="owner", verbose=verbose)
+#     facefile = OpenFoamFile(meshpath, name="faces", verbose=verbose)
+#     pointfile = OpenFoamFile(meshpath,name="points",precision=precision,
+#         verbose=verbose)
+#     neigh = OpenFoamFile(meshpath, name="neighbour", verbose=verbose)
+#     cell_faces=defaultdict(list)
+# 
+#     for fIdx,cIdx in enumerate(neigh.values):
+#         cell_faces[cIdx].append(fIdx) 
+#     for fIdx,cIdx in enumerate(owner.values):
+#         cell_faces[cIdx].append(fIdx)
+# 
+#     n_cell = owner.nb_cell
+#     cells_as_edges=[None]*n_cell
+# 
+#     xyz=pointfile.values.reshape([-1,3])
+#     xyz=np.tensordot(xyz,rot,[-1,0])
+# 
+#     bboxes=np.zeros((n_cell,6),np.float64)
+#     for cIdx in range(n_cell):
+#         edges = cell_as_edges(cIdx, cell_faces, facefile, xyz)
+#         cells_as_edges[cIdx] = edges
+#         pnts = np.array(edges).reshape( (-1,3) )
+#         xxyyzz = [pnts[:,0].min(),
+#                   pnts[:,0].max(),
+#                   pnts[:,1].min(),
+#                   pnts[:,1].max(),
+#                   pnts[:,2].min(),
+#                   pnts[:,2].max()]
+#         bboxes[cIdx] = xxyyzz # OF native reference frame
+# 
+#     raster_weights = sparse.dok_matrix((fld.F.shape[0]*fld.F.shape[1],
+#                                         bboxes.shape[0]),
+#                                        np.float64)
+#         
+#     # check bounds, then compute clipped volume.
+#     
+#     for row in utils.progress(range(fld.shape[0])):
+#         ymin=fld_y[row]-fld.dy/2
+#         ymax=fld_y[row]+fld.dy/2
+#         # Implicit transposition - switch openfoam z to raster y
+#         #dy = (np.minimum(ymax,bboxes[:,5]) - np.maximum(ymin,bboxes[:,4])).clip(0)
+#         for col in range(fld.shape[1]):
+#             pix = row*fld.shape[1] + col # row-major ordering of pixels
+#             
+#             xmin=fld_x[col]-fld.dx/2
+#             xmax=fld_x[col]+fld.dx/2
+#          
+#             # Implicit transposition - switch openfoam z to raster y
+#             sel = ( (bboxes[:,0]<xmax)&(bboxes[:,1]>xmin) &
+#                     (bboxes[:,4]<ymax)&(bboxes[:,5]>ymin) )
+#             
+#             #dx = (np.minimum(xmax,bboxes[:,1]) - np.maximum(xmin,bboxes[:,0])).clip(0)
+#             #A = dx*dy
+#             
+#             # can volume also improve this? Maybe if we also calculated dz.
+#             #weights = A[mask]/(fld.dx*fld.dy)
+#             for cIdx in np.nonzero(sel)[0]:
+#                 # alpha-weighting is included per timestep
+#                 # Implicit transposition - switch openfoam z to raster y
+#                 vol = clipped_volume(cells_as_edges[cIdx],
+#                                      xmin=xmin,xmax=xmax,
+#                                      zmin=ymin,zmax=ymax)
+#                 raster_weights[pix,cIdx] = vol/Apixel
+#                 
+#     if cache_fn is not None:
+#         if not os.path.exists(cache_dir):
+#             os.makedirs(cache_dir)
+#         with open(cache_fn,'wb') as fp:
+#             pickle.dump(raster_weights,fp,-1)
+#     return raster_weights
 
-    # Load proc mesh                    
-    verbose=False
-    meshpath = os.path.join(meshpath,'constant/polyMesh')
-    # owner.nb_faces, boundary, values, nb_cell
-    owner = OpenFoamFile(meshpath, name="owner", verbose=verbose)
-    facefile = OpenFoamFile(meshpath, name="faces", verbose=verbose)
-    pointfile = OpenFoamFile(meshpath,name="points",precision=precision,
-        verbose=verbose)
-    neigh = OpenFoamFile(meshpath, name="neighbour", verbose=verbose)
-    cell_faces=defaultdict(list)
-
-    for fIdx,cIdx in enumerate(neigh.values):
-        cell_faces[cIdx].append(fIdx) 
-    for fIdx,cIdx in enumerate(owner.values):
-        cell_faces[cIdx].append(fIdx)
-
-    n_cell = owner.nb_cell
-    cells_as_edges=[None]*n_cell
-
-    xyz=pointfile.values.reshape([-1,3])
-    xyz=np.tensordot(xyz,rot,[-1,0])
-
-    bboxes=np.zeros((n_cell,6),np.float64)
-    for cIdx in range(n_cell):
-        edges = cell_as_edges(cIdx, cell_faces, facefile, xyz)
-        cells_as_edges[cIdx] = edges
-        pnts = np.array(edges).reshape( (-1,3) )
-        xxyyzz = [pnts[:,0].min(),
-                  pnts[:,0].max(),
-                  pnts[:,1].min(),
-                  pnts[:,1].max(),
-                  pnts[:,2].min(),
-                  pnts[:,2].max()]
-        bboxes[cIdx] = xxyyzz # OF native reference frame
-
-    raster_weights = sparse.dok_matrix((fld.F.shape[0]*fld.F.shape[1],
-                                        bboxes.shape[0]),
-                                       np.float64)
-        
-    # check bounds, then compute clipped volume.
-    
-    for row in utils.progress(range(fld.shape[0])):
-        ymin=fld_y[row]-fld.dy/2
-        ymax=fld_y[row]+fld.dy/2
-        # Implicit transposition - switch openfoam z to raster y
-        #dy = (np.minimum(ymax,bboxes[:,5]) - np.maximum(ymin,bboxes[:,4])).clip(0)
-        for col in range(fld.shape[1]):
-            pix = row*fld.shape[1] + col # row-major ordering of pixels
-            
-            xmin=fld_x[col]-fld.dx/2
-            xmax=fld_x[col]+fld.dx/2
-         
-            # Implicit transposition - switch openfoam z to raster y
-            sel = ( (bboxes[:,0]<xmax)&(bboxes[:,1]>xmin) &
-                    (bboxes[:,4]<ymax)&(bboxes[:,5]>ymin) )
-            
-            #dx = (np.minimum(xmax,bboxes[:,1]) - np.maximum(xmin,bboxes[:,0])).clip(0)
-            #A = dx*dy
-            
-            # can volume also improve this? Maybe if we also calculated dz.
-            #weights = A[mask]/(fld.dx*fld.dy)
-            for cIdx in np.nonzero(sel)[0]:
-                # alpha-weighting is included per timestep
-                # Implicit transposition - switch openfoam z to raster y
-                vol = clipped_volume(cells_as_edges[cIdx],
-                                     xmin=xmin,xmax=xmax,
-                                     zmin=ymin,zmax=ymax)
-                raster_weights[pix,cIdx] = vol/Apixel
-                
-    if cache_fn is not None:
-        if not os.path.exists(cache_dir):
-            os.makedirs(cache_dir)
-        with open(cache_fn,'wb') as fp:
-            pickle.dump(raster_weights,fp,-1)
-    return raster_weights
-
-def precalc_raster_weights_proc_by_faces(meshpath, fld, rot, precision=15, force=False):
+def precalc_raster_weights_proc_by_faces(fld, xyz, face_nodes, face_cells, cell_faces):
     """
     This version should be much faster. It avoids qhull, slices faces rather than clipping
     cells, and uses a padded array mesh representation that's faster for both python and
     numba
     """
-    hash_input=[fld.extents,fld.F.shape,rot]
-    hash_out = hashlib.md5(pickle.dumps(hash_input)).hexdigest()
-    cache_dir=os.path.join(meshpath,"cache")
-    cache_fn=os.path.join(cache_dir,
-                          f"raster_weights-{fld.dx:.3g}x_{fld.dy:.3g}y-{hash_out}")
-    print(f"Weights for {meshpath}: cache file is {cache_fn}")
-    
-    if os.path.exists(cache_fn) and not force:
-        with open(cache_fn,'rb') as fp:
-            return pickle.load(fp)
-    
-    mesh_state = mesh_ops.load_mesh_state(mesh_path)
-    
     #  base operation is to slice the mesh
     
     #  Slice by y=n*dy planes and x=n*dx planes
     #  compute volumes and centers
     #  assign to pixel via centers
     #  compile into matrix
+
+    mesh_state = (xyz,face_nodes,face_cells,cell_faces)
     
     fld_x,fld_y = fld.xy() # I think these are pixel centers
 
@@ -934,8 +933,6 @@ def precalc_raster_weights_proc_by_faces(meshpath, fld, rot, precision=15, force
         if col==0: continue
         xmin=fld_x[col]-fld.dx/2
         xmax=fld_x[col]+fld.dx/2
-
-        # probably have to sort out rotations here
         mesh_state = mesh_ops.mesh_slice(np.r_[1,0,0], xmin, *mesh_state)
 
     if 0: # debugging checks
@@ -949,8 +946,6 @@ def precalc_raster_weights_proc_by_faces(meshpath, fld, rot, precision=15, force
         if row==0: continue
         ymin=fld_y[row]-fld.dy/2
         ymax=fld_y[row]+fld.dy/2
-
-        # probably have to sort out rotations here
         mesh_state = mesh_ops.mesh_slice(np.r_[0,1,0], ymin, *mesh_state)
 
     if 0: # debugging checks
@@ -962,13 +957,6 @@ def precalc_raster_weights_proc_by_faces(meshpath, fld, rot, precision=15, force
     print("Calculate volume")
     volumes,centers = mesh_ops.mesh_cell_volume_centers(*mesh_state)
 
-    # total_volume_pre = volumes_pre.sum()
-    # total_volume_post = volumes.sum()
-    # print(f"Volume before slicing: {total_volume_pre}")
-    # print(f" Volume after slicing: {total_volume_post}")
-    # return # DEV
-
-    # Come back to this once we actually have the cells.
     raster_weights = sparse.dok_matrix((fld.F.shape[0]*fld.F.shape[1],
                                         centers.shape[0]),
                                        np.float64)
@@ -987,20 +975,14 @@ def precalc_raster_weights_proc_by_faces(meshpath, fld, rot, precision=15, force
             xmin=fld_x[col]-fld.dx/2
             xmax=fld_x[col]+fld.dx/2
          
-            # Implicit transposition - switch openfoam z to raster y
+            # No more implicit transposition
             sel = ( (centers[:,0]<xmax)&(centers[:,0]>xmin) &
-                    (centers[:,2]<ymax)&(centers[:,2]>ymin) )
+                    (centers[:,1]<ymax)&(centers[:,1]>ymin) )
             
             for cIdx in np.nonzero(sel)[0]:
                 # alpha-weighting is included per timestep
-                # Implicit transposition - switch openfoam z to raster y
                 raster_weights[pix,cIdx] = volumes[cIdx]/Apixel
                 
-    if cache_fn is not None:
-        if not os.path.exists(cache_dir):
-            os.makedirs(cache_dir)
-        with open(cache_fn,'wb') as fp:
-            pickle.dump(raster_weights,fp,-1)
     return raster_weights
 
 
