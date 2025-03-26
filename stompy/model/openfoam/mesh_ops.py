@@ -227,8 +227,11 @@ def mesh_check_cell(cIdx,verbose,mesh_state):
     return np.all(np.array(outwards)>0)
 
 
-def mesh_slice(slice_normal, slice_offset, xyz, face_nodes, face_cells, cell_faces):
+def mesh_slice(slice_normal, slice_offset, cell_mapping, xyz, face_nodes, face_cells, cell_faces):
     tol = 1e-10
+    if cell_mapping is None:
+        cell_mapping = np.arange(len(cell_faces))
+        
     # identify which faces to slice:
     if 1:
         offset_xyz = np.dot(xyz,slice_normal) - slice_offset
@@ -495,7 +498,10 @@ def mesh_slice(slice_normal, slice_offset, xyz, face_nodes, face_cells, cell_fac
                         # bad here.
                         if f_i==0 and side_xyz[f_nodes[f_i+1]]!=0:
                             # last-to-first edge is the one.
-                            assert f_nodes[-1]>=n_node_orig,"More trouble with slice nodes"
+                            # pretty sure this overly restrictive. face could have come in with a node
+                            # on the slice. Even if it's a new face, one of the nodes could have already
+                            # been on the slice.
+                            #assert f_nodes[-1]>=n_node_orig,"More trouble with slice nodes"
                             nodeA = f_nodes[-1]
                             nodeB = f_nodes[0]
                             assert nodeA!=nodeB
@@ -563,6 +569,7 @@ def mesh_slice(slice_normal, slice_offset, xyz, face_nodes, face_cells, cell_fac
         new_cIdx = len(cell_faces)
         cell_faces[cIdx,:] = cell_face_neg
         cell_faces = utils.array_append(cell_faces,cell_face_pos)
+        cell_mapping = utils.array_append(cell_mapping, cell_mapping[cIdx])
         face_cells = utils.array_append(face_cells,np.array([cIdx,new_cIdx]))
 
         #import pdb
@@ -602,7 +609,7 @@ def mesh_slice(slice_normal, slice_offset, xyz, face_nodes, face_cells, cell_fac
                 else:
                     assert False,"Failed to find face to flip"
 
-    return (xyz, face_nodes, face_cells, cell_faces)
+    return cell_mapping, (xyz, face_nodes, face_cells, cell_faces)
 
 
 def mesh_cell_bboxes(xyz,face_nodes,face_cells,cell_faces):

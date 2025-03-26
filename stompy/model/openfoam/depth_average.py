@@ -926,14 +926,16 @@ def precalc_raster_weights_proc_by_faces(fld, xyz, face_nodes, face_cells, cell_
     #  compile into matrix
 
     mesh_state = (xyz,face_nodes,face_cells,cell_faces)
+    n_cells_orig = len(cell_faces)
     
     fld_x,fld_y = fld.xy() # I think these are pixel centers
 
+    cell_mapping=None
     for col in utils.progress(range(fld.shape[1])):
         if col==0: continue
         xmin=fld_x[col]-fld.dx/2
         xmax=fld_x[col]+fld.dx/2
-        mesh_state = mesh_ops.mesh_slice(np.r_[1,0,0], xmin, *mesh_state)
+        cell_mapping, mesh_state = mesh_ops.mesh_slice(np.r_[1,0,0], xmin, cell_mapping, *mesh_state)
 
     if 0: # debugging checks
         print("Checking cells")
@@ -946,7 +948,7 @@ def precalc_raster_weights_proc_by_faces(fld, xyz, face_nodes, face_cells, cell_
         if row==0: continue
         ymin=fld_y[row]-fld.dy/2
         ymax=fld_y[row]+fld.dy/2
-        mesh_state = mesh_ops.mesh_slice(np.r_[0,1,0], ymin, *mesh_state)
+        cell_mapping, mesh_state = mesh_ops.mesh_slice(np.r_[0,1,0], ymin, cell_mapping, *mesh_state)
 
     if 0: # debugging checks
         print("Checking cells after all slicing")
@@ -958,7 +960,7 @@ def precalc_raster_weights_proc_by_faces(fld, xyz, face_nodes, face_cells, cell_
     volumes,centers = mesh_ops.mesh_cell_volume_centers(*mesh_state)
 
     raster_weights = sparse.dok_matrix((fld.F.shape[0]*fld.F.shape[1],
-                                        centers.shape[0]),
+                                        n_cells_orig),
                                        np.float64)
         
     # check bounds, then compute clipped volume.
@@ -981,7 +983,7 @@ def precalc_raster_weights_proc_by_faces(fld, xyz, face_nodes, face_cells, cell_
             
             for cIdx in np.nonzero(sel)[0]:
                 # alpha-weighting is included per timestep
-                raster_weights[pix,cIdx] = volumes[cIdx]/Apixel
+                raster_weights[pix,cell_mapping[cIdx]] = volumes[cIdx]/Apixel
                 
     return raster_weights
 
