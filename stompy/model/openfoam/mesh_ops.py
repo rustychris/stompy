@@ -247,6 +247,57 @@ def mesh_slice(slice_normal, slice_offset, cell_mapping, xyz, face_nodes, face_c
         # slice. just be fast here
         faces_to_slice = np.nonzero(~cmp_face_same)[0]
 
+    # Filtering step - in the case of warped faces, it's possible to have something like
+    # size_xyz=[-1,1,-1,1]. Forcing those nodes to be on the slice plane leads to issues
+    # with adjacent faces. Instead, triangulate.
+    if 1:
+        n_face_orig = faces_to_slice.shape[0]
+        
+        for fIdx in faces_to_slice:
+            nodes = face_nodes[fIdx]
+            node_count = np.sum(nodes>=0)
+            nodes = nodes[:node_count]
+            side_nodes = side_xyz[nodes]
+
+            last_side = side_nodes[0] 
+            # Simplify logic below by forcing sides_nodes[0]==-1
+            for i in range(node_count):
+                if side_nodes[i]==-1:
+                    break
+            else:
+                # no nodes clearly on neg side, no splice to do
+                continue
+            if i!=0: # NB: only works if nodes and side_nodes are trimmed
+                nodes = np.roll(nodes,-i)
+                side_nodes = np.roll(side_nodes,-i)
+
+            last_side=side_nodes[0]
+            crossings=0
+            coplanar=0
+            for i in range(node_count):
+                i_next=(i+1)%node_count
+                side_this=side_nodes[i]
+                side_next=side_nodes[i_next]
+                if side_this==0 and side_next==0:
+                    coplanar+=1
+                    continue
+                if side_next==0:
+                    continue
+                if last_side!=side_next:
+                    crossings+=1
+                last_side=side_next
+
+            if crossings>2 or (crossings>0 and coplanar>0):
+                # Break fIdx into triangles. No changes to xyz, but face_nodes, face_cells, cell_faces get
+                # updated.
+                print(f"Triangulating warped face on slice plane for fIdx={fIdx}")
+                (xyz, face_nodes, face_cells, cell_faces) = mesh_triangulate(fIdx, 
+                                                                             xyz, face_nodes, face_cells, cell_faces)
+
+        tri_faces = np.arange(n_face_orig,face_nodes.shape[0])
+        if len(tri_faces):
+            faces_to_slice = np.concatenate((faces_to_slice,tri_faces))
+        
     #print(f"At offset {slice_offset} will slice {len(faces_to_slice)} faces")
 
     # slices actually have to be per edge, not face.
@@ -484,7 +535,9 @@ def mesh_slice(slice_normal, slice_offset, cell_mapping, xyz, face_nodes, face_c
                 nodeA=nodeB=-1
                 on_slice_count = (side_xyz[f_nodes]==0).sum()
                 if on_slice_count>2:
-                    print("WARNING: face {fIdx} has {on_slice_count} nodes on slice, and is part of a cell to be sorted")
+                    print(f"WARNING: face {fIdx} has {on_slice_count} nodes on slice, and is part of a cell to be sorted")
+                    import pdb
+                    pdb.set_trace() # not sure what to do in this case
                 if (fIdx<n_face_orig) and (on_slice_count<2):
                     continue
                 
@@ -637,3 +690,37 @@ def mesh_cell_bboxes(xyz,face_nodes,face_cells,cell_faces):
     return cell_bounds
 
     
+# (xyz, face_nodes, face_cells, cell_faces) =
+def mesh_triangulate(fIdx, 
+                     xyz, face_nodes, face_cells, cell_faces):
+    # assume incoming face is convex in the plane, such that triangulation is
+    # simple. Not always a great assumption...
+    nodes = face_nodes[fIdx]
+    nodes=nodes[nodes>=0] # this will be a copy, so it's safe to mutate face_nodes below
+
+    owner,nbr = face_cells[fIdx,:]
+    n_face_owner = (cell_faces[owner]!=NO_FACE).sum()
+    if nbr>=0:
+        n_face_nbr = (cell_faces[nbr]!=NO_FACE).sum()
+    
+    for i_tri in range(len(nodes)-2):
+        tri_nodes = np.full(FACE_MAX_NODES,-1,np.int32)
+        tri_nodes[0] = nodes[0]
+        tri_nodes[1] = nodes[i_tri+1]
+        tri_nodes[2] = nodes[i_tri+2]
+
+        if i_tri==0:
+            face_nodes[fIdx] = tri_nodes
+        else:
+            newFIdx = len(face_nodes)
+            face_nodes = utils.array_append(face_nodes, tri_nodes)
+            face_cells = utils.array_append(face_cells, face_cells[fIdx])
+            cell_faces[owner,n_face_owner]=newFIdx
+            n_face_owner+=1
+
+            if nbr>=0:
+                cell_faces[nbr,n_face_nbr]=~newFIdx # ~ for neighbor reference
+                n_face_nbr+=1
+
+    
+    return xyz, face_nodes, face_cells, cell_faces
