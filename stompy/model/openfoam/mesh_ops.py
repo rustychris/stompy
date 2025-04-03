@@ -227,6 +227,7 @@ def mesh_check_cell(cIdx,verbose,mesh_state):
     return np.all(np.array(outwards)>0)
 
 
+@njit
 def mesh_slice(slice_normal, slice_offset, cell_mapping, xyz, face_nodes, face_cells, cell_faces):
     tol = 1e-10
     if cell_mapping is None:
@@ -255,28 +256,32 @@ def mesh_slice(slice_normal, slice_offset, cell_mapping, xyz, face_nodes, face_c
         
         for fIdx in faces_to_slice:
             nodes = face_nodes[fIdx]
-            node_count = np.sum(nodes>=0)
+            # node_count = np.sum(nodes>=0)
+            for node_i in range(FACE_MAX_NODES):
+                if nodes[node_i]<0:
+                    node_count=node_i
+                    break
+            else:
+                node_count=FACE_MAX_NODES
+                
             nodes = nodes[:node_count]
             side_nodes = side_xyz[nodes]
 
-            last_side = side_nodes[0] 
             # Simplify logic below by forcing sides_nodes[0]==-1
-            for i in range(node_count):
-                if side_nodes[i]==-1:
+            for i_start in range(node_count):
+                if side_nodes[i_start]==-1:
                     break
             else:
                 # no nodes clearly on neg side, no splice to do
                 continue
-            if i!=0: # NB: only works if nodes and side_nodes are trimmed
-                nodes = np.roll(nodes,-i)
-                side_nodes = np.roll(side_nodes,-i)
 
-            last_side=side_nodes[0]
+            last_side=side_nodes[i_start]
             crossings=0
             coplanar=0
             for i in range(node_count):
-                i_next=(i+1)%node_count
-                side_this=side_nodes[i]
+                i_this=(i_start+i)%node_count
+                i_next=(i_this+1)%node_count
+                side_this=side_nodes[i_this]
                 side_next=side_nodes[i_next]
                 if side_this==0 and side_next==0:
                     coplanar+=1
@@ -310,26 +315,25 @@ def mesh_slice(slice_normal, slice_offset, cell_mapping, xyz, face_nodes, face_c
     n_node_orig = xyz.shape[0]
 
     for fIdx in faces_to_slice:
-        #import pdb
-        #pdb.set_trace()
         nodes = face_nodes[fIdx]
-        node_count = np.sum(nodes>=0)
+        for node_i in range(FACE_MAX_NODES):
+            if nodes[node_i]<0:
+                node_count=node_i
+                break
+        else:
+            node_count=FACE_MAX_NODES
         nodes = nodes[:node_count]
 
         # use side_xyz for fine-grained control
         #cmp_nodes = cmp_xyz[nodes[:node_count]]
         side_nodes = side_xyz[nodes]
         if 1: # Simplify logic below by forcing sides_nodes[0]==-1
-            for i in range(node_count):
-                if side_nodes[i]==-1:
+            for i_start in range(node_count):
+                if side_nodes[i_start]==-1:
                     break
             else:
                 # no nodes clearly on neg side, no splice to do
                 continue
-            if i!=0:
-                # NB: only works if nodes and side_nodes are trimmed
-                nodes = np.roll(nodes,-i)
-                side_nodes = np.roll(side_nodes,-i)
         
         # Split into two lists of nodes, one for the part of the face with cmp_xyz True (less
         # than offset), and one for the part of the face on or above the slice
@@ -338,7 +342,7 @@ def mesh_slice(slice_normal, slice_offset, cell_mapping, xyz, face_nodes, face_c
         count_neg=0
         nodes_pos = np.full(FACE_MAX_NODES,-1,dtype=np.int32)
         count_pos=0
-        last_side = side_nodes[0] 
+        last_side = side_nodes[i_start] 
         assert last_side!=0,"Should be -1, but definitely not 0"
 
         coplanar_count=0 # how many edges of the face are on the slice plane
@@ -346,8 +350,9 @@ def mesh_slice(slice_normal, slice_offset, cell_mapping, xyz, face_nodes, face_c
         #if np.any(side_nodes==0):
         #    print(f"{fIdx}: has {np.sum(side_nodes==0)} nodes on slice surface")
 
-        for i in range(node_count):
-            i_next=(i+1)%node_count
+        for ii in range(node_count):
+            i_this=(i_start+ii)%node_count
+            i_next=(i_this+1)%node_count
             # where should node i+1 go?
             # cases for -1/0/+1:
             #   Easy cases:
@@ -387,7 +392,7 @@ def mesh_slice(slice_normal, slice_offset, cell_mapping, xyz, face_nodes, face_c
             #    figure out the starting side. If the side_nodes[0]==0,
             #    rotate to always get side_nodes[0]==-1
             
-            side_this=side_nodes[i]
+            side_this=side_nodes[i_this]
             side_next=side_nodes[i_next]
             
             if side_this==-1 and side_next==-1:
@@ -415,10 +420,10 @@ def mesh_slice(slice_normal, slice_offset, cell_mapping, xyz, face_nodes, face_c
                 if side_next!=last_side:
                     # need to add nodes[i] to side_next, too
                     if side_next==-1:
-                        nodes_neg[count_neg]=nodes[i] # i, not i_next
+                        nodes_neg[count_neg]=nodes[i_this] # i, not i_next
                         count_neg+=1
                     elif side_next==1:
-                        nodes_pos[count_pos]=nodes[i] # i, not i_next
+                        nodes_pos[count_pos]=nodes[i_this] # i, not i_next
                         count_pos+=1
                     else:
                         assert False,"Really?"
@@ -436,17 +441,17 @@ def mesh_slice(slice_normal, slice_offset, cell_mapping, xyz, face_nodes, face_c
                 last_side = side_next
             elif side_this * side_next < 0: # Clear split
                 # if cmp_nodes[i] != cmp_nodes[i_next]:  # SPLIT
-                n_small,n_large = nodes[i],nodes[i_next]
+                n_small,n_large = nodes[i_this],nodes[i_next]
                 if n_small>n_large:
                     n_small,n_large = n_large,n_small
                 k=(n_small,n_large)
 
                 if k not in sliced_edges:
-                    value = np.dot(xyz[nodes[i]],slice_normal) - slice_offset
+                    value = np.dot(xyz[nodes[i_this]],slice_normal) - slice_offset
                     next_value = np.dot(xyz[nodes[i_next]],slice_normal) - slice_offset
                     assert next_value!=value
                     alpha = (0-value)/(next_value-value)
-                    new_point = (1-alpha)*xyz[nodes[i]] + alpha*xyz[nodes[i_next]]
+                    new_point = (1-alpha)*xyz[nodes[i_this]] + alpha*xyz[nodes[i_next]]
                     new_node = xyz.shape[0]
                     xyz = utils.array_append(xyz,new_point)
                     side_xyz = utils.array_append(side_xyz,0) # on the slice by construction
@@ -536,8 +541,8 @@ def mesh_slice(slice_normal, slice_offset, cell_mapping, xyz, face_nodes, face_c
                 on_slice_count = (side_xyz[f_nodes]==0).sum()
                 if on_slice_count>2:
                     print(f"WARNING: face {fIdx} has {on_slice_count} nodes on slice, and is part of a cell to be sorted")
-                    import pdb
-                    pdb.set_trace() # not sure what to do in this case
+                    #import pdb
+                    #pdb.set_trace() # not sure what to do in this case
                 if (fIdx<n_face_orig) and (on_slice_count<2):
                     continue
                 
