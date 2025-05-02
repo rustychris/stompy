@@ -2271,8 +2271,10 @@ class SuntansModel(hm.HydroModel):
                         g=grids[proc]
                     yield [proc,g,ds]
             elif merged:
-                map_fn=self.map_outputs()[0]
-                g=unstructured_grid.UnstructuredGrid.from_ugrid(map_fn)
+                # not split into subdomains, but outputs may potentially be split by timesteps
+                map_fn=self.map_outputs()
+                # use the first output to get the grid (they should all be the same)
+                g=unstructured_grid.UnstructuredGrid.from_ugrid(map_fn[0])
                 yield [0,g,map_fn]
             else:
                 for proc in range(self.num_procs):
@@ -2316,8 +2318,20 @@ class SuntansModel(hm.HydroModel):
                 if c is not None:
                     proc_point_cell[proc,pnti]=c
                     if ds is None:
-                        if isinstance(map_fn,str):
-                            ds=xr.open_dataset(map_fn)
+                        if isinstance(map_fn, list) and len(map_fn) == 1:
+                            # if we only have one output in the map_output list, open it as a single file
+                            ds=xr.open_dataset(map_fn[0])
+                        elif isinstance(map_fn, list):
+                            # otherwise, open multi-file dataset
+                            def clean_nc(ds):
+                                ds['Nk_c'] = ds[
+                                    'Nk']  # poorly named variable.
+                                del ds['Nk']
+                                for d in ['Nc', 'Nk', 'numsides', 'Ne', 'Two', 'Nkw']:
+                                    ds[d] = np.arange(ds.dims[d])
+                                ds = ds.set_coords(['xp', 'yp'])
+                                return ds
+                            ds=xr.open_mfdataset(map_fn, preprocess=clean_nc, data_vars='minimal')
                         else:
                             ds=map_fn.copy()
                         # doctor up the Nk dimensions
