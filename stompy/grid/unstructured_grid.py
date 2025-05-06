@@ -7053,6 +7053,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         return_type:
           'nodes': list of node indexes
           'edges' or 'sides': array of edge indices
+          'halfedges': edge indices, but 1s complement when the natural direction is opposite path
           'cost': just the total cost
         selector: given an edge index and direction, return True if the edge should be considered.
         edge_weight: None: use euclidean distance, otherwise function taking an
@@ -7158,7 +7159,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         # update/replace the return values in results based on return_type
         return_values=[] #  (node/cell, <return value>)
         for i,result in enumerate(results):
-            if return_type in ['nodes','edges','sides','cells']:
+            if return_type in ['nodes','edges','sides','halfedges','cells']:
                 # reconstruct the path:
                 path = [result['n']] # will be a cell if traverse=='cells'
                 while 1:
@@ -7181,6 +7182,18 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                                             for i in range(len(path)-1)] )
                 else:
                     raise Exception("Bad value for traverse: %s"%traverse)
+            elif return_type == 'halfedges':
+                assert traverse=='nodes'
+                hes=[]
+                for a,b in zip(path[:-1],path[1:]):
+                    j=self.nodes_to_edge(a,b)
+                    if self.edges['nodes'][j,0]==a:
+                        pass
+                    elif self.edges['nodes'][j,0]==b:
+                        j=~j
+                    hes.append(j)
+                return_value=np.array( hes )
+                
             elif return_type=='cost':
                 return_value=done[result['n']][0]
             return_values.append( (result['n'],return_value) )

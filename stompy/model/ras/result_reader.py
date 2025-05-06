@@ -11,6 +11,7 @@ import h5py
 import numpy as np
 import datetime
 import glob, os
+import xarray as xr
 
 # Would like to replicate what RAS does
 # technically that requires the terrain
@@ -195,7 +196,34 @@ class RasReader:
             return result[:self.grid.Ncells()]
         else:
             return result
+        
+    def cell_min_bed_elevation(self, trim_virtual=True):
+        base=f'Geometry/2D Flow Areas/{self.area_name}'
+        z = self.h5[base]['Cells Minimum Elevation']
+        if trim_virtual:
+            z=z[:self.grid.Ncells()]
+        return z
     
+    def cell_mean_bed_elevation(self, trim_virtual=True):
+        base=f'Geometry/2D Flow Areas/{self.area_name}'
+        # Ncell x {start,count}
+        cell_vol_elev_info = self.h5[base]['Cells Volume Elevation Info'][:,:]
+        # Ncell x {elevation, volume}
+        cell_vol_elev_values = self.h5[base]['Cells Volume Elevation Values'][:,:]
+        cell_areas = self.h5[base]['Cells Surface Area'][:]
+
+        # Assumes cells are fully inundated
+        last_entries = cell_vol_elev_info[:,0] + cell_vol_elev_info[:,1] - 1
+        max_elevs = cell_vol_elev_values[last_entries,0]
+        max_vols  = cell_vol_elev_values[last_entries,1]
+        # ghost cells throw some 0.0 in
+        mean_bed_elevs = np.zeros_like(max_elevs)
+        ghost = cell_areas<=0.0
+        mean_bed_elevs[~ghost] = max_elevs[~ghost] - max_vols[~ghost]/cell_areas[~ghost]
+        if trim_virtual:
+            mean_bed_elevs=mean_bed_elevs[:self.grid.Ncells()]
+        return mean_bed_elevs
+        
     def face_wse(self,time_step):
         """
         Ben's hard way to interpolate WSE at the face, currently only RAS6
@@ -268,3 +296,40 @@ class RasReader:
             result[c,:] = x
         return result
 
+    def extract(self,time_steps=None,variables=['Water Surface'],locations=None):
+        """
+        locations: [ [x,y], ...] or dict { 'label':[x,y], ....}
+        """
+        ds=xr.Dataset()
+        if time_steps is None:
+            time_steps = np.arange(len(self.times()))
+        ds['time'] = ('time',), self.times()[time_steps].astype('<M8[ns]')
+
+        # flat WSE in each cell
+        if locations is None:
+            cells = np.arange(self.grid.Ncells())
+        else:
+            if isinstance(locations,dict):
+                loc_xy=np.array(list(locations.values()))
+                loc_name=list(locations.keys())
+            else:
+                loc_xy=np.array(locations)
+                loc_name=None
+            cells = [self.grid.select_cells_nearest(p) for p in loc_xy]
+            ds['x'] = ('sample',), loc_xy[:,0]
+            ds['y'] = ('sample',), loc_xy[:,1]
+            if loc_name:
+                ds['sample']=('sample',),loc_name
+
+        ds['cell']=('sample',),cells
+
+        # initialize
+        for v in variables:
+            ds[v] = ('time','sample',),np.zeros((ds.sizes['time'],ds.sizes['sample']),np.float64)
+
+        for step_i,time_step in enumerate(time_steps):
+            for v in variables:
+                if v=='Water Surface':
+                    wse = self.cell_wse(time_step)
+                    ds[v].values[step_i,:] = wse[cells]
+        return ds
