@@ -199,9 +199,11 @@ class PostFoam:
         if self._bboxes is None:
             bboxes=[]
             for proc in range(self.n_procs):
-                print(f"Calculating bboxes for processor {proc}")
+                print(f"Read mesh for processor {proc}")
                 mesh_state = self.read_mesh_state(proc)
-                bbox = mesh_ops.mesh_cell_bboxes(*mesh_state)
+                print(f"Calculate bboxes for processor {proc}")
+                # bbox = mesh_ops.mesh_cell_bboxes(*mesh_state)
+                bbox = mesh_ops.mesh_cell_bboxes_nb(*mesh_state)
                 bboxes.append(bbox)
                 
             # Appears there are no ghost cells,
@@ -434,6 +436,14 @@ class PostFoam:
                 raster_weights = sparse.hstack( (raster_weights,proc_raster_weights) )
         self.raster_precalc = raster_weights
 
+    # def get_raster_cache_fn(self,label,fld,proc=None,**kw):
+    #     hash_input=[fld.extents,fld.F.shape,self.rot]
+    #     hash_out = hashlib.md5(pickle.dumps(hash_input)).hexdigest()
+    #     
+    #     cache_dir=os.path.join(self.proc_dir(proc),"cache")
+    #     cache_fn=os.path.join(cache_dir,
+    #                           f"raster_weights-{fld.dx:.3g}x_{fld.dy:.3g}y-{hash_out}")
+        
     def precalc_raster_weights_proc_by_faces(self,proc,fld,force=False):
         hash_input=[fld.extents,fld.F.shape,self.rot]
         hash_out = hashlib.md5(pickle.dumps(hash_input)).hexdigest()
@@ -456,55 +466,71 @@ class PostFoam:
                 pickle.dump(raster_weights, fp, -1)
         return raster_weights
     
-    def to_raster(self, variable, timename, force_precalc=False):
-        if variable=='wse':
-            return self.raster_wse(timename)
-        
-        self.read_timestep(timename)
+    def to_raster(self, variable, timename, force_precalc=False, cache=True):
         n_components=None
         if variable=='U':
             n_components = 3
         fld = field.SimpleGrid.zeros(extents=self.raster_xxyy,
                                      dx=self.raster_dx,dy=self.raster_dy, 
                                      n_components=n_components)
+
+        if cache:
+            hash_input=[fld.extents,fld.F.shape,self.rot]
+            hash_out = hashlib.md5(pickle.dumps(hash_input)).hexdigest()
+            cache_dir=os.path.join(self.sim_dir,"cache")
+            cache_fn=os.path.join(cache_dir,
+                                  f"{variable}-{timename}-{fld.dx:.3g}x_{fld.dy:.3g}y-{hash_out}.tif")
+            if os.path.exists(cache_fn):
+                return field.GdalGrid(cache_fn)
         
-        if self.raster_precalc is None:
-            self.precalc_raster_info(fld,force=force_precalc)
-            
-        raster_weights = self.raster_precalc
-            
-        fld_x,fld_y = fld.xy()
+        if variable=='wse':
+            fld = self.raster_wse(timename)
+        else:
+            self.read_timestep(timename)
 
-        # for sanity, process each component in sequence (tho memory inefficient)
-        for comp in range(n_components or 1):
-            
-            if variable=='U':
-                # this 
-                num = raster_weights.dot(self.alphas*self.vels[:,comp])
-                den = raster_weights.dot(self.alphas)
+            if self.raster_precalc is None:
+                self.precalc_raster_info(fld,force=force_precalc)
 
-                # seems like division by zero should be handled by 'divide', but
-                # so far it trips 'invalid'
-                with np.errstate(divide='ignore',invalid='ignore'):
-                    u = num/den
-                    u[ np.abs(den)<1e-10 ] = np.nan
-                
-                fld.F[:,:,comp] = u.reshape( (fld.F.shape[0],fld.F.shape[1]) )                
-            elif variable=='depth_bad':
-                # this field and inv_depth_bad are not good approximations
-                # and left here only for comparison to other approaches.
-                # measure up from the bed, which is assumed flat
-                # This will not be a good estimate when the bed is not flat,
-                # non-simple, or the domain doesn't fill the pixel.
-                fld.F[:,:] = raster_weights.dot(self.alphas).reshape( fld.F.shape )
-            elif variable=='inv_depth_bad':
-                # More likely that the top of the domain is flat than the
-                # bed being flat, but still has errors when the freesurface
-                # intersects the walls.
-                fld.F[:,:] = raster_weights.dot(1.0-self.alphas).reshape( fld.F.shape )
-            else:
-                raise Exception(f"Not ready for other fields like {variable}")
-                
+            raster_weights = self.raster_precalc
+
+            fld_x,fld_y = fld.xy()
+
+            # for sanity, process each component in sequence (tho memory inefficient)
+            for comp in range(n_components or 1):
+
+                if variable=='U':
+                    # this 
+                    num = raster_weights.dot(self.alphas*self.vels[:,comp])
+                    den = raster_weights.dot(self.alphas)
+
+                    # seems like division by zero should be handled by 'divide', but
+                    # so far it trips 'invalid'
+                    with np.errstate(divide='ignore',invalid='ignore'):
+                        u = num/den
+                        u[ np.abs(den)<1e-10 ] = np.nan
+
+                    fld.F[:,:,comp] = u.reshape( (fld.F.shape[0],fld.F.shape[1]) )                
+                elif variable=='depth_bad':
+                    # this field and inv_depth_bad are not good approximations
+                    # and left here only for comparison to other approaches.
+                    # measure up from the bed, which is assumed flat
+                    # This will not be a good estimate when the bed is not flat,
+                    # non-simple, or the domain doesn't fill the pixel.
+                    fld.F[:,:] = raster_weights.dot(self.alphas).reshape( fld.F.shape )
+                elif variable=='inv_depth_bad':
+                    # More likely that the top of the domain is flat than the
+                    # bed being flat, but still has errors when the freesurface
+                    # intersects the walls.
+                    fld.F[:,:] = raster_weights.dot(1.0-self.alphas).reshape( fld.F.shape )
+                else:
+                    raise Exception(f"Not ready for other fields like {variable}")
+
+        if cache:
+            cache_dir = os.path.dirname(cache_fn)
+            if not os.path.exists(cache_dir):
+                os.makedirs(cache_dir)
+            fld.write_gdal(cache_fn)
+
         return fld
 
     def rot_name(self):
@@ -930,25 +956,44 @@ def precalc_raster_weights_proc_by_faces(fld, xyz, face_nodes, face_cells, cell_
     
     fld_x,fld_y = fld.xy() # I think these are pixel centers
 
+    # unclear whether numba version is sketch or not.
+    slicer = mesh_ops.mesh_slice_nb # mesh_slice_nb
+
+    if 0: # debugging checks
+        print("Checking cells before any operations")
+        for cIdx in utils.progress(range(len(mesh_state[3])), func=print):
+            if not mesh_ops.mesh_check_cell(cIdx,False,mesh_state):
+                import pdb
+                pdb.set_trace()
+                mesh_ops.mesh_check_cell(cIdx,True,mesh_state)
+                
+        print("Check complete")
+
     cell_mapping=None
     for col in utils.progress(range(fld.shape[1])):
         if col==0: continue
         xmin=fld_x[col]-fld.dx/2
         xmax=fld_x[col]+fld.dx/2
-        cell_mapping, mesh_state = mesh_ops.mesh_slice(np.r_[1,0,0], xmin, cell_mapping, *mesh_state)
+        cell_mapping, mesh_state = slicer(np.r_[1,0,0], xmin, cell_mapping, *mesh_state)
 
     if 0: # debugging checks
         print("Checking cells")
         for cIdx in utils.progress(range(len(mesh_state[3])), func=print):
-            assert mesh_ops.mesh_check_cell(cIdx,False,mesh_state)
+            if not mesh_ops.mesh_check_cell(cIdx,False,mesh_state):
+                print(f"cIdx={cIdx} failed check")
+                mesh_ops.mesh_check_cell(cIdx,True,mesh_state)
+                raise Exception(f"cIdx={cIdx} failed check")
+                
         print("Check complete")
-
+    
     # Slice the mesh so all cells are in exactly one pixel
+    print("Slicing by row")
     for row in utils.progress(range(fld.shape[0])):
+        print("Row:", row)
         if row==0: continue
         ymin=fld_y[row]-fld.dy/2
         ymax=fld_y[row]+fld.dy/2
-        cell_mapping, mesh_state = mesh_ops.mesh_slice(np.r_[0,1,0], ymin, cell_mapping, *mesh_state)
+        cell_mapping, mesh_state = slicer(np.r_[0,1,0], ymin, cell_mapping, *mesh_state)
 
     if 0: # debugging checks
         print("Checking cells after all slicing")
@@ -957,8 +1002,9 @@ def precalc_raster_weights_proc_by_faces(fld, xyz, face_nodes, face_cells, cell_
         print("Check complete")
 
     print("Calculate volume")
-    volumes,centers = mesh_ops.mesh_cell_volume_centers(*mesh_state)
+    volumes,centers = mesh_ops.mesh_cell_volume_centers_nb(*mesh_state)
 
+    print("Assemble matrix")
     raster_weights = sparse.dok_matrix((fld.F.shape[0]*fld.F.shape[1],
                                         n_cells_orig),
                                        np.float64)
