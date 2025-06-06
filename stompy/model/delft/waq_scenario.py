@@ -1513,6 +1513,8 @@ class Hydro(object):
                 path=g.shortest_path(a, b)
                 legs+=list(path[1:])
 
+        print("Node path is ",legs)
+        
         self.infer_2d_links()
 
         # RH: I think the crux of the changes below from ZZ
@@ -1537,47 +1539,7 @@ class Hydro(object):
 
         link_and_signs=[] # (link idx, sign to make from->to same as left->right
         for a,b in zip(legs[:-1],legs[1:]):
-            j=g.nodes_to_edge(a,b)
-            
-            if j is None:
-                # this happens when the line cuts across an island, and edges were
-                # specified directly. ignore the exchange.
-                if on_edge:
-                    continue
-                else:
-                    # if legs came from shortest_path() above, it really shouldn't
-                    # miss any edges, so signal bad news
-                    raise Exception("edge couldn't be found, but it came from the grid.")
-            
-            # possible to have missing cells with other marks (as in
-            # marking an ocean or flow boundary), but boundary links are
-            # just -1:
-            c1_c2=g.edge_to_cells(j).clip(-1,g.Ncells())
-
-            # ZZ changes were right here.
-            
-            leg_to_edge_sign=1
-            if g.edges['nodes'][j,0] == b:
-                leg_to_edge_sign=-1
-
-            # assumes that hydro elements and grid cells have the same numbering
-            # make sure that any missing cell is just labeled -1
-            fwd_hit= np.nonzero( np.all( self.links[:,:]==c1_c2, axis=1 ) )[0]
-            rev_hit= np.nonzero( np.all( self.links[:,:]==c1_c2[::-1], axis=1 )) [0]
-            nhits=len(fwd_hit)+len(rev_hit)
-            if nhits==0:
-                if np.any(c1_c2<0):
-                    self.log.warning("Discarding boundary edge in path_to_transect_exchanges")
-                    continue
-                else:
-                    raise Exception("Failed to match edge to link")
-            elif nhits>1:
-                raise Exception("Somehow got two matches.  Bad stuff.")
-
-            if len(fwd_hit):
-                link_and_sign = [fwd_hit[0],leg_to_edge_sign] 
-            else:
-                link_and_sign =[rev_hit[0],-leg_to_edge_sign]
+            link_and_sign = self.nodes_to_link_and_sign(a,b,on_edge)
             if link_and_signs and link_and_signs[-1][0]==link_and_sign[0]:
                 self.log.warning("Discarding repeated link")
             else:
@@ -1595,7 +1557,66 @@ class Hydro(object):
                 transect_exchs.append( sign*exch_sign*(1+exch) )
 
         return transect_exchs
-            
+
+    def link_to_edge(self,link):
+        # discards orientation
+        c1,c2 = self.links[link]
+        g = self.grid()
+        return g.cells_to_edge(c1,c2)
+        
+    def nodes_to_link_and_sign(self,a,b,on_edge=False):
+        """
+        a,b: node indices (0-based), assumed to be correct for self.grid()
+        and flowgeom.
+        also assumes the cells and elements match up.
+        returns the corresponding link and +-1 depending on whether the link
+        is reversed relative to the order of a,b.
+        exact sign convention unclear.
+        """
+        g=self.grid()
+        j=g.nodes_to_edge(a,b)
+
+        if j is None:
+            # this happens when the line cuts across an island, and edges were
+            # specified directly. ignore the exchange.
+            if on_edge:
+                continue
+            else:
+                # if legs came from shortest_path() above, it really shouldn't
+                # miss any edges, so signal bad news
+                raise Exception("edge couldn't be found, but it came from the grid.")
+
+        # possible to have missing cells with other marks (as in
+        # marking an ocean or flow boundary), but boundary links are
+        # just -1:
+        c1_c2=g.edge_to_cells(j).clip(-1,g.Ncells())
+
+        # ZZ changes were right here.
+
+        leg_to_edge_sign=1
+        if g.edges['nodes'][j,0] == b:
+            leg_to_edge_sign=-1
+
+        # assumes that hydro elements and grid cells have the same numbering
+        # make sure that any missing cell is just labeled -1
+        fwd_hit= np.nonzero( np.all( self.links[:,:]==c1_c2, axis=1 ) )[0]
+        rev_hit= np.nonzero( np.all( self.links[:,:]==c1_c2[::-1], axis=1 )) [0]
+        nhits=len(fwd_hit)+len(rev_hit)
+        if nhits==0:
+            if np.any(c1_c2<0):
+                self.log.warning("Discarding boundary edge in path_to_transect_exchanges")
+                continue
+            else:
+                raise Exception("Failed to match edge to link")
+        elif nhits>1:
+            raise Exception("Somehow got two matches.  Bad stuff.")
+
+        if len(fwd_hit):
+            link_and_sign = [fwd_hit[0],leg_to_edge_sign] 
+        else:
+            link_and_sign =[rev_hit[0],-leg_to_edge_sign]
+        return link_and_sign
+    
     link_group_dtype=[('id','i4'),
                       ('name','O'),
                       ('attrs','O')]
