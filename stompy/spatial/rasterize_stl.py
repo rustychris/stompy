@@ -58,7 +58,9 @@ def transform(fp_stl,translate,R):
     normals = fp_stl.normals.dot(R)
     return xyz, normals
 
-def stl_to_field(fp_stl,R,translate=[0,0,0],dx=None,dy=None,max_dim=None,pad=[0,0],nodata=np.nan):
+def stl_to_field(fp_stl,R,translate=[0,0,0],dx=None,dy=None,max_dim=None,pad=[0,0],nodata=np.nan,
+                 cull_by_normals=True,
+                 normal_tol=1e-4):
     xyz, normals = transform(fp_stl, translate, R)
     xxyy=[xyz[...,0].min()-pad[0], xyz[...,0].max()+pad[0],
           xyz[...,1].min()-pad[1], xyz[...,1].max()+pad[1]]
@@ -88,22 +90,28 @@ def stl_to_field(fp_stl,R,translate=[0,0,0],dx=None,dy=None,max_dim=None,pad=[0,
     
     for norm, triple in utils.progress(zip(normals,xyz)):
         # For starters handle the coordinate transfomation manually
-        if norm[2]<=0.0: # sign might be wrong
-            continue
+        if cull_by_normals and norm[2]<=normal_tol: 
+            continue # degen or facing away
+        elif np.abs(norm[2])<=normal_tol:
+            continue # degenerate 
         # rasterize a triangle into the field.
         rasterize_triangle(fld,X,Y,triple) 
         
     return fld
 
-def stl_to_grid(fp_stl,R,translate=[0,0,0],dx=None,dy=None,max_dim=None,pad=[0,0],nodata=np.nan):
+def stl_to_grid(fp_stl,R,translate=[0,0,0],dx=None,dy=None,max_dim=None,pad=[0,0],nodata=np.nan,
+                cull_by_normals=True,
+                normal_tol=1e-4):
     xyz,normals = transform(fp_stl,translate,R)
 
     # shove them into a grid to help with uniqueifying edges
     g=unstructured_grid.UnstructuredGrid()
     
     for norm, triple in utils.progress(zip(normals,xyz)):
-        if norm[2]<=1e-4: 
-            continue
+        if cull_by_normals and norm[2]<=normal_tol: 
+            continue # degen or facing away
+        elif np.abs(norm[2])<=normal_tol:
+            continue # degenerate 
         nodes,edges=g.add_linestring(triple[...,:2],closed=True,tolerance=1e-2) # handles unique nodes, edges
         
     print(f"Grid has {g.Nnodes()} nodes, {g.Nedges()} edges")
@@ -114,7 +122,7 @@ def stl_to_grid(fp_stl,R,translate=[0,0,0],dx=None,dy=None,max_dim=None,pad=[0,0
     return g
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="rasterize_stl.py",
         description="Convert STL to georeferenced raster or shapefile")
@@ -125,6 +133,8 @@ def main():
     
     parser.add_argument("--force","-f",help="Overwrite existing file",action='store_true')
     parser.add_argument("--proj",help="Spatial reference in GDAL text format, like EPSG:26910",default="")
+
+    parser.add_argument("--cull",help="Disable triangle culling",action='store_false')
 
     parser.add_argument("--scale",nargs='+',help="Scale x [y z]",type=float)
     parser.add_argument("--rx",help="Rotate around x axis, degrees",type=float)
@@ -140,7 +150,7 @@ def main():
     parser.add_argument("--pad",nargs=2,help="Pad the extent of the output DEM (tif output)",type=float,default=[0,0])
     parser.add_argument("--nodata",help="Value for missing pixels (tif output)",default=np.nan, type=float)
     
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     # Using an existing stl file:
     fp_stl = mesh.Mesh.from_file(args.stl_file)
@@ -194,6 +204,8 @@ def main():
     else:
         kwargs['max_dim']=args.size
 
+    kwargs['cull_by_normals'] = args.cull
+        
     if args.out_file.lower().endswith('.tif'):
         output_type='tif'
     elif args.out_file.lower().endswith('.shp'):

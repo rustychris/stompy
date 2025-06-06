@@ -188,7 +188,8 @@ class RasReader:
         t0 = self.time_start()
         offset_days = self.time_relative_days()[:]
         return t0 + np.array(offset_days*86400,np.int64)*np.timedelta64(1,'s')
-        
+
+    @memoize.imemoize(lru=5)
     def cell_wse(self,time_step,trim_virtual=True):
         key=self.area_base+'Water Surface'
         result = self.h5[key][time_step]
@@ -224,6 +225,7 @@ class RasReader:
             mean_bed_elevs=mean_bed_elevs[:self.grid.Ncells()]
         return mean_bed_elevs
         
+    @memoize.imemoize(lru=5)
     def face_wse(self,time_step):
         """
         Ben's hard way to interpolate WSE at the face, currently only RAS6
@@ -247,20 +249,23 @@ class RasReader:
             result[j] = face_interp_ben(wseA[j], wseB[j], zminA[j], zminB[j], face_min_elev[j])
         return result
     
-
+    @memoize.imemoize(lru=5)
     def face_flow(self,time_step):
         flow_key = self.area_base + "Face Flow"
         if flow_key in self.h5:
             return self.h5[flow_key][time_step,:]
         else:
-            raise Exception("Inferring face flow not yet implemented")
+            return self.face_velocity(time_step) * self.face_area(time_step)
+        
+    @memoize.imemoize(lru=5)
     def face_velocity(self,time_step):
         vel_key = self.area_base + "Face Velocity"
         if vel_key in self.h5:
             return self.h5[vel_key][time_step,:]
         else:
             raise Exception("Inferring face velocity not implemented")
-
+        
+    @memoize.imemoize(lru=5)
     def face_area(self,time_step):
         face_wse = self.face_wse(time_step)
         face_area = np.zeros_like(face_wse)
@@ -277,10 +282,13 @@ class RasReader:
             interp_area += (wse-tbl['z'][-1])*wet_length
         return interp_area
 
-    def cell_velocity(self,time_step):
+    @memoize.imemoize(lru=5)
+    def cell_velocity(self, time_step, face_areas=None, face_flows=None):
         # Cell-centered vector velocity via weighted least squares
-        face_areas = self.face_area(time_step)
-        face_flows = self.face_flow(time_step)
+        if face_areas is None:
+            face_areas = self.face_area(time_step)
+        if face_flows is None:
+            face_flows = self.face_flow(time_step)
         normals = self.grid.edges['normal']
 
         # WLS
