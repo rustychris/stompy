@@ -566,7 +566,10 @@ class Hydro(object):
         try:
             # Hmm - clunky, but not a good existing way to deterine whether
             # there is vertical diffusion data or not
-            self.vert_diffs(0)
+            # Note that data could start before/after self.time0. This may still
+            # be clumsy, if vert_diffs somehow has a different timestep than the
+            # hydro in general. Not sure if that happens
+            self.vert_diffs(self.t_secs[0])
             has_vert_diffs=True
         except Exception as exc:
             self.log.info("No vertical dispersion (%s)"%str(exc))
@@ -1779,7 +1782,7 @@ class Hydro(object):
                                      for t in time_range ]
 
         t_secs=self.t_secs[tidx_start:tidx_stop]
-        times=np.datetime64(self.time0)+t_secs*np.timedelta64(1,'s')
+        times=(np.datetime64(self.time0)+t_secs*np.timedelta64(1,'s')).astype('<M8[ns]')
         
         data=np.zeros( len(t_secs), np.float64)
         for i,t in utils.progress(enumerate(times)):
@@ -2168,13 +2171,13 @@ class HydroFiles(Hydro):
                 fp.seek(stride*ti)
                 tstamp=np.fromfile(fp,'i4',1)
                 
-                if len(tstamp)==0 or tstamp[0]!=t_sec:
-                    if 0:# old behavior, no scanning:
-                        if len(tstamp)==0:
-                            print("WARNING: no timestamp read for seg function")
-                        else: 
-                            print("WARNING: time stamp mismatch: %s != %d should scan but won't"%(tstamp[0],t_sec))
-                    else: # new behavior to accomodate hydro parameters with variable time steps
+                if ti<0 or len(tstamp)==0 or tstamp[0]!=t_sec:
+                    # if 0:# old behavior, no scanning:
+                    #     if len(tstamp)==0:
+                    #         print("WARNING: no timestamp read for seg function")
+                    #     else: 
+                    #         print("WARNING: time stamp mismatch: %s != %d should scan but won't"%(tstamp[0],t_sec))
+                    if 1: # new behavior to accomodate hydro parameters with variable time steps
                         # assumes at least two time steps, and that all steps are the same size
                         fp.seek(0)
                         tstamp0=np.fromfile(fp,'i4',1)[0]
@@ -2188,6 +2191,10 @@ class HydroFiles(Hydro):
                         warning=None
                         if ti<0:
                             if t_sec>=0:
+                                # Someone requested a time step that's before the first record.
+                                # At times this has happened because requesting time 0 was a hack
+                                # to detect whether the field existed, and sometimes the field
+                                # exists but starts later.
                                 warning="WARNING: inferred time index %d is negative in %s!"%(ti,filename)
                             else:
                                 # kludgey - the problem is that something like the temperature field
@@ -10689,14 +10696,14 @@ END_MULTIGRID"""%num_layers
         for i,rec in enumerate(locations):
             geom=rec['geom']
 
-            if geom.type=='LineString':
+            if geom.geom_type=='LineString':
                 if clip_to_poly:
                     clipped=geom.intersection(poly)
 
                     # rather than assume that clipped comes back with
                     # the same orientation, and multiple pieces come
                     # back in order, manually re-assemble the line
-                    if clipped.type=='LineString':
+                    if clipped.geom_type=='LineString':
                         segs=[clipped]
                     else:
                         segs=clipped.geoms
@@ -10709,7 +10716,7 @@ END_MULTIGRID"""%num_layers
                     # original
                     all_dists.sort()
 
-                    xy=[geom.interpolate(d) for d in all_dists]
+                    xy=[np.array(geom.interpolate(d).coords[0]) for d in all_dists]
                 else:
                     xy=np.array(geom.coords)
                     
@@ -10720,7 +10727,7 @@ END_MULTIGRID"""%num_layers
                 exchs=self.hydro.path_to_transect_exchanges(xy,on_boundary=on_boundary)
                 new_transects.append( (name,exchs) )
             else:
-                self.log.warning("Not ready to handle geometry type %s"%geom.type)
+                self.log.warning("Not ready to handle geometry type %s"%geom.geom_type)
         self.log.info("Added %d monitored transects from %s"%(len(new_transects),shp_fn))
         self.monitor_transects = self.monitor_transects + tuple(new_transects)
         if add_station:
@@ -12331,13 +12338,13 @@ class InpReader:
             count=self.next_int()
             segs=[self.next_int() for _ in range(count)]
             self.monitor_areas.append( (name,segs))
-        print(f"{len(self.monitor_areas)} mon areas")
+        #print(f"{len(self.monitor_areas)} mon areas")
         
     def read_transects(self):
         has_tran=self.next_int()
         if has_tran>0:
             n_tran = self.next_int()
-            print("n_tran",n_tran)
+            #print("n_tran",n_tran)
         else:
             n_tran=0
         self.monitor_transects=[]
@@ -12347,7 +12354,7 @@ class InpReader:
             count=self.next_int()
             exchs=[self.next_int() for _ in range(count)]
             self.monitor_transects.append( (name,exchs))
-        print(f"{len(self.monitor_transects)} transects")
+        #print(f"{len(self.monitor_transects)} transects")
 
     def get_transect_by_name(self,name):
         for tran in self.monitor_transects:
