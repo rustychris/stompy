@@ -7750,6 +7750,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     errs /=np.mean(dists,axis=1)
                 errors[sel]=errs
         return errors
+    
     def angle_errors(self):
         centers = self.cells_center()
         e2c=self.edge_to_cells(recalc=True)
@@ -7764,7 +7765,33 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                / mag(edge_vecs) )
         angle_err=(np.arccos(dots) - np.pi/2)
         return angle_err
-    
+
+    def dfm_cosphiunet(self):
+        """
+        Compute per-edge cosphiunet as in DFM. 0.0 on edges without two adjacent cells.
+        This is the cosine of the angle between the center-center vector and the edge vector.
+        0.0 is ideal. 0.5 is typical DFM threshold. Reports signed values, but only the absolute
+        value really matters. cosphi=nan for edges with coincident cell centers
+        """
+        cc=self.cells_center()
+        e2c=self.edge_to_cells()
+        cosphi=np.zeros(self.Nedges(), np.float64)
+
+        is_link=e2c.min(axis=1)>=0
+        cosphi[~is_link]=0.0 
+
+        cell_vecs=cc[e2c[is_link,0]] - cc[e2c[is_link,1]]
+        edge_vecs=self.nodes['x'][self.edges['nodes'][is_link,1]] - self.nodes['x'][self.edges['nodes'][is_link,0]]
+
+        cell_mags=(cell_vecs**2).sum(axis=1)
+        edge_mags=(edge_vecs**2).sum(axis=1)
+
+        mags = cell_mags*edge_mags
+        bad_link = mags<1e-6
+        mags[bad_link] = 1        
+        cosphi[is_link] = np.where(bad_link, np.nan, (cell_vecs * edge_vecs).sum(axis=1) / np.sqrt(mags))
+        return cosphi
+
     def edge_clearance(self,edges=None,mode='min',cc=None,Ac=None,
                        eps_Ac=1e-5,recalc_e2c=False):
         """
