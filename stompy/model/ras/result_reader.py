@@ -136,7 +136,12 @@ class RasReader:
             self.version="RAS6"
         except KeyError:
             self.version="RAS2025"
-            
+
+    def load_postproc(run):
+        # Doesn't actually have the computed flows. Maybe not useful.
+        post_proc_fn = os.path.dirname(self.results_fn) + f"/{self.short_title()}/PostProcessing.hdf"
+        return h5py.File(post_proc_fn, 'r')
+
     def close(self):
         self.h5.close()
         self.h5 = None
