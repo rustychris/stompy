@@ -1301,7 +1301,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             assert isinstance(bc.geom_type,list),"Didn't fully refactor, looks like"
             if (bc.geom is None) and (None not in bc.geom_type):
                 raise Exception("BC %s, name=%s has no geometry. Maybe missing from shapefiles?"%(bc,bc.name))
-            assert bc.geom.type in bc.geom_type
+            assert bc.geom.geom_type in bc.geom_type
 
             coords=np.array(bc.geom.coords)
             ndim=coords.shape[1] # 2D or 3D geometry

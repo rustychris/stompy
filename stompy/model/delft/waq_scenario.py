@@ -1580,7 +1580,7 @@ class Hydro(object):
             # this happens when the line cuts across an island, and edges were
             # specified directly. ignore the exchange.
             if on_edge:
-                continue
+                pass
             else:
                 # if legs came from shortest_path() above, it really shouldn't
                 # miss any edges, so signal bad news
@@ -1605,7 +1605,7 @@ class Hydro(object):
         if nhits==0:
             if np.any(c1_c2<0):
                 self.log.warning("Discarding boundary edge in path_to_transect_exchanges")
-                continue
+                pass
             else:
                 raise Exception("Failed to match edge to link")
         elif nhits>1:

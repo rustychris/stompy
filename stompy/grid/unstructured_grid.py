@@ -866,11 +866,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             v=mesh.attrs['face_edge_connectivity']
             if v in nc:
                 # Some files advertise variable they don't have. Trust no one.
-                ug.cells['edges'] = nc[mesh.attrs['face_edge_connectivity']].values
+                ug.cells['edges'] = nc[v].values
         if 'edge_face_connectivity' in mesh.attrs:
             v=mesh.attrs['edge_face_connectivity']
             if v in nc:
-                ug.edges['cells'] = nc[mesh.attrs['edge_face_connectivity']].values
+                cells = nc[v].values
+                ug.edges['cells'] = np.where( np.isfinite(cells), cells, -1)
         
         if dialect=='fishptm':
             ug.cells_center()
@@ -7750,6 +7751,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     errs /=np.mean(dists,axis=1)
                 errors[sel]=errs
         return errors
+    
     def angle_errors(self):
         centers = self.cells_center()
         e2c=self.edge_to_cells(recalc=True)
@@ -7764,7 +7766,54 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                / mag(edge_vecs) )
         angle_err=(np.arccos(dots) - np.pi/2)
         return angle_err
+
+    def dfm_cosphiunet(self):
+        """
+        Compute per-edge cosphiunet as in DFM. 0.0 on edges without two adjacent cells.
+        This is the cosine of the angle between the center-center vector and the edge vector.
+        0.0 is ideal. 0.5 is typical DFM threshold. Reports signed values, but only the absolute
+        value really matters. cosphi=nan for edges with coincident cell centers
+        """
+        cc=self.cells_center()
+        e2c=self.edge_to_cells()
+        cosphi=np.zeros(self.Nedges(), np.float64)
+
+        is_link=e2c.min(axis=1)>=0
+        cosphi[~is_link]=0.0 
+
+        cell_vecs=cc[e2c[is_link,0]] - cc[e2c[is_link,1]]
+        edge_vecs=self.nodes['x'][self.edges['nodes'][is_link,1]] - self.nodes['x'][self.edges['nodes'][is_link,0]]
+
+        cell_mags=(cell_vecs**2).sum(axis=1)
+        edge_mags=(edge_vecs**2).sum(axis=1)
+
+        mags = cell_mags*edge_mags
+        bad_link = mags<1e-6
+        mags[bad_link] = 1        
+        cosphi[is_link] = np.where(bad_link, np.nan, (cell_vecs * edge_vecs).sum(axis=1) / np.sqrt(mags))
+        return cosphi
     
+    def dfm_linklength(self):
+        """
+        Compute nondimensional link length
+        DFM (tag 141798) compares center:center distance
+        dist(center1-center2) < 0.9*removesmalllinkstrsh*0.5*(sqrt(area1)+sqrt(area2))
+
+        Where the default threshold is 0.1.
+        This method returns 
+        dist(center1-center2) / 0.9*0.5*(sqrt(area1)+sqrt(area2))
+        """
+        lengths=np.zeros(self.Nedges(),np.float64)
+        e2c=self.edge_to_cells()
+        cc=self.cells_center()
+        internal=e2c.min(axis=1)>=0
+        lengths[~internal] = np.nan
+        sqrt_area=np.sqrt(self.cells_area())
+        cA=e2c[internal,0]
+        cB=e2c[internal,1]
+        lengths[internal] = mag(cc[cA]-cc[cB]) / (0.9*0.5*(sqrt_area[cA]+sqrt_area[cB]))
+        return lengths
+
     def edge_clearance(self,edges=None,mode='min',cc=None,Ac=None,
                        eps_Ac=1e-5,recalc_e2c=False):
         """
