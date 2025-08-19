@@ -53,6 +53,10 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
     dwaq=False
     # Specify location of proc_def.def file:
     waq_proc_def=None
+
+    # Explicitly write points in dry areas to make sure DFM doesn't turn islands into
+    # cells. Hasn't generally been needed.
+    automatic_dry_points=False
     
     # flow and source/sink BCs will get the adjacent nodes dredged
     # down to this depth in order to ensure the impose flow doesn't
@@ -955,9 +959,23 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         # Assumes update_config() already called
         self.write_structures() # updates mdu
         self.write_monitors()
+        if self.automatic_dry_points:
+            self.write_dry_points()
         log.info("Writing MDU to %s"%self.mdu.filename)
         self.mdu.write()
 
+    def write_dry_points(self):
+        self.mdu['geometry','DryPointsFile'] = 'dry_points.xyz'
+        dest=os.path.join(self.run_dir, self.mdu['geometry','DryPointsFile'])
+
+        lines=self.grid.boundary_linestrings()
+        with open(dest,'wt') as fp:
+            for line in lines:
+                # outer boundary has negative area, skip it.
+                if utils.signed_area(line)<0: continue
+                pnt=geometry.Polygon(line).representative_point().coords[0]
+                fp.write(f"{pnt[0]:.6f},{pnt[1]:0.6f},0\n")
+        
     def write_monitors(self):
         # start with empty
         if not self.mdu['output','ObsFile']:

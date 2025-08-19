@@ -865,12 +865,14 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         if 'face_edge_connectivity' in mesh.attrs:
             v=mesh.attrs['face_edge_connectivity']
             if v in nc:
+                start_index=nc[v].attrs.get('start_index',0)
                 # Some files advertise variable they don't have. Trust no one.
-                ug.cells['edges'] = nc[v].values
+                ug.cells['edges'] = nc[v].values - start_index
         if 'edge_face_connectivity' in mesh.attrs:
             v=mesh.attrs['edge_face_connectivity']
             if v in nc:
-                cells = nc[v].values
+                start_index=nc[v].attrs.get('start_index',0)
+                cells = nc[v].values - start_index
                 ug.edges['cells'] = np.where( np.isfinite(cells), cells, -1)
         
         if dialect=='fishptm':
