@@ -1539,7 +1539,12 @@ class Hydro(object):
 
         link_and_signs=[] # (link idx, sign to make from->to same as left->right
         for a,b in zip(legs[:-1],legs[1:]):
-            link_and_sign = self.nodes_to_link_and_sign(a,b,on_edge)
+            link_and_sign = self.nodes_to_link_and_sign(a, b ,on_edge, on_boundary=on_boundary)
+            if link_and_sign is None:
+                # could be that a line cut across and island and with on_edge
+                # the edges are directly specified. Could also be that
+                continue
+            
             if link_and_signs and link_and_signs[-1][0]==link_and_sign[0]:
                 self.log.warning("Discarding repeated link")
             else:
@@ -1564,7 +1569,7 @@ class Hydro(object):
         g = self.grid()
         return g.cells_to_edge(c1,c2)
         
-    def nodes_to_link_and_sign(self,a,b,on_edge=False):
+    def nodes_to_link_and_sign(self, a, b, on_edge=False, on_boundary='warn_and_skip'):
         """
         a,b: node indices (0-based), assumed to be correct for self.grid()
         and flowgeom.
@@ -1577,14 +1582,10 @@ class Hydro(object):
         j=g.nodes_to_edge(a,b)
 
         if j is None:
-            # this happens when the line cuts across an island, and edges were
-            # specified directly. ignore the exchange.
             if on_edge:
-                continue
+                return None
             else:
-                # if legs came from shortest_path() above, it really shouldn't
-                # miss any edges, so signal bad news
-                raise Exception("edge couldn't be found, but it came from the grid.")
+                raise Exception("Failed to find edge")
 
         # possible to have missing cells with other marks (as in
         # marking an ocean or flow boundary), but boundary links are
@@ -1605,7 +1606,7 @@ class Hydro(object):
         if nhits==0:
             if np.any(c1_c2<0):
                 self.log.warning("Discarding boundary edge in path_to_transect_exchanges")
-                continue
+                return None
             else:
                 raise Exception("Failed to match edge to link")
         elif nhits>1:

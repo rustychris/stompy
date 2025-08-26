@@ -1,13 +1,15 @@
 import os
 import numpy as np
+from ... import utils
 from numba import njit
 from numba.typed import List
+    
 import time
 from fluidfoam.readof import OpenFoamFile
-from ... import utils
 
-FACE_MAX_NODES=20
-CELL_MAX_FACES=20
+# Did run into an issue with MR long v3 that hit the cell-faces limit of 20
+FACE_MAX_NODES=40
+CELL_MAX_FACES=40
 NO_FACE=np.iinfo(np.int32).max
 
 
@@ -59,6 +61,15 @@ def load_mesh_state(case_dir,precision=15):
 
     print(f"Time to convert mesh representation: {time.time()-t:.3f}s")
     return (xyz,face_nodes,face_cells,cell_faces)
+
+def mesh_bbox(case_dir,precision=15):
+    # Load proc mesh                    
+    verbose=False
+    meshpath = os.path.join(case_dir,'constant/polyMesh')
+    pointfile = OpenFoamFile(meshpath, name="points", precision=precision, verbose=verbose)
+
+    xyz=pointfile.values.reshape([-1,3])
+    return np.array([xyz.min(axis=0),xyz.max(axis=0)])
 
 def mesh_rotate(rot,xyz,face_nodes,face_cells,cell_faces):
     xyz=np.tensordot(xyz,rot,[-1,0])
@@ -308,7 +319,7 @@ def mesh_check_cell(cIdx,verbose,mesh_state):
     # these come out with wrong sign.
     if verbose:
         print("Outward components: "," ".join([f"{comp:.2e}" for comp in outwards])) # expect all positive
-        if np.all(comp==0):
+        if np.all(outwards==0):
             import pdb
             pdb.set_trace()
 
@@ -369,7 +380,7 @@ def mesh_slice(slice_normal, slice_offset, cell_mapping, xyz, face_nodes, face_c
     # size_xyz=[-1,1,-1,1]. Forcing those nodes to be on the slice plane leads to issues
     # with adjacent faces. Instead, triangulate.
     if 1:
-        n_face_orig = faces_to_slice.shape[0]
+        n_face_orig = face_nodes.shape[0] # had been wrongly faces_to_slice
         
         for fIdx in faces_to_slice:
             nodes = face_nodes[fIdx]
@@ -415,12 +426,13 @@ def mesh_slice(slice_normal, slice_offset, cell_mapping, xyz, face_nodes, face_c
                 print(f"Triangulating warped face on slice plane for fIdx={fIdx}")
                 (xyz, face_nodes, face_cells, cell_faces) = mesh_triangulate(fIdx, 
                                                                              xyz, face_nodes, face_cells, cell_faces)
+                assert np.all(face_nodes[:,:3]>=0)
 
         tri_faces = np.arange(n_face_orig,face_nodes.shape[0])
         if len(tri_faces):
             faces_to_slice = np.concatenate((faces_to_slice,tri_faces))
         
-    #print(f"At offset {slice_offset} will slice {len(faces_to_slice)} faces")
+    print(f"At offset {slice_offset} will slice {len(faces_to_slice)} faces")
 
     # slices actually have to be per edge, not face.
     sliced_edges={} # (edge small node, edge large node) => new node
@@ -431,6 +443,8 @@ def mesh_slice(slice_normal, slice_offset, cell_mapping, xyz, face_nodes, face_c
     n_face_orig = face_nodes.shape[0]
     n_node_orig = xyz.shape[0]
 
+    assert np.all(face_nodes[:,:3]>=0)
+
     for fIdx in faces_to_slice:
         nodes = face_nodes[fIdx]
         for node_i in range(FACE_MAX_NODES):
@@ -440,6 +454,7 @@ def mesh_slice(slice_normal, slice_offset, cell_mapping, xyz, face_nodes, face_c
         else:
             node_count=FACE_MAX_NODES
         nodes = nodes[:node_count]
+        assert len(nodes)>=3 # having some corruption issues...
 
         # use side_xyz for fine-grained control
         #cmp_nodes = cmp_xyz[nodes[:node_count]]
@@ -596,6 +611,14 @@ def mesh_slice(slice_normal, slice_offset, cell_mapping, xyz, face_nodes, face_c
         assert count_neg>=3 
         assert count_pos>=3
 
+        # # DBG - make sure we're not creating a degenerate triangle
+        # for new_faces in [nodes_neg,nodes_pos]:
+        #     tmp_nodes = new_faces[new_faces>=0]
+        #     tmp_nodes.sort()
+        #     assert np.all(tmp_nodes[1:] - tmp_nodes[:-1])>0
+        #     assert(len(tmp_nodes)>=3)
+        # # /DBG
+                
         face_nodes[fIdx]=nodes_neg
         newFIdx = len(face_nodes)
         face_nodes = array_append(face_nodes, nodes_pos)
@@ -610,6 +633,9 @@ def mesh_slice(slice_normal, slice_offset, cell_mapping, xyz, face_nodes, face_c
         cIdx = face_cells[fIdx,0] # owner
         assert cIdx>=0
         sliced_cells[cIdx] = -1 # sliced, but no new cell has been created
+        # this is failing with cell_n_faces[cIdx]==20, but dimensions is 20.
+        if cell_n_faces[cIdx]==CELL_MAX_FACES:
+            raise Exception(f"cell_n_faces[cIdx=={cIdx}]=={CELL_MAX_FACES} - cannot add another face")
         cell_faces[cIdx,cell_n_faces[cIdx]]=newFIdx
         cell_n_faces[cIdx]+=1
 
@@ -625,7 +651,15 @@ def mesh_slice(slice_normal, slice_offset, cell_mapping, xyz, face_nodes, face_c
     cells_to_sort = list(sliced_cells.keys())
     cells_to_sort.sort()
 
+    assert np.all(face_nodes[:,:3]>=0)
+
     for cIdx in cells_to_sort:
+        # # DBG
+        # if cIdx==91200 and len(cells_to_sort)==1265:
+        #     print("Walk through and check for a sketchy pair of edges including 217145,217146")
+        #     import pdb
+        #     pdb.set_trace()
+        # # /DBG
         faces = cell_faces[cIdx,:cell_n_faces[cIdx]]
         cell_face_neg = np.full(CELL_MAX_FACES,NO_FACE,np.int32)
         count_neg=0
@@ -728,6 +762,7 @@ def mesh_slice(slice_normal, slice_offset, cell_mapping, xyz, face_nodes, face_c
                     break
             assert new_face_node[nfn_count-1]==new_face_node[0]
             new_face_node[nfn_count-1]=-1
+            assert (new_face_node>=0).sum() >= 3
 
             
         new_fIdx = face_nodes.shape[0]
@@ -783,6 +818,9 @@ def mesh_slice(slice_normal, slice_offset, cell_mapping, xyz, face_nodes, face_c
                 else:
                     assert False,"Failed to find face to flip"
 
+    assert np.all(face_nodes[:,:3]>=0)
+                
+                    
     return cell_mapping, (xyz, face_nodes, face_cells, cell_faces)
 
 
@@ -1345,6 +1383,9 @@ def mesh_triangulate(fIdx,
         tri_nodes[1] = nodes[i_tri+1]
         tri_nodes[2] = nodes[i_tri+2]
 
+        # DBG: tracking down degenerates
+        assert tri_nodes[0]!=tri_nodes[1] and tri_nodes[1]!=tri_nodes[2] and tri_nodes[2]!=tri_nodes[0]
+
         if i_tri==0:
             face_nodes[fIdx] = tri_nodes
         else:
@@ -1369,6 +1410,8 @@ def mesh_triangulate_nb(fIdx,
     nodes = face_nodes[fIdx]
     nodes = nodes[nodes>=0] # this will be a copy, so it's safe to mutate face_nodes below
 
+    assert len(nodes)>=3
+    
     owner,nbr = face_cells[fIdx]
     n_face_owner = (cell_faces[owner]!=NO_FACE).sum()
     if nbr>=0:

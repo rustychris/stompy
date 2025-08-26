@@ -91,7 +91,10 @@ class PostFoam:
     sim_dir = None
     verbose = False
     raster_mode = 'clipping' # or 'bbox'
-    
+
+    # mesh_slice_method=='numba'
+    mesh_slice_method='python'
+
     max_n_procs=1024 # just to bound the search, no inf loops
     precision=15
     current_timename = None
@@ -458,7 +461,7 @@ class PostFoam:
                 return pickle.load(fp)
         
         mesh_state = self.read_mesh_state(proc)
-        raster_weights = precalc_raster_weights_proc_by_faces(fld, *mesh_state)
+        raster_weights = precalc_raster_weights_proc_by_faces(fld, *mesh_state, mesh_slice_method=self.mesh_slice_method)
         if cache_fn is not None:
             if not os.path.exists(cache_dir):
                 os.makedirs(cache_dir)
@@ -938,7 +941,7 @@ def clipped_volume(edges, xmin=None, xmax=None, ymin=None, ymax=None,
 #             pickle.dump(raster_weights,fp,-1)
 #     return raster_weights
 
-def precalc_raster_weights_proc_by_faces(fld, xyz, face_nodes, face_cells, cell_faces):
+def precalc_raster_weights_proc_by_faces(fld, xyz, face_nodes, face_cells, cell_faces, mesh_slice_method='numba'):
     """
     This version should be much faster. It avoids qhull, slices faces rather than clipping
     cells, and uses a padded array mesh representation that's faster for both python and
@@ -957,7 +960,10 @@ def precalc_raster_weights_proc_by_faces(fld, xyz, face_nodes, face_cells, cell_
     fld_x,fld_y = fld.xy() # I think these are pixel centers
 
     # unclear whether numba version is sketch or not.
-    slicer = mesh_ops.mesh_slice_nb # mesh_slice_nb
+    if mesh_slice_method=='numba':
+        slicer = mesh_ops.mesh_slice_nb # mesh_slice_nb
+    else:
+        slicer = mesh_ops.mesh_slice # mesh_slice_nb
 
     if 0: # debugging checks
         print("Checking cells before any operations")
@@ -968,6 +974,7 @@ def precalc_raster_weights_proc_by_faces(fld, xyz, face_nodes, face_cells, cell_
                 mesh_ops.mesh_check_cell(cIdx,True,mesh_state)
                 
         print("Check complete")
+    assert np.all(mesh_state[1][:,:3]>=0)
 
     cell_mapping=None
     for col in utils.progress(range(fld.shape[1])):
@@ -975,6 +982,7 @@ def precalc_raster_weights_proc_by_faces(fld, xyz, face_nodes, face_cells, cell_
         xmin=fld_x[col]-fld.dx/2
         xmax=fld_x[col]+fld.dx/2
         cell_mapping, mesh_state = slicer(np.r_[1,0,0], xmin, cell_mapping, *mesh_state)
+        assert np.all(mesh_state[1][:,:3]>=0) # col 232 is leaving this corrupt.
 
     if 0: # debugging checks
         print("Checking cells")
@@ -983,8 +991,9 @@ def precalc_raster_weights_proc_by_faces(fld, xyz, face_nodes, face_cells, cell_
                 print(f"cIdx={cIdx} failed check")
                 mesh_ops.mesh_check_cell(cIdx,True,mesh_state)
                 raise Exception(f"cIdx={cIdx} failed check")
-                
         print("Check complete")
+    if 1: # and check that all faces have at least 3 nodes
+        assert np.all(mesh_state[1][:,:3]>=0)
     
     # Slice the mesh so all cells are in exactly one pixel
     print("Slicing by row")
@@ -993,6 +1002,10 @@ def precalc_raster_weights_proc_by_faces(fld, xyz, face_nodes, face_cells, cell_
         if row==0: continue
         ymin=fld_y[row]-fld.dy/2
         ymax=fld_y[row]+fld.dy/2
+        # if row==5: 
+        #     import pdb
+        #     print("DEBUG: about to hit 2-node face bug")
+        #     pdb.set_trace()
         cell_mapping, mesh_state = slicer(np.r_[0,1,0], ymin, cell_mapping, *mesh_state)
 
     if 0: # debugging checks
@@ -1000,6 +1013,8 @@ def precalc_raster_weights_proc_by_faces(fld, xyz, face_nodes, face_cells, cell_
         for cIdx in utils.progress(range(len(mesh_state[3])), func=print):
             assert mesh_ops.mesh_check_cell(cIdx,False,mesh_state)
         print("Check complete")
+    if 1: # and check that all faces have at least 3 nodes
+        assert np.all(mesh_state[1][:,:3]>=0)
 
     print("Calculate volume")
     volumes,centers = mesh_ops.mesh_cell_volume_centers_nb(*mesh_state)

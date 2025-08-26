@@ -13,6 +13,14 @@ try:
 except ImportError:
     import ogr,osr
 
+try:
+    # Recent GDAL complains about not having this, but not
+    # sure if older GDAL has it.
+    ogr.UseExceptions()
+except AttributeError:
+    pass
+
+    
 import glob,os,re
 
 from shapely import wkb,wkt
