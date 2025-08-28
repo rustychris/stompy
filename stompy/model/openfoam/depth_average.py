@@ -90,7 +90,12 @@ class PostFoam:
 
     sim_dir = None
     verbose = False
-    raster_mode = 'clipping' # or 'bbox'
+    # 'clipping': precise, but slow and not robust. Clips each unstructured
+    #    cell to pixel boundaries, uses clipped volume for integration
+    # 'bbox': cells with bounding box overlapping pixel are counted, with minor
+    #    adjustment for how much the bounding box overlaps the pixel
+    # 'sampling': samples cells that intersect the center of a pixel
+    raster_mode = 'clipping' # or 'clipping', 'bbox', 'sampling'
 
     # mesh_slice_method=='numba'
     mesh_slice_method='python'
@@ -372,6 +377,8 @@ class PostFoam:
             self.precalc_raster_info_clipping(fld,force=force)
         elif self.raster_mode=='bbox':
             self.precalc_raster_info_bbox(fld)
+        elif self.raster_mode=='sampling':
+            self.precalc_raster_info_sampling(fld)
         else:
             raise Exception(f"Bad raster mode {self.raster_mode}")
             
@@ -420,8 +427,6 @@ class PostFoam:
         # weights is a matrix with columns corresponding to openfoam cells
         # and rows corresponding to output pixels in row-major order
 
-        raster_weights = None
-
         # fallback to serial... had issues with multiprocessing at this level
         #    tasks = [ (self.proc_dir(proc),fld,self.rot) 
         #              for proc in range(self.n_procs) ]
@@ -429,16 +434,9 @@ class PostFoam:
         #        results = pool.starmap(precalc_raster_weights_proc_by_faces,tasks,15,force)
         results = [self.precalc_raster_weights_proc_by_faces(proc,fld,force=force)
                    for proc in range(self.n_procs)]
-            
-        for proc,proc_raster_weights in enumerate(results):
-            print(f"Assembling from processor {proc}")
-            # Want to stack these left-to-right
-            if raster_weights is None:
-                raster_weights = proc_raster_weights
-            else:
-                raster_weights = sparse.hstack( (raster_weights,proc_raster_weights) )
-        self.raster_precalc = raster_weights
 
+        self.raster_precalc = self.merge_proc_raster_weights(results)
+        
     # def get_raster_cache_fn(self,label,fld,proc=None,**kw):
     #     hash_input=[fld.extents,fld.F.shape,self.rot]
     #     hash_out = hashlib.md5(pickle.dumps(hash_input)).hexdigest()
@@ -467,6 +465,49 @@ class PostFoam:
                 os.makedirs(cache_dir)
             with open(cache_fn,'wb') as fp:
                 pickle.dump(raster_weights, fp, -1)
+        return raster_weights
+
+    def precalc_raster_info_sampling(self, fld, force=False):
+        # weights is a matrix with columns corresponding to openfoam cells
+        # and rows corresponding to output pixels in row-major order
+        results = [self.precalc_raster_weights_proc_by_sampling(proc,fld,force=force)
+                   for proc in range(self.n_procs)]
+
+        self.raster_precalc = self.merge_proc_raster_weights(results)
+
+    def precalc_raster_weights_proc_by_sampling(self,proc,fld,force=False):
+        hash_input=[fld.extents,fld.F.shape,self.rot]
+        hash_out = hashlib.md5(pickle.dumps(hash_input)).hexdigest()
+        
+        cache_dir=os.path.join(self.proc_dir(proc),"cache")
+        cache_fn=os.path.join(cache_dir,
+                              f"raster_weights-sampling-{fld.dx:.3g}x_{fld.dy:.3g}y-{hash_out}")
+        print(f"Weights for {proc}: cache file is {cache_fn}")
+    
+        if os.path.exists(cache_fn) and not force:
+            with open(cache_fn,'rb') as fp:
+                return pickle.load(fp)
+        
+        mesh_state = self.read_mesh_state(proc)
+        raster_weights = precalc_raster_weights_proc_by_sampling(fld, *mesh_state)
+        if cache_fn is not None:
+            if not os.path.exists(cache_dir):
+                os.makedirs(cache_dir)
+            with open(cache_fn,'wb') as fp:
+                pickle.dump(raster_weights, fp, -1)
+        return raster_weights
+
+        
+    def merge_proc_raster_weights(self,results):
+        raster_weights = None
+
+        for proc,proc_raster_weights in enumerate(results):
+            print(f"Assembling from processor {proc}")
+            # Want to stack these left-to-right
+            if raster_weights is None:
+                raster_weights = proc_raster_weights
+            else:
+                raster_weights = sparse.hstack( (raster_weights,proc_raster_weights) )
         return raster_weights
     
     def to_raster(self, variable, timename, force_precalc=False, cache=True):
@@ -849,98 +890,6 @@ def clipped_volume(edges, xmin=None, xmax=None, ymin=None, ymax=None,
     else:
         return volume_cell_edges(edges)
     
-# def precalc_raster_weights_proc(fld, force, xyz, face_nodes, face_cells, cell_faces):
-#     raise Exception("Outdated - implicit rotation and slow calc")
-#     hash_input=[fld.extents,fld.F.shape,rot]
-#     hash_out = hashlib.md5(pickle.dumps(hash_input)).hexdigest()
-#     cache_dir=os.path.join(meshpath,"cache")
-#     cache_fn=os.path.join(cache_dir,
-#                           f"raster_weights-{fld.dx:.3g}x_{fld.dy:.3g}y-{hash_out}")
-#     print(f"Weights for {meshpath}: cache file is {cache_fn}")
-#     
-#     if os.path.exists(cache_fn) and not force:
-#         with open(cache_fn,'rb') as fp:
-#             return pickle.load(fp)
-#     
-#     fld_x,fld_y = fld.xy()
-#     Apixel = fld.dx*fld.dy
-# 
-#     # Load proc mesh                    
-#     verbose=False
-#     meshpath = os.path.join(meshpath,'constant/polyMesh')
-#     # owner.nb_faces, boundary, values, nb_cell
-#     owner = OpenFoamFile(meshpath, name="owner", verbose=verbose)
-#     facefile = OpenFoamFile(meshpath, name="faces", verbose=verbose)
-#     pointfile = OpenFoamFile(meshpath,name="points",precision=precision,
-#         verbose=verbose)
-#     neigh = OpenFoamFile(meshpath, name="neighbour", verbose=verbose)
-#     cell_faces=defaultdict(list)
-# 
-#     for fIdx,cIdx in enumerate(neigh.values):
-#         cell_faces[cIdx].append(fIdx) 
-#     for fIdx,cIdx in enumerate(owner.values):
-#         cell_faces[cIdx].append(fIdx)
-# 
-#     n_cell = owner.nb_cell
-#     cells_as_edges=[None]*n_cell
-# 
-#     xyz=pointfile.values.reshape([-1,3])
-#     xyz=np.tensordot(xyz,rot,[-1,0])
-# 
-#     bboxes=np.zeros((n_cell,6),np.float64)
-#     for cIdx in range(n_cell):
-#         edges = cell_as_edges(cIdx, cell_faces, facefile, xyz)
-#         cells_as_edges[cIdx] = edges
-#         pnts = np.array(edges).reshape( (-1,3) )
-#         xxyyzz = [pnts[:,0].min(),
-#                   pnts[:,0].max(),
-#                   pnts[:,1].min(),
-#                   pnts[:,1].max(),
-#                   pnts[:,2].min(),
-#                   pnts[:,2].max()]
-#         bboxes[cIdx] = xxyyzz # OF native reference frame
-# 
-#     raster_weights = sparse.dok_matrix((fld.F.shape[0]*fld.F.shape[1],
-#                                         bboxes.shape[0]),
-#                                        np.float64)
-#         
-#     # check bounds, then compute clipped volume.
-#     
-#     for row in utils.progress(range(fld.shape[0])):
-#         ymin=fld_y[row]-fld.dy/2
-#         ymax=fld_y[row]+fld.dy/2
-#         # Implicit transposition - switch openfoam z to raster y
-#         #dy = (np.minimum(ymax,bboxes[:,5]) - np.maximum(ymin,bboxes[:,4])).clip(0)
-#         for col in range(fld.shape[1]):
-#             pix = row*fld.shape[1] + col # row-major ordering of pixels
-#             
-#             xmin=fld_x[col]-fld.dx/2
-#             xmax=fld_x[col]+fld.dx/2
-#          
-#             # Implicit transposition - switch openfoam z to raster y
-#             sel = ( (bboxes[:,0]<xmax)&(bboxes[:,1]>xmin) &
-#                     (bboxes[:,4]<ymax)&(bboxes[:,5]>ymin) )
-#             
-#             #dx = (np.minimum(xmax,bboxes[:,1]) - np.maximum(xmin,bboxes[:,0])).clip(0)
-#             #A = dx*dy
-#             
-#             # can volume also improve this? Maybe if we also calculated dz.
-#             #weights = A[mask]/(fld.dx*fld.dy)
-#             for cIdx in np.nonzero(sel)[0]:
-#                 # alpha-weighting is included per timestep
-#                 # Implicit transposition - switch openfoam z to raster y
-#                 vol = clipped_volume(cells_as_edges[cIdx],
-#                                      xmin=xmin,xmax=xmax,
-#                                      zmin=ymin,zmax=ymax)
-#                 raster_weights[pix,cIdx] = vol/Apixel
-#                 
-#     if cache_fn is not None:
-#         if not os.path.exists(cache_dir):
-#             os.makedirs(cache_dir)
-#         with open(cache_fn,'wb') as fp:
-#             pickle.dump(raster_weights,fp,-1)
-#     return raster_weights
-
 def precalc_raster_weights_proc_by_faces(fld, xyz, face_nodes, face_cells, cell_faces, mesh_slice_method='numba'):
     """
     This version should be much faster. It avoids qhull, slices faces rather than clipping
@@ -976,12 +925,20 @@ def precalc_raster_weights_proc_by_faces(fld, xyz, face_nodes, face_cells, cell_
         print("Check complete")
     assert np.all(mesh_state[1][:,:3]>=0)
 
+    #DBG
+    # print("Check 265980 and 271032 for a common triplet of nodes")
+    # # looking for nodes ..., 116666, 152228, 117240, ...
+    # import pdb
+    # pdb.set_trace()
+    #/DBG
+    
     cell_mapping=None
     for col in utils.progress(range(fld.shape[1])):
         if col==0: continue
         xmin=fld_x[col]-fld.dx/2
         xmax=fld_x[col]+fld.dx/2
         cell_mapping, mesh_state = slicer(np.r_[1,0,0], xmin, cell_mapping, *mesh_state)
+        print(f"col={col} face_count={mesh_state[1].shape[0]}")
         assert np.all(mesh_state[1][:,:3]>=0) # col 232 is leaving this corrupt.
 
     if 0: # debugging checks
@@ -1007,6 +964,7 @@ def precalc_raster_weights_proc_by_faces(fld, xyz, face_nodes, face_cells, cell_
         #     print("DEBUG: about to hit 2-node face bug")
         #     pdb.set_trace()
         cell_mapping, mesh_state = slicer(np.r_[0,1,0], ymin, cell_mapping, *mesh_state)
+        print(f"row={row} face_count={mesh_state[1].shape[0]}")
 
     if 0: # debugging checks
         print("Checking cells after all slicing")
@@ -1046,6 +1004,28 @@ def precalc_raster_weights_proc_by_faces(fld, xyz, face_nodes, face_cells, cell_
                 # alpha-weighting is included per timestep
                 raster_weights[pix,cell_mapping[cIdx]] = volumes[cIdx]/Apixel
                 
+    return raster_weights
+
+def precalc_raster_weights_proc_by_sampling(fld, xyz, face_nodes, face_cells, cell_faces):
+    """
+    Try a sampling based approach
+    """
+    mesh_state = (xyz,face_nodes,face_cells,cell_faces)
+
+    import pdb
+    pdb.set_trace()
+    
+    fld_X,fld_Y = fld.XY() # these are pixel centers
+    fld_Z=0*fld_X
+
+    fld_XYZ=np.array([fld_X,fld_Y,fld_Z]).transpose([1,2,0])
+    
+    print("Assemble matrix")
+    raster_weights = sparse.dok_matrix((fld.F.shape[0]*fld.F.shape[1],
+                                        n_cells_orig),
+                                       np.float64)
+    mesh_ops.sample_lines(np.r_[0,0,1],fld_XYZ, raster_weights, *mesh_state)
+    
     return raster_weights
 
 

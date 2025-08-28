@@ -446,6 +446,13 @@ def mesh_slice(slice_normal, slice_offset, cell_mapping, xyz, face_nodes, face_c
     assert np.all(face_nodes[:,:3]>=0)
 
     for fIdx in faces_to_slice:
+        #DBG
+        # if fIdx==265980 or fIdx==271032:
+        #     print(f"About to slice fIdx={fIdx}")
+        #     import pdb
+        #     pdb.set_trace()
+        #/DBG
+        
         nodes = face_nodes[fIdx]
         for node_i in range(FACE_MAX_NODES):
             if nodes[node_i]<0:
@@ -762,7 +769,7 @@ def mesh_slice(slice_normal, slice_offset, cell_mapping, xyz, face_nodes, face_c
                     break
             assert new_face_node[nfn_count-1]==new_face_node[0]
             new_face_node[nfn_count-1]=-1
-            assert (new_face_node>=0).sum() >= 3
+            assert (new_face_node>=0).sum() >= 3,"Possible duplicate faces, maybe bad triangulation of warped faces"
 
             
         new_fIdx = face_nodes.shape[0]
@@ -1367,6 +1374,12 @@ def mesh_cell_bboxes_nb(xyz,face_nodes,face_cells,cell_faces):
 #@njit
 def mesh_triangulate(fIdx, 
                      xyz, face_nodes, face_cells, cell_faces):
+    #DBG
+    #if fIdx==265980:
+    #    import pdb
+    #    pdb.set_trace()
+    #/DBG
+
     # assume incoming face is convex in the plane, such that triangulation is
     # simple. Not always a great assumption...
     nodes = face_nodes[fIdx]
@@ -1438,6 +1451,34 @@ def mesh_triangulate_nb(fIdx,
 
     return xyz, face_nodes, face_cells, cell_faces
 
+
+def sample_lines(normal, origins, weights_dok, xyz, face_nodes, face_cells, cell_faces):
+    # collapse each face onto a plane defined by the normal
+    # calculate signed areas and whether the polygon is valid (not self-intersecting)
+    # create spatial index
+    # Cast a ray for each origin:
+    #  project origin onto same plane
+    #  find all faces that it intersects via spatial index
+
+    # How to make this robust in light of nonplanar faces and floating point issues?
+    # Option A: walk the cells -- involved and hard to make fast
+    # Option B: triangulate all faces... helps some, but ...
+    # Option C: Start simple -- most of the time the intersections are clean. Each
+    #           face entering a cell is paired with a face leaving the same cell.
+    #           Calculate a distance from origin for each intersection, sort the faces
+    #           by distance. Most of the time that will map to a consistent sequence
+    #           of cells. If the sequence is not consistent, could just drop those cells,
+    #           include them.
+    
+    for row in utils.progress(range(origins.shape[0])):
+        for col in range(origins.shape[1]):
+            pix = row*origins.shape[1] + col # row-major ordering of pixels
+            point=origins[row,col]
+            #x=fld_x[col] ; y=fld_y[row]
+            (cIdxs, cell_lengths) = sample_line(normal, point, *mesh_state)
+            for cIdx,weight in zip(cIdxs, cell_lengths):
+                weights_dok[pix,cIdx] = weight
+                
 
 # Row: 20
 # Row: 21
