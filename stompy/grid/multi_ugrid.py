@@ -394,6 +394,7 @@ class MultiUgrid(object):
                     if f in g.cells.dtype.names:
                         log.warning("Dropping extra cell field %s to avoid max_sides issues"%f)
                         g.delete_cell_field(f)
+                g.edge_to_cells(recalc=True) # 20250813: failing to merge, seems to be edge ordering. 
         if is_dfm:
             # kludge DFM output (ver. 2021.03) has nNetElem and nFlowElem, which appear to
             # both be for the cell dimension
