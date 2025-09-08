@@ -16,6 +16,7 @@ from numba.typed import List
 from numba import jit,njit
 from scipy.spatial import KDTree
 
+
 # import matplotlib.pyplot as plt
 #from fluidfoam.readof import getVolumes
 #from fluidfoam import readmesh
@@ -32,7 +33,7 @@ from fluidfoam import readvector, readscalar
 
 from shapely import geometry, ops, convex_hull
 
-from . import mesh_ops
+from . import mesh_ops, mesh_ops_nb
 
 class PostFoam:
     """
@@ -99,6 +100,10 @@ class PostFoam:
 
     # mesh_slice_method=='numba'
     mesh_slice_method='python'
+
+    # Scan each mesh for repeated triples of nodes, try to eliminate by
+    # triangulation and merging.
+    clean_duplicate_triples = False
 
     max_n_procs=1024 # just to bound the search, no inf loops
     precision=15
@@ -207,13 +212,8 @@ class PostFoam:
         if self._bboxes is None:
             bboxes=[]
             for proc in range(self.n_procs):
-                print(f"Read mesh for processor {proc}")
-                mesh_state = self.read_mesh_state(proc)
-                print(f"Calculate bboxes for processor {proc}")
-                # bbox = mesh_ops.mesh_cell_bboxes(*mesh_state)
-                bbox = mesh_ops.mesh_cell_bboxes_nb(*mesh_state)
-                bboxes.append(bbox)
-                
+                bboxes.append(self.get_mesh_bbox(proc))
+                             
             # Appears there are no ghost cells,
             # so it's valid to just concatenate results from each processor when 
             # only considering cell-centered quantities.
@@ -250,7 +250,26 @@ class PostFoam:
             case_dir = self.proc_dir(proc)
         mesh_state = mesh_ops.load_mesh_state(case_dir,precision=self.precision)
         mesh_state = mesh_ops.mesh_rotate(self.rot,*mesh_state)
+
+        if self.clean_duplicate_triples:
+            mesh_state = mesh_ops.mesh_clean_duplicate_triples(*mesh_state)
         return mesh_state # Note that this does make any cached information within depth_average a fn of rot
+    def get_mesh_bbox(self,proc):
+        assert proc is not None
+        cache_fn = os.path.join(self.proc_dir(proc),"cache/mesh_bbox-v00")
+        
+        if os.path.exists(cache_fn):
+            with open(cache_fn,'rb') as fp:
+                bbox=pickle.load(fp)
+        else:
+            print(f"Read mesh for processor {proc}")
+            mesh_state = self.read_mesh_state(proc)
+            print(f"Calculate bboxes for processor {proc}")
+            bbox = mesh_ops_nb.mesh_cell_bboxes_nb(*mesh_state)
+            os.makedirs(os.path.dirname(cache_fn))
+            with open(cache_fn,'wb') as fp:
+                pickle.dump(bbox, fp, protocol=-1)
+        return bbox
     
     def read_mesh(self, read_volumes=False):
         # Get bounding boxes for the whole domain
@@ -299,58 +318,6 @@ class PostFoam:
             )
         return OpenFoamFile(meshpath, name=filetype, verbose=self.verbose)
                                     
-    # def read_cell_bbox(self, proc=None, calc_volume=False):
-    #     """
-    #     Get the axis-aligned extents of each cell. Limited to 
-    #     constant meshes. path can be self.sim_dir for the global mesh,
-    #     or a processor path for a submesh
-    #     
-    #     Calculating volumes increases run time by a factor of 4 or so
-    #     """
-    #     owner = self.read_owner(proc) 
-    #     facefile = self.read_facefile(proc) 
-    #     pointfile = self.read_pointfile(proc)
-    #     neigh = self.read_neighbor(proc)
-    #     
-    #     face = {}
-    #     for i in range(neigh.nb_faces):
-    #         if not neigh.values[i] in face:
-    #             face[neigh.values[i]] = list()
-    #         face[neigh.values[i]].append(facefile.faces[i]["id_pts"][:])
-    #     for i in range(owner.nb_faces):
-    #         if not owner.values[i] in face:
-    #             face[owner.values[i]] = list()
-    #         face[owner.values[i]].append(facefile.faces[i]["id_pts"][:])
-    # 
-    #     if calc_volume:
-    #         VolCell_all = np.empty(owner.nb_cell, dtype=float)
-    # 
-    #     # bounds of each cell, xxyyzz, in XXoriginal OFXX reference frame
-    #     # TMP: in y-up frame
-    #     cell_bounds = np.full( (owner.nb_cell,6), np.nan )
-    #     
-    #     for i in range(owner.nb_cell):
-    #         pointsCell=[]
-    #         for k in zip(np.unique(np.concatenate(face[i])[:])):
-    #             pointsCell.append([pointfile.values_x[k],pointfile.values_y[k],pointfile.values_z[k]])
-    # 
-    #         # Add 3D elements into the empty array
-    #         pointsCell=np.array(pointsCell)
-    #         pointsCell = np.tensordot(pointsCell,self.rot,[-1,0]) # ROTATE
-    #         
-    #         if calc_volume:
-    #             # Note that cells are not necessarily convex, and faces
-    #             # are not necessarily planar, so this is not exact.
-    #             VolCell_all[i]=ss.ConvexHull(pointsCell).volume
-    #         for dim in range(3):
-    #             cell_bounds[i,2*dim  ] = np.min(pointsCell[:,dim])
-    #             cell_bounds[i,2*dim+1] = np.max(pointsCell[:,dim])
-    #         
-    #     if calc_volume:
-    #         return cell_bounds, VolCell_all
-    #     else:
-    #         return cell_bounds
-
     def set_raster_parameters(self,dx,dy=None,xxyy=None):
         if xxyy is None:
             xxyy = [self.bboxes[:,0].min(),self.bboxes[:,1].max(),
@@ -489,7 +456,8 @@ class PostFoam:
                 return pickle.load(fp)
         
         mesh_state = self.read_mesh_state(proc)
-        raster_weights = precalc_raster_weights_proc_by_sampling(fld, *mesh_state)
+        bbox = self.get_mesh_bbox(proc)
+        raster_weights = precalc_raster_weights_proc_by_sampling(fld, bbox, *mesh_state)
         if cache_fn is not None:
             if not os.path.exists(cache_dir):
                 os.makedirs(cache_dir)
@@ -497,7 +465,6 @@ class PostFoam:
                 pickle.dump(raster_weights, fp, -1)
         return raster_weights
 
-        
     def merge_proc_raster_weights(self,results):
         raster_weights = None
 
@@ -910,9 +877,9 @@ def precalc_raster_weights_proc_by_faces(fld, xyz, face_nodes, face_cells, cell_
 
     # unclear whether numba version is sketch or not.
     if mesh_slice_method=='numba':
-        slicer = mesh_ops.mesh_slice_nb # mesh_slice_nb
+        slicer = mesh_ops_nb.mesh_slice_nb
     else:
-        slicer = mesh_ops.mesh_slice # mesh_slice_nb
+        slicer = mesh_ops.mesh_slice 
 
     if 0: # debugging checks
         print("Checking cells before any operations")
@@ -975,7 +942,7 @@ def precalc_raster_weights_proc_by_faces(fld, xyz, face_nodes, face_cells, cell_
         assert np.all(mesh_state[1][:,:3]>=0)
 
     print("Calculate volume")
-    volumes,centers = mesh_ops.mesh_cell_volume_centers_nb(*mesh_state)
+    volumes,centers = mesh_ops_nb.mesh_cell_volume_centers_nb(*mesh_state)
 
     print("Assemble matrix")
     raster_weights = sparse.dok_matrix((fld.F.shape[0]*fld.F.shape[1],
@@ -1006,15 +973,12 @@ def precalc_raster_weights_proc_by_faces(fld, xyz, face_nodes, face_cells, cell_
                 
     return raster_weights
 
-def precalc_raster_weights_proc_by_sampling(fld, xyz, face_nodes, face_cells, cell_faces):
+def precalc_raster_weights_proc_by_sampling(fld, bbox, xyz, face_nodes, face_cells, cell_faces):
     """
     Try a sampling based approach
     """
     mesh_state = (xyz,face_nodes,face_cells,cell_faces)
 
-    import pdb
-    pdb.set_trace()
-    
     fld_X,fld_Y = fld.XY() # these are pixel centers
     fld_Z=0*fld_X
 
@@ -1024,7 +988,7 @@ def precalc_raster_weights_proc_by_sampling(fld, xyz, face_nodes, face_cells, ce
     raster_weights = sparse.dok_matrix((fld.F.shape[0]*fld.F.shape[1],
                                         n_cells_orig),
                                        np.float64)
-    mesh_ops.sample_lines(np.r_[0,0,1],fld_XYZ, raster_weights, *mesh_state)
+    mesh_ops.sample_lines(np.r_[0,0,1],fld_XYZ, raster_weights, bbox, *mesh_state)
     
     return raster_weights
 
