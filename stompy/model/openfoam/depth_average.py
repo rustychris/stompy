@@ -251,8 +251,13 @@ class PostFoam:
         mesh_state = mesh_ops.load_mesh_state(case_dir,precision=self.precision)
         mesh_state = mesh_ops.mesh_rotate(self.rot,*mesh_state)
 
+        assert np.all(mesh_state[2]<0, axis=1).sum()==0 # right?
+
         if self.clean_duplicate_triples:
             mesh_state = mesh_ops.mesh_clean_duplicate_triples(*mesh_state)
+            print("mesh_check_adjacency() after cleaning duplicates")
+            assert np.all(mesh_state[2]<0, axis=1).sum()==0 # right - this is failing
+            
         return mesh_state # Note that this does make any cached information within depth_average a fn of rot
     def get_mesh_bbox(self,proc):
         assert proc is not None
@@ -900,7 +905,7 @@ def precalc_raster_weights_proc_by_faces(fld, xyz, face_nodes, face_cells, cell_
     #/DBG
     
     cell_mapping=None
-    for col in utils.progress(range(fld.shape[1])):
+    for col in utils.progress(range(fld.shape[1]),msg="Col: %s"):
         if col==0: continue
         xmin=fld_x[col]-fld.dx/2
         xmax=fld_x[col]+fld.dx/2
@@ -921,15 +926,10 @@ def precalc_raster_weights_proc_by_faces(fld, xyz, face_nodes, face_cells, cell_
     
     # Slice the mesh so all cells are in exactly one pixel
     print("Slicing by row")
-    for row in utils.progress(range(fld.shape[0])):
-        print("Row:", row)
+    for row in utils.progress(range(fld.shape[0]),msg="Row: %s"):
         if row==0: continue
         ymin=fld_y[row]-fld.dy/2
         ymax=fld_y[row]+fld.dy/2
-        # if row==5: 
-        #     import pdb
-        #     print("DEBUG: about to hit 2-node face bug")
-        #     pdb.set_trace()
         cell_mapping, mesh_state = slicer(np.r_[0,1,0], ymin, cell_mapping, *mesh_state)
         print(f"row={row} face_count={mesh_state[1].shape[0]}")
 

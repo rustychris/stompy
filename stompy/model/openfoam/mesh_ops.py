@@ -196,6 +196,35 @@ def mesh_cell_volume_centers(xyz, face_nodes, face_cells, cell_faces):
 
     return cell_volumes, cell_centers
 
+def mesh_check_adjacency(mesh_state):
+    print("Checking adjacency")
+    xyz, face_nodes, face_cells, cell_faces = mesh_state
+
+    for fIdx in range(face_nodes.shape[0]):
+        # check owner
+        if fIdx not in cell_faces[face_cells[fIdx,0],:]:
+            import pdb
+            pdb.set_trace()
+        if face_cells[fIdx,1]>=0:
+            if ~fIdx not in cell_faces[face_cells[fIdx,1],:]:
+                import pdb
+                pdb.set_trace()
+            
+    for cIdx in range(cell_faces.shape[0]):
+        for signed_fIdx in cell_faces[cIdx,:]:
+            if signed_fIdx==NO_FACE:
+                break
+            elif signed_fIdx<0:
+                if cIdx!=face_cells[~signed_fIdx,1]:
+                    import pdb
+                    pdb.set_trace()
+            else:
+                if cIdx!=face_cells[signed_fIdx,0]:
+                    import pdb
+                    pdb.set_trace()
+    return True
+            
+    
 def mesh_cell_summary(cIdx,mesh_state):
     return mesh_check_cell(cIdx,True,mesh_state)
 
@@ -301,11 +330,26 @@ def mesh_cell_is_closed(cIdx,mesh_state, four_okay=False):
         
 
 def mesh_slice(slice_normal, slice_offset, cell_mapping, xyz, face_nodes, face_cells, cell_faces):
+    #mesh_check_adjacency([xyz,face_nodes,face_cells,cell_faces])
+    assert np.all(face_cells<0, axis=1).sum()==0  # right? but it fails...
+    
     print(f"mesh_slice(slice_normal={slice_normal}, slice_offset={slice_offset})")
     tol = 1e-10
     if cell_mapping is None:
         cell_mapping = np.arange(len(cell_faces))
-        
+    else:
+        assert cell_mapping.shape[0] == len(cell_faces)
+
+    # DBG
+    # if slice_normal[1]==1 and slice_offset==40.225000000000016:
+    #     print("Cell 180458 is likely to fail, due to becoming a single facet")
+    #     print("  also, at some point, either already or in the first half of this call,")
+    #     print("  face_cells[550129] include cIdx 180458, but that cell does not reference that face")
+    # 
+    #     import pdb
+    #     pdb.set_trace()
+    # /DBG
+    
     # identify which faces to slice:
     if 1:
         offset_xyz = np.dot(xyz,slice_normal) - slice_offset
@@ -382,11 +426,16 @@ def mesh_slice(slice_normal, slice_offset, cell_mapping, xyz, face_nodes, face_c
                 (xyz, face_nodes, face_cells, cell_faces) = mesh_triangulate(fIdx, 
                                                                              xyz, face_nodes, face_cells, cell_faces)
                 assert np.all(face_nodes[:,:3]>=0)
+                assert np.all(face_cells<0, axis=1).sum()==0 
 
         tri_faces = np.arange(n_face_orig,face_nodes.shape[0])
         if len(tri_faces):
             faces_to_slice = np.concatenate((faces_to_slice,tri_faces))
-        
+
+    if len(faces_to_slice)==0:
+        print("Nothing to slice - early return")
+        return cell_mapping, (xyz, face_nodes, face_cells, cell_faces)
+
     print(f"At offset {slice_offset} will slice {len(faces_to_slice)} faces")
 
     # slices actually have to be per edge, not face.
@@ -399,8 +448,13 @@ def mesh_slice(slice_normal, slice_offset, cell_mapping, xyz, face_nodes, face_c
     n_node_orig = xyz.shape[0]
 
     assert np.all(face_nodes[:,:3]>=0)
+    assert np.all( face_cells<0, axis=1).sum()==0 # failing here
 
     for fIdx in faces_to_slice:
+        # if len(face_nodes)>=923035:
+        #     print(f"About to slice {fIdx=}, and {len(face_nodes)=}")
+        #     import pdb
+        #     pdb.set_trace()
         #print(f"After filtering, slicing {fIdx}")
         nodes = face_nodes[fIdx]
         for node_i in range(FACE_MAX_NODES):
@@ -603,6 +657,7 @@ def mesh_slice(slice_normal, slice_offset, cell_mapping, xyz, face_nodes, face_c
     cells_to_sort.sort()
 
     assert np.all(face_nodes[:,:3]>=0)
+    assert np.all(face_cells[:,0]>=0) # all faces must have an owner. Failing here.
 
     new_cell_start_idx=cell_faces.shape[0]
     for cIdx in cells_to_sort:
@@ -610,13 +665,13 @@ def mesh_slice(slice_normal, slice_offset, cell_mapping, xyz, face_nodes, face_c
 
         verbose=False
         #DBG
-        if False: # cIdx==160297 and len(cells_to_sort)==35:
-            print("Maybe about to crash because slice include two loops")
-            polydata=mesh_writer.mesh_cell_to_polydata(cIdx, xyz, face_nodes, face_cells, cell_faces)
-            polydata.save(f"/home/rusty/raid01/data18/DWR/bad_cell_{cIdx}.stl")
-            verbose=True
-            import pdb
-            pdb.set_trace()
+        # if False: # cIdx==160297 and len(cells_to_sort)==35:
+        #     print("Maybe about to crash because slice include two loops")
+        #     polydata=mesh_writer.mesh_cell_to_polydata(cIdx, xyz, face_nodes, face_cells, cell_faces)
+        #     polydata.save(f"/home/rusty/raid01/data18/DWR/bad_cell_{cIdx}.stl")
+        #     verbose=True
+        #     import pdb
+        #     pdb.set_trace()
         #DBG
         
         faces = cell_faces[cIdx,:cell_n_faces[cIdx]]
@@ -798,6 +853,7 @@ def mesh_slice(slice_normal, slice_offset, cell_mapping, xyz, face_nodes, face_c
                 #import pdb
                 #pdb.set_trace()
 
+        assert np.all(face_cells[:,0]>=0) # all faces must have an owner
 
         # Create new cell and update face_cells and cell_face adjacency info
         new_cIdx = len(cell_faces)
@@ -807,6 +863,8 @@ def mesh_slice(slice_normal, slice_offset, cell_mapping, xyz, face_nodes, face_c
         for i in range(new_faces_count):
             face_cells = array_append(face_cells,np.array([cIdx,new_cIdx]))
 
+        assert np.all(face_cells[:,0]>=0) # all faces must have an owner
+            
         # Update face_cells. Only have to deal with those in cell_face_pos. Faces in
         # cell_face_neg already point to the correct cIdx. This will overwrite
         # new_cIdx with new_cIdx for the slice face, just fyi
@@ -844,19 +902,121 @@ def mesh_slice(slice_normal, slice_offset, cell_mapping, xyz, face_nodes, face_c
         assert mesh_cell_is_closed(cIdx,(xyz,face_nodes,face_cells,cell_faces))
         assert mesh_cell_is_closed(new_cIdx,(xyz,face_nodes,face_cells,cell_faces))
         #/DBG
+        
+    assert np.all(face_cells[:,0]>=0) # all faces must have an owner
 
     maybe_disconnected=cells_to_sort + list(range(new_cell_start_idx,cell_faces.shape[0]))
     cell_mapping, mesh_state = mesh_split_disconnected_cells(maybe_disconnected,
                                                              cell_mapping,
                                                              (xyz,face_nodes,face_cells,cell_faces))
-                                  
-    assert np.all(face_nodes[:,:3]>=0)
-    return cell_mapping, (xyz, face_nodes, face_cells, cell_faces)
+    assert np.all(mesh_state[1][:,:3]>=0)
+    # DBG
+    #mesh_check_adjacency(mesh_state)
+    assert np.all(mesh_state[2][:,0]>=0) # all faces must have an owner
+    # /DBG
+    return cell_mapping, mesh_state
 
 def mesh_split_disconnected_cells(cIdxs,cell_mapping,mesh_state):
-    print("NOT IMPLEMENTED: split_disconnected_cells")
-    #(xyz,face_nodes,face_cells,cell_faces) = mesh_state
-    return cell_mapping, mesh_state
+    (xyz,face_nodes,face_cells,cell_faces) = mesh_state
+    for cIdx in cIdxs:
+        fIdxs = []
+        for fIdx in cell_faces[cIdx]:
+            if fIdx==NO_FACE: break
+            if fIdx<0: fIdxs.append(~fIdx)
+            else: fIdxs.append(fIdx)
+        node_to_faces=defaultdict(list)
+        face_to_fi={}
+        for fi,fIdx in enumerate(fIdxs):
+            face_to_fi[fIdx]=fi
+            for nIdx in face_nodes[fIdx]:
+                if nIdx<0: break
+                node_to_faces[nIdx].append(fIdx)
+                
+        component=np.full(len(fIdxs),-1)
+        n_components=0
+        for fi,fIdx in enumerate(fIdxs):
+            if component[fi]>=0: continue # already visited
+            component[fi]=n_components
+            stack=[fIdx] # stack holds faces that have been labeled, but nbrs not queued
+            while stack:
+                fIdx_trav=stack.pop()
+                for n in face_nodes[fIdx_trav]:
+                    if n<0: break
+                    for nbr_fIdx in node_to_faces[n]:
+                        nbr_i=face_to_fi[nbr_fIdx]
+                        if component[nbr_i]<0:
+                            component[nbr_i]=n_components
+                            stack.append(nbr_fIdx)
+                        else:
+                            assert component[nbr_i] == n_components
+            n_components+=1
+        if n_components!=1:
+            print("EXPERIMENTAL: split_disconnected_cells")
+            #import pdb
+            #pdb.set_trace()
+
+            # This is rare, and even rarer that there would be more than two components
+            # Don't worry about quadratic loops...
+            # 1. create a new set of cell_faces rows
+            orig_cell_faces = cell_faces[cIdx].copy()
+            new_cell_face_rows=[]
+            cells_to_check=[]
+            for new_comp_i in range(n_components):
+                new_cell_face_row = np.full(CELL_MAX_FACES,NO_FACE)
+                new_cell_face_count=0
+                new_cell_idx=cIdx if new_comp_i==0 else len(cell_faces) # reference cell_faces as it grows
+                for fi,comp in enumerate(component):
+                    if comp==new_comp_i:
+                        signed_fIdx = orig_cell_faces[fi] # cell_faces being mutated, use orig_cell_faces
+                        new_cell_face_row[new_cell_face_count] = signed_fIdx
+                        new_cell_face_count+=1
+                        if new_comp_i>0: # need to change face_cells, too
+                            side = 0 if signed_fIdx>=0 else 1
+                            assert face_cells[fIdxs[fi],side]==cIdx
+                            face_cells[fIdxs[fi],side]=new_cell_idx
+
+                if new_comp_i==0:
+                    cell_faces[cIdx] = new_cell_face_row
+                else:
+                    cell_faces = array_append(cell_faces, new_cell_face_row)
+                    cell_mapping = array_append(cell_mapping, cell_mapping[cIdx])
+                cells_to_check.append(new_cell_idx)
+            # loop over fIdxs and check for any flips
+            mesh_maybe_flip_faces(fIdxs, (xyz, face_nodes, face_cells, cell_faces)) # inplace
+
+            #DBG
+            for check_cIdx in cells_to_check:
+                assert mesh_cell_is_closed(check_cIdx,(xyz,face_nodes,face_cells,cell_faces))
+            #mesh_check_adjacency([xyz, face_nodes, face_cells, cell_faces])
+            #/DBG
+            
+    return cell_mapping, (xyz,face_nodes,face_cells,cell_faces)
+
+def mesh_maybe_flip_faces(fIdxs, mesh_state):
+    # Some extra work to maintain the invariant that the face normal points to
+    # the higher indexed cell.
+    xyz,face_nodes,face_cells,cell_faces = mesh_state
+    for fIdx in fIdxs:
+        cOwn, cNbr = face_cells[fIdx] # ownership before flipping
+        if cNbr>=0 and cNbr<cOwn:
+            # Due to changes in cell indexes, face must point in opposite direction
+            face_cells[fIdx] = [cNbr,cOwn]
+            f_nodes = face_nodes[fIdx]
+            f_nodes = f_nodes[f_nodes>=0]
+            face_nodes[fIdx,:len(f_nodes)] = f_nodes[::-1] # flip orientation
+
+            for f_i in range(CELL_MAX_FACES):
+                if cell_faces[cOwn,f_i] == fIdx:
+                    cell_faces[cOwn,f_i] = ~fIdx
+                    break
+            else:
+                assert False,"Failed to find face to flip"
+            for f_i in range(CELL_MAX_FACES):
+                if cell_faces[cNbr,f_i] == ~fIdx:
+                    cell_faces[cNbr,f_i] = fIdx
+                    break
+            else:
+                assert False,"Failed to find face to flip"
 
 def mesh_cell_bboxes(xyz,face_nodes,face_cells,cell_faces):
     dense_faces = xyz[face_nodes]
@@ -977,6 +1137,9 @@ def mesh_renumber_faces(xyz,face_nodes,face_cells,cell_faces):
     neg_faces=(cell_faces<0)
     cell_faces[pos_faces] = face_map[cell_faces[pos_faces]]
     cell_faces[neg_faces] = ~face_map[~cell_faces[neg_faces]]
+
+    assert np.all(face_cells<0, axis=1).sum()==0 # right?
+    
     return xyz,face_nodes,face_cells,cell_faces
 
 
@@ -1019,13 +1182,6 @@ def merge_duplicate_triples(fIdxA,fIdxB,*mesh_state):
     cellsA = face_cells[fIdxA] # e.g. array([151425, 152171], dtype=int32)
     cellsB = face_cells[fIdxB] # e.g. array([152171, 152921], dtype=int32)
 
-    #DBG
-    # if (11608 in cellsA) or (11608 in cellsB):
-    #     print("Might be about about to leave an edge (171510, 171641) with 1 occurrence")
-    #     import pdb
-    #     pdb.set_trace()
-    #/DBG
-    
     # Find the common cell, wire it all up, delete the other face (annoying)
     cell_middle=-1
     for cellsAone in cellsA:
@@ -1139,6 +1295,13 @@ def merge_duplicate_triples(fIdxA,fIdxB,*mesh_state):
     face_cells[fIdxB,:] = -1
     face_nodes[fIdxB,:] = -1
 
+    # It's possible that cell_opp_A and cell_opp_B are both -1. fIdxA 
+    # is no longer owned by anyone, so it should be marked for deletion, too
+    if cell_opp_A<0 and cell_opp_B<0:
+        assert np.all( face_cells[fIdxA]<0 )
+        face_nodes[fIdxA]=-1 # this is specifically what the renumber code looks for
+        return
+    
     if 1:
         for cell_opp in [cell_opp_A,cell_opp_B]:
             if cell_opp<0: continue
@@ -1163,6 +1326,8 @@ def mesh_clean_duplicate_triples(xyz,face_nodes,face_cells,cell_faces):
     dupe_triples = mesh_duplicate_triples(xyz,face_nodes,face_cells,cell_faces)
     print(f"{len(dupe_triples)} triples with more than one face on first pass")
 
+    assert np.all(face_cells<0, axis=1).sum()==0 # right?
+    
     # Triangulate them
     faces_to_triangulate=[]
     for dupe_triple in dupe_triples:
@@ -1174,10 +1339,6 @@ def mesh_clean_duplicate_triples(xyz,face_nodes,face_cells,cell_faces):
                 mesh_cell_is_closed(cIdx,(xyz,face_nodes,face_cells,cell_faces))
                 
         n_before=face_nodes.shape[0]
-        #if fIdx==50826: # false alarm? this should get merged away
-        #    print("the edge (174489, 174490) is about to get added 4 times")
-        #    import pdb
-        #    pdb.set_trace()
         xyz,face_nodes,face_cells,cell_faces = mesh_triangulate(fIdx, 
                                                                 xyz, face_nodes, face_cells, cell_faces)
         print(f"mesh_clean: triangulate fIdx={fIdx} into add'l {np.arange(n_before,face_nodes.shape[0])}")
@@ -1187,6 +1348,8 @@ def mesh_clean_duplicate_triples(xyz,face_nodes,face_cells,cell_faces):
             if cIdx>=0:
                 mesh_cell_is_closed(cIdx,(xyz,face_nodes,face_cells,cell_faces),four_okay=True)
         #/DBG
+
+    assert np.all(face_cells<0, axis=1).sum()==0 # right?
         
     dupe_triples = mesh_duplicate_triples(xyz,face_nodes,face_cells,cell_faces)
     print(f"{len(dupe_triples)} triples with more than one face on second pass")
@@ -1217,6 +1380,9 @@ def mesh_clean_duplicate_triples(xyz,face_nodes,face_cells,cell_faces):
 
         xyz,face_nodes,face_cells,cell_faces = mesh_renumber_faces(xyz,face_nodes,face_cells,cell_faces)
 
+    # I'm guessing that we need to renumber here - should have just happened
+    assert np.all(face_cells<0, axis=1).sum()==0 # right?
+        
     if 1:
         mesh_state=(xyz,face_nodes,face_cells,cell_faces)
         for cIdx in utils.progress(range(len(cell_faces)), msg="Check cells are closed %s"):
