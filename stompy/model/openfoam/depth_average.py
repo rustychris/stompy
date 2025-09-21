@@ -433,8 +433,11 @@ class PostFoam:
         mesh_state = self.read_mesh_state(proc)
         raster_weights = precalc_raster_weights_proc_by_faces(fld, *mesh_state, mesh_slice_method=self.mesh_slice_method)
         if cache_fn is not None:
-            if not os.path.exists(cache_dir):
-                os.makedirs(cache_dir)
+            #if not os.path.exists(cache_dir): # can lead to race condition
+            try:
+                os.makedirs(cache_dir) # safe (right?) on raid w.r.t. race condition
+            except FileExistsError:
+                pass 
             with open(cache_fn,'wb') as fp:
                 pickle.dump(raster_weights, fp, -1)
         return raster_weights
