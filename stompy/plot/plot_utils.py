@@ -1503,3 +1503,20 @@ def plot_with_isolated(x,y,*a,**k):
     k.pop('label','')
     ax.plot(x[isolated],y[isolated],marker=marker, *a,**k)
     
+def add_scroller(ax):
+    def on_scroll(event):
+        if event.inaxes != ax:
+            return
+
+        if event.button == 'down':
+            factor = 0.05
+        elif event.button == 'up':
+            factor = -0.05
+        ext = utils.expand_xxyy(ax.axis(), factor)
+        ax.axis(ext)
+        fig.canvas.draw_idle()
+
+    fig = ax.figure
+    for cb in list(fig.canvas.callbacks.callbacks['scroll_event'])[2:]:
+        fig.canvas.mpl_disconnect(cb)
+    fig.canvas.mpl_connect('scroll_event', on_scroll)

@@ -184,9 +184,19 @@ class RasReader:
         return self.h5[self.unsteady_base+'/Time']
 
     def time_start(self):
-        t = self.h5['Plan Data/Plan Information'].attrs['Simulation Start Time'].decode('ascii')
-        # '22Aug2022 02:00:00'
-        t_datetime = datetime.datetime.strptime(t,"%d%b%Y %H:%M:%S")
+        # This is failing with 2025
+        plan_info = 'Plan Information'
+        compute_start = 'Compute Start Time (DESC)'
+        if plan_info in self.h5['Plan Data']:
+            # RAS 6.x
+            t = self.h5['Plan Data/Plan Information'].attrs['Simulation Start Time'].decode('ascii')
+            # '22Aug2022 02:00:00'
+            t_datetime = datetime.datetime.strptime(t,"%d%b%Y %H:%M:%S")
+        elif compute_start in self.h5['Plan Data'].attrs:
+            t = self.h5['Plan Data'].attrs[compute_start].decode('ascii')
+            # '1/1/2000 12:00:00 AM'
+            t_datetime = datetime.datetime.strptime(t,"%m/%d/%Y %I:%M:%S %p")
+
         return np.datetime64(t_datetime)
 
     def times(self):
@@ -346,3 +356,21 @@ class RasReader:
                     wse = self.cell_wse(time_step)
                     ds[v].values[step_i,:] = wse[cells]
         return ds
+
+    @memoize.imemoize()
+    def sa2d_conn_cells(self):
+        """
+        Returns a list of cell indexes that participate in SA/2D connections.
+        """
+        gate_cells=[]
+        conn_results="Results/Unsteady/Output/Output Blocks/Base Output/Unsteady Time Series/SA 2D Area Conn"
+        for conn in self.h5[conn_results]:
+            hw_cell_path=conn_results+f"/{conn}/HW TW Segments/Headwater Cells"
+            tw_cell_path=conn_results+f"/{conn}/HW TW Segments/Tailwater Cells"
+            for cell_path in [hw_cell_path, tw_cell_path]:
+                cells = self.h5[cell_path][:]
+                if cells.dtype.char=='S': # not sure why, but they come in as strings
+                    cells=[int(c) for c in cells]
+                gate_cells.append(cells)
+        gate_cells=np.unique(np.concatenate(gate_cells))
+        return gate_cells

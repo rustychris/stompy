@@ -2554,9 +2554,15 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         Glue edges back into complex edges except at break_nodes. This has to be aware of 
         cells!
         Start with slow implementation since we can reuse some other methods
+        subedges: name of the subedge field. Will be created on demand.
+        break_nodes: enumerable of node indices to break polylines at, in addition to degree!=2
+          nodes.
         """
         break_nodes={n:True for n in break_nodes}
-        
+
+        if subedges not in self.edges.dtype.names:
+            self.add_edge_field(subedges,np.full(self.Nedges(),None))
+            
         # Ensure that all subedge fields are valid.
         for j in self.valid_edge_iter():
             self.get_subedge(j,subedges)
