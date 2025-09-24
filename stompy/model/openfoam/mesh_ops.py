@@ -3,8 +3,8 @@ import numpy as np
 from ... import utils
 from ...spatial import triangulate_polygon
 from collections import defaultdict
-from . import mesh_writer
-    
+from . import mesh_writer, mesh_ops_cy
+
 import time
 from fluidfoam.readof import OpenFoamFile
 
@@ -320,7 +320,7 @@ def mesh_cell_is_closed(cIdx,mesh_state, four_okay=False):
         count=edges[k]
         if count==2: continue
         if four_okay and count==4:
-            print(f"  {cIdx=} has edge {k} with {edges[k]} occurrences. Hopefully will merge")
+            pass # print(f"  {cIdx=} has edge {k} with {edges[k]} occurrences. Hopefully will merge")
         else:
             print(f"Appears {cIdx=} is not closed - edge {k} has {count} occurrences")
             is_closed=False
@@ -331,25 +331,19 @@ def mesh_cell_is_closed(cIdx,mesh_state, four_okay=False):
 
 def mesh_slice(slice_normal, slice_offset, cell_mapping, xyz, face_nodes, face_cells, cell_faces):
     #mesh_check_adjacency([xyz,face_nodes,face_cells,cell_faces])
-    assert np.all(face_cells<0, axis=1).sum()==0  # right? but it fails...
+    #assert np.all(face_cells<0, axis=1).sum()==0  # right? but it fails...
     
-    print(f"mesh_slice(slice_normal={slice_normal}, slice_offset={slice_offset})")
+    #print(f"mesh_slice(slice_normal={slice_normal}, slice_offset={slice_offset})")
+
+    t0=time.time()
+    
     tol = 1e-10
     if cell_mapping is None:
-        cell_mapping = np.arange(len(cell_faces))
+        cell_mapping = np.arange(len(cell_faces), dtype=np.int32)
     else:
         assert cell_mapping.shape[0] == len(cell_faces)
+        cell_mapping = cell_mapping.astype(np.int32)
 
-    # DBG
-    # if slice_normal[1]==1 and slice_offset==40.225000000000016:
-    #     print("Cell 180458 is likely to fail, due to becoming a single facet")
-    #     print("  also, at some point, either already or in the first half of this call,")
-    #     print("  face_cells[550129] include cIdx 180458, but that cell does not reference that face")
-    # 
-    #     import pdb
-    #     pdb.set_trace()
-    # /DBG
-    
     # identify which faces to slice:
     if 1:
         offset_xyz = np.dot(xyz,slice_normal) - slice_offset
@@ -432,8 +426,12 @@ def mesh_slice(slice_normal, slice_offset, cell_mapping, xyz, face_nodes, face_c
         if len(tri_faces):
             faces_to_slice = np.concatenate((faces_to_slice,tri_faces))
 
+    t_filtering=time.time() - t0
+    #print(f"Filtering: {t_filtering:.3f}s")
+    t0=time.time()
+    
     if len(faces_to_slice)==0:
-        print("Nothing to slice - early return")
+        #print("Nothing to slice - early return")
         return cell_mapping, (xyz, face_nodes, face_cells, cell_faces)
 
     print(f"At offset {slice_offset} will slice {len(faces_to_slice)} faces")
@@ -442,7 +440,7 @@ def mesh_slice(slice_normal, slice_offset, cell_mapping, xyz, face_nodes, face_c
     sliced_edges={} # (edge small node, edge large node) => new node
     sliced_cells={} # cell index => new cell clipped off of it
 
-    cell_n_faces = (cell_faces!=NO_FACE).sum(axis=1)
+    cell_n_faces = (cell_faces!=NO_FACE).sum(axis=1).astype(np.int32)
 
     n_face_orig = face_nodes.shape[0]
     n_node_orig = xyz.shape[0]
@@ -451,11 +449,6 @@ def mesh_slice(slice_normal, slice_offset, cell_mapping, xyz, face_nodes, face_c
     assert np.all( face_cells<0, axis=1).sum()==0 # failing here
 
     for fIdx in faces_to_slice:
-        # if len(face_nodes)>=923035:
-        #     print(f"About to slice {fIdx=}, and {len(face_nodes)=}")
-        #     import pdb
-        #     pdb.set_trace()
-        #print(f"After filtering, slicing {fIdx}")
         nodes = face_nodes[fIdx]
         for node_i in range(FACE_MAX_NODES):
             if nodes[node_i]<0:
@@ -617,11 +610,11 @@ def mesh_slice(slice_normal, slice_offset, cell_mapping, xyz, face_nodes, face_c
         assert count_pos>=3
 
         #DBG - make sure we're not creating a degenerate triangle
-        for new_faces in [nodes_neg,nodes_pos]:
-            tmp_nodes = new_faces[new_faces>=0]
-            tmp_nodes.sort()
-            assert np.all(tmp_nodes[1:] - tmp_nodes[:-1])>0
-            assert(len(tmp_nodes)>=3)
+        # for new_faces in [nodes_neg,nodes_pos]:
+        #     tmp_nodes = new_faces[new_faces>=0]
+        #     tmp_nodes.sort()
+        #     assert np.all(tmp_nodes[1:] - tmp_nodes[:-1])>0
+        #     assert(len(tmp_nodes)>=3)
         #/DBG
                 
         face_nodes[fIdx]=nodes_neg
@@ -651,32 +644,70 @@ def mesh_slice(slice_normal, slice_offset, cell_mapping, xyz, face_nodes, face_c
             cell_n_faces[cIdx]+=1
             assert cIdx>face_cells[fIdx,0] # the actual invariant for face orientation
 
+    t_slice_face=time.time() - t0
+    print(f"Slice faces: {t_slice_face:.3f}s")
+
+    t0=time.time()
+
+    # This is the most expensive part, e.g. sort cells: 1.5s, clean: 0.38s, slice faces: 0.2s, filter 0.1s
+    # split to separate method
+    # cython gets sort cells from 1.5 to 0.5
+    
     # Sort the clipped cells -- safer not to assume they're sorted. Don't want to
     # assume that everything is maintained upper-triangular and properly sorted
-    cells_to_sort = list(sliced_cells.keys())
+    mesh_slice_fix_cells=mesh_slice_fix_cells_py
+    #mesh_slice_fix_cells=mesh_ops_cy.mesh_slice_fix_cells
+    
+    cells_to_sort = np.array(list(sliced_cells.keys()))
+    cells_to_sort.sort()
+    new_cell_start_idx=cell_faces.shape[0] # track new cells added during mesh_slice_fix_cells
+    cell_mapping, xyz, face_nodes, face_cells, cell_faces = mesh_slice_fix_cells(cells_to_sort.astype(np.int32),
+                                                                                 side_xyz.astype(np.int32),
+                                                                                 cell_n_faces.astype(np.int32),
+                                                                                 n_face_orig,
+                                                                                 cell_mapping.astype(np.int32),
+                                                                                 xyz,
+                                                                                 face_nodes.astype(np.int32),
+                                                                                 face_cells.astype(np.int32),
+                                                                                 cell_faces.astype(np.int32))
+
+
+    t_sort_cells=time.time() - t0
+    print(f"Sort cells: {t_sort_cells:.3f}s")
+    t0=time.time()
+    assert np.all(face_cells[:,0]>=0) # all faces must have an owner
+
+    maybe_disconnected=np.concatenate([cells_to_sort,
+                                       list(range(new_cell_start_idx,cell_faces.shape[0]))])
+    cell_mapping, mesh_state = mesh_split_disconnected_cells(maybe_disconnected,
+                                                             cell_mapping,
+                                                             (xyz,face_nodes,face_cells,cell_faces))
+    assert np.all(mesh_state[1][:,:3]>=0)
+    # DBG
+    #mesh_check_adjacency(mesh_state)
+    #assert np.all(mesh_state[2][:,0]>=0) # all faces must have an owner
+    # /DBG
+
+    t_cleanup = time.time() - t0
+    print(f"Clean: {t_cleanup:3f}s")
+    return cell_mapping, mesh_state
+
+
+
+#-------------------
+
+def mesh_slice_fix_cells_py(cells_to_sort, side_xyz, cell_n_faces, n_face_orig, 
+                            cell_mapping, xyz, face_nodes, face_cells, cell_faces):
     cells_to_sort.sort()
 
     assert np.all(face_nodes[:,:3]>=0)
     assert np.all(face_cells[:,0]>=0) # all faces must have an owner. Failing here.
 
-    new_cell_start_idx=cell_faces.shape[0]
     for cIdx in cells_to_sort:
-        # print(f"sorting cIdx={cIdx}")
-
         verbose=False
-        #DBG
-        # if False: # cIdx==160297 and len(cells_to_sort)==35:
-        #     print("Maybe about to crash because slice include two loops")
-        #     polydata=mesh_writer.mesh_cell_to_polydata(cIdx, xyz, face_nodes, face_cells, cell_faces)
-        #     polydata.save(f"/home/rusty/raid01/data18/DWR/bad_cell_{cIdx}.stl")
-        #     verbose=True
-        #     import pdb
-        #     pdb.set_trace()
-        #DBG
-        
         faces = cell_faces[cIdx,:cell_n_faces[cIdx]]
-        if verbose:
-            print("  Faces: ",faces)
+        #if verbose:
+        #    print("  Faces: ",faces)
         cell_face_neg = np.full(CELL_MAX_FACES,NO_FACE,np.int32)
         count_neg=0
         cell_face_pos = np.full(CELL_MAX_FACES,NO_FACE,np.int32)
@@ -688,12 +719,11 @@ def mesh_slice(slice_normal, slice_offset, cell_mapping, xyz, face_nodes, face_c
                 fIdx = ~signed_fIdx
             else:
                 fIdx = signed_fIdx
-            if verbose:
-                print(f"  fIdx={fIdx} ({signed_fIdx})")
+            #if verbose:
+            #    print(f"  fIdx={fIdx} ({signed_fIdx})")
 
             f_nodes = face_nodes[fIdx]
             f_nodes = f_nodes[f_nodes>=0]
-            is_neg_coords = (np.dot(slice_normal,xyz[f_nodes].mean(axis=0))<slice_offset)
 
             f_nodes_sides=side_xyz[f_nodes]
             is_neg = f_nodes_sides.mean()<0
@@ -701,11 +731,12 @@ def mesh_slice(slice_normal, slice_offset, cell_mapping, xyz, face_nodes, face_c
                 import pdb
                 pdb.set_trace()
 
-            if is_neg != is_neg_coords:
-                print(f"HEY - side_xyz shows {is_neg=} but from the coordinates {is_neg_coords=}")
+            #is_neg_coords = (np.dot(slice_normal,xyz[f_nodes].mean(axis=0))<slice_offset)
+            #if is_neg != is_neg_coords:
+            #    print(f"HEY - side_xyz shows {is_neg=} but from the coordinates {is_neg_coords=}")
 
-            if verbose:
-                print(f"  relative to slice_offset: ", np.dot(slice_normal,xyz[f_nodes].mean(axis=0))-slice_offset)
+            #if verbose:
+            #    print(f"  relative to slice_offset: ", np.dot(slice_normal,xyz[f_nodes].mean(axis=0))-slice_offset)
             if is_neg:
                 if verbose:
                     print(f"    Face {fIdx} is_neg, assign to original cell as {signed_fIdx}")
@@ -774,24 +805,24 @@ def mesh_slice(slice_normal, slice_offset, cell_mapping, xyz, face_nodes, face_c
                     # enough. Also possible that invariants were broken earlier. Orientation of
                     # new faces matches the old, but it's possible that cells are being created
                     # in the right order, that face_cells isn't proparly updated, dunno
-                    if verbose:
-                        print(f"    signed_fIdx non-negative, keeping  order, will add edges {nodeA},{nodeB}")
-                    #pass
+                    #if verbose:
+                    #    print(f"    signed_fIdx non-negative, keeping  order, will add edges {nodeA},{nodeB}")
+                    pass
                 else:
                     nodeB,nodeA = nodeA,nodeB
-                    if verbose:
-                        print(f"    signed_fIdx negative, flipping edge order, will add edge {nodeA},{nodeB}")
+                    #if verbose:
+                    #    print(f"    signed_fIdx negative, flipping edge order, will add edge {nodeA},{nodeB}")
                     
                 new_face_edges.append( [nodeA,nodeB] )
 
-        if verbose:
-            print("    All edges:")
-            for edge in new_face_edges:
-                print(f"      {edge}")
-        if verbose:
-            import pdb
-            pdb.set_trace()
-            verbose=False
+        #if verbose:
+        #    print("    All edges:")
+        #    for edge in new_face_edges:
+        #        print(f"      {edge}")
+        #if verbose:
+        #    import pdb
+        #    pdb.set_trace()
+        #    verbose=False
             
         # Stuff new_face_edges in here by matching
         # The ordering is tedious
@@ -902,19 +933,14 @@ def mesh_slice(slice_normal, slice_offset, cell_mapping, xyz, face_nodes, face_c
         assert mesh_cell_is_closed(cIdx,(xyz,face_nodes,face_cells,cell_faces))
         assert mesh_cell_is_closed(new_cIdx,(xyz,face_nodes,face_cells,cell_faces))
         #/DBG
-        
-    assert np.all(face_cells[:,0]>=0) # all faces must have an owner
+    return cell_mapping, xyz, face_nodes, face_cells, cell_faces
 
-    maybe_disconnected=cells_to_sort + list(range(new_cell_start_idx,cell_faces.shape[0]))
-    cell_mapping, mesh_state = mesh_split_disconnected_cells(maybe_disconnected,
-                                                             cell_mapping,
-                                                             (xyz,face_nodes,face_cells,cell_faces))
-    assert np.all(mesh_state[1][:,:3]>=0)
-    # DBG
-    #mesh_check_adjacency(mesh_state)
-    assert np.all(mesh_state[2][:,0]>=0) # all faces must have an owner
-    # /DBG
-    return cell_mapping, mesh_state
+#-------------------
+
+
+
+
+
 
 def mesh_split_disconnected_cells(cIdxs,cell_mapping,mesh_state):
     (xyz,face_nodes,face_cells,cell_faces) = mesh_state
@@ -1305,8 +1331,9 @@ def merge_duplicate_triples(fIdxA,fIdxB,*mesh_state):
     if 1:
         for cell_opp in [cell_opp_A,cell_opp_B]:
             if cell_opp<0: continue
-            valid = mesh_cell_summary(cell_opp,(xyz,face_nodes,face_cells,cell_faces))
-            print(f"Mesh check: {cell_opp=} {valid=}")
+            #valid = mesh_cell_summary(cell_opp,(xyz,face_nodes,face_cells,cell_faces))
+            #print(f"Mesh check: {cell_opp=} {valid=}")
+            
             # Likely that the triangulation will have technically invalidated some of these cells.
             # the existing mesh_cell_check asserts that faces have a valid normal relative to the
             # cell center. For this usage, might be better to look at the cell-cell vector and
@@ -1341,7 +1368,7 @@ def mesh_clean_duplicate_triples(xyz,face_nodes,face_cells,cell_faces):
         n_before=face_nodes.shape[0]
         xyz,face_nodes,face_cells,cell_faces = mesh_triangulate(fIdx, 
                                                                 xyz, face_nodes, face_cells, cell_faces)
-        print(f"mesh_clean: triangulate fIdx={fIdx} into add'l {np.arange(n_before,face_nodes.shape[0])}")
+        #print(f"mesh_clean: triangulate fIdx={fIdx} into add'l {np.arange(n_before,face_nodes.shape[0])}")
 
         #DBG
         for cIdx in face_cells[fIdx,:]:

@@ -3045,6 +3045,15 @@ class SimpleGrid(QuadrilateralGrid):
 
         for chan in range(3):
             self.F[:,:,chan] = (self.F[:,:,chan]*(1-alpha) + other.F[:,:,chan]*alpha) * inv_alpha
+
+    def rot90(self):
+        """
+        Rotate image 90deg ccw, or multiple of that
+        """
+        # probably glossing over some ordering issues. watch out for mirroring.
+        new_extents=[self.extents[2],self.extents[3],self.extents[0],self.extents[1]]
+        new_F = np.rot90(self.F,1)
+        return field.SimpleGrid(extents=new_extents, F=new_F)
             
     @staticmethod
     def read(fname):

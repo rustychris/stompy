@@ -169,18 +169,18 @@ class PostFoam:
         self.current_timename=timename
         vels=[]
         alphas=[]
-        for proc in range(self.n_procs):
-            print(f"Reading output for processor {proc}")
+        for proc in utils.progress(range(self.n_procs),msg="Reading output across procs %s"):
+            #print(f"Reading output for processor {proc}")
             proc_dir = self.proc_dir(proc)
-            vels.append( readvector(proc_dir, timename, 'U') )
-            alphas.append( readscalar(proc_dir, timename, 'alpha.water') )
+            vels.append( readvector(proc_dir, timename, 'U', verbose=False) )
+            alphas.append( readscalar(proc_dir, timename, 'alpha.water', verbose=False) )
 
         self.vels = np.concatenate( vels,axis=1 ).transpose()
         self.alphas = np.concatenate(alphas)
 
     def read_scalar(self,proc,timename,scalar_name):
         if proc is not None:
-            return readscalar(self.proc_dir(proc), timename, scalar_name)
+            return readscalar(self.proc_dir(proc), timename, scalar_name, verbose=False)
         else:
             # need some global cell information
             self.local_to_global(0) # Trigger mapping during DEV
@@ -255,7 +255,7 @@ class PostFoam:
 
         if self.clean_duplicate_triples:
             mesh_state = mesh_ops.mesh_clean_duplicate_triples(*mesh_state)
-            print("mesh_check_adjacency() after cleaning duplicates")
+            # print("mesh_check_adjacency() after cleaning duplicates")
             assert np.all(mesh_state[2]<0, axis=1).sum()==0 # right - this is failing
             
         return mesh_state # Note that this does make any cached information within depth_average a fn of rot
@@ -271,7 +271,10 @@ class PostFoam:
             mesh_state = self.read_mesh_state(proc)
             print(f"Calculate bboxes for processor {proc}")
             bbox = mesh_ops_nb.mesh_cell_bboxes_nb(*mesh_state)
-            os.makedirs(os.path.dirname(cache_fn))
+            try:
+                os.makedirs(os.path.dirname(cache_fn))
+            except FileExistsError:
+                pass
             with open(cache_fn,'wb') as fp:
                 pickle.dump(bbox, fp, protocol=-1)
         return bbox
@@ -424,7 +427,7 @@ class PostFoam:
         cache_dir=os.path.join(self.proc_dir(proc),"cache")
         cache_fn=os.path.join(cache_dir,
                               f"raster_weights-{fld.dx:.3g}x_{fld.dy:.3g}y-{hash_out}")
-        print(f"Weights for {proc}: cache file is {cache_fn}")
+        #print(f"Weights for {proc}: cache file is {cache_fn}")
     
         if os.path.exists(cache_fn) and not force:
             with open(cache_fn,'rb') as fp:
@@ -913,7 +916,7 @@ def precalc_raster_weights_proc_by_faces(fld, xyz, face_nodes, face_cells, cell_
         xmin=fld_x[col]-fld.dx/2
         xmax=fld_x[col]+fld.dx/2
         cell_mapping, mesh_state = slicer(np.r_[1,0,0], xmin, cell_mapping, *mesh_state)
-        print(f"col={col} face_count={mesh_state[1].shape[0]}")
+        #print(f"col={col} face_count={mesh_state[1].shape[0]}")
         assert np.all(mesh_state[1][:,:3]>=0) # col 232 is leaving this corrupt.
 
     if 0: # debugging checks
@@ -934,7 +937,7 @@ def precalc_raster_weights_proc_by_faces(fld, xyz, face_nodes, face_cells, cell_
         ymin=fld_y[row]-fld.dy/2
         ymax=fld_y[row]+fld.dy/2
         cell_mapping, mesh_state = slicer(np.r_[0,1,0], ymin, cell_mapping, *mesh_state)
-        print(f"row={row} face_count={mesh_state[1].shape[0]}")
+        #print(f"row={row} face_count={mesh_state[1].shape[0]}")
 
     if 0: # debugging checks
         print("Checking cells after all slicing")
