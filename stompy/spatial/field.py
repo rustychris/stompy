@@ -1917,7 +1917,8 @@ class CurvilinearGrid(QuadrilateralGrid):
         self.scatter = plt.scatter( self.X[:,:,0].ravel(),
                                     self.X[:,:,1].ravel(),
                                     c=self.F[:,:].ravel(),
-                                    antialiased=False,marker='s',lod=True,
+                                    antialiased=False,marker='s',
+                                    # 2025-09-29 fails lod=True,
                                     lw=0,**kwargs )
         
     def apply_xform(self,xform):

@@ -98,6 +98,9 @@ def plot_wkb(g,*args,**kwargs):
         return plot_multilinestring(g,*args,**kwargs)
     elif g.geom_type =='LineString':
         return plot_linestring(g,*args,**kwargs)
+    elif g.geom_type == 'GeometryCollection':
+        for geom in g.geoms:
+            plot_wkb(geom,*args,**kwargs)
     else:
         raise Exception("no match to type")
     

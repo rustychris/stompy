@@ -1,4 +1,7 @@
-import pyvista as pv
+try:
+    import pyvista as pv
+except ModuleNotFoundError:
+    print("pyvista not installed. mesh_writer will not work")
 from . import mesh_ops
 import numpy as np
 

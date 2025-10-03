@@ -3,7 +3,13 @@ import numpy as np
 from ... import utils
 from ...spatial import triangulate_polygon
 from collections import defaultdict
-from . import mesh_writer, mesh_ops_cy
+
+from . import mesh_writer
+
+try:
+    from . import mesh_ops_cy
+except ModuleNotFoundError:
+    print("assume cython not installed. buggy accelerated code not activated")
 
 import time
 from fluidfoam.readof import OpenFoamFile
