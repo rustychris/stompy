@@ -52,8 +52,9 @@ def load_mesh_state(case_dir,precision=15):
     # At what point do I need to track cells?
     # ultimately, it's cells that have data
 
-    cell_faces = np.full( (owner.nb_cell,CELL_MAX_FACES), NO_FACE, dtype=np.int32 )
-    cell_n_faces = np.zeros( owner.nb_cell, np.int32)
+    n_cells = max(owner.nb_cell, neigh.nb_cell)
+    cell_faces = np.full( (n_cells, CELL_MAX_FACES), NO_FACE, dtype=np.int32 )
+    cell_n_faces = np.zeros( n_cells, np.int32)
     
     for fIdx,cIdx in enumerate(neigh.values):
         cell_faces[cIdx,cell_n_faces[cIdx]] = ~fIdx  # one's complement indicates we're the nbr
