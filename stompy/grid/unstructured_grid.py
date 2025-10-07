@@ -3053,6 +3053,42 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         cvals=vertex_vals.sum(axis=1)/weights.sum(axis=1)
         return cvals
 
+    def interp_node_to_raster_function(self,dx=None,dy=None,fld=None):
+        """
+        Returns a function that takes node values and returns a raster 
+        as a field.SimpleGrid.
+        """
+        from ..spatial import field
+        from matplotlib.tri import LinearTriInterpolator
+
+        if dx is None and fld is None:
+            raise ValueError("Exactly one of dx or fld should be specified")
+        
+        if fld is None:
+            g_xxyy=self.bounds()
+            if dy is None: dy=dx
+            fld=field.SimpleGrid.zeros(extents=[g_xxyy[0]-dx, g_xxyy[1]+dx,
+                                                g_xxyy[2]-dy, g_xxyy[3]+dy],
+                                       dx=dx,dy=dy)
+
+        tri = self.mpl_triangulation()
+
+        def to_field(node_values,fld=fld,tri=tri):
+            if node_values is None:
+                # shorthand to get a field with the extents and shape of
+                # the output.
+                node_values=np.zeros(M.shape[1])
+
+            lti = LinearTriInterpolator(tri,node_values)
+
+            X,Y = fld.XY()
+            pix_values=lti(X,Y)
+            #pix_values[invalid]=np.nan
+            f_result=field.SimpleGrid(extents=fld.extents,F=pix_values.reshape(fld.F.shape))
+            #f_result.fill_by_convolution(iterations=1)
+            return f_result
+        return to_field
+    
     def interp_cell_to_raster_function(self,*a,**kw):
         """
         Bundle interp_cell_to_raster_matrix into a simple function that
