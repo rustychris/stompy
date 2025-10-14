@@ -155,6 +155,8 @@ class PostFoam:
         self._local_to_global = [None]*self.n_procs
         for proc in range(self.n_procs):
             proc_centers = self.cell_centers(proc=proc)
+            # NOTE! an entry == self.ncell_global means no match.
+            # leave as is, since a -1 or similar could be inadvertently used as an index.
             dists,self._local_to_global[proc] = kdt.query(proc_centers,distance_upper_bound=1e-5)
 
     def local_to_global(self,proc):
@@ -188,7 +190,8 @@ class PostFoam:
             for lproc in range(self.n_procs):
                 proc_scalar = self.read_scalar(lproc,timename,scalar_name)
                 l2g = self.local_to_global(lproc)
-                result[l2g] = proc_scalar
+                valid = l2g!=self.ncell_global # sentinel for no match
+                result[l2g[valid]] = proc_scalar[valid]
             return result
         
     def read_n_procs(self):
@@ -254,7 +257,9 @@ class PostFoam:
         assert np.all(mesh_state[2]<0, axis=1).sum()==0 # right?
 
         if self.clean_duplicate_triples:
+            print("Before mesh_clean_duplicate_triples: num cells = ", mesh_state[3].shape[0])
             mesh_state = mesh_ops.mesh_clean_duplicate_triples(*mesh_state)
+            print("After mesh_clean_duplicate_triples: num cells = ", mesh_state[3].shape[0])
             # print("mesh_check_adjacency() after cleaning duplicates")
             assert np.all(mesh_state[2]<0, axis=1).sum()==0 # right - this is failing
             

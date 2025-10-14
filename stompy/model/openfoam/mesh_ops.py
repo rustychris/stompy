@@ -93,7 +93,7 @@ def mesh_face_center_areas(xyz,face_nodes, face_cells, cell_faces):
     face_area=np.zeros((nfaces,3),np.float64)
 
     for fIdx in range(nfaces):
-        face = List()
+        face = list()
         ctr=np.zeros(3,np.float64)
         for f_n in face_nodes[fIdx]:
             if f_n<0: break
