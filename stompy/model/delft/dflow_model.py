@@ -712,7 +712,13 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                 
             # not a cross platform solution!
             gen_parallel=os.path.join(self.dfm_bin_dir,"generate_parallel_mdu.sh")
-            cmd=[gen_parallel,os.path.basename(self.mdu.filename),"%d"%self.num_procs,'6']
+            
+            cmd=[gen_parallel,os.path.basename(self.mdu.filename),"%d"%self.num_procs]
+            part_file =self.mdu['geometry','PartitioneFile']
+            if part_file not in [None,""]:
+                self.log.info("Passing partition file to generate_parallel_mdu.sh")
+                cmd.append(part_file)
+            cmd.append('6') # icgsolver
             print(f"About to call {cmd}")
             return utils.call_with_path(cmd,self.run_dir)
 
