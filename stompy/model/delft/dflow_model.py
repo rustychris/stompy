@@ -1050,11 +1050,17 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                 lines=[
                     "[structure]",
                     "type         = %s"%s['type'],
-                    "id           = %s"%s['name'],
-                    "polylinefile = %s.pli"%s['name']
+                    "id           = %s"%s['name']
                     ]
+                # don't set location for compound structure
+                if s['type'] != 'compound' or True:
+                    # allow location to be set explicitly, fallback to name.pli
+                    if 'polylinefile' in s.keys():
+                        lines.append("polylinefile = %s.pli"%s['polylinefile'])
+                    else:
+                        lines.append("polylinefile = %s.pli"%s['name'])
                 for k in s:
-                    if k in ['type','name','geom']: continue
+                    if k in ['type','name','geom', 'polylinefile']: continue
                     if isinstance(s[k],xr.DataArray):
                         # Note that only a few of the parameters can be time series
                         # iirc, crest level, gate opening, gate height
@@ -1074,19 +1080,26 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                 # "\n"
 
                 fp.write("\n".join(lines))
-                pli_fn=os.path.join(self.run_dir,s['name']+'.pli')
-                if 'geom' in s:
-                    geom=s['geom']
-                    if isinstance(geom,np.ndarray):
-                        geom=geometry.LineString(geom)
-                else:
-                    geom=self.get_geometry(name=s['name'])
+                if s['type'] != 'compound' or True:
+                    if 'polylinefile' in s:
+                        pli_fn=os.path.join(self.run_dir,s['polylinefile']+'.pli')
+                    else:
+                        pli_fn=os.path.join(self.run_dir,s['name']+'.pli')
+                    if 'geom' in s:
+                        geom=s['geom']
+                        if isinstance(geom,np.ndarray):
+                            geom=geometry.LineString(geom)
+                    else:
+                        if 'polylinefile' in s:
+                            geom=self.get_geometry(name=s['polylinefile'])
+                        else:
+                            geom=self.get_geometry(name=s['name'])
 
-                if geom.geom_type=='MultiLineString' and len(geom.geoms)==1:
-                    geom=geom.geoms[0] # geojson I think does this.
-                assert geom.geom_type=='LineString'
-                pli_data=[ (s['name'], np.array(geom.coords)) ]
-                dio.write_pli(pli_fn,pli_data)
+                    if geom.geom_type=='MultiLineString' and len(geom.geoms)==1:
+                        geom=geom.geoms[0] # geojson I think does this.
+                    assert geom.geom_type=='LineString'
+                    pli_data=[ (s['name'], np.array(geom.coords)) ]
+                    dio.write_pli(pli_fn,pli_data)
                 
                 
     # some read/write methods which may have to refer to model state to properly
@@ -1135,6 +1148,8 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             self.write_roughness_bc(bc)
         elif isinstance(bc,hm.ScalarBC):
             self.write_scalar_bc(bc)
+        elif isinstance(bc, hm.SalinityIC):
+            self.write_salinity_ic(bc)
         else:
             super(DFlowModel,self).write_bc(bc)
 
@@ -1437,7 +1452,6 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
         if isinstance(parent_bc,hm.SourceSinkBC):
             log.debug("BC %s should be handled by SourceSink"%bc_id)
             return
-        
         assert isinstance(parent_bc, (hm.StageBC,hm.FlowBC)),"Haven't implemented point-source scalar yet"
         assert parent_bc.geom.geom_type=='LineString'
         
@@ -1494,6 +1508,24 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                    da.y.values,
                    da.values ]
         np.savetxt(xyz_path,xyz)
+
+
+    def write_salinity_ic(self, bc):
+        # write spatial salinity IC (homogeneous in vertical)
+        # assume we have .xyz file already, just copy it to run dir
+        xyz_fn = os.path.basename(bc.name)
+        xyz_path = os.path.join(self.run_dir, xyz_fn)
+        with open(self.ext_force_file(), 'at') as fp:
+            lines = ["QUANTITY=initialsalinity",
+                     f"FILENAME={xyz_fn}",
+                     "FILETYPE=7",
+                     "METHOD=4",
+                     "OPERAND=O",
+                     "\n"
+                     ]
+            fp.write("\n".join(lines))
+        # just copy initial salinity file to run_dir
+        shutil.copyfile(bc.name, xyz_path)
 
     def initial_water_level(self):
         """
