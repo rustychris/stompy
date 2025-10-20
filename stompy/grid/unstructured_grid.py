@@ -2569,9 +2569,15 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         Glue edges back into complex edges except at break_nodes. This has to be aware of 
         cells!
         Start with slow implementation since we can reuse some other methods
+        subedges: name of the subedge field. Will be created on demand.
+        break_nodes: enumerable of node indices to break polylines at, in addition to degree!=2
+          nodes.
         """
         break_nodes={n:True for n in break_nodes}
-        
+
+        if subedges not in self.edges.dtype.names:
+            self.add_edge_field(subedges,np.full(self.Nedges(),None))
+            
         # Ensure that all subedge fields are valid.
         for j in self.valid_edge_iter():
             self.get_subedge(j,subedges)
@@ -2743,7 +2749,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         Nactive = sum(~self.cells['deleted'])
         return np.argsort( self.cells['deleted'],kind='mergesort')[:Nactive]
 
-    def renumber_cells(self,order=None):
+    def renumber_cells(self,order=None,min_edge_mark=-2000):
         """
         Renumber cell indices, dropping deleted cells.
         Update edges['cells'], preserving negative values (e.g.
@@ -2752,12 +2758,16 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         to get new cell indices.  Cell map is actually slightly
         larger than the number of old cells, to accomodate negative
         indexing.  For example, cell_map[-2]=-2
+        min_edge_mark: limits negative indexing, in case int.minValue
+        or something absurd comes in.
         """
         if order is None:
             csort = self.renumber_cells_ordering()
         else:
-            csort= order
-        Nneg=-min(-1,self.edges['cells'].min())
+            csort = order
+
+        min_mark = self.edges['cells'].min().clip(min_edge_mark,-1)
+        Nneg=-min_mark
         cell_map = np.zeros(self.Ncells()+Nneg,np.int32) # do this before truncating cells
         self.cells = self.cells[csort]
 
@@ -2768,14 +2778,14 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         # or cell_map[csort[a]] = a
         # for all a, so
         # cell_map[csort[arange(Ncells)]] = arange(Ncells)
-        cell_map[:] = -999 # these should only remain for deleted cells, and never show up in the output
+        cell_map[:] = min_edge_mark # these should only remain for deleted cells, and never show up in the output
         cell_map[:-Nneg][csort] = np.arange(self.Ncells())
         # cell_map[-1] = -1 # land edges map cell -1 to -1
         # allow broader range of negatives:
         # map cell -1 to -1, -2 to -2, etc.
         cell_map[-Nneg:] = np.arange(-Nneg,0)
 
-        self.edges['cells'] = cell_map[self.edges['cells']]
+        self.edges['cells'] = cell_map[self.edges['cells'].clip(min_mark,None)]
         self._cell_center_index=None
         return cell_map
 
@@ -3064,6 +3074,42 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         cvals=vertex_vals.sum(axis=1)/weights.sum(axis=1)
         return cvals
 
+    def interp_node_to_raster_function(self,dx=None,dy=None,fld=None):
+        """
+        Returns a function that takes node values and returns a raster 
+        as a field.SimpleGrid.
+        """
+        from ..spatial import field
+        from matplotlib.tri import LinearTriInterpolator
+
+        if dx is None and fld is None:
+            raise ValueError("Exactly one of dx or fld should be specified")
+        
+        if fld is None:
+            g_xxyy=self.bounds()
+            if dy is None: dy=dx
+            fld=field.SimpleGrid.zeros(extents=[g_xxyy[0]-dx, g_xxyy[1]+dx,
+                                                g_xxyy[2]-dy, g_xxyy[3]+dy],
+                                       dx=dx,dy=dy)
+
+        tri = self.mpl_triangulation()
+
+        def to_field(node_values,fld=fld,tri=tri):
+            if node_values is None:
+                # shorthand to get a field with the extents and shape of
+                # the output.
+                node_values=np.zeros(M.shape[1])
+
+            lti = LinearTriInterpolator(tri,node_values)
+
+            X,Y = fld.XY()
+            pix_values=lti(X,Y)
+            #pix_values[invalid]=np.nan
+            f_result=field.SimpleGrid(extents=fld.extents,F=pix_values.reshape(fld.F.shape))
+            #f_result.fill_by_convolution(iterations=1)
+            return f_result
+        return to_field
+    
     def interp_cell_to_raster_function(self,*a,**kw):
         """
         Bundle interp_cell_to_raster_matrix into a simple function that
@@ -3589,7 +3635,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         for ci,c in enumerate(ids):
             if not self.cells['deleted'][c]:
-                centroids[ci]= np.array(self.cell_polygon(c).centroid)
+                centroids[ci]= np.array(self.cell_polygon(c).centroid.coords)
         return centroids
 
     def cells_centroid_py(self,ids=None):

@@ -1917,7 +1917,8 @@ class CurvilinearGrid(QuadrilateralGrid):
         self.scatter = plt.scatter( self.X[:,:,0].ravel(),
                                     self.X[:,:,1].ravel(),
                                     c=self.F[:,:].ravel(),
-                                    antialiased=False,marker='s',lod=True,
+                                    antialiased=False,marker='s',
+                                    # 2025-09-29 fails lod=True,
                                     lw=0,**kwargs )
         
     def apply_xform(self,xform):
@@ -3045,6 +3046,15 @@ class SimpleGrid(QuadrilateralGrid):
 
         for chan in range(3):
             self.F[:,:,chan] = (self.F[:,:,chan]*(1-alpha) + other.F[:,:,chan]*alpha) * inv_alpha
+
+    def rot90(self):
+        """
+        Rotate image 90deg ccw, or multiple of that
+        """
+        # probably glossing over some ordering issues. watch out for mirroring.
+        new_extents=[self.extents[2],self.extents[3],self.extents[0],self.extents[1]]
+        new_F = np.rot90(self.F,1)
+        return field.SimpleGrid(extents=new_extents, F=new_F)
             
     @staticmethod
     def read(fname):

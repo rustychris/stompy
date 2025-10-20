@@ -184,9 +184,19 @@ class RasReader:
         return self.h5[self.unsteady_base+'/Time']
 
     def time_start(self):
-        t = self.h5['Plan Data/Plan Information'].attrs['Simulation Start Time'].decode('ascii')
-        # '22Aug2022 02:00:00'
-        t_datetime = datetime.datetime.strptime(t,"%d%b%Y %H:%M:%S")
+        # This is failing with 2025
+        plan_info = 'Plan Information'
+        compute_start = 'Compute Start Time (DESC)'
+        if plan_info in self.h5['Plan Data']:
+            # RAS 6.x
+            t = self.h5['Plan Data/Plan Information'].attrs['Simulation Start Time'].decode('ascii')
+            # '22Aug2022 02:00:00'
+            t_datetime = datetime.datetime.strptime(t,"%d%b%Y %H:%M:%S")
+        elif compute_start in self.h5['Plan Data'].attrs:
+            t = self.h5['Plan Data'].attrs[compute_start].decode('ascii')
+            # '1/1/2000 12:00:00 AM'
+            t_datetime = datetime.datetime.strptime(t,"%m/%d/%Y %I:%M:%S %p")
+
         return np.datetime64(t_datetime)
 
     def times(self):
@@ -255,18 +265,24 @@ class RasReader:
         return result
     
     @memoize.imemoize(lru=5)
-    def face_flow(self,time_step):
+    def face_flow(self, time_step, structure_adjustment=False):
         flow_key = self.area_base + "Face Flow"
         if flow_key in self.h5:
-            return self.h5[flow_key][time_step,:]
+            flow = self.h5[flow_key][time_step,:]
+            if structure_adjustment:
+                self.update_structure_flow_velocity(time_step, face_flow=flow)
+            return flow
         else:
-            return self.face_velocity(time_step) * self.face_area(time_step)
+            return self.face_velocity(time_step, structure_adjustment=structure_adjustment) * self.face_area(time_step)
         
     @memoize.imemoize(lru=5)
-    def face_velocity(self,time_step):
+    def face_velocity(self, time_step, structure_adjustment=False):
         vel_key = self.area_base + "Face Velocity"
         if vel_key in self.h5:
-            return self.h5[vel_key][time_step,:]
+            vel = self.h5[vel_key][time_step,:]
+            if structure_adjustment:
+                self.update_structure_flow_velocity(time_step,face_velocity=vel)
+            return vel
         else:
             raise Exception("Inferring face velocity not implemented")
         
@@ -277,6 +293,40 @@ class RasReader:
         for j in utils.progress(range(self.grid.Nedges())):
             face_area[j] = self.face_area_elev_interp(j,face_wse[j])
         return face_area
+
+    def update_structure_flow_velocity(self, tidx, face_flow=None, face_velocity=None):
+        """
+        Update face flow and/or area to account for 2D hydraulic connections.
+        """
+        hyd_conns="2D Hyd Conn"
+        face_areas = self.face_area(tidx)
+        for conn in self.h5[self.area_base][hyd_conns]:
+            # print(conn)
+            # Face points - just use the HW side (HW=TW for our gates)
+            face_points = self.h5[self.area_base][hyd_conns][conn]['Geometric Info']['Headwater Face Points'][:]
+            flows = self.h5[self.area_base][hyd_conns][conn]['HW TW Segments']['Flow'][tidx,:] # has an extra entry
+            edges = [self.grid.nodes_to_halfedge(a,b)
+                     for a,b in zip(face_points[:-1],face_points[1:])]
+            for i,he in enumerate(edges):
+                # Guess and check on the sign. I'm assuming that the orientation of HW vs TW is dictated
+                # by the order of face face points. Based on results, need the extra negation here.
+                Q=-flows[i] * (-1)**he.orient
+                if face_flow is not None:
+                    face_flow[he.j] = Q
+                if face_velocity is not None:
+                    face_velocity[he.j] = Q / face_areas[he.j].clip(0.001)
+                    
+    def structure_faces(self):
+        """
+        Edge indexes with structures
+        """
+        hyd_conns="2D Hyd Conn"
+        edges=[]
+        for conn in self.h5[self.area_base][hyd_conns]:
+            face_points = self.h5[self.area_base][hyd_conns][conn]['Geometric Info']['Headwater Face Points'][:]
+            edges += [self.grid.nodes_to_halfedge(a,b).j
+                      for a,b in zip(face_points[:-1],face_points[1:])]
+        return np.array(edges)
     
     def face_area_elev_interp(self,j,wse):
         tbl = self.grid.edges['area_table'][j]
@@ -288,23 +338,40 @@ class RasReader:
         return interp_area
 
     @memoize.imemoize(lru=5)
-    def cell_velocity(self, time_step, face_areas=None, face_flows=None):
+    def cell_velocity(self, time_step, face_areas=None, face_velocity=None, structure_adjustment=False):
         # Cell-centered vector velocity via weighted least squares
         if face_areas is None:
             face_areas = self.face_area(time_step)
-        if face_flows is None:
-            face_flows = self.face_flow(time_step)
+        #if face_flows is None:
+        #    face_flows = self.face_flow(time_step, structure_adjustment=structure_adjustment)
+        if face_velocity is None:
+            face_velocity = self.face_velocity(time_step, structure_adjustment=structure_adjustment)
         normals = self.grid.edges['normal']
 
-        # WLS
+        # WLS - mostly follow RAS, though this is not as optimized or vetted
         result=np.full( (self.grid.Ncells(),2), np.nan)
+        cell_areas = self.grid.cells_area()
+        face_lengths = self.grid.edges_length()
+        
         for c in range(self.grid.Ncells()):
             rows=[]
             rhs=[]
             for j in self.grid.cell_to_edges(c):
-                rows.append( [face_areas[j]*normals[j,0],
-                              face_areas[j]*normals[j,1]]) 
-                rhs.append( face_flows[j] )  
+                v_f = face_velocity[j]
+                # Still not working out that well. Quad cell has two closed faces
+                # and two with modest flow/velocity. The two with flow are not perfectly
+                # aligned, and the flow is noisy, leading to change in volume. WLS does
+                # not account for that, and tries to make up the difference with a large
+                # lateral velocity.
+                # Original approach used face area to weight the rows.
+                # But I think face length might be better? 
+                w=face_lengths[j]
+                # [ n_x*A_f    n_y*A_f ] [u_x] = [ u_f ]
+                # [ n_x*A_f    n_y*A_f ] [u_y] =
+                
+                rows.append( [w*normals[j,0],
+                              w*normals[j,1]]) 
+                rhs.append( w*v_f )
             x,res,rank,s = np.linalg.lstsq(rows,rhs,rcond=None)
             result[c,:] = x
         return result
@@ -346,3 +413,22 @@ class RasReader:
                     wse = self.cell_wse(time_step)
                     ds[v].values[step_i,:] = wse[cells]
         return ds
+
+    @memoize.imemoize()
+    def sa2d_conn_cells(self):
+        """
+        Returns a list of cell indexes that participate in SA/2D connections.
+        """
+        gate_cells=[]
+        conn_results="Results/Unsteady/Output/Output Blocks/Base Output/Unsteady Time Series/SA 2D Area Conn"
+        for conn in self.h5[conn_results]:
+            hw_cell_path=conn_results+f"/{conn}/HW TW Segments/Headwater Cells"
+            tw_cell_path=conn_results+f"/{conn}/HW TW Segments/Tailwater Cells"
+            for cell_path in [hw_cell_path, tw_cell_path]:
+                cells = self.h5[cell_path][:]
+                if cells.dtype.char=='S': # not sure why, but they come in as strings
+                    cells=[int(c) for c in cells]
+                gate_cells.append(cells)
+        gate_cells=np.unique(np.concatenate(gate_cells))
+        return gate_cells
+    
