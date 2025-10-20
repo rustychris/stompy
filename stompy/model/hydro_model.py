@@ -661,6 +661,15 @@ class PadTime(BCFilter):
             da.time.values[0] = self.bc.model.run_start - self.pad_time
             da.values[0] = self.pad_value
         return da
+
+
+class SalinityIC(BC):
+    # no src_data(), used for already existing .xyz files
+    def __init__(self, name, **kw):
+        self.name = name
+        super(SalinityIC, self).__init__(name, **kw)
+        return
+
         
 class RoughnessBC(BC):
     shapefile=None
@@ -1536,6 +1545,8 @@ class HydroModel(object):
         """
         hits=self.match_gazetteer(**kws)
         if hits:
+            if not len(hits)==1:
+                import pdb; pdb.set_trace()
             assert len(hits)==1
             return hits[0]['geom']
         else:
