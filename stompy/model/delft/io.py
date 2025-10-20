@@ -403,7 +403,7 @@ def read_pli(fn,one_per_line=True):
     """
     features=[]
 
-    with open(fn,'rt') as fp:
+    with open(fn,'rt',encoding='latin-1') as fp:
         if not one_per_line:
             toker=inp_tok(fp)
             token=lambda: six.next(toker)
