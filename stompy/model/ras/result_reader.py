@@ -222,8 +222,20 @@ class RasReader:
     
     def cell_mean_bed_elevation(self, trim_virtual=True):
         base=f'Geometry/2D Flow Areas/{self.area_name}'
+        if self.version=='RAS6':
+            return self.cell_mean_bed_elevation_ras6(base,trim_virtual)
+        elif self.version=='RAS2025':
+            return self.cell_mean_bed_elevation_ras2025(base,trim_virtual)
+            
+    def cell_mean_bed_elevation_ras6(self,base,trim_virtual):
         # Ncell x {start,count}
-        cell_vol_elev_info = self.h5[base]['Cells Volume Elevation Info'][:,:]
+        cell_vol_elev_info_key="Cells Volume Elevation Info"
+        if cell_vol_elev_info_key not in self.h5[base]:
+            print("No subgrid bathy for cells found. Flat cells or misinterpreting H5 file.")
+            print(f"  (expecting {self.version} formatted file)")
+            return self.cell_min_bed_elevation(trim_virtual=trim_virtual)
+
+        cell_vol_elev_info = self.h5[base][cell_vol_elev_info_key][:,:]
         # Ncell x {elevation, volume}
         cell_vol_elev_values = self.h5[base]['Cells Volume Elevation Values'][:,:]
         cell_areas = self.h5[base]['Cells Surface Area'][:]
@@ -232,6 +244,35 @@ class RasReader:
         last_entries = cell_vol_elev_info[:,0] + cell_vol_elev_info[:,1] - 1
         max_elevs = cell_vol_elev_values[last_entries,0]
         max_vols  = cell_vol_elev_values[last_entries,1]
+        # ghost cells throw some 0.0 in
+        mean_bed_elevs = np.zeros_like(max_elevs)
+        ghost = cell_areas<=0.0
+        mean_bed_elevs[~ghost] = max_elevs[~ghost] - max_vols[~ghost]/cell_areas[~ghost]
+        if trim_virtual:
+            mean_bed_elevs=mean_bed_elevs[:self.grid.Ncells()]
+        return mean_bed_elevs
+
+    def cell_mean_bed_elevation_ras2025(self,base,trim_virtual=True):
+        cell_table_key="Property Tables/Cell Tables"
+        if cell_table_key not in self.h5[base]:
+            print("No subgrid bathy for cells found. Flat cells or misinterpreting H5 file.")
+            print(f"  (expecting {self.version} formatted file)")
+            return self.cell_min_bed_elevation(trim_virtual=trim_virtual)
+
+        cell_elev_vol = self.h5[base][cell_table_key]
+        starts = cell_elev_vol.attrs['Start']
+        counts = np.zeros_like(starts)
+        counts[:-1] = np.diff(starts)
+        counts[-1] = len(cell_elev_vol)-starts[-1]
+        
+        # Ncell x {elevation, volume}
+        
+        cell_areas = self.grid.cells_area(subedges='subedges')
+
+        # Assumes cells are fully inundated, up to last elev entry.
+        last_entries = starts + counts - 1
+        max_elevs = cell_elev_vol[last_entries,0]
+        max_vols  = cell_elev_vol[last_entries,1]
         # ghost cells throw some 0.0 in
         mean_bed_elevs = np.zeros_like(max_elevs)
         ghost = cell_areas<=0.0

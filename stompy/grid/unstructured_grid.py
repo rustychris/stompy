@@ -1204,14 +1204,13 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                         internal_count = internal_values.attrs['Count']
                         internal_start = internal_values.attrs['Start']
                     except KeyError:
-                        print("Failed to find subedge info")
+                        print("INFO: No face internal points found.")
                         # File not written with subedge geometry
                         internal_info=None
                         internal_values=None
                 else:
                     raise Exception("Unknown version: "+ twod_info['version'])
                         
-                    
                 edge_nodes=np.array(edge_nodes)
                 nedges = len(edge_nodes)
                 edges = -1 * np.ones((nedges, 2), dtype=int)

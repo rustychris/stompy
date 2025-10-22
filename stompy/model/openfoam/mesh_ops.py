@@ -765,9 +765,8 @@ def mesh_slice_fix_cells_py(cells_to_sort, side_xyz, cell_n_faces, n_face_orig,
                 nodeA=nodeB=-1
                 on_slice_count = (side_xyz[f_nodes]==0).sum()
                 if on_slice_count>2:
+                    # nonplanar - hope for the best.
                     print(f"WARNING: face {fIdx} has {on_slice_count} nodes on slice, and is part of a cell to be sorted")
-                    #import pdb
-                    #pdb.set_trace() # not sure what to do in this case
                 if (fIdx<n_face_orig) and (on_slice_count<2):
                     if verbose:
                         print(f"    not added. original face and {on_slice_count=}")
@@ -775,52 +774,34 @@ def mesh_slice_fix_cells_py(cells_to_sort, side_xyz, cell_n_faces, n_face_orig,
                 
                 for f_i in range(len(f_nodes)):
                     assert f_nodes[f_i]>=0 # f_nodes is truncated above
-                    
-                    if side_xyz[f_nodes[f_i]]==0:
+                    f_i_next = (f_i+1)%len(f_nodes)
+
+                    # previously assumed that a face could contribute at most 1 edge
+                    # to the new face, but there are nonplanar faces for which that is not
+                    # true.
+                    if side_xyz[f_nodes[f_i]]==0 and side_xyz[f_nodes[f_i_next]]==0:
                         # created from or on slice
                         # on sliced edge the new nodes must be adjacent
                         # weird sliced faces with edges that were on the slice will be
                         # bad here.
-                        if f_i==0 and side_xyz[f_nodes[f_i+1]]!=0:
-                            # last-to-first edge is the one.
-                            # pretty sure this overly restrictive. face could have come in with a node
-                            # on the slice. Even if it's a new face, one of the nodes could have already
-                            # been on the slice.
-                            #assert f_nodes[-1]>=n_node_orig,"More trouble with slice nodes"
-                            nodeA = f_nodes[-1]
-                            nodeB = f_nodes[0]
-                            assert nodeA!=nodeB
-                        else: 
-                            nodeA=f_nodes[f_i]
-                            assert f_i+1<len(f_nodes),"Trouble with slice nodes"
-                            nodeB=f_nodes[f_i+1]
-                            assert nodeA!=nodeB
-                        break
-                assert nodeA>=0
-                assert nodeB>=0
-                assert side_xyz[nodeA]==0
-                assert side_xyz[nodeB]==0
+                        nodeA=f_nodes[f_i]
+                        nodeB=f_nodes[f_i_next]
+                        assert nodeA!=nodeB
+                        assert nodeA>=0
+                        assert nodeB>=0
 
-                # Should be able to infer orientation
-                # The invariants for orientation: face normals follow righthand rule,
-                # and the normals points out of the cell with a lower index.
-                # Try to stick with that, rather than assuming it always points away from owner.
-                # So I want the edges to make a face normal pointing out of the neg cell
-                if signed_fIdx>=0:
-                    # face_nodes[fIdx] are in the desired order
-                    # These two clauses are suspect, and just checking the sign may not be
-                    # enough. Also possible that invariants were broken earlier. Orientation of
-                    # new faces matches the old, but it's possible that cells are being created
-                    # in the right order, that face_cells isn't proparly updated, dunno
-                    #if verbose:
-                    #    print(f"    signed_fIdx non-negative, keeping  order, will add edges {nodeA},{nodeB}")
-                    pass
-                else:
-                    nodeB,nodeA = nodeA,nodeB
-                    #if verbose:
-                    #    print(f"    signed_fIdx negative, flipping edge order, will add edge {nodeA},{nodeB}")
-                    
-                new_face_edges.append( [nodeA,nodeB] )
+                        # Should be able to infer orientation
+                        # The invariants for orientation: face normals follow righthand rule,
+                        # and the normals points out of the cell with a lower index.
+                        # Try to stick with that, rather than assuming it always points away from owner.
+                        # So I want the edges to make a face normal pointing out of the neg cell
+                        if signed_fIdx>=0:
+                            # face_nodes[fIdx] are in the desired order
+                            pass
+                        else:
+                            nodeB,nodeA = nodeA,nodeB
+
+                        new_face_edges.append( [nodeA,nodeB] )
 
         #if verbose:
         #    print("    All edges:")
@@ -874,8 +855,16 @@ def mesh_slice_fix_cells_py(cells_to_sort, side_xyz, cell_n_faces, n_face_orig,
                     break
             assert new_face_node[nfn_count-1]==new_face_node[0]
             new_face_node[nfn_count-1]=-1
-            assert (new_face_node>=0).sum() >= 3,"Possible duplicate faces, maybe bad triangulation of warped faces"
-            
+            # maybe, just maybe, it's possible for a cell to have an edge that is coincident with the slice
+            # plane, and separately have a finite sliced face.
+            #assert (new_face_node>=0).sum() >= 3,"Possible duplicate faces, maybe bad triangulation of warped faces"
+            if (new_face_node>=0).sum() < 3:
+                # If we do hit one of these, probably don't want to add it. When it did get added
+                # ended up tripping the closed cell tests because a two-node "face" appeared to be
+                # repeating an existing edge.
+                print("WARNING: Possible duplicate faces, maybe bad triangulation of warped faces, or maybe just a weird cell.")
+                continue
+                        
             new_fIdx = face_nodes.shape[0]
             face_nodes = array_append(face_nodes,new_face_node)
             new_faces_count+=1

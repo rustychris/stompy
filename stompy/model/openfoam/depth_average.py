@@ -246,7 +246,7 @@ class PostFoam:
         return (volumes,centers)
 
     @memoize.imemoize(lru=100)
-    def read_mesh_state(self,proc=None):
+    def read_mesh_state(self,proc=None,clean_duplicate_triples=None):
         if proc is None:
             case_dir = self.sim_dir
         else:
@@ -256,12 +256,15 @@ class PostFoam:
 
         assert np.all(mesh_state[2]<0, axis=1).sum()==0 # right?
 
-        if self.clean_duplicate_triples:
+        if clean_duplicate_triples is None:
+            clean_duplicate_triples = self.clean_duplicate_triples
+
+        if clean_duplicate_triples:
             print("Before mesh_clean_duplicate_triples: num cells = ", mesh_state[3].shape[0])
             mesh_state = mesh_ops.mesh_clean_duplicate_triples(*mesh_state)
             print("After mesh_clean_duplicate_triples: num cells = ", mesh_state[3].shape[0])
             # print("mesh_check_adjacency() after cleaning duplicates")
-            assert np.all(mesh_state[2]<0, axis=1).sum()==0 # right - this is failing
+            assert np.all(mesh_state[2]<0, axis=1).sum()==0
             
         return mesh_state # Note that this does make any cached information within depth_average a fn of rot
     def get_mesh_bbox(self,proc):
@@ -637,10 +640,9 @@ class PostFoam:
         print(f"proc:{proc} centers x:{centers[:,0].min()} to {centers[:,0].max()}")
         print(f"                    y:{centers[:,1].min()} to {centers[:,1].max()}")
         print(f"                    z:{centers[:,2].min()} to {centers[:,2].max()}")
-        
-        #owner =self.read_owner(proc)
-        #nbr   =self.read_neighbor(proc)
-        mesh_state = self.read_mesh_state(proc)
+
+        # for contouring no need to fix up cell geometry.
+        mesh_state = self.read_mesh_state(proc,clean_duplicate_triples=False)
         xyz,face_nodes,face_cells,cell_faces = mesh_state
         internal = face_cells[:,1]>=0
         owner=face_cells[internal,0]

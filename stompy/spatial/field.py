@@ -3047,14 +3047,27 @@ class SimpleGrid(QuadrilateralGrid):
         for chan in range(3):
             self.F[:,:,chan] = (self.F[:,:,chan]*(1-alpha) + other.F[:,:,chan]*alpha) * inv_alpha
 
-    def rot90(self):
+    def rotate(self,degrees_ccw):
         """
-        Rotate image 90deg ccw, or multiple of that
+        Rotate image CCW - argument in degrees but limited to multiplies of 90 deg.
         """
-        # probably glossing over some ordering issues. watch out for mirroring.
-        new_extents=[self.extents[2],self.extents[3],self.extents[0],self.extents[1]]
-        new_F = np.rot90(self.F,1)
-        return field.SimpleGrid(extents=new_extents, F=new_F)
+        degrees_cw = (-degrees_ccw) % 360
+        assert (degrees_cw % 90) == 0
+
+        # Adjust extents to get a rotation around the origin.
+        if degrees_cw==0:
+            new_extents = self.extents
+        elif degrees_cw==90:
+            new_extents=[self.extents[2],self.extents[3],-self.extents[1],-self.extents[0]]
+        elif degrees_cw==180:
+            new_extents=[-self.extents[1],-self.extents[0],-self.extents[3],-self.extents[2]]
+        elif degrees_cw==270:
+            new_extents=[-self.extents[3],-self.extents[2],self.extents[0],self.extents[1]]
+        else:
+            assert False
+
+        new_F = np.rot90(self.F,degrees_cw//90)
+        return SimpleGrid(extents=new_extents, F=new_F)
             
     @staticmethod
     def read(fname):
@@ -3203,7 +3216,7 @@ class GdalGrid(SimpleGrid):
         # And starts off with multiple channels, if they exist, as the
         # first index.
         if A.ndim == 3:
-            print("Putting multiple channels as last index")
+            #print("Putting multiple channels as last index")
             A = A.transpose(1,2,0)
 
         # often gdal data is in image coordinates, which is just annoying.
