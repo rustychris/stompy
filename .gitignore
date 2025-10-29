@@ -4,3 +4,4 @@ build
 *~
 dev
 .ipynb_checkpoints
+/stompy_ocean.egg-info/

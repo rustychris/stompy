@@ -403,7 +403,7 @@ def read_pli(fn,one_per_line=True):
     """
     features=[]
 
-    with open(fn,'rt') as fp:
+    with open(fn,'rt',encoding='latin-1') as fp:
         if not one_per_line:
             toker=inp_tok(fp)
             token=lambda: six.next(toker)
@@ -1372,7 +1372,7 @@ class SectionedConfig(object):
     def get_value(self,sec_key):
         """
         return the string-valued settings for a given key.
-        if they key is not found, returns None.
+        if the key is not found, returns None.
         If the key is present but with no value, returns the empty string
         """
         section=self.format_section(sec_key[0])

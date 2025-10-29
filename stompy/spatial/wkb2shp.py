@@ -13,6 +13,14 @@ try:
 except ImportError:
     import ogr,osr
 
+try:
+    # Recent GDAL complains about not having this, but not
+    # sure if older GDAL has it.
+    ogr.UseExceptions()
+except AttributeError:
+    pass
+
+    
 import glob,os,re
 
 from shapely import wkb,wkt
@@ -216,6 +224,9 @@ def wkb2shp(shp_name,
                 geom_wkbs = [g.wkb for g in geom.geoms]
             else:
                 geom_wkbs = [geom.wkb]
+        else:
+            raise Exception("Expected geoms to be shapely Polygon, LineString, Point, MultiPolygon, MultiLineString, MultiPoint, "
+                            "or path to file with binary WKB data")
     
         for geom_wkb in geom_wkbs:
             feat_geom = ogr.CreateGeometryFromWkb(geom_wkb)
