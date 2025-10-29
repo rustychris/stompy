@@ -510,8 +510,10 @@ def lines_to_polygons(new_features,close_arc=False,single_feature=True,force_ori
 
     log.info("Building index")
     # Because the index only hands back the poly, not an index.
+    # Shapely no longer likes user attributes, use a dict instead.
+    poly_to_join_id = {}
     for i,p in enumerate(simple_polys):
-        p.join_id=i
+        poly_to_join_id[p]=i  # p.join_id=i
 
     index=STRtree(simple_polys)
     log.info("done building index")
@@ -535,7 +537,8 @@ def lines_to_polygons(new_features,close_arc=False,single_feature=True,force_ori
         prep_ext_poly = prepare_geometry(ext_poly)
 
         hits=index.query(ext_poly)
-        hit_indexes=[p.join_id for p in hits]
+        hit_indexes=[poly_to_join_id(p) # p.join_id
+                     for p in hits]
         # this keeps us comparing large->small, needed to avoid
         # confusing islands in lake with lakes
         hit_indexes.sort()

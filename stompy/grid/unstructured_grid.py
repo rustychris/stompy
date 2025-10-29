@@ -7,6 +7,7 @@ from __future__ import print_function
 
 import sys,os,types
 import logging
+import pathlib # python 3 only, but python 2 is not worth supporting anymore.
 
 try:
     from osgeo import ogr,osr
@@ -75,6 +76,14 @@ class AmbiguousMeshException(GridException):
     def __init__(self,*a,meshes=[],**k):
         super().__init__(*a,**k)
         self.meshes=meshes
+
+class DuplicateMeshElement(GridException):
+    def __init__(self, dest_mesh, *a, dest_cell=-1, src_mesh=None, src_cell=-1, **k):
+        super().__init__(*a,**k)
+        self.dest_mesh = dest_mesh
+        self.src_mesh = src_mesh
+        self.dest_cell = dest_cell
+        self.src_cell=src_cell
 
 def request_square(ax,max_bounds=None):
     """
@@ -521,6 +530,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             if not np.all( self.cells['nodes'][:,max_sides:] == self.UNDEFINED ):
                 raise GridException("Some cells cannot fit in requested max_sides")
 
+        # DFM hack, sometimes we have other cell:edge variables.
+        cell_side_fields=['edges','nodes','NetElemLink']
+            
         old_max_sides=self.max_sides
         self.max_sides=max_sides
 
@@ -537,7 +549,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             else:
                 shape=None
 
-            if name in ['edges','nodes']:
+            if name in cell_side_fields: # 'edges','nodes','NetElemLink'
                 new_cell_dtype.append( (name,vtype,self.max_sides) )
             else:
                 new_cell_dtype.append( typeinfo ) # just copy
@@ -549,7 +561,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         for typeinfo in old_dtype:
             name=typeinfo[0]
-            if name in ['edges','nodes']:
+            if name in cell_side_fields: 
                 if old_max_sides > self.max_sides:
                     new_cells[name][:,:] = self.cells[name][:,:self.max_sides]
                 else:
@@ -721,6 +733,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
          face_node_connectivity, edge_node_connectivity, and optionally face_edge
          connectivity, edge_face_connectivity, etc.)
         """
+        if isinstance(nc,pathlib.Path):
+            nc=str(nc)
+            
         if isinstance(nc,six.string_types):
             filename=nc
             if dialect=='fvcom':
@@ -2906,7 +2921,13 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             for i,edge in enumerate(kwargs['edges']):
                 kwargs['edges'][i]=edge_map[edge]
 
-            cell_map[n]=self.add_cell(**kwargs)
+            try:
+                cell_map[n]=self.add_cell(**kwargs)
+            except DuplicateMeshElement as exc:
+                exc.src_mesh = ugB
+                exc.src_cell = n
+                exc.dest_mesh = self
+                raise
 
         return node_map,edge_map,cell_map
 
@@ -4911,13 +4932,17 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             if ( (n1==self.edges['nodes'][j,0]) and
                  (n2==self.edges['nodes'][j,1]) ):
                 # this cell is on the 'left' side of the edge
-                assert self.edges['cells'][j,0]<0
+                # assert self.edges['cells'][j,0]<0
+                if self.edges['cells'][j,0]>=0:
+                    raise DuplicateMeshElement(dest_mesh=self, dest_cell=self.edges['cells'][j,0])
                 # TODO: probably this ought to be using modify_edge
                 self.edges['cells'][j,0]=i
             elif ( (n1==self.edges['nodes'][j,1]) and
                    (n2==self.edges['nodes'][j,0]) ):
                 # this cell is on the 'right' side of the edge
-                assert self.edges['cells'][j,1]<0
+                # assert self.edges['cells'][j,1]<0
+                if self.edges['cells'][j,1]>=0:
+                    raise DuplicateMeshElement(dest_mesh=self, dest_cell=self.edges['cells'][j,1])
                 # TODO: probably this ought to be using modify_edge
                 self.edges['cells'][j,1]=i
             else:
@@ -5925,6 +5950,32 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         return D.tocsr()
 
+    def fill_by_smoothing_func(self,cells,count=7):
+        """
+        Return a function that takes a subset of cell values and returns a dense, interpolated
+        field across all the cells of a grid.
+        cells: cell indexes where data is known
+        count: iterations of filling
+        """
+        M = self.smooth_matrix()
+        def fill_func(subset,cells=cells,M=M,count=count):
+            v=np.full(self.Ncells(), 0.0) # values
+            w=np.full(self.Ncells(), 0.0) # weights
+            valid=np.isfinite(subset)
+            v[cells[valid]] = subset[valid]
+            w[cells[valid]] = 1.0
+
+            for _ in range(count):
+                v=M.dot(v)
+                w=M.dot(w)
+
+            thresh=0.01
+            result = v/w.clip(thresh)
+            result[ w<thresh ]=np.nan
+            return result
+        return fill_func
+
+    
     def edge_clip_mask(self,xxyy,ends=False):
         """
         return a bitmask over edges falling in the boundiny box.
@@ -6014,7 +6065,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 values = np.asanyarray(values)
 
         if ragged_edges is None:
-            ragged_edges='edgecolor' in kwargs
+            ragged_edges='edgecolor' in kwargs or 'ec' in kwargs
 
         if mask is None:
             mask=~self.cells['deleted']

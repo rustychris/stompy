@@ -1503,6 +1503,14 @@ def plot_with_isolated(x,y,*a,**k):
     k.pop('label','')
     ax.plot(x[isolated],y[isolated],marker=marker, *a,**k)
     
+def zoom(fac, ax=None):
+    # fac:0 no zoom
+    # fac:1 double width, zooming out
+    # fac:-1 collapse to empty, zoom in infinitely.
+    ax = ax or plt.gca()
+    xxyy = utils.expand_xxyy(ax.axis(),fac)
+    ax.axis(xxyy)
+
 def add_scroller(ax):
     def on_scroll(event):
         if event.inaxes != ax:
@@ -1520,3 +1528,4 @@ def add_scroller(ax):
     for cb in list(fig.canvas.callbacks.callbacks['scroll_event'])[2:]:
         fig.canvas.mpl_disconnect(cb)
     fig.canvas.mpl_connect('scroll_event', on_scroll)
+

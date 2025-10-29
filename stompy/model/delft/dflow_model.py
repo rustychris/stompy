@@ -185,7 +185,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
 
         for fn in os.listdir(self.restart_from.run_dir):
             _,suffix = os.path.splitext(fn)
-            do_copy = ( (suffix in ['.tim','.pli','.pliz','.ext','.xyz','.ini','.xyn'])
+            do_copy = ( (suffix in ['.tim','.pli','.pliz','.ext','.xyz','.ini','.xyn','.pol'])
                         or (fn in flowfm_ext)
                         # sources.sub is explicitly handled in write_config
                         or (fn in flowfm_mdu and fn !='sources.sub')
@@ -687,6 +687,11 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             # slashes in the path to the mdu (ver 1.4.4)
             # since run_dflowfm uses run_dir as the working directory
             # here we strip to the basename
+            # Note that it may be tempting to add genpolygon=1 here, but
+            # in tests with 2023.01 that led to corrupt partitioning
+            # with ghost cells modified on some partitions but not 
+            # other partitions, including creating egregious concave
+            # cells.
             cmd=["--partition:ndomains=%d:icgsolver=6"%self.num_procs,
                  os.path.basename(self.mdu.filename)]
             print(f"About to call {cmd}")
@@ -707,7 +712,13 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                 
             # not a cross platform solution!
             gen_parallel=os.path.join(self.dfm_bin_dir,"generate_parallel_mdu.sh")
-            cmd=[gen_parallel,os.path.basename(self.mdu.filename),"%d"%self.num_procs,'6']
+            
+            cmd=[gen_parallel,os.path.basename(self.mdu.filename),"%d"%self.num_procs]
+            part_file =self.mdu['geometry','PartitioneFile']
+            if part_file not in [None,""]:
+                self.log.info("Passing partition file to generate_parallel_mdu.sh")
+                cmd.append(part_file)
+            cmd.append('6') # icgsolver
             print(f"About to call {cmd}")
             return utils.call_with_path(cmd,self.run_dir)
 
@@ -1508,7 +1519,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
 
     _mu=None
     def map_dataset(self,force_multi=False,grid=None,chain=False,xr_kwargs={},
-                    clone_from=None):
+                    clone_from=None,refresh=False):
         """
         Return map dataset. For MPI runs, this will emulate a single, merged
         global dataset via multi_ugrid. For serial runs it directly opens
@@ -1527,10 +1538,17 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
           which should speedup the loading process. Currently only handled when
           chain is False.
         """
+        default_xr_kwargs = dict(decode_timedelta=True)
+        xr_kwargs = default_xr_kwargs | xr_kwargs
+        
         if not chain:
             if self.num_procs<=1 and not force_multi:
                 # xarray caches this.
                 ds=xr.open_dataset(self.map_outputs()[0],**xr_kwargs)
+                if refresh:
+                    ds.close()
+                    ds=xr.open_dataset(self.map_outputs()[0],**xr_kwargs)
+                    
                 # put the grid in as an attribute so that the non-multiugrid
                 # and multiugrid return values can be used the same way.
                 ds.attrs['grid'] = ugrid.UnstructuredGrid.read_ugrid(ds)
@@ -1541,6 +1559,8 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                 if self._mu is None:
                     self._mu=multi_ugrid.MultiUgrid(self.map_outputs(),grid=grid,xr_kwargs=xr_kwargs,
                                                     clone_from=clone_from)
+                if refresh:
+                    self._mu.reload() # not sufficient if the grid changes, though.
                 return self._mu
         else:
             # as with his_dataset(), caching is not aware of options like chain.
@@ -1795,6 +1815,13 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             assert self.run_dir != model.run_dir
         else:
             assert self.run_dir == model.run_dir
+
+        part_files = glob.glob(os.path.join(model.run_dir,"*_part.pol"))
+        if len(part_files)>0:
+            fn=part_files[0]
+            # Should get copied in copy_for_restart
+            self.log.info("Automatically adding {os.path.basename(fn)} as a partition file")
+            self.mdu['geometry','PartitionFile']=os.path.basename(fn)
 
         self.set_restart_file()
     def set_restart_file(self):

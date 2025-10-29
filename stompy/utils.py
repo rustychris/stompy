@@ -307,16 +307,16 @@ def within_2d(vecs,xxyy):
 
 
 def expand_xyxy(xyxy,factor):
-    dx=xyxy[2] - xyxy[0]
-    dy=xyxy[3] - xyxy[1]
+    dx=(xyxy[2] - xyxy[0])/2.0
+    dy=(xyxy[3] - xyxy[1])/2.0
     return [ xyxy[0] - dx*factor,
              xyxy[1] - dy*factor,
              xyxy[2] + dx*factor,
              xyxy[3] + dy*factor]
 
 def expand_xxyy(xxyy,factor):
-    dx=xxyy[1] - xxyy[0]
-    dy=xxyy[3] - xxyy[2]
+    dx=(xxyy[1] - xxyy[0])/2.0
+    dy=(xxyy[3] - xxyy[2])/2.0
     return [ xxyy[0] - dx*factor,
              xxyy[1] + dx*factor,
              xxyy[2] - dy*factor,
