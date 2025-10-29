@@ -969,11 +969,6 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         gtin.add_node_field('elev',P[:,2])
         return gtin
     
-    # COMING SOON
-    #@staticmethod
-    #def read_rgfgrid(grd_fn):
-    #    HERE
-
     @staticmethod
     def read_gr3(fn):
         return SchismGrid.read_gr3(fn)
@@ -3052,7 +3047,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         cvals=vertex_vals.sum(axis=1)/weights.sum(axis=1)
         return cvals
 
-    def interp_node_to_raster_function(self,dx=None,dy=None,fld=None):
+    def interp_node_to_raster_function(self,dx=None,dy=None,fld=None,subedges=None):
         """
         Returns a function that takes node values and returns a raster 
         as a field.SimpleGrid.
@@ -3072,6 +3067,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         tri = self.mpl_triangulation()
 
+        # additionally mask anything outside the mesh footprint
+        mask = ~fld.polygon_mask(self.boundary_polygon(subedges=subedges))
+
         def to_field(node_values,fld=fld,tri=tri):
             if node_values is None:
                 # shorthand to get a field with the extents and shape of
@@ -3085,6 +3083,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             #pix_values[invalid]=np.nan
             f_result=field.SimpleGrid(extents=fld.extents,F=pix_values.reshape(fld.F.shape))
             #f_result.fill_by_convolution(iterations=1)
+            f_result.F[mask]=np.nan
             return f_result
         return to_field
     
@@ -6404,7 +6403,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     def node_point(self,n):
         return geometry.Point( self.nodes['x'][n] )
 
-    def boundary_linestrings(self,return_nodes=False,sort=False):
+    def boundary_linestrings(self, return_nodes=False, sort=False, subedges=None):
         """
         Extract line strings for all boundaries, as determined by
         edges having less than two adjacent cells.
@@ -6470,7 +6469,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             
         return lines
 
-    def boundary_polygon_by_edges(self,allow_multiple=False):
+    def boundary_polygon_by_edges(self,allow_multiple=False,subedges=None):
         """ return polygon, potentially with holes, representing the domain.
         equivalent to unioning all cell_polygons, but hopefully faster.
         in one test, this method was 3.9 times faster than union.  This is
@@ -6481,7 +6480,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
          are found, that is usually interpreted as an error in topology.  allow_multiple
          will instead return a list of polygons.
         """
-        lines=self.boundary_linestrings()
+        lines=self.boundary_linestrings(subedges=subedges)
         polys,extras=join_features.lines_to_polygons(lines,close_arc=False,single_feature=False)
         if len(polys)>1 and not allow_multiple:
             raise GridException("somehow there are multiple boundary polygons")
@@ -6492,7 +6491,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         else:
             return polys[0]
 
-    def boundary_polygon_by_union(self,cells=None):
+    def boundary_polygon_by_union(self,cells=None, subedges=None):
         """ Compute a polygon encompassing the full domain by unioning all
         cell polygons.
         cells: optionally a sequence or bitmask of cell ids to be used, otherwise
@@ -6507,25 +6506,28 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             cell_geoms = [None]*len(cells)
 
         for idx,i in enumerate(cells):
-            xy = self.nodes['x'][self.cell_to_nodes(i)]
-            cell_geoms[idx] = geometry.Polygon(xy)
+            if subedges is None:
+                xy = self.nodes['x'][self.cell_to_nodes(i)]
+                cell_geoms[idx] = geometry.Polygon(xy)
+            else:
+                cell_geoms[idx] = self.cell_polygon(i,subedges=subedges)
         del cell_geoms[(idx+1):]
         #return ops.cascaded_union(cell_geoms)
         # Updated api as of 2022-02-22
         return ops.unary_union(cell_geoms)
 
-    def boundary_polygon(self):
+    def boundary_polygon(self, subedges=None):
         """ return polygon, potentially with holes, representing the domain.
         This method tries an edge-based approach, but will fall back to unioning
         all cell polygons if the edge-based approach fails.
         """
         try:
             # TODO: why does this fail so often? Is it stale edge_to_cells? 
-            return self.boundary_polygon_by_edges()
+            return self.boundary_polygon_by_edges(subedges=subedges)
         except Exception as exc:
             self.log.info('Warning, boundary_polygon() failed using edges!  Trying polygon union method')
             # self.log.warning(exc,exc_info=True)
-            return self.boundary_polygon_by_union()
+            return self.boundary_polygon_by_union(subedges=subedges)
 
     def area_total(self):
         """
@@ -8197,7 +8199,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         ptm_sides[:,4] = self.edges['mark']
         return ptm_sides
 
-    def write_cells_shp(self,shpname,extra_fields=[],overwrite=False,islands=None):
+    def write_cells_shp(self, shpname, extra_fields=[], overwrite=False, islands=None, srs_text="EPSG:26910"):
         """ extra_fields is a list of lists,
             with either 3 items:
               # this way is obsolete.
@@ -8255,16 +8257,16 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         print( cell_data.dtype )
         result=wkb2shp.wkb2shp(shpname,input_wkbs=cell_geoms,fields=cell_data,
-                               overwrite=overwrite)
+                               overwrite=overwrite, srs_text=srs_text)
         return result
 
-    def write_shore_shp(self,shpname,geom_type='polygon',overwrite=False):
+    def write_shore_shp(self,shpname,geom_type='polygon',overwrite=False,srs_text="EPSG:26910"):
         poly=self.boundary_polygon()
         if geom_type=='polygon':
             geoms=[poly]
         elif geom_type=='linestring':
             geoms=list(poly.boundary.geoms)
-        wkb2shp.wkb2shp(shpname,geoms,overwrite=overwrite)
+        wkb2shp.wkb2shp(shpname,geoms,overwrite=overwrite,srs_text=srs_text)
 
     def init_shp(self,shpname,geom_type):
         drv = ogr.GetDriverByName('ESRI Shapefile')
@@ -8286,7 +8288,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         return new_ds,new_layer
 
 
-    def write_edges_shp(self,shpname,extra_fields=[],overwrite=False, subedges=None, srs_text=None):
+    def write_edges_shp(self,shpname,extra_fields=[],overwrite=False, subedges=None, srs_text="EPSG:26910"):
         """ Write a shapefile with each edge as a polyline.
         see write_cells_shp for description of extra_fields
         items in extra_fields can also be a simple string, in which case the data 
@@ -8352,7 +8354,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         in the past.
         """
         return self.write_nodes_shp(*a,**kw)
-    def write_nodes_shp(self,shpname,extra_fields=[],overwrite=False):
+    def write_nodes_shp(self,shpname,extra_fields=[],overwrite=False,srs_text="EPSG:26910"):
         """ Write a shapefile with each node.  Fields will attempt to mirror
         self.nodes.dtype
 
@@ -8373,7 +8375,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         node_data=recarray_del_fields(node_data,['x','deleted'])
 
         wkb2shp.wkb2shp(shpname,input_wkbs=node_geoms,fields=node_data,
-                        overwrite=overwrite)
+                        overwrite=overwrite,srs_text=srs_text)
 
     def write_ptm_gridfile(self,fn,overwrite=False,subgrid=True):
         """ write this grid out in the ptm grid format.

@@ -2359,6 +2359,7 @@ class SimpleGrid(QuadrilateralGrid):
         return Field.value_on_edge(self,e,samples=samples,**kw)
 
     def upsample(self,factor=2):
+        assert factor==2,"upsample is barely implemented, only allows doubling"
         x = np.linspace(self.extents[0],self.extents[1],1+factor*(self.F.shape[1]-1))
         y = np.linspace(self.extents[2],self.extents[3],1+factor*(self.F.shape[0]-1))
 
@@ -2884,6 +2885,8 @@ class SimpleGrid(QuadrilateralGrid):
                 resx = resy = self.dx
             else:
                 resx = resy = res
+            if xxyy is None:
+                xxyy = self.extents
             xxyy=as_xxyy(xxyy)
             x = np.arange(xxyy[0],xxyy[1]+resx,resx)
             y = np.arange(xxyy[2],xxyy[3]+resy,resy)

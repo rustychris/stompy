@@ -101,7 +101,7 @@ def stl_to_field(fp_stl,R,translate=[0,0,0],dx=None,dy=None,max_dim=None,pad=[0,
 
 def stl_to_grid(fp_stl,R,translate=[0,0,0],dx=None,dy=None,max_dim=None,pad=[0,0],nodata=np.nan,
                 cull_by_normals=True,
-                normal_tol=1e-4):
+                normal_tol=1e-4,node_tol=1e-2):
     xyz,normals = transform(fp_stl,translate,R)
 
     # shove them into a grid to help with uniqueifying edges
@@ -111,16 +111,93 @@ def stl_to_grid(fp_stl,R,translate=[0,0,0],dx=None,dy=None,max_dim=None,pad=[0,0
         if cull_by_normals and norm[2]<=normal_tol: 
             continue # degen or facing away
         elif np.abs(norm[2])<=normal_tol:
-            continue # degenerate 
-        nodes,edges=g.add_linestring(triple[...,:2],closed=True,tolerance=1e-2) # handles unique nodes, edges
+            continue # degenerate
+
+        nodes,edges=g.add_linestring(triple[...,:2],closed=True,tolerance=node_tol) # handles unique nodes, edges
         
-    print(f"Grid has {g.Nnodes()} nodes, {g.Nedges()} edges")
+    print(f"Grid has {g.Nnodes()} nodes, {g.Nedges()} edges, {g.Ncells()} cells")
     # 0.0 tolerance: 60 165
     # 1e-2 58, 161
     # Further bump up the normal tolerance to 1e-8, 58 nodes, 160 edges
 
     return g
 
+def triangles_to_point_edge_face(xyz,normals):
+    """
+    Convert STL-ish raw triangles to topology with points, edges, and faces.
+    (no cells yet).
+    """
+    xyz_to_point={}
+    points_to_edge={}
+    
+    points=np.zeros( (0,3), np.float64)
+    face_dtype=[('points',np.int64,3),('normal',np.float64,3)]
+    faces=np.zeros( 0, dtype=face_dtype)
+    face_normals=np.zeros( (0,3), np.int64)
+    edge_dtype=[('points',np.int64,2), ('faces',np.int64,2)]
+    edges=np.zeros( 0, dtype=edge_dtype)
+    
+    # convert xyz to points,faces
+    for tri_id,triple in enumerate(xyz):
+        face=np.zeros( (), dtype=face_dtype)
+        face_points=[]
+        for coord in triple:
+            coord = tuple(coord)
+            # May need a spatial index and a tolerance here if input is not precise
+            if coord not in xyz_to_point:
+                point_id=len(points)
+                xyz_to_point[coord] = point_id
+                points=utils.array_append(points, coord)
+            else:
+                point_id=xyz_to_point[coord]
+            face_points.append(point_id)
+        face['points'] = face_points
+        face['normal'] = normals[tri_id]
+        faces=utils.array_append(faces,face)
+    
+        for edgeA,edgeB in utils.circular_pairs(face_points):
+            if edgeB<edgeA:
+                edgeA,edgeB = edgeB,edgeA
+            edge_key=(edgeA,edgeB)
+            edge_id = points_to_edge.get(edge_key,-1)
+            if edge_id<0:
+                edge = np.zeros( (), edge_dtype)
+                edge['points']=[edgeA,edgeB]
+                edge['faces']=[tri_id,-1]
+                edge_id=len(edges)
+                edges=utils.array_append(edges,edge)
+                points_to_edge[edge_key] = edge_id
+            else:
+                assert edges['faces'][edge_id,0]>=0
+                assert edges['faces'][edge_id,1]<0
+                edges['faces'][edge_id,1]=tri_id
+    return points,edges,faces        
+
+def triangles_to_feature_edges(xyz,normals,normal_tol=1e-4,dihedral_angle_deg=5.0,point_tol=1e-3):
+    """
+    Convert raw STL triangles to a 2D edge mesh containing feature edges based on
+    a dihedral angle and backface culling.
+    """
+    points,edges,faces = triangles_to_point_edge_face(xyz,normals)
+    
+    g_2d=unstructured_grid.UnstructuredGrid()
+    dihedral_tol=np.cos(dihedral_angle_deg*np.pi/180)
+    
+    for j in range(len(edges)):
+        edge=edges[j]
+        crease=False
+        # include edges if...
+        fA,fB = edge['faces']
+        # only one adjacent face and its not culled.
+        if fB<0:
+            crease = faces['normal'][fA,2]>=normal_tol
+        else:
+            by_angle = utils.to_unit(faces['normal'][fA]).dot(utils.to_unit(faces['normal'][fB])) < dihedral_tol
+            by_normal = max(faces['normal'][fA,2],faces['normal'][fB,2])>=normal_tol
+            crease = by_angle and by_normal
+        if crease:
+            g_2d.add_linestring( points[edge['points'],:2],tolerance=point_tol)
+    return g_2d
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
@@ -155,9 +232,7 @@ def main(argv=None):
     # Using an existing stl file:
     fp_stl = mesh.Mesh.from_file(args.stl_file)
     
-    R = np.array( [[1,0,0],
-                   [0,1,0],
-                   [0,0,1]], np.float64)
+    R = np.eye(3, dtype=np.float64)
     translate = np.array([0.0,0.0,0.0])
     
     # Arbitrary scaling and rotation. Switch y and z so it's more geographic

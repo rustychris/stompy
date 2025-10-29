@@ -15,8 +15,10 @@ import time
 from fluidfoam.readof import OpenFoamFile
 
 # Did run into an issue with MR long v3 that hit the cell-faces limit of 20
-FACE_MAX_NODES=40
-CELL_MAX_FACES=40
+# Had been using 40 and 40, but I think it's more common to have cells with large
+# numbers of faces than faces with many nodes.
+FACE_MAX_NODES=20
+CELL_MAX_FACES=60
 NO_FACE=np.iinfo(np.int32).max
 VSMALL=1e-14
 
@@ -844,27 +846,40 @@ def mesh_slice_fix_cells_py(cells_to_sort, side_xyz, cell_n_faces, n_face_orig,
                     if new_face_edges[edge_i][0]!=to_match:
                         continue # already used or no match
                     # we have a match
-                    new_face_node[nfn_count] = new_face_edges[edge_i][1]
-                    nfn_count+=1
+                    # sort of disgusting to have to check for this, but there are cases where
+                    # an edge is coplanar with the slice, but both faces are on one side.
+                    # It shows up as an A-B-A sequence.
+                    # So we start with A-B, nfn_count=2.
+                    matched_node = new_face_edges[edge_i][1]
                     matched_count+=1
                     new_face_edges[edge_i] = [-1,-1]
+                    if nfn_count>=2 and new_face_node[nfn_count-2] == matched_node:
+                        print(f"WARNING: node {matched_node} appears twice in ring. Dropping it and the degenerate neighbor node")
+                        new_face_node[nfn_count-1]=-1
+                        nfn_count-=1
+                    else:
+                        new_face_node[nfn_count] = matched_node
+                        nfn_count+=1
                     break
                 else:
                     # Could have multiple cycles, no need to keep looking in this
                     # loop. Outer loop will pick them up. 
                     break
+                
+            # check for and then drop the repeated node index
             assert new_face_node[nfn_count-1]==new_face_node[0]
             new_face_node[nfn_count-1]=-1
+            nfn_count-=1
+            
             # maybe, just maybe, it's possible for a cell to have an edge that is coincident with the slice
             # plane, and separately have a finite sliced face.
             #assert (new_face_node>=0).sum() >= 3,"Possible duplicate faces, maybe bad triangulation of warped faces"
-            if (new_face_node>=0).sum() < 3:
+            if nfn_count < 3:
                 # If we do hit one of these, probably don't want to add it. When it did get added
                 # ended up tripping the closed cell tests because a two-node "face" appeared to be
                 # repeating an existing edge.
                 print("WARNING: Possible duplicate faces, maybe bad triangulation of warped faces, or maybe just a weird cell.")
                 continue
-                        
             new_fIdx = face_nodes.shape[0]
             face_nodes = array_append(face_nodes,new_face_node)
             new_faces_count+=1
