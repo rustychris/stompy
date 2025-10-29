@@ -5819,6 +5819,32 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         return D.tocsr()
 
+    def fill_by_smoothing_func(self,cells,count=7):
+        """
+        Return a function that takes a subset of cell values and returns a dense, interpolated
+        field across all the cells of a grid.
+        cells: cell indexes where data is known
+        count: iterations of filling
+        """
+        M = self.smooth_matrix()
+        def fill_func(subset,cells=cells,M=M,count=count):
+            v=np.full(self.Ncells(), 0.0) # values
+            w=np.full(self.Ncells(), 0.0) # weights
+            valid=np.isfinite(subset)
+            v[cells[valid]] = subset[valid]
+            w[cells[valid]] = 1.0
+
+            for _ in range(count):
+                v=M.dot(v)
+                w=M.dot(w)
+
+            thresh=0.01
+            result = v/w.clip(thresh)
+            result[ w<thresh ]=np.nan
+            return result
+        return fill_func
+
+    
     def edge_clip_mask(self,xxyy,ends=False):
         """
         return a bitmask over edges falling in the boundiny box.
