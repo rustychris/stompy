@@ -33,7 +33,7 @@ from matplotlib.path import Path
 
 import pdb
 
-from ..spatial import gen_spatial_index, proj_utils
+from ..spatial import gen_spatial_index, proj_utils, linestring_utils
 from ..utils import (mag, circumcenter, circular_pairs,signed_area, poly_circumcenter,
                      orient_intersection,array_append,within_2d, to_unit, progress,
                      dist_along, recarray_add_fields,recarray_del_fields,
@@ -509,12 +509,20 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     def reproject(self,src_srs,dest_srs):
         xform=proj_utils.mapper(src_srs,dest_srs)
         new_g=self.copy()
-        new_g.nodes['x'] = xform(self.nodes['x'])
-        new_g.cells['_center']=np.nan
-        new_g._node_index=None
-        new_g._cell_center_index=None
-
+        new_g.apply_transform(xfrom)
         return new_g
+
+    def apply_transform(self, xform, subedges=None):
+        self.nodes['x'] = xform(self.nodes['x'])
+        self.cells['_center']=np.nan
+        self._node_index=None
+        self._cell_center_index=None
+        if subedges is not None:
+            print("Attempting to handle subedges in apply transform")
+            subedge_data = self.edges[subedges]
+            for j in range(self.Nedges()):
+                if subedge_data[j] is not None:
+                    subedge_data[j] = xform(subedge_data[j])
 
     def modify_max_sides(self,max_sides):
         """
@@ -1013,7 +1021,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         else:
             h = h5py.File(hdf_fname, 'r')
             close_h5 = True
-            
+
         try:
             cc_suffixes=None
             names=list(h['Geometry/2D Flow Areas'].keys())
@@ -1151,22 +1159,47 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 return result
                 
             if elevations:
-                cell_key='Geometry/2D Flow Areas/' + twod_area_name + '/Cells Minimum Elevation'
-                edge_key='Geometry/2D Flow Areas/' + twod_area_name + '/Faces Minimum Elevation'
-                if cell_key in h:
-                    Nc=grd.Ncells() # to trim out trailing ghost cells
-                    grd.add_cell_field('cell_z_min',
-                                       h[cell_key][:Nc])
-                if edge_key in h:
-                    grd.add_edge_field('edge_z_min',
-                                       h[edge_key])
-
+                cell_keys = [
+                    'Geometry/2D Flow Areas/' + twod_area_name + '/Cells Minimum Elevation',
+                    'Geometry/2D Flow Areas/' + twod_area_name + '/Property Tables/Cell Minimum Elevation',
+                ]
+                for cell_key in cell_keys:
+                    if cell_key in h:
+                        Nc=grd.Ncells() # to trim out trailing ghost cells
+                        grd.add_cell_field('cell_z_min', h[cell_key][:Nc])
+                        break
+                else:
+                    print("Cell minimum elevation not found")
+                    
+                edge_keys=[
+                    'Geometry/2D Flow Areas/' + twod_area_name + '/Faces Minimum Elevation',
+                    'Geometry/2D Flow Areas/' + twod_area_name + '/Property Tables/Face Minimum Elevation'
+                ]
+                for edge_key in edge_keys:
+                    if edge_key in h:
+                        grd.add_edge_field('edge_z_min', h[edge_key])
+                        break
+                else:
+                    print("Edge minimum elevation not found")
+                    
                 # elevation tables:
-                edge_info_key='Geometry/2D Flow Areas/' + twod_area_name + '/Faces Area Elevation Info'
-                edge_value_key='Geometry/2D Flow Areas/' + twod_area_name + '/Faces Area Elevation Values'
-                if (edge_info_key in h) and (edge_value_key in h):
-                    edge_values_start_count = h[edge_info_key][:]
-                    edge_values = h[edge_value_key][:] # z, area, wet perim, manning
+                edge_values = None
+                if twod_info['version']=='v6':
+                    edge_info_key='Geometry/2D Flow Areas/' + twod_area_name + '/Faces Area Elevation Info'
+                    edge_value_key='Geometry/2D Flow Areas/' + twod_area_name + '/Faces Area Elevation Values'
+                    if (edge_info_key in h) and (edge_value_key in h):
+                        edge_values_start_count = h[edge_info_key][:]
+                        edge_values = h[edge_value_key][:] # z, area, wet perim, manning
+                elif twod_info['version']=='v2025':
+                    edge_table_key=f'Geometry/2D Flow Areas/{twod_area_name}/Property Tables/Face Tables'
+                    if edge_table_key in h:
+                        edge_table = h[edge_table_key]
+                        edge_starts = edge_table.attrs['Start']
+                        edge_starts = edge_table.attrs['Start']
+                        edge_stops = np.r_[edge_starts[1:],edge_table.shape[0]]
+                        edge_values_start_count = np.c_[edge_starts,edge_stops-edge_starts]
+                        edge_values = edge_table[:]
+                if edge_values is not None:
                     edge_structured = np.zeros(edge_values.shape[0], dtype=[ ('z',edge_values.dtype),
                                                                             ('area',edge_values.dtype),
                                                                             ('wet_perimeter',edge_values.dtype),
@@ -1177,22 +1210,37 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                     edge_structured['mannings_n'] = edge_values[:,3]
                     grd.add_edge_field('area_table',ragged_to_object(edge_values_start_count,edge_structured))
 
-                cell_info_key='Geometry/2D Flow Areas/' + twod_area_name + '/Cells Volume Elevation Info'
-                cell_value_key='Geometry/2D Flow Areas/' + twod_area_name + '/Cells Volume Elevation Values'
-                if (cell_info_key in h) and (cell_value_key in h):
-                    cell_values_start_count = h[cell_info_key][:N] # drop ghosts/virtual
-                    cell_values = h[cell_value_key][:] # z, area, wet perim, manning
+                cell_values = None
+                if twod_info['version']=='v6':
+                    cell_info_key='Geometry/2D Flow Areas/' + twod_area_name + '/Cells Volume Elevation Info'
+                    cell_value_key='Geometry/2D Flow Areas/' + twod_area_name + '/Cells Volume Elevation Values'
+                    if (cell_info_key in h) and (cell_value_key in h):
+                        cell_values_start_count = h[cell_info_key][:N] # drop ghosts/virtual
+                        cell_values = h[cell_value_key][:] # z, area, wet perim, manning
+                elif twod_info['version']=='v2025':
+                    cell_table_key=f'Geometry/2D Flow Areas/{twod_area_name}/Property Tables/Cell Tables'
+                    if cell_table_key in h:
+                        cell_table = h[cell_table_key]
+                        cell_starts = cell_table.attrs['Start']
+                        cell_stops = np.r_[cell_starts[1:],cell_table.shape[0]]
+                        cell_values_start_count = np.c_[cell_starts,cell_stops-cell_starts]
+                        cell_values = cell_table[:]
+
+                if cell_values is not None:
                     cell_structured = np.zeros(cell_values.shape[0], dtype=[('z',cell_values.dtype),
                                                                             ('volume',cell_values.dtype)])
                     cell_structured['z'] = cell_values[:,0]
                     cell_structured['volume'] = cell_values[:,1]
                     grd.add_cell_field('volume_table',ragged_to_object(cell_values_start_count,cell_structured))
 
+
             edge_normal_length_key='Geometry/2D Flow Areas/' + twod_area_name + '/Faces NormalUnitVector and Length'
             if edge_normal_length_key in h:
                 edge_normal_length = h[edge_normal_length_key][:]
                 grd.add_edge_field('normal',edge_normal_length[:,:2])
                 grd.add_edge_field('length_normal',edge_normal_length[:,2])
+            else:
+                grd.add_edge_field('normal',grd.edges_normals())
                     
             if subedges is not None:
                 if twod_info['version']=='v6':
@@ -5313,8 +5361,8 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             return lcoll
 
     def plot_halfedges(self,ax=None,mask=None,values=None,clip=None,
-                       labeler=None,
-                       offset=0.2,**kwargs):
+                       labeler=None, offset=0.2, placement='normal',
+                       subedges=None, **kwargs):
         """
         plot a scatter and/or labels, two per edge, corresponding to
         two half-edges (i.e. edges['cells']).
@@ -5325,6 +5373,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         values: scalar values for scatter.  size  (Nedges,2) or (sum(mask),2)
         labeler: show text label at each location. callable function f(edge_idx,{0,1})
         offset: fraction of edge length to offset the half-edge location
+        placement: 'normal' interprets the halfedges as sides of the edge, i.e. consistent
+          with the face's normal.
+          'tangential' interprets halfedges as ends of the face, start and end.
         """
         ax = ax or plt.gca()
 
@@ -5336,15 +5387,44 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         if clip is not None:
             mask=mask & self.edge_clip_mask(clip)
 
-        edge_nodes = edge_nodes[mask]
-
-        segs = self.nodes['x'][edge_nodes]
-        midpoints = segs.mean(axis=1)
-        deltas = segs[:,:,:] - midpoints[:,None,:]
-        # rotate by 90
-        deltas=offset*deltas[:,:,::-1]
-        deltas[:,:,1]*=-1
-        offset_points = midpoints[:,None,:] + deltas
+        rot90cw=np.array([ [ 0,1],  # x' = y 
+                           [-1,0]]) # y' =-x
+        if subedges is None:
+            edge_nodes = edge_nodes[mask]
+            segs = self.nodes['x'][edge_nodes]
+            midpoints = segs.mean(axis=1)
+            if placement=='normal':
+                deltas = segs[:,:,:] - midpoints[:,None,:]
+                # rotate by 90
+                deltas=offset*deltas[:,:,::-1]
+                deltas[:,:,1]*=-1
+                offset_points = midpoints[:,None,:] + deltas
+            else: # 'tangential'
+                # [j,orient,xy]
+                # segs: [j,{start,end},{x,y}]
+                offset_points= offset*midpoints[:,None,:] + (1.0-offset)*segs
+        else:
+            idx_mask=np.nonzero(mask)[0]
+            offset_points=np.zeros( (len(idx_mask),2,2), np.float64)
+            for j in idx_mask:
+                linestring = self.edges[subedges][j]
+                if linestring is None:
+                    linestring = self.nodes['x'][self.edges['nodes'][j]]
+                if placement=='normal':
+                    finite=0.001
+                    midpoint,tangent=linestring_utils.sample_fraction(linestring, [0.5,0.5+finite])
+                    # replicate scaling from non-subedge code
+                    delta = 2*offset*(tangent-midpoint)/finite # points along the line
+                    delta = rot90cw @ delta
+                    # convention is that looking along the line, normal points from left to right
+                    # so first offset is 90ccw
+                    # code above  I think is taking the midpoint->endpoint vectors, rotating 90 cw
+                    # and scale by offset
+                    offset_points[j,0]=midpoint-delta
+                    offset_points[j,1]=midpoint+delta
+                else:
+                    offset_points[j,0],offset_points[j,1] = linestring_utils.sample_fraction(linestring,
+                                                                                             [offset,1-offset])
 
         # try to be smart about when to slice the edge values and when
         # they come pre-sliced
@@ -5355,11 +5435,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             coll = plt.scatter(offset_points[:,:,0].ravel(),
                                offset_points[:,:,1].ravel(),
                                30,
-                               values.ravel())
+                               values.ravel(),
+                               **kwargs)
         else:
             coll = ax.plot(offset_points[:,:,0].ravel(),
                            offset_points[:,:,1].ravel(),
-                           '.')
+                           **(dict(marker='.',lw=0) | kwargs))
 
         if labeler is not None:
             # offset_points has already been masked, so use the

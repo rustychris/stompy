@@ -14,6 +14,7 @@ from shapely import geometry
 from .. import utils
 from ..grid import exact_delaunay
 from ..model import stream_tracer
+from ..spatial import field
 
 class StreamlineQuiver(object):
     max_short_traces=100 # abort loop when this many traces have come up short.
@@ -411,7 +412,10 @@ class StreamlineQuiver(object):
         for seg,speed in zip(segs,speeds):
             seg=np.asanyarray(seg)
             seg=seg[np.isfinite(seg[:,0])]
-            uv=speed*utils.to_unit(seg[-1]-seg[-2])
+            if len(seg)>1:
+                uv=speed*utils.to_unit(seg[-1]-seg[-2])
+            else:
+                uv=[0,0] # or go back to velocity
             xyuvs.append( [seg[-1,0],seg[-1,1],uv[0],uv[1]])
         xyuvs=np.array(xyuvs)
 
@@ -452,7 +456,8 @@ class RegularStreamlineQuiver(StreamlineQuiver):
 
         self.g=g
         self.island_points=[]
-        self.boundary=g.boundary_polygon()
+        if self.g is not None:
+            self.boundary=g.boundary_polygon()
         self.update_U(U)
     def update_U(self,U):
         self.U=U
@@ -465,11 +470,15 @@ class RegularStreamlineQuiver(StreamlineQuiver):
         X,Y=np.meshgrid(x,y)
         xy=np.c_[X.ravel(), Y.ravel()]
         def neg(i): return i if i is not None else -1
-        cells=np.array([neg(self.g.select_cells_nearest(p,inside=True)) for p in utils.progress(xy)])        
-        valid=cells>=0
+        if self.g is not None:
+            cells=np.array([neg(self.g.select_cells_nearest(p,inside=True)) for p in utils.progress(xy)])        
+            valid=cells>=0
+        else:
+            cells=np.full(len(xy),-1)
+            valid=np.full(len(xy),True) # subclass has to figure it out
         samples = np.zeros( valid.sum(), dtype=[('x',float,2),('c',int)])
-        samples['x']=xy[valid]
         samples['c']=cells[valid]
+        samples['x']=xy[valid]
         return samples
 
     def segments_and_speeds(self,include_truncated=True):
@@ -514,3 +523,59 @@ class RegularStreamlineQuiver(StreamlineQuiver):
             record()
         return np.array(track) # x,y,u,v
         
+class GridQuiver(RegularStreamlineQuiver):
+    """
+    Use a vector-valued spatial.field.SimpleGrid() for the velocity. Much
+    faster than velocities on UnstructuredGrid.
+    """
+    def __init__(self,U,V=None,**kw):
+        """
+        U, V=None: field.SimpleGrid instance with two-vector values
+        U, V: both scalar SimpleGrid
+        """
+        if V is not None:
+            U = field.SimpleGrid(extents=U.extents,F=np.stack([U.F,V.F],axis=-1))
+        self.clip = U.extents
+        super().__init__(U=U,g=None,**kw)
+        if self.clip is None:
+            self.clip = self.U.extents 
+            
+    def calculate_streamlines(self):
+        xy = self.cart_samples(self.clip, self.dx)['x']
+        self.U.default_interpolation='nearest' # linear doesn't work with vector field
+        uv = self.U(xy)
+        
+        n_steps = max(1,int(self.max_t/self.dt))
+        tracks=np.zeros((n_steps,len(xy),4)) # time, seed, {x,y,u,v}
+        
+        for step in range(n_steps):
+            tracks[step,:,:2] = xy
+            u=self.U(xy)
+            u[np.isnan(u[:,0]),:]=0.0
+            tracks[step,:,2:] = u
+            xy += self.dt*u
+        
+        # to ragged:
+        u_mag = utils.mag(tracks[:,:,2:])
+        n_valid_steps = (u_mag>0).sum(axis=0)
+        n_valid_steps
+        self.streamlines = [ tracks[:n_valid,i,:] for i,n_valid in enumerate(n_valid_steps) if n_valid>0] 
+            
+    def streamline(self,xy,cell,U_fld,max_t,dt):
+        print("Shouldn't be calling this one")
+        xy=np.array(xy)
+        n_steps = max(1,int(max_t/dt))
+        track=np.zeros((n_steps,4)) # x,y,u,v
+        for step in range(n_steps):
+            track[step,:2] = xy
+            u=U_fld(xy)
+            track[step,2:] = u
+            if np.isnan(u[0]) or (u[0]==0.0 and u[1]==0.0):
+                return track[:step]
+            xy += dt*u
+        return track            
+    def update_U(self,U):
+        self.U = U
+        self.Umag = utils.mag(U.F)
+        self.calculate_streamlines()
+        self.streamlines=[s for s in self.streamlines if len(s)>0]

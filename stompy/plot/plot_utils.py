@@ -1400,7 +1400,7 @@ def fat_quiver(X,Y,U,V,ax=None,**kwargs):
     return coll
 
 
-def reduce_text_overlap(ax,max_iter=200):
+def reduce_text_overlap(ax,max_iter=200,expand=0.0):
     """
     Try to shift the texts in an axes to avoid overlaps.
     """
@@ -1417,8 +1417,11 @@ def reduce_text_overlap(ax,max_iter=200):
     bboxes=[]
     for txt in texts:
         ext=txt.get_window_extent()
-        bboxes.append( [ [ext.xmin,ext.ymin],
-                         [ext.xmax,ext.ymax] ] )
+        dx=expand*(ext.xmax - ext.xmin)
+        dy=expand*(ext.ymax - ext.ymin)
+        dx=dy=max(dx,dy)
+        bboxes.append( [ [ext.xmin-dx,ext.ymin-dy],
+                         [ext.xmax+dx,ext.ymax+dy] ] )
     bboxes=np.array(bboxes)
 
     # each iteration move overlapping texts by about this

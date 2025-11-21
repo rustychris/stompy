@@ -7,8 +7,6 @@ Created on Thu Oct  6 12:20:10 2022
 
 import subprocess, os
 
-out='cimarron_v1.mp4'
-
 def mkanim(out,frame_path,fps=16,ffmpeg='ffmpeg',overwrite=True):
     """
     out: path to output mp4 file
@@ -21,7 +19,7 @@ def mkanim(out,frame_path,fps=16,ffmpeg='ffmpeg',overwrite=True):
         else:
             raise Exception(f"{out} exists")
                 
-    res=subprocess.run(['ffmpeg',
+    res=subprocess.run([ffmpeg,
                         '-framerate',str(fps),
                         '-i',frame_path,
                         # this deals with odd dimensions

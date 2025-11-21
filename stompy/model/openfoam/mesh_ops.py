@@ -94,7 +94,7 @@ def mesh_face_center_areas(xyz,face_nodes, face_cells, cell_faces):
     face_ctr=np.zeros((nfaces,3),np.float64)
     face_area=np.zeros((nfaces,3),np.float64)
 
-    for fIdx in range(nfaces):
+    for fIdx in utils.progress(range(nfaces)):
         face = list()
         ctr=np.zeros(3,np.float64)
         for f_n in face_nodes[fIdx]:
@@ -1474,3 +1474,30 @@ def sample_line(normal, point, bbox, xyz, face_nodes, face_cells, cell_faces):
 
 def mesh_copy(mesh_state):
     return [a.copy() for a in mesh_state]
+
+def mesh_footprint(mesh_state, tol=1e-6):
+    """
+    Extract polygon (or multipolygon) of the top planar surface of the mesh.
+    Assuming this is a hydraulic domain with a flat atmosphere patch, this is
+    the planview footprint of the mesh.
+    """
+    from shapely import ops,geometry
+    xyz,face_nodes,face_cells,cell_faces = mesh_state
+    sel_bdry = np.where(face_cells[:,1]<0)[0]
+    polygons = []
+
+    # limit to boundary cells within the micron of the domain.
+    # So far this has been effective at skipping problematic faces.
+    z_top = xyz[:,2].max() - tol
+
+    for fIdx in utils.progress(sel_bdry):
+        nodes = face_nodes[fIdx]
+        nodes = nodes[nodes>=0]
+        face_z = xyz[nodes,2]
+        if np.any(face_z<z_top): continue
+        coords = xyz[nodes,:2]
+        poly = geometry.Polygon(coords)
+        polygons.append(poly)        
+
+    return ops.unary_union(polygons)
+    

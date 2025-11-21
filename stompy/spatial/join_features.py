@@ -537,8 +537,16 @@ def lines_to_polygons(new_features,close_arc=False,single_feature=True,force_ori
         prep_ext_poly = prepare_geometry(ext_poly)
 
         hits=index.query(ext_poly)
-        hit_indexes=[poly_to_join_id(p) # p.join_id
-                     for p in hits]
+        hit_indexes=[]
+        for p in hits:
+            # confusing - at times the index query has returned the geometry, and at other
+            # times an integer index
+            if isinstance(p,shapely.geometry.Polygon):
+                p=poly_to_join_id[p]
+            hit_indexes.append(p)
+        #hit_indexes=[poly_to_join_id[p] # p.join_id
+        #             for p in hits]
+        
         # this keeps us comparing large->small, needed to avoid
         # confusing islands in lake with lakes
         hit_indexes.sort()

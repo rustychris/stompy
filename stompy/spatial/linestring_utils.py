@@ -190,6 +190,13 @@ def distance_along(linestring):
     return np.concatenate( ( [0],
                              np.cumsum(diffs) ) )
 
+def sample_fraction(linestring, fractions):
+    dists = distance_along(linestring)
+    sample_dists=dists[-1] * np.asarray(fractions)
+    x = np.interp(sample_dists, dists,linestring[:,0])
+    y = np.interp(sample_dists, dists,linestring[:,1])
+    return np.c_[x,y]
+
 def left_normals(linestring):
     """
     For each point in the [N,2] linestring find the left-pointing

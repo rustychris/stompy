@@ -171,14 +171,7 @@ class RasReader:
             
     @property
     def area_base(self):
-        if self.version=='RAS6':        
-            return (self.unsteady_base + f'/2D Flow Areas/{self.area_name}/')
-        elif self.version=='RAS2025':
-            # maybe "Mesh" is actually the twod_area_name? 2025 doesn't have
-            # multiple areas yet.
-            return self.unsteady_base + '/2D Flow Areas/Mesh/'
-        else:
-            raise Exception("Bad version: "+self.version)
+        return (self.unsteady_base + f'/2D Flow Areas/{self.area_name}/')
 
     def time_relative_days(self):
         return self.h5[self.unsteady_base+'/Time']
@@ -206,16 +199,34 @@ class RasReader:
 
     @memoize.imemoize(lru=5)
     def cell_wse(self,time_step,trim_virtual=True):
-        key=self.area_base+'Water Surface'
-        result = self.h5[key][time_step]
+        key_wse=self.area_base+'Water Surface'
+        key_depth=self.area_base+'Cell Depth'
+        if key_wse in self.h5:
+            result = self.h5[key_wse][time_step]
+        elif key_depth in self.h5:
+            # RAS2025, at least on 2025-11-03
+            result = self.h5[key_depth][time_step] + self.cell_min_bed_elevation(trim_virtual=False)
+        else:
+            print("Expected to find Water Surface or Depth in ",self.h5[self.area_base].keys())
+            import pdb
+            pdb.set_trace()
         if trim_virtual:
             return result[:self.grid.Ncells()]
         else:
             return result
-        
+
+    @memoize.imemoize()
     def cell_min_bed_elevation(self, trim_virtual=True):
         base=f'Geometry/2D Flow Areas/{self.area_name}'
-        z = self.h5[base]['Cells Minimum Elevation']
+        for key in ['Cells Minimum Elevation',
+                    'Property Tables/Cell Minimum Elevation']:
+            if key in self.h5[base]:
+                z = self.h5[base][key]
+                break
+        else:
+            print("Failed to find cell minimum elevation")
+            import pdb
+            pdb.set_trace()
         if trim_virtual:
             z=z[:self.grid.Ncells()]
         return z
@@ -377,6 +388,9 @@ class RasReader:
             wet_length = utils.dist_total(self.grid.get_subedge(j,subedges='subedges'))
             interp_area += (wse-tbl['z'][-1])*wet_length
         return interp_area
+    def face_wet_perimeter_elev_interp(self,j,wse):
+        tbl = self.grid.edges['area_table'][j]
+        return np.interp(wse, tbl['z'], tbl['wet_perimeter'])
 
     @memoize.imemoize(lru=5)
     def cell_velocity(self, time_step, face_areas=None, face_velocity=None, structure_adjustment=False):
