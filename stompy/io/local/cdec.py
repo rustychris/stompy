@@ -136,7 +136,6 @@ def cdec_dataset(station,start_date,end_date,sensor,
             cache_fn=os.path.join(cache_dir,base_fn)
         else:
             cache_fn=None
-
         if (cache_mode!='refresh') and (cache_fn is not None) and os.path.exists(cache_fn):
             log.info("Cached   %s -- %s"%(interval_start,interval_end))
             ds=xr.open_dataset(cache_fn)
@@ -146,7 +145,8 @@ def cdec_dataset(station,start_date,end_date,sensor,
         else:
             log.info("Fetching %s"%(base_fn))
             req=requests.get(base_url,params=params)
-            df=pd.read_csv(StringIO(req.text),na_values=['---'],
+            # BRT = below rating table
+            df=pd.read_csv(StringIO(req.text),na_values=['---', 'BRT'],
                            parse_dates=[ 'DATE TIME' ])
             if len(df)==0:
                 continue
@@ -176,6 +176,8 @@ def cdec_dataset(station,start_date,end_date,sensor,
 
     if len(datasets)>1:
         # it's possible that not all variables appear in all datasets
+        # drop NaT time values
+        datasets = [d.sel(time=d.time.notnull()) for d in datasets]
         dataset=datasets[0]
         for other in datasets[1:]:
             dataset=dataset.combine_first(other)
@@ -191,7 +193,6 @@ def cdec_dataset(station,start_date,end_date,sensor,
     dataset.load() # force read into memory before closing files
     for d in datasets:
         d.close()
-
     return dataset
 
 
