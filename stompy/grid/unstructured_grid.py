@@ -890,7 +890,10 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             if v in nc:
                 start_index=nc[v].attrs.get('start_index',0)
                 # Some files advertise variable they don't have. Trust no one.
-                ug.cells['edges'] = nc[v].values - start_index
+                # Some files have values.dtype=float64. Maybe to get nan handling?
+                # HERE coalesce nan to -1
+                tmp_edges = nc[v].values
+                ug.cells['edges'] = np.where(np.isfinite(tmp_edges),tmp_edges - start_index, -1).astype(np.int64)
         if 'edge_face_connectivity' in mesh.attrs:
             v=mesh.attrs['edge_face_connectivity']
             if v in nc:

@@ -1682,7 +1682,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                 coord_vals=[s.decode().strip() for s in his_ds[names].values]
                 
                 if len(coord_vals)>len(np.unique(coord_vals)):
-                    print('Yuck - duplicate %s names'%coord)
+                    self.log.info('Sorting out duplicate %s names'%coord)
                     mask=[val not in coord_vals[:i]
                           for i,val in enumerate(coord_vals)]
                     mask=np.array(mask, np.bool_ )
@@ -2147,6 +2147,15 @@ def extract_transect_his(his_ds,pattern):
     dsxr['d_sample']=('sample',),utils.dist_along(xy)
 
     return dsxr
+
+def decode_structure_geom(his_ds, struct_idx):
+    node_counts=his_ds.general_structure_geom_node_count.values
+    node_starts=np.r_[0,np.cumsum(node_counts)]
+    node_stops=node_starts + node_counts
+    node_slice = slice(node_starts[struct_idx],node_stops[struct_idx])
+    xy=np.c_[ his_ds.general_structure_geom_node_coordx[node_slice],
+              his_ds.general_structure_geom_node_coordy[node_slice]]
+    return xy
 
 # Utilities for setting grid bathymetry
 def dem_to_cell_bathy(dem,g,fill_iters=20):

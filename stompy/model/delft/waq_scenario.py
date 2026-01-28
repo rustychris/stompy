@@ -1036,6 +1036,46 @@ class Hydro(object):
             Vlast=Vnow
         return summary
 
+
+    def segment_conservation_detail(self,seg,tidx):
+        """
+        similar to above check, but specific to a single segment and provides details
+        about exchanges, flows, etc. Faster for a single segment as it does not form a matrix
+        to handle the global operation.
+        seg should be 0-based
+        """
+        tidx0 = tidx 
+        tidx1 = tidx0+1 # 46800 = 26*1800
+        dt = self.t_secs[tidx1] - self.t_secs[tidx0]
+
+        vol0 = self.volumes(tidx0*dt)[seg] 
+        vol1 = self.volumes(tidx1*dt)[seg] 
+        poi = self.pointers # 1-based [from,to,adj_from, adj_to]
+        Qs = self.flows(tidx0*dt)
+
+        exch_from = np.nonzero( poi[:,0] == seg+1)[0]
+        exch_to   = np.nonzero( poi[:,1] == seg+1)[0]
+        exchs = np.concatenate([exch_from,exch_to]) # all 0-based
+
+        print("Segment (0-based): ",seg)
+        Qsum=0.0
+        for exch in exchs:
+            Q=Qs[exch]
+            # convention is sum flow _into_ the segment
+            if poi[exch,0]==seg+1:
+                sgn = -1
+            elif poi[exch,1]==seg+1:
+                sgn = 1
+            else:
+                raise Exception("pointer error")
+            Qsum+=sgn*Q
+            print(f"  [exch {exch:7}] from {poi[exch,0]-1}\tto {poi[exch,1]-1}\tQin={sgn*Q: 10.6f}")
+        print(f"Qsum*dt={Qsum:.5f}⋅{dt} = {Qsum*dt:.5f}")
+        err = vol0 + Qsum*dt - vol1
+        rel_err = err/max(vol1,vol0)
+        print(f"V0({vol0:.3f}) + Q.dt({Qsum*dt:.3f}) = V1({vol1:.3f}) + err({err:.5f}, {100*rel_err:.5f}%)")
+
+
     # Boundary handling
     # this representation follows the naming in the input file
     boundary_dtype=[('id','S20'),
@@ -1114,8 +1154,21 @@ class Hydro(object):
         # need to associate an internal segment with each bc exchange
         bc_exch=(poi[:,0]<0)
         bc_external=-1-poi[bc_exch,0]
-        assert bc_external[0]==0
-        assert np.all( np.diff(bc_external)==1)
+        # Previously asserted that the boundary exchanges were in order.
+        # Appears that is not the case with hyd created from waqmerge
+
+        #assert bc_external[0]==0
+        #assert np.all( np.diff(bc_external)==1)
+        #
+        if bc_external[0]!=0 or np.any(np.diff(bc_external)!=1):
+            ordered = bc_external.copy()
+            ordered.sort()
+            # Still make sure they are all accounted for
+            assert ordered[0]==0
+            assert np.all( np.diff(ordered)==1 )
+            
+            print("BC segments are not monotonic -- proceeding but may violate downstream assumptions")
+        
         return poi[bc_exch,1]-1
 
     def datetime_to_index(self,dt):
@@ -1895,7 +1948,8 @@ class HydroFiles(Hydro):
                         line=fp.readline().strip()
                         if line=='' or line=='end-'+tok:
                             break
-                        index1,link_id,elt_id,from_x,from_y,to_x,to_y,name = line.split()
+                        # max split keeps names with spaces together
+                        index1,link_id,elt_id,from_x,from_y,to_x,to_y,name = line.split(None,7)
                         sink_sources.append(dict(index1=int(index1),
                                                  link_id=int(link_id),
                                                  elt_id=int(elt_id),
@@ -2915,10 +2969,14 @@ class DwaqAggregator(Hydro):
                 ds[old]=data
 
             # special handling for other dimensions
-            if 'nFlowElem' not in ds.dims and 'nmesh2d_face' in ds.dims:
-                # helps down the line to make this its own dimension, not just reuse
-                # the dimension from nmesh2d_face.
-                ds['nFlowElem']=('nFlowElem',),ds['nmesh2d_face'].values
+            if 'nFlowElem' not in ds.dims:
+                # various naming schemes
+                if 'nmesh2d_face' in ds.dims:
+                    # helps down the line to make this its own dimension, not just reuse
+                    # the dimension from nmesh2d_face.
+                    ds['nFlowElem']=('nFlowElem',),ds['nmesh2d_face'].values
+                elif 'mesh2d_nFaces' in ds.dims:
+                    ds['nFlowElem']=('nFlowElem',),ds['mesh2d_nFaces'].values
             
             if ('NetNode_x' in ds) and ('NetElemNode' in ds['NetNode_x'].dims):
                 self.log.info("Trying to triage bad dimensions in NetCDF (probably ddcouplefm output)")
@@ -3005,7 +3063,7 @@ class DwaqAggregator(Hydro):
 
                 # and boundary elements get numbered beyond the number of regular elements.
                 face_dim=ds['mesh2d'].attrs.get('face_dimension','nmesh2d_face')
-                FlowLink[bc_links,0]=ds.dims[face_dim] + 1 + np.arange(bc_links.sum())
+                FlowLink[bc_links,0]=ds.sizes[face_dim] + 1 + np.arange(bc_links.sum())
 
                 assert np.all(FlowLink[:,0]>=start_index),"Missed some boundary links??"
 
@@ -3036,7 +3094,7 @@ class DwaqAggregator(Hydro):
                     n_sink_src = len(sink_srcs)
                     extra_FlowLink = np.zeros( (n_sink_src,2), np.int32)
                     for ss_idx,sink_src in enumerate(sink_srcs):
-                        extra_FlowLink[ss_idx,0]=ds.dims['nFlowElem'] + -sink_src['link_id']
+                        extra_FlowLink[ss_idx,0]=ds.sizes['nFlowElem'] + -sink_src['link_id']
                         extra_FlowLink[ss_idx,1]=sink_src['elt_id']
                     FlowLinkSS = np.concatenate( (ds.FlowLink.values, extra_FlowLink), axis=0)
                     FlowLinkSSDomain = np.concatenate( (ds.FlowLinkDomain.values, np.full(n_sink_src,p)) )
@@ -3054,7 +3112,7 @@ class DwaqAggregator(Hydro):
                 sub_bnds = hyd.read_bnd()
                 min_bc_linkid = min( [0] +[sub_bnd[1]['link'].min() for sub_bnd in sub_bnds] )
                 # I think this is fair, but it might be too stringent.
-                assert FlowLinkSS.max() == ds.dims['nFlowElem'] - min_bc_linkid
+                assert FlowLinkSS.max() == ds.sizes['nFlowElem'] - min_bc_linkid
                 
             self._flowgeoms_xr[p] = ds
             
@@ -3612,7 +3670,7 @@ class DwaqAggregator(Hydro):
                 face_dim=nc.mesh2d.attrs.get('face_dimension','nFlowElem')
             else:
                 face_dim='nFlowElem'
-            nFlowElem=nc.dims[face_dim]
+            nFlowElem=nc.sizes[face_dim]
 
             pointers2d=pointers[:,:2].copy()
             sel=(pointers2d>0) # only map non-boundary segments
@@ -7074,6 +7132,8 @@ class ModelForcing(object):
             # coerce to tuple with datenums
             data=(utils.to_dnum(data.index.values),
                   data.values)
+        elif isinstance(data,pd.DataFrame):
+            raise Exception("Expected pandas.Series, (time,values) tuple, or scalar, got pd.DataFrame")
 
         if isinstance(data,tuple):
             data_t,data_values=data
@@ -9464,7 +9524,8 @@ class InpFile(object):
         n_transects=len(self.scenario.monitor_transects)
 
         if n_transects==0:
-            return " 2     ; monitoring transects not used;\n"
+            # No idea why this was 2 for about 10 years.
+            return " 0     ; monitoring transects not used;\n"
 
         if len(self.scenario.monitor_areas)==0:
             # this is a real problem, though the code above for text_monitor_areas
@@ -10576,7 +10637,7 @@ END_MULTIGRID"""%num_layers
         if len(hyds)==1:
             self.hydro=HydroFiles(hyd_path=hyds[0])
         else:
-            log.info("Could not detect a load-able hyd file")
+            self.log.info("Could not detect a load-able hyd file")
         return self.hydro
     
     def set_hydro(self,hydro):
@@ -12297,10 +12358,13 @@ class InpReader:
             self.read()
             self.fp = None
     def skip_to_section(self,sec):
+        """
+        Skips to '#{sec}', which is the *end* of given section
+        """
         while 1:
             line = self.fp.readline()
             if line=="": break
-            if line.startswith(f'#{sec}'):
+            if line.strip().startswith(f'#{sec}'):
                 return True
         return False
     
@@ -12321,17 +12385,20 @@ class InpReader:
     def read(self):
         self.read_section0()
         assert self.skip_to_section(1)
-        self.next_int() ; self.next_str() ; self.next_str()
-        self.next_float()
-        while 1:
-            t=self.next_str()
-            if t[0] in "01232456789": break
-        self.next_str()
-        assert 0==self.next_int() # timestep option
+        self.next_int() ; self.next_str() ; self.next_str() # system clock info
+        self.next_float()                    # integration option
+        while 1:                             #
+            t=self.next_str()                #
+            if t[0] in "01232456789": break  # /integration options
+        # start time in t
+        self.next_str() # stop time
+        assert 0==self.next_int() # assume constant timestep option
         self.next_str() # time step value
         self.read_mon()
         self.read_transects()
-
+        assert self.skip_to_section(5)
+        self.read_section6() # discharges, withdrawals, waste loads
+        
     def read_section0(self):
         header=self.fp.readline() # first line sets comment char, can't be read through toker
         tokens = header.split()
@@ -12373,7 +12440,9 @@ class InpReader:
         #print(f"{len(self.monitor_areas)} mon areas")
         
     def read_transects(self):
-        has_tran=self.next_int()
+        has_tran=self.next_int() # issue with input file has 2 but this
+        if has_tran==2:
+            has_tran=0 # old stompy bug wrote 2, which dwaq allowed, but should be 0.
         if has_tran>0:
             n_tran = self.next_int()
             #print("n_tran",n_tran)
@@ -12387,7 +12456,63 @@ class InpReader:
             exchs=[self.next_int() for _ in range(count)]
             self.monitor_transects.append( (name,exchs))
         #print(f"{len(self.monitor_transects)} transects")
+        
+    def read_section6(self):
+        # discharges, withdrawals, waste loads
+        n_discharges = self.next_int()
+        self.discharges = [self.read_discharge() for _ in range(n_discharges)]
+        self.loads = []
+        while 1:
+            # DOES NOT SUPPORT TIMESERIES or renaming
+            load = self.read_discharge_item()
+            if load is None:
+                break
+            else:
+                self.loads.append(load)
+        # CONSUMES THE #6!
+            
+    def read_discharge(self):
+        seg_id = self.next_int()
+        s = self.next_str()
+        option='DEFAULT' # rules for default are ... nuanced.
+        if s.upper() in ['MASS','CONC','RAIN','WELL']:
+            option = s
+            s = self.next_str()
+        load_id = s
+        load_name = self.next_str()
+        load_type = self.next_str()
+        return [seg_id,option,load_id,load_name,load_type]
 
+    def read_discharge_item(self):
+        s=self.next_str()
+        if s == '#6':
+            return None
+        
+        # either ITEM or CONCENTRATION
+        def read_strings(token0,stop_tokens):
+            elts=[token0] # ITEM or CONCENTRATION
+            while 1:
+                tok=self.next_str()
+                if (not tok) or tok in stop_tokens:
+                    break
+                elts.append(tok)
+            return elts,tok
+
+        dims=[]
+        for _ in range(2):
+            elts,s = read_strings(s,['ITEM','CONCENTRATION','DATA'])
+            if elts[0]=='ITEM':
+                items=elts[1:]
+            elif elts[0]=='CONCENTRATION':
+                concentrations=elts[1:]
+            dims.append(elts[0])
+            
+        assert s=='DATA',"Trouble while parsing discharge concentrations"
+
+        data = [self.next_float() for _ in range(len(items) * len(concentrations))]
+
+        return dict(items=items, concentrations=concentrations, dims=dims, data=data)
+    
     def get_transect_by_name(self,name):
         for tran in self.monitor_transects:
             if name==tran[0]:

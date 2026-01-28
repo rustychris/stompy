@@ -149,10 +149,80 @@ def mon_his_file_dataframe(fn):
     return df
 
 
+def parse_mon_textfile(mon_fn):
+    """
+    Parse the limited balance information in the human-readable .mon file.
+    """
+    from collections import defaultdict
+    mon_recs = defaultdict(list)
+
+    t0=None
+    with open(mon_fn,'rt') as fp:
+        # find T0 line
+        while 1:
+            l=fp.readline()
+            if not l: return None
+            if 'T0:' in l:
+                t0=np.datetime64(l.strip().split()[1].replace('-','T').replace('/','-'))
+                break
+                
+        last_time=None
+        while 1:
+            l = fp.readline()
+            if not l: break
+            time_str='  TIME =' # followed by '   0D  0H 10M  0S .'
+            total_mass_str=' TOTAL MASS IN SYSTEM '
+            prefix_len = len(total_mass_str)
+
+            if l.startswith(time_str):
+                _,_,s_days,s_hours,s_minutes,s_seconds,*rest = l.strip().split()        
+                last_time_secs = (int(s_days.strip('D'))*86400
+                                  + int(s_hours.strip('H'))*3600
+                                  + int(s_minutes.strip('M'))*60
+                                  + int(s_seconds.strip('S')) )
+                mon_recs['time_seconds'].append(last_time_secs)
+
+            if not l.startswith(total_mass_str): continue
+
+            def parse_line(l):
+                l = l or fp.readline()
+                assert l
+                l=l[21:].rstrip()
+                count = len(l)//11
+                return [float(l[11*i:11*(i+1)]) for i in range(count)]
+
+            mon_recs['mass'].append( parse_line(l) )
+            mon_recs['process'].append( parse_line(None) )
+            mon_recs['load'].append( parse_line(None) )
+            mon_recs['inflow'].append( parse_line(None) )
+            mon_recs['outflow'].append( parse_line(None) )
+            l=fp.readline()
+            tracer_names = [s for s in l[prefix_len:].strip().split()]
+            continue
+
+    mon_ds = xr.Dataset()
+    times =  t0 + np.timedelta64(1,'s') * np.array(mon_recs['time_seconds'])
+    mon_ds['time'] = ('time',),times
+    mon_ds['time_s'] = ('time',), mon_recs['time_seconds']
+    mon_ds['tracer'] = ('tracer',), tracer_names
+    for k in ['mass','process','load','inflow','outflow']:
+        data = np.array(mon_recs[k])
+        print(f"{k} has shape {data.shape}")
+        mon_ds[k] = ('time','tracer'), data
+    return mon_ds
+
+
+
+
 def inp_tok(fp,comment=';'):
     # tokenizer for parsing rules of delwaq inp file.
     # parses either single-quoted strings, or space-delimited literals.
-    for line in fp:
+    #for line in fp:
+    while 1:
+        line = fp.readline()
+        if not line:
+            break
+        
         if comment in line:
             line=line[ : line.index(comment)]
         # pattern had been
@@ -1720,7 +1790,8 @@ def read_bnd(fn):
         N_groups=int(token())
         groups=[]
         for group_idx in range(N_groups):
-            group_name=token()
+            #group_name=token() # ideally this would read a line, in case there are spaces
+            group_name = fp.readline().strip()
             N_link=int(token())
             links=np.zeros( N_link,
                             dtype=[ ('link','i4'),
