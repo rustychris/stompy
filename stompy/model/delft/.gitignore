@@ -1,2 +1,6 @@
 .svn
 
+custom_process__pm*
+custom_process_pm*
+custom_process_orig.py_rh
+custom_process_bk_*
