@@ -3,7 +3,7 @@ import sys
 import os
 from collections import defaultdict
 from stompy import utils
-from . import dflow_model
+from . import dflow_model, waq_scenario
 
 
 # When including this as a 'mixin', it needs to go first, before
@@ -137,7 +137,17 @@ class CustomProcesses:
         
         # Tell dwaq about the tables
         self.waq_proc_def=os.path.abspath(os.path.join(self.proc_table_dst_dir,'proc_def'))
+        # if we're Scenario, it goes here
+        self.proc_path=self.waq_proc_def
 
+    def custom_add_process(self,name):        
+        if isinstance(self,dflow_model.DFlowModel):
+            self.dwaq.add_process(name)
+        elif isinstance(self,waq_scenario.WaqModel):
+            self.add_process(name)
+        else: # waq_scenario.Scenario
+            print(f"Assuming caller will activate process {name}")
+        
     def custom_Decay(self,substance,rate):
         """
         Add a basic decay process for the given substance and rate.
@@ -172,10 +182,7 @@ class CustomProcesses:
         p.update(kw)
 
         # Presumably want to enable it, though could be optional
-        if isinstance(self,dflow_model.DFlowModel):
-            self.dwaq.add_process(p['name'])
-        else: # WaqModel or related
-            self.add_process(p['name'])
+        self.custom_add_process(p['name'])
         
         n_stoich=1
         if conc_decay!=0.0:
@@ -253,7 +260,7 @@ END
         p.update(kw)
 
         # Presumably want to enable it, though could be optional
-        self.dwaq.add_process(p['name'])
+        self.custom_add_process(p['name'])
 
         # Two important things in the process table:
         #  - create an exchange-centered settling velocity,
@@ -298,10 +305,7 @@ END
         p.update(kw)
 
         # Presumably want to enable it, though could be optional
-        if isinstance(self,dflow_model.DFlowModel):
-            self.dwaq.add_process(p['name'])
-        else: # WaqModel or related
-            self.add_process(p['name'])
+        self.custom_add_process(p['name'])
         
         # With SW_Uitz=0.0:
         # SD = PAConstant / ExtVl
@@ -347,3 +351,552 @@ END
 """
         self.custom_procs.append(process)
 
+    def custom_TFDiatAlt(self,**kw):
+        idx=self.copy_count['TFDiatAlt']
+        self.copy_count['TFDiatAlt']+=1
+        if self.copy_count['TFDiatAlt']>1:
+            raise Exception("custom_TFDiatAlt' can only be used once")
+        
+        p=dict(name="TFDiatAlt")
+        p.update(kw)
+
+        # Presumably want to enable it, though could be optional
+        self.custom_add_process(p['name'])
+        
+        process=f"""
+{p['name']:10}                    Use library developed from TFALGALT.f for asymmetric double exponential temperature correction for algal growth rate  
+TFALGALT  ; module name
+123       ; TRswitch
+11        ; # input items for segments
+Temp            20.000      x Water Temperature                                      (oC)               
+TCGLD           4.0000      x lower temp limit for growth processes diatoms/greens   (oC)            
+TCGUD           35.0000     x upper temp limit for growth processes diatoms/greens   (oC)          
+TCGOD           20.0000     x optimal temp for growth processes diatoms/greens       (oC)            
+TCGO_LD         18.0000     x lower range of optimal temp for growth processes       (oC)            
+TCGO_UD         22.0000     x upper range of optimal temp for growth processes       (oC)             
+K1D             0.01000     x fraction of growth rate at TCGL                        (-)   
+K2D             0.95000     x fraction of growth rate at TCGO_L                      (-)    
+K3D             0.95000     x fraction of growth rate at TCGO_U                      (-) 
+K4D             0.01000     x fraction of growth rate at TCGU                        (-)
+TcDecDiat       1.07000     x temp. coeff. for respiration and mortality Greens      (-)            
+         0; # input items for exchanges
+         2; # output items for segments
+TFGroDiat                   x temperature function growth Greens <0-1>               (-)
+TFMrtDiat                   x temperature function mortality Greens <0-1>            (-)                
+         0; # output items for exchanges
+         0; # fluxes
+         0; # stoichiometry lines         
+         0; # stoichiometry lines dispersion arrays
+         0; # stoichiometry lines velocity arrays
+END
+"""
+        self.custom_procs.append(process)     
+
+    def custom_TFGreenAlt(self,**kw):
+        idx=self.copy_count['TFGreenAlt']
+        self.copy_count['TFGreenAlt']+=1
+        if self.copy_count['TFGreenAlt']>1:
+            raise Exception("custom_TFGreenAlt can only be used once")
+        
+        p=dict(name="TFGreenAlt")
+        p.update(kw)
+
+        # Presumably want to enable it, though could be optional
+        self.custom_add_process(p['name'])
+        
+        process=f"""
+{p['name']:10}                    Use library developed from TFALGALT.f for asymmetric double exponential temperature correction for algal growth rate  
+TFALGALT  ; module name
+123       ; TRswitch
+11        ; # input items for segments
+Temp            20.000      x Water Temperature                                      (oC)               
+TCGLG           4.0000      x lower temp limit for growth processes diatoms/greens   (oC)            
+TCGUG           35.0000     x upper temp limit for growth processes diatoms/greens   (oC)          
+TCGOG           20.0000     x optimal temp for growth processes diatoms/greens       (oC)            
+TCGO_LG         18.0000     x lower range of optimal temp for growth processes       (oC)            
+TCGO_UG         22.0000     x upper range of optimal temp for growth processes       (oC)             
+K1G             0.05000     x fraction of growth rate at TCGL                        (-)   
+K2G             0.95000     x fraction of growth rate at TCGO_L                      (-)    
+K3G             0.95000     x fraction of growth rate at TCGO_L                      (-) 
+K4G             0.95000     x fraction of growth rate at TCGO_L                      (-)
+TcDecGreen      1.07000     x temp. coeff. for respiration and mortality Greens      (-)            
+         0; # input items for exchanges
+         2; # output items for segments
+TFGroGreen                  x temperature function growth Greens <0-1>               (-)
+TFMrtGreen                  x temperature function mortality Greens <0-1>            (-)                
+         0; # output items for exchanges
+         0; # fluxes
+         0; # stoichiometry lines         
+         0; # stoichiometry lines dispersion arrays
+         0; # stoichiometry lines velocity arrays
+END
+"""
+        self.custom_procs.append(process)     
+        
+    def custom_sedmoddet1(self,**kw):
+        idx=self.copy_count['sedmoddet1']
+        self.copy_count['sedmoddet1']+=1
+        if self.copy_count['sedmoddet1']>1:
+            raise Exception("custom_sedmoddet1 can only be used once")
+        
+        p=dict(name="sedmoddet1")
+        p.update(kw)
+
+        # Presumably want to enable it, though could be optional
+        self.custom_add_process(p['name'])
+        
+        process=f"""
+{p['name']:10}                    Mineralization of Det1 substances
+sedmod    ; module name
+123       ; TRswitch
+34        ; # input items for segments
+DetCS1          -999.0      x Detrital carbon concentration                          (gC/m^2) 
+DetNS1          -999.0      x Detrital nitrogen concentration                        (gC/m^2) 
+DetPS1          -999.0      x Detrital phosphporus concentration                     (gC/m^2)  
+OXY             -999.0      x oxygen concentration                                   (gO2/m^3)
+NO3             -999.0      x nitrate concentration                                  (gN/m^3)
+Temp            15.0000     x ambient water temperature                              (oC)
+Depth           -999.0      x depth of segment                                       (m)
+rsoptd1         0.00000     x option for same or sep rates for C,N,P, Si - 0 = same  (-)
+rsdet1c         0.03000     x first order mineralization rate C (used for all if opt = 0) (1/d)
+rsdet1n         0.03000     x first order mineralization rate                        (1/d)
+rsdet1p         0.03000     x first order mineralization rate                        (1/d)
+tcdet1          1.09000     x temp. correction factor for mineralization             (-)
+frmindod1       0.80000     x fraction mineralization by DO                          (-) 
+dbguntd1        0.00000     x option to print debug output (0 = no output, or specify 4 digit unit number > 0)           (-)
+flgqmrt         0.00000     x flag for simulating quadratic mortality (0 = not used) (-)       
+Diat            -999.0      x diatoms concentration                                  (gC/m^3)
+Green           -999.0      x Greens concentration                                   (gC/m^3) 
+kqmrtdiat       0.01000     x quadratic mortality rate for diatoms                   (m^3/gC.d)       
+tmqdiat         1.07        x temperature correction factor for diatoms mortality    (-)       
+frauqdiat       0.15        x autolysis fraction of diat mortality                   (-)
+frrfqdiat       0.15        x fraction of diat mortality routed to refractory pool   (-) 
+MinDiat         0.00000     x Minimum conc of diatoms to stop mortality              (g/m^3)  
+NCRatDiat       0.16000     x N:C ratio Diatoms                                      (gN/gC)             
+PCRatDiat       0.02000     x P:C ratio Diatoms                                      (gP/gC)             
+SCRatDiat       0.49000     x Si:C ratio Diatoms                                     (gSi/gC)      
+kqmrtgrn        0.01000     x quadratic mortality rate for greens                    (m^3/gC.d)
+tmqgrn          1.07        x temperature correction factor for greens mortality     (-)             
+frauqgrn        0.15        x autolysis fraction of mortality routed for diat        (-)
+frrfqgrn        0.15        x fraction of diat mortality routed to refractory pool   (-)
+MinGreen        0.00000     x Minimum conc of greens  to stop mortality              (g/m^3)
+NCRatGreen      0.16000     x N:C ratio Greens                                       (gN/gC)             
+PCRatGreen      0.02000     x P:C ratio Greens                                       (gP/gC) 
+SCRatGreen      0.00000     x Si:C ratio Greens                                     (gSi/gC)        
+optdbgq         0.00000     x option to print debug output for quadratic mortality (0 = no output)  (-)
+         0; # input items for exchanges
+         5; # output items for segments
+fdetcs1min                  x sediment mineralization of C                           (gC/m^2/d) 
+fdetns1min                  x sediment mineralization of N                           (gN/m^2/d)
+fdetps1min                  x sediment mineralization of P                           (gP/m^2/d)
+fdetcs1sod                  x sediment oxygen demand                                 (gO2/m^2/d)
+fdetcs1nit                  x denitrification                                        (gN/m^2/d)
+         0; # output items for exchanges
+        29; # fluxes
+ddetcs1min                  x mineralization                                         (gC/m^3/d)
+ddetns1min                  x sediment mineralization of N                           (gN/m^3/d)
+ddetps1min                  x sediment mineralization of P                           (gP/m^3/d)
+ddetcs1sod                  x SOD                                                    (gO2/m^3/d)
+ddetcs1nit                  x denitrification                                        (gN/m^3/d)
+dqmtdiat                    x vol. quadratic mortality rate diatoms                  (gC/m^3/d)
+dqmtdLC                     x vol. quadratic mortality rate diatoms C labile         (gC/m^3/d)
+dqmtdRC                     x vol. quadratic mortality rate diatoms C refractory     (gC/m^3/d)      
+dqmtdLN                     x vol. quadratic mortality rate diatoms N labile         (gN/m^3/d)
+dqmtdRN                     x vol. quadratic mortality rate diatoms N refractory     (gN/m^3/d)  
+dqmtdNH4                    x vol. quadratic mortality rate diatoms NH4 autolysis    (gN/m^3/d)      
+dqmtdLP                     x vol. quadratic mortality rate diatoms P labile         (gP/m^3/d)
+dqmtdRP                     x vol. quadratic mortality rate diatoms P refractory     (gP/m^3/d)    
+dqmtdPO4                    x vol. quadratic mortality rate diatoms PO4 autolysis    (gP/m^3/d)      
+dqmtdLSi                    x vol. quadratic mortality rate diatoms Si labile        (gSi/m^3/d) 
+dqmtdRSi                    x vol. quadratic mortality rate diatoms Si refractory    (gSi/m^3/d)
+dqmtdSi                     x vol. quadratic mortality rate diatoms Si autolysis     (gSi/m^3/d) 
+dqmtgree                    x vol. quadratic mortality rate greens                   (gC/m^3/d)      
+dqmtgLC                     x vol. quadratic mortality rate greens C labile          (gC/m^3/d)   
+dqmtgRC                     x vol. quadratic mortality rate greens C refractory      (gC/m^3/d)      
+dqmtgLN                     x vol. quadratic mortality rate greens N labile          (gN/m^3/d)
+dqmtgRN                     x vol. quadratic mortality rate greens N refractory      (gN/m^3/d)   
+dqmtgNH4                    x vol. quadratic mortality rate greens NH4 autolysis     (gN/m^3/d)       
+dqmtgLP                     x vol. quadratic mortality rate greens P labile          (gP/m^3/d)
+dqmtgRP                     x vol. quadratic mortality rate greens P refractory      (gP/m^3/d)      
+dqmtgPO4                    x vol. quadratic mortality rate greens PO4 autolysis     (gP/m^3/d)      
+dqmtgLSi                    x vol. quadratic mortality rate greens Si labile         (gSi/m^3/d)
+dqmtgRSi                    x vol. quadratic mortality rate greens Si refractory     (gSi/m^3/d)
+dqmtgSi                     x vol. quadratic mortality rate greens Si autolysis      (gSi/m^3/d)
+        45; # stoichiometry lines      
+DetCS1      ddetcs1min    -1.00000
+TIC         ddetcs1min     1.00000
+H2O         ddetcs1min     1.50000
+DetNS1      ddetns1min    -1.00000
+NH4         ddetns1min     1.00000
+H+          ddetns1min    -0.07100
+ALKA        ddetns1min     4.35700
+DetPS1      ddetps1min    -1.00000
+PO4         ddetps1min     1.00000
+H+          ddetps1min     0.03200
+ALKA        ddetps1min    -1.96800
+OXY         ddetcs1sod    -1.00000
+NO3         ddetcs1nit    -1.00000
+Diat        dqmtdiat      -1.00000
+POC1        dqmtdLC        1.00000
+POC2        dqmtdRC        1.00000
+PON1        dqmtdLN        1.00000
+PON2        dqmtdRN        1.00000
+NH4         dqmtdNH4       1.00000
+H+          dqmtdNH4      -0.07100
+ALKA        dqmtdNH4       4.35700
+POP1        dqmtdLP        1.00000
+POP2        dqmtdRP        1.00000 
+PO4         dqmtdPO4       1.00000
+H+          dqmtdPO4       0.03200
+ALKA        dqmtdPO4      -1.96800
+Opal        dqmtdLSi       1.00000
+Opal        dqmtdRSi       1.00000
+Si          dqmtdSi        1.00000      
+Green       dqmtgree      -1.00000   
+POC1        dqmtgLC        1.00000
+POC2        dqmtgRC        1.00000
+PON1        dqmtgLN        1.00000
+PON2        dqmtgRN        1.00000
+NH4         dqmtgNH4       1.00000
+H+          dqmtgNH4      -0.07100
+ALKA        dqmtgNH4       4.35700        
+POP1        dqmtgLP        1.00000
+POP2        dqmtgRP        1.00000
+PO4         dqmtgPO4       1.00000
+H+          dqmtgPO4       0.03200
+ALKA        dqmtgPO4      -1.96800
+Opal        dqmtgLSi       1.00000
+Opal        dqmtgRSi       1.00000
+Si          dqmtgSi        1.00000
+         0; # stoichiometry lines dispersion arrays
+         0; # stoichiometry lines velocity arrays
+END
+"""
+        self.custom_procs.append(process)  
+
+    def custom_sedmoddet2(self,**kw):
+        idx=self.copy_count['sedmoddet2']
+        self.copy_count['sedmoddet2']+=1
+        if self.copy_count['sedmoddet2']>1:
+            raise Exception("custom_sedmoddet2 can only be used once")
+        
+        p=dict(name="sedmoddet2")
+        p.update(kw)
+
+        # Presumably want to enable it, though could be optional
+        self.custom_add_process(p['name'])
+        
+        process=f"""
+{p['name']:10}                    Mineralization of Det2 substances
+sedmod    ; module name
+123       ; TRswitch
+34        ; # input items for segments
+DetCS2          -999.0      x Detrital carbon concentration                          (gC/m^2) 
+DetNS2          -999.0      x Detrital nitrogen concentration                        (gC/m^2) 
+DetPS2          -999.0      x Detrital phosphporus concentration                     (gC/m^2) 
+OXY             -999.0      x oxygen concentration                                   (gO2/m^3)
+NO3             -999.0      x nitrate concentration                                  (gN/m^3)
+Temp            15.0000     x ambient water temperature                              (oC)
+Depth           -999.0      x depth of segment                                       (m)
+rsoptd2         0.00000     x option for same or sep rates for C,N,P, Si - 0 = same  (-)
+rsdet2c         0.03000     x first order mineralization rate C (used for all if opt = 0) (1/d)
+rsdet2n         0.03000     x first order mineralization rate                        (1/d)
+rsdet2p         0.03000     x first order mineralization rate                        (1/d)
+tcdet2          1.09000     x temp. correction factor for mineralization             (-)
+frmindod2       0.80000     x fraction mineralization by DO                          (-) 
+dbguntd2        0.00000     x option to print debug output (0 = no output, or specify 4 digit unit number > 0)           (-)
+flgqmrt2        0.00000     x flag for simulating quadratic mortality (0 = not used) (-)       
+Diat            -999.0      x diatoms concentration                                  (gC/m^3)
+Green           -999.0      x Greens concentration                                   (gC/m^3) 
+kqmrtdiat       0.01000     x quadratic mortality rate for diatoms                   (m^3/gC.d)       
+tmqdiat         1.07        x temperature correction factor for diatoms mortality    (-)       
+frauqdiat       0.15        x autolysis fraction of diat mortality                   (-)
+frrfqdiat       0.15        x fraction of diat mortality routed to refractory pool   (-) 
+MinDiat         0.00000     x Minimum conc of diatoms to stop mortality              (g/m^3)  
+NCRatDiat       0.16000     x N:C ratio Diatoms                                      (gN/gC)             
+PCRatDiat       0.02000     x P:C ratio Diatoms                                      (gP/gC)             
+SCRatDiat       0.49000     x Si:C ratio Diatoms                                     (gSi/gC)      
+kqmrtgrn        0.01000     x quadratic mortality rate for greens                    (m^3/gC.d)
+tmqgrn          1.07        x temperature correction factor for greens mortality     (-)             
+frauqgrn        0.15        x autolysis fraction of mortality routed for diat        (-)
+frrfqgrn        0.15        x fraction of diat mortality routed to refractory pool   (-)
+MinGreen        0.00000     x Minimum conc of greens  to stop mortality              (g/m^3)
+NCRatGreen      0.16000     x N:C ratio Greens                                       (gN/gC)             
+PCRatGreen      0.02000     x P:C ratio Greens                                       (gP/gC) 
+SCRatGreen      0.00000     x Si:C ratio Greens                                     (gSi/gC)        
+optdbgq2        0.00000     x option to print debug output for quadratic mortality (0 = no output)  (-)
+         0; # input items for exchanges
+         5; # output items for segments
+fdetcs2min                  x sediment mineralization of C                           (gC/m^2/d) 
+fdetns2min                  x sediment mineralization of N                           (gN/m^2/d)
+fdetps2min                  x sediment mineralization of P                           (gP/m^2/d)
+fdetcs2sod                  x sediment oxygen demand                                 (gO2/m^2/d)
+fdetcs2nit                  x denitrification                                        (gN/m^2/d)
+         0; # output items for exchanges
+        29; # fluxes
+ddetcs2min                  x mineralization                                         (gC/m^3/d)
+ddetns2min                  x sediment mineralization of N                           (gN/m^3/d)
+ddetps2min                  x sediment mineralization of P                           (gP/m^3/d)
+ddetcs2sod                  x SOD                                                    (gO2/m^3/d)
+ddetcs2nit                  x denitrification                                        (gN/m^3/d)
+ddumoo101                  x vol. quadratic mortality rate diatoms                  (gC/m^3/d)
+ddumoo102                  x vol. quadratic mortality rate diatoms C labile         (gC/m^3/d)
+ddumoo103                  x vol. quadratic mortality rate diatoms C refractory     (gC/m^3/d)      
+ddumoo104                  x vol. quadratic mortality rate diatoms N labile         (gN/m^3/d)
+ddumoo105                  x vol. quadratic mortality rate diatoms N refractory     (gN/m^3/d)  
+ddumoo106                  x vol. quadratic mortality rate diatoms NH4 autolysis    (gN/m^3/d)      
+ddumoo107                  x vol. quadratic mortality rate diatoms P labile         (gP/m^3/d)
+ddumoo108                  x vol. quadratic mortality rate diatoms P refractory     (gP/m^3/d)    
+ddumoo109                  x vol. quadratic mortality rate diatoms PO4 autolysis    (gP/m^3/d)      
+ddumoo110                  x vol. quadratic mortality rate diatoms Si labile        (gSi/m^3/d) 
+ddumoo111                  x vol. quadratic mortality rate diatoms Si refractory    (gSi/m^3/d)
+ddumoo112                  x vol. quadratic mortality rate diatoms Si autolysis     (gSi/m^3/d) 
+ddumoo113                  x vol. quadratic mortality rate greens                   (gC/m^3/d)      
+ddumoo114                  x vol. quadratic mortality rate greens C labile          (gC/m^3/d)   
+ddumoo115                  x vol. quadratic mortality rate greens C refractory      (gC/m^3/d)      
+ddumoo116                  x vol. quadratic mortality rate greens N labile          (gN/m^3/d)
+ddumoo117                  x vol. quadratic mortality rate greens N refractory      (gN/m^3/d)   
+ddumoo118                  x vol. quadratic mortality rate greens NH4 autolysis     (gN/m^3/d)       
+ddumoo119                  x vol. quadratic mortality rate greens P labile          (gP/m^3/d)
+ddumoo120                  x vol. quadratic mortality rate greens P refractory      (gP/m^3/d)      
+ddumoo121                  x vol. quadratic mortality rate greens PO4 autolysis     (gP/m^3/d)      
+ddumoo122                  x vol. quadratic mortality rate greens Si labile         (gSi/m^3/d)
+ddumoo123                  x vol. quadratic mortality rate greens Si refractory     (gSi/m^3/d)
+ddumoo124                  x vol. quadratic mortality rate greens Si autolysis      (gSi/m^3/d)
+        13; # stoichiometry lines      
+DetCS2      ddetcs2min    -1.00000
+TIC         ddetcs2min     1.00000
+H2O         ddetcs2min     1.50000
+DetNS2      ddetns2min    -1.00000
+NH4         ddetns2min     1.00000
+H+          ddetns2min    -0.07100
+ALKA        ddetns2min     4.35700
+DetPS2      ddetps2min    -1.00000
+PO4         ddetps2min     1.00000
+H+          ddetps2min     0.03200
+ALKA        ddetps2min    -1.96800
+OXY         ddetcs2sod    -1.00000
+NO3         ddetcs2nit    -1.00000
+         0; # stoichiometry lines dispersion arrays
+         0; # stoichiometry lines velocity arrays
+END
+"""
+        self.custom_procs.append(process)
+
+    def custom_sedmodoo1(self,**kw):
+        idx=self.copy_count['sedmodoo1']
+        self.copy_count['sedmodoo1']+=1
+        if self.copy_count['sedmodoo1']>1:
+            raise Exception("custom_sedmodoo1 can only be used once")
+        
+        p=dict(name="sedmodoo1")
+        p.update(kw)
+
+        # Presumably want to enable it, though could be optional
+        self.custom_add_process(p['name'])
+        
+        process=f"""
+{p['name']:10}                    Mineralization of OOX1 substances
+sedmod    ; module name
+123       ; TRswitch
+34        ; # input items for segments
+OOCS1           -999.0      x Detrital carbon concentration                          (gC/m^2) 
+OONS1           -999.0      x Detrital nitrogen concentration                        (gN/m^2) 
+OOPS1           -999.0      x Detrital phosphporus concentration                     (gP/m^2) 
+OXY             -999.0      x oxygen concentration                                   (gO2/m^3)
+NO3             -999.0      x nitrate concentration                                  (gN/m^3)
+Temp            15.0000     x ambient water temperature                              (oC)
+Depth           -999.0      x depth of segment                                       (m)
+rsopto1         0.00000     x option for same or sep rates for C,N,P, Si - 0 = same  (-)
+rsoo1c          0.00010     x first order mineralization rate C (used for all if opt = 0) (1/d)
+rsoo1n          0.00010     x first order mineralization rate                        (1/d)
+rsoo1p          0.00010     x first order mineralization rate                        (1/d)
+tcoox1          1.09000     x temp. correction factor for mineralization             (-)
+frmindoo1       0.80000     x fraction mineralization by DO                          (-) 
+dbguntoo1       0.00000     x option to print debug output (0 = no output, or specify 4 digit unit number > 0)           (-)
+flgqmrt3        0.00000     x flag for simulating quadratic mortality (0 = not used) (-)       
+Diat            -999.0      x diatoms concentration                                  (gC/m^3)
+Green           -999.0      x Greens concentration                                   (gC/m^3) 
+kqmrtdiat       0.01000     x quadratic mortality rate for diatoms                   (m^3/gC.d)       
+tmqdiat         1.07        x temperature correction factor for diatoms mortality    (-)       
+frauqdiat       0.15        x autolysis fraction of diat mortality                   (-)
+frrfqdiat       0.15        x fraction of diat mortality routed to refractory pool   (-) 
+MinDiat         0.00000     x Minimum conc of diatoms to stop mortality              (g/m^3)  
+NCRatDiat       0.16000     x N:C ratio Diatoms                                      (gN/gC)             
+PCRatDiat       0.02000     x P:C ratio Diatoms                                      (gP/gC)             
+SCRatDiat       0.49000     x Si:C ratio Diatoms                                     (gSi/gC)      
+kqmrtgrn        0.01000     x quadratic mortality rate for greens                    (m^3/gC.d)
+tmqgrn          1.07        x temperature correction factor for greens mortality     (-)             
+frauqgrn        0.15        x autolysis fraction of mortality routed for diat        (-)
+frrfqgrn        0.15        x fraction of diat mortality routed to refractory pool   (-)
+MinGreen        0.00000     x Minimum conc of greens  to stop mortality              (g/m^3)
+NCRatGreen      0.16000     x N:C ratio Greens                                       (gN/gC)             
+PCRatGreen      0.02000     x P:C ratio Greens                                       (gP/gC) 
+SCRatGreen      0.00000     x Si:C ratio Greens                                     (gSi/gC)        
+optdbgq3        0.00000     x option to print debug output for quadratic mortality (0 = no output)  (-)
+         0; # input items for exchanges
+         5; # output items for segments
+foocs1min                   x sediment mineralization of C                           (gC/m^2/d) 
+foons1min                   x sediment mineralization of N                           (gN/m^2/d)
+foops1min                   x sediment mineralization of P                           (gP/m^2/d)
+foocs1sod                   x sediment oxygen demand                                 (gO2/m^2/d)
+foocs1nit                   x denitrification                                        (gN/m^2/d)
+         0; # output items for exchanges
+        29; # fluxes
+doocs1min                   x mineralization                                         (gC/m^3/d)
+doons1min                   x sediment mineralization of N                           (gN/m^3/d)
+doops1min                   x sediment mineralization of P                           (gP/m^3/d)
+doocs1sod                   x SOD                                                    (gO2/m^3/d)
+doocs1nit                   x denitrification                                        (gN/m^3/d)
+ddumoo101                   x vol. quadratic mortality rate diatoms                  (gC/m^3/d)
+ddumoo102                   x vol. quadratic mortality rate diatoms C labile         (gC/m^3/d)
+ddumoo103                   x vol. quadratic mortality rate diatoms C refractory     (gC/m^3/d)      
+ddumoo104                   x vol. quadratic mortality rate diatoms N labile         (gN/m^3/d)
+ddumoo105                   x vol. quadratic mortality rate diatoms N refractory     (gN/m^3/d)  
+ddumoo106                   x vol. quadratic mortality rate diatoms NH4 autolysis    (gN/m^3/d)      
+ddumoo107                   x vol. quadratic mortality rate diatoms P labile         (gP/m^3/d)
+ddumoo108                   x vol. quadratic mortality rate diatoms P refractory     (gP/m^3/d)    
+ddumoo109                   x vol. quadratic mortality rate diatoms PO4 autolysis    (gP/m^3/d)      
+ddumoo110                   x vol. quadratic mortality rate diatoms Si labile        (gSi/m^3/d) 
+ddumoo111                   x vol. quadratic mortality rate diatoms Si refractory    (gSi/m^3/d)
+ddumoo112                   x vol. quadratic mortality rate diatoms Si autolysis     (gSi/m^3/d) 
+ddumoo113                   x vol. quadratic mortality rate greens                   (gC/m^3/d)      
+ddumoo114                   x vol. quadratic mortality rate greens C labile          (gC/m^3/d)   
+ddumoo115                   x vol. quadratic mortality rate greens C refractory      (gC/m^3/d)      
+ddumoo116                   x vol. quadratic mortality rate greens N labile          (gN/m^3/d)
+ddumoo117                   x vol. quadratic mortality rate greens N refractory      (gN/m^3/d)   
+ddumoo118                   x vol. quadratic mortality rate greens NH4 autolysis     (gN/m^3/d)       
+ddumoo119                   x vol. quadratic mortality rate greens P labile          (gP/m^3/d)
+ddumoo120                   x vol. quadratic mortality rate greens P refractory      (gP/m^3/d)      
+ddumoo121                   x vol. quadratic mortality rate greens PO4 autolysis     (gP/m^3/d)      
+ddumoo122                   x vol. quadratic mortality rate greens Si labile         (gSi/m^3/d)
+ddumoo123                   x vol. quadratic mortality rate greens Si refractory     (gSi/m^3/d)
+ddumoo124                   x vol. quadratic mortality rate greens Si autolysis      (gSi/m^3/d)
+        13; # stoichiometry lines      
+OOCS1       doocs1min     -1.00000
+TIC         doocs1min      1.00000
+H2O         doocs1min      1.50000
+OONS1       doons1min     -1.00000
+NH4         doons1min      1.00000
+H+          doons1min     -0.07100
+ALKA        doons1min      4.35700
+OOPS1       doops1min     -1.00000
+PO4         doops1min      1.00000
+H+          doops1min      0.03200
+ALKA        doops1min     -1.96800
+OXY         doocs1sod     -1.00000
+NO3         doocs1nit     -1.00000
+         0; # stoichiometry lines dispersion arrays
+         0; # stoichiometry lines velocity arrays
+END
+"""
+        self.custom_procs.append(process)
+
+    def custom_sedmodoo2(self,**kw):
+        idx=self.copy_count['sedmodoo2']
+        self.copy_count['sedmodoo2']+=1
+        if self.copy_count['sedmodoo2']>1:
+            raise Exception("custom_sedmodoo2 can only be used once")
+        
+        p=dict(name="sedmodoo2")
+        p.update(kw)
+
+        # Presumably want to enable it, though could be optional
+        self.custom_add_process(p['name'])
+        
+        process=f"""
+{p['name']:10}                    Mineralization of OOX2 substances
+sedmod    ; module name
+123       ; TRswitch
+34        ; # input items for segments
+OOCS2           -999.0      x Detrital carbon concentration                          (gC/m^2) 
+OONS2           -999.0      x Detrital nitrogen concentration                        (gN/m^2) 
+OOPS2           -999.0      x Detrital phosphporus concentration                     (gP/m^2) 
+OXY             -999.0      x oxygen concentration                                   (gO2/m^3)
+NO3             -999.0      x nitrate concentration                                  (gN/m^3)
+Temp            15.0000     x ambient water temperature                              (oC)
+Depth           -999.0      x depth of segment                                       (m)
+rsopto2         0.00000     x option for same or sep rates for C,N,P, Si - 0 = same  (-)
+rsoo2c          0.00010     x first order mineralization rate C (used for all if opt = 0) (1/d)
+rsoo2n          0.00010     x first order mineralization rate                        (1/d)
+rsoo2p          0.00010     x first order mineralization rate                        (1/d)
+tcoox2          1.09000     x temp. correction factor for mineralization             (-)
+frmindoo2       0.80000     x fraction mineralization by DO                          (-) 
+dbguntoo2       0.00000     x option to print debug output (0 = no output, or specify 4 digit unit number > 0)           (-)
+flgqmrt4        0.00000     x flag for simulating quadratic mortality (0 = not used) (-)       
+Diat            -999.0      x diatoms concentration                                  (gC/m^3)
+Green           -999.0      x Greens concentration                                   (gC/m^3) 
+kqmrtdiat       0.01000     x quadratic mortality rate for diatoms                   (m^3/gC.d)       
+tmqdiat         1.07        x temperature correction factor for diatoms mortality    (-)       
+frauqdiat       0.15        x autolysis fraction of diat mortality                   (-)
+frrfqdiat       0.15        x fraction of diat mortality routed to refractory pool   (-) 
+MinDiat         0.00000     x Minimum conc of diatoms to stop mortality              (g/m^3)  
+NCRatDiat       0.16000     x N:C ratio Diatoms                                      (gN/gC)             
+PCRatDiat       0.02000     x P:C ratio Diatoms                                      (gP/gC)             
+SCRatDiat       0.49000     x Si:C ratio Diatoms                                     (gSi/gC)      
+kqmrtgrn        0.01000     x quadratic mortality rate for greens                    (m^3/gC.d)
+tmqgrn          1.07        x temperature correction factor for greens mortality     (-)             
+frauqgrn        0.15        x autolysis fraction of mortality routed for diat        (-)
+frrfqgrn        0.15        x fraction of diat mortality routed to refractory pool   (-)
+MinGreen        0.00000     x Minimum conc of greens  to stop mortality              (g/m^3)
+NCRatGreen      0.16000     x N:C ratio Greens                                       (gN/gC)             
+PCRatGreen      0.02000     x P:C ratio Greens                                       (gP/gC) 
+SCRatGreen      0.00000     x Si:C ratio Greens                                     (gSi/gC)        
+optdbgq4        0.00000     x option to print debug output for quadratic mortality (0 = no output)  (-)
+         0; # input items for exchanges
+         5; # output items for segments
+foocs2min                   x sediment mineralization of C                           (gC/m^2/d) 
+foons2min                   x sediment mineralization of N                           (gN/m^2/d)
+foops2min                   x sediment mineralization of P                           (gP/m^2/d)
+foocs2sod                   x sediment oxygen demand                                 (gO2/m^2/d)
+foocs2nit                   x denitrification                                        (gN/m^2/d)
+         0; # output items for exchanges
+        29; # fluxes
+doocs2min                   x mineralization                                         (gC/m^3/d)
+doons2min                   x sediment mineralization of N                           (gN/m^3/d)
+doops2min                   x sediment mineralization of P                           (gP/m^3/d)
+doocs2sod                   x SOD                                                    (gO2/m^3/d)
+doocs2nit                   x denitrification                                        (gN/m^3/d)
+ddumoo201                   x vol. quadratic mortality rate diatoms                  (gC/m^3/d)
+ddumoo202                   x vol. quadratic mortality rate diatoms C labile         (gC/m^3/d)
+ddumoo203                   x vol. quadratic mortality rate diatoms C refractory     (gC/m^3/d)      
+ddumoo204                   x vol. quadratic mortality rate diatoms N labile         (gN/m^3/d)
+ddumoo205                   x vol. quadratic mortality rate diatoms N refractory     (gN/m^3/d)  
+ddumoo206                   x vol. quadratic mortality rate diatoms NH4 autolysis    (gN/m^3/d)      
+ddumoo207                   x vol. quadratic mortality rate diatoms P labile         (gP/m^3/d)
+ddumoo208                   x vol. quadratic mortality rate diatoms P refractory     (gP/m^3/d)    
+ddumoo209                   x vol. quadratic mortality rate diatoms PO4 autolysis    (gP/m^3/d)      
+ddumoo210                   x vol. quadratic mortality rate diatoms Si labile        (gSi/m^3/d) 
+ddumoo211                   x vol. quadratic mortality rate diatoms Si refractory    (gSi/m^3/d)
+ddumoo212                   x vol. quadratic mortality rate diatoms Si autolysis     (gSi/m^3/d) 
+ddumoo213                   x vol. quadratic mortality rate greens                   (gC/m^3/d)      
+ddumoo214                   x vol. quadratic mortality rate greens C labile          (gC/m^3/d)   
+ddumoo215                   x vol. quadratic mortality rate greens C refractory      (gC/m^3/d)      
+ddumoo216                   x vol. quadratic mortality rate greens N labile          (gN/m^3/d)
+ddumoo217                   x vol. quadratic mortality rate greens N refractory      (gN/m^3/d)   
+ddumoo218                   x vol. quadratic mortality rate greens NH4 autolysis     (gN/m^3/d)       
+ddumoo219                   x vol. quadratic mortality rate greens P labile          (gP/m^3/d)
+ddumoo220                   x vol. quadratic mortality rate greens P refractory      (gP/m^3/d)      
+ddumoo221                   x vol. quadratic mortality rate greens PO4 autolysis     (gP/m^3/d)      
+ddumoo222                   x vol. quadratic mortality rate greens Si labile         (gSi/m^3/d)
+ddumoo223                   x vol. quadratic mortality rate greens Si refractory     (gSi/m^3/d)
+ddumoo224                   x vol. quadratic mortality rate greens Si autolysis      (gSi/m^3/d)
+        13; # stoichiometry lines      
+OOCS2       doocs2min     -1.00000
+TIC         doocs2min      1.00000
+H2O         doocs2min      1.50000
+OONS2       doons2min     -1.00000
+NH4         doons2min      1.00000
+H+          doons2min     -0.07100
+ALKA        doons2min      4.35700
+OOPS2       doops2min     -1.00000
+PO4         doops2min      1.00000
+H+          doops2min      0.03200
+ALKA        doops2min     -1.96800
+OXY         doocs2sod     -1.00000
+NO3         doocs2nit     -1.00000
+         0; # stoichiometry lines dispersion arrays
+         0; # stoichiometry lines velocity arrays
+END
+"""
+        self.custom_procs.append(process)
