@@ -8106,9 +8106,9 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             # some readers hang on to a file point and that won't pickle.
             d['fp']=None
 
-        logging.info("get state for unstructured grid, keys are")
-        for k in d:
-            logging.info(f"{k}: {type(d[k])}")
+        #logging.info("get state for unstructured grid, keys are")
+        #for k in d:
+        #    logging.info(f"{k}: {type(d[k])}")
         return d
     def __setstate__(self,state):
         super(UnstructuredGrid,self).__setstate__(state)

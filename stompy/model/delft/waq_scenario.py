@@ -103,7 +103,7 @@ def timedelta_to_waq_timestep(td):
     
     return "%08d%02d%02d%02d"%(days, hours, mins, secs)
 
-def rel_symlink(src, dst, overwrite=False):
+def rel_symlink(src, dst, overwrite=False, ignore_samefile=True):
     """ Create a symlink, adjusting for a src path relative
     to cwd rather than the directory of dst. 
     """
@@ -111,7 +111,11 @@ def rel_symlink(src, dst, overwrite=False):
     # pwd, create a symlink that includes the right number of
     # ../..'s
     if os.path.lexists(dst):
-        assert not os.path.samefile(src,dst),"Attempt to symlink file to itself"
+        if os.path.samefile(src,dst):
+            if ignore_samefile:
+                print(f"Skipping symlink that already exists: ln -s {src} {dst}")
+            else:
+                raise Exception(f"Attempt to symlink file {src} to {dst}, but they are the same file")
         if not overwrite:
             raise Exception("%s already exists, and overwrite is False"%dst)
         else:
@@ -7210,6 +7214,12 @@ class BoundaryCondition(ModelForcing):
         datetimes are specified as in Scenario.as_datetime - DateTime instance, integer seconds
          or float datenum.
         """
+        if isinstance(data,pd.DataFrame):
+            # Before 2026-01-01 or so, this was silently ignored, but the simulation would 
+            # use the first value and ignore the rest.
+            raise Exception("BC data is DataFrame, expected constant, 1d/2d array, or pandas Series.\n"
+                            + f"boundaries={boundaries}\n"
+                            + f"substances={substances}")
         super(BoundaryCondition,self).__init__(items=boundaries,substances=substances,data=data)
 
     bdefs=None
