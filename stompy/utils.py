@@ -1872,12 +1872,12 @@ def cell_region_to_df(sheet,xl_range,idx_ncols=0,idx_nrows=0,fn=None):
     return df
 
 
-def uniquify_paths(fns):
+def uniquify_paths(fns,sep='/'):
     # split each filename into parts, and include only enough of the trailing parts
     # make each name unique, and omit trailing parts that are the same for all fns.
 
     # reverse to make the indexing easier
-    splits = [ fn.split('/')[::-1] for fn in fns]
+    splits = [ fn.split(sep)[::-1] for fn in fns]
 
 
     # Trying to identify a,b such that splits[a:b] uniquely identify each source
@@ -1904,7 +1904,7 @@ def uniquify_paths(fns):
                 break
         if done:
             break
-    trimmed = [ '/'.join(split[a:b][::-1]) for split in splits]
+    trimmed = [ sep.join(split[a:b][::-1]) for split in splits]
     return trimmed
 
 

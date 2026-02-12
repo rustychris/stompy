@@ -230,6 +230,20 @@ class RasReader:
         if trim_virtual:
             z=z[:self.grid.Ncells()]
         return z
+
+    def cell_manning_n(self, trim_virtual=True):
+        base=f'Geometry/2D Flow Areas/{self.area_name}'
+        for key in ["Cells Center Manning's n"]:
+            if key in self.h5[base]:
+                z = self.h5[base][key]
+                break
+        else:
+            print("Failed to find cell Manning's n")
+            import pdb
+            pdb.set_trace()
+        if trim_virtual:
+            z=z[:self.grid.Ncells()]
+        return z
     
     def cell_mean_bed_elevation(self, trim_virtual=True):
         base=f'Geometry/2D Flow Areas/{self.area_name}'

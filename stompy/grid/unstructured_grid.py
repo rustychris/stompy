@@ -5365,7 +5365,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
     def plot_halfedges(self,ax=None,mask=None,values=None,clip=None,
                        labeler=None, offset=0.2, placement='normal',
-                       subedges=None, **kwargs):
+                       subedges=None,text_kw={}, **kwargs):
         """
         plot a scatter and/or labels, two per edge, corresponding to
         two half-edges (i.e. edges['cells']).
@@ -5453,7 +5453,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                 for side in [0,1]:
                     ax.text( offset_points[ji,side,0],
                              offset_points[ji,side,1],
-                             labeler(j,side) )
+                             labeler(j,side), **text_kw )
         return coll
 
     def fields_to_xy(self,target,node_fields,x0,eps=1e-6):
