@@ -38,6 +38,8 @@ from ..utils import (mag, circumcenter, circular_pairs,signed_area, poly_circumc
                      orient_intersection,array_append,within_2d, to_unit, progress,
                      dist_along, recarray_add_fields,recarray_del_fields,
                      point_segment_distance)
+from .. import memoize
+from ..plot import plot_wkb
 
 try:
     import netCDF4
@@ -6125,7 +6127,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         if ax is None:
             ax=plt.gca()
         return ax.tripcolor(tri, values[sources], **kw)
+
     
+    def plot_boundary_polygon(self,**kw):
+        poly = self.boundary_polygon()
+        return plot_wkb.plot_wkb(poly,**kw)
+        
     def plot_cells(self,ax=None,mask=None,values=None,clip=None,centers=False,labeler=None,
                    masked_values=None,ragged_edges=None,
                    centroid=False,subedges=None,text_kw={},**kwargs):
@@ -6655,6 +6662,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         # Updated api as of 2022-02-22
         return ops.unary_union(cell_geoms)
 
+    @memoize.imemoize()
     def boundary_polygon(self, subedges=None):
         """ return polygon, potentially with holes, representing the domain.
         This method tries an edge-based approach, but will fall back to unioning

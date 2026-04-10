@@ -169,7 +169,7 @@ def imemoize(lru=None,key_method='pickle'):
             elif key_method=='strhash':
                 key = memoize_key_strhash(args,**kwargs)
             else:
-                key=key_method(args,**kwargs)
+                key = key_method(args,**kwargs)
 
             # to distinguish multiple methods
             key=str(obj),key
@@ -182,8 +182,10 @@ def imemoize(lru=None,key_method='pickle'):
                 else:
                     cache = {}
                 self._memocache=cache
+
+            force = kwargs.pop('_force',False)
             
-            if key not in cache:
+            if force or key not in cache:
                 value = obj(self,*args,**kwargs)
                 cache[key]=value
             else:

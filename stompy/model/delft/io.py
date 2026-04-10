@@ -548,7 +548,7 @@ def write_pli(file_like,pli_data):
                 node_labels=[""]*len(data)
 
             fp.write("%s\n"%label)
-            fp.write("     %d     %d\n"%data.shape)
+            fp.write("  %d     %d\n"%data.shape)
             if len(data) != len(node_labels):
                 raise Exception("%d nodes, but there are %d node labels"%(len(data),
                                                                           len(node_labels)))
