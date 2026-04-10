@@ -57,14 +57,11 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
     # Explicitly write points in dry areas to make sure DFM doesn't turn islands into
     # cells. Hasn't generally been needed.
     automatic_dry_points=False
-    
-    # flow and source/sink BCs will get the adjacent nodes dredged
-    # down to this depth in order to ensure the impose flow doesn't
-    # get blocked by a dry edge. Set to None to disable.
-    # This has moved to just the BC objects, and removed here to avoid
-    # confusion.
-    # dredge_depth=-1.0
 
+    # path to a .pol file, relative to script directory, to set partitioning
+    # number of partitions in file must agree self.nprocs
+    partition_pol_input=None 
+    
     def __init__(self,*a,**kw):
         # Still working out the ordering.
         # currently HydroModel calls configure(), and configure
@@ -475,7 +472,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             assert 'data' not in rec,"How is there already a data item?"
             rec['data']=None # will get updated if there is data and load_data=True
                 
-            if ext=='.pli':
+            if ext in ['.pli','.pliz']:
                 pli_fn=os.path.join(os.path.dirname(ext_fn),
                                     rec['FILENAME'])
                 pli=dio.read_pli(pli_fn)
@@ -496,7 +493,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                     # timeseries at one or more points along boundary:
                     # DIFFERENT logic if it's a source/sink.
                     if rec['QUANTITY'].upper()=="DISCHARGE_SALINITY_TEMPERATURE_SORSIN":
-                        tim_fn=pli_fn.replace('.pli','.tim')
+                        tim_fn=pli_fn.replace(ext,'.tim')
                         if os.path.exists(tim_fn):
                             t_ref,t_start,t_stop=self.mdu.time_range()
                             # These have a column for flow and each tracer
@@ -506,6 +503,9 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                             # are mentioned in boundary conditions, initial conditions and
                             # the substance file. Punt the complexity to the caller.
                             data=dio.read_dfm_tim(tim_fn,t_ref)
+                        else:
+                            print(f"Failed to find time series data for source-sink in {tim_fn}")
+                            
                     else:
                         tims=[]
                         for node_i,node_xy in enumerate(rec['coordinates']):
@@ -692,10 +692,23 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             # with ghost cells modified on some partitions but not 
             # other partitions, including creating egregious concave
             # cells.
-            cmd=["--partition:ndomains=%d:icgsolver=6"%self.num_procs,
-                 os.path.basename(self.mdu.filename)]
+            if self.partition_pol_input is None:
+                cmd=["--partition:ndomains=%d:icgsolver=6"%self.num_procs,
+                     os.path.basename(self.mdu.filename)]
+            else:
+                shutil.copyfile(self.partition_pol_input,
+                                os.path.join(self.run_dir, os.path.basename(self.partition_pol_input)))
+                # ndomains=0 necessary to fallback to the pol file.
+                cmd=["--partition:ndomains=0:icgsolver=6",
+                     os.path.basename(self.mdu.filename),
+                     os.path.basename(self.partition_pol_input)]
+                
             print(f"About to call {cmd}")
             output=self.run_dflowfm(cmd,mpi=False)
+            try:
+                output=output.decode('ascii')
+            except AttributeError:
+                pass
             print("-"*80)
             print(output)
             print("-"*80)
@@ -714,7 +727,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             gen_parallel=os.path.join(self.dfm_bin_dir,"generate_parallel_mdu.sh")
             
             cmd=[gen_parallel,os.path.basename(self.mdu.filename),"%d"%self.num_procs]
-            part_file =self.mdu['geometry','PartitioneFile']
+            part_file =self.mdu['geometry','PartitionFile']
             if part_file not in [None,""]:
                 self.log.info("Passing partition file to generate_parallel_mdu.sh")
                 cmd.append(part_file)
@@ -1682,7 +1695,7 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                 coord_vals=[s.decode().strip() for s in his_ds[names].values]
                 
                 if len(coord_vals)>len(np.unique(coord_vals)):
-                    self.log.info('Sorting out duplicate %s names'%coord)
+                    log.info('Sorting out duplicate %s names'%coord)
                     mask=[val not in coord_vals[:i]
                           for i,val in enumerate(coord_vals)]
                     mask=np.array(mask, np.bool_ )

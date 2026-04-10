@@ -3137,7 +3137,7 @@ class GdalGrid(SimpleGrid):
         return [xmin,xmax,ymin,ymax],[dx,dy]
 
     def __init__(self,filename,bounds=None,geo_bounds=None,target_projection=None,
-                 source_projection=None):
+                 source_projection=None,color_table=False):
         """ Load a raster dataset into memory.
         bounds: [x-index start, x-index end, y-index start, y-index end]
          will load a subset of the raster.
@@ -3146,7 +3146,9 @@ class GdalGrid(SimpleGrid):
         geo_bounds: xxyy bounds in geographic coordinates
 
         target_projection: reproject if needed to given projection, specified as proj.4 
-         compatible string. geo_bounds will be interpreted in the target projection. 
+         compatible string. geo_bounds will be interpreted in the target projection.
+
+        color_table: use an embedded colortable and return an RGBA field
         """        
         if isinstance(filename,gdal.Dataset):
             self.gds=filename
@@ -3239,20 +3241,30 @@ class GdalGrid(SimpleGrid):
 
         # and there might be a nodata value, which we want to map to NaN
         b = self.gds.GetRasterBand(1)
-        nodata = b.GetNoDataValue()
 
-        if nodata is not None:
-            if A.dtype in (np.int16,np.int32):
-                A[ A==nodata ] = self.int_nan
-            elif A.dtype in (np.uint8,np.uint16,np.uint32):
-                A[ A==nodata ] = 0 # not great...
-            elif np.issubdtype(A.dtype,np.float32):
-                # Oddly, it's possible for nodata to be a float64,
-                # and A a float32.
-                nodata=np.float32(nodata)
-                A[ A==nodata ] = np.nan
-            else:
-                A[ A==nodata ] = np.nan
+        if color_table:
+            table = b.GetColorTable()
+            count = table.GetCount()
+            mapping = np.zeros((count,4),np.uint8) # assume 8-bit RGBA?
+            for i in range(count):
+                mapping[i,:] = table.GetColorEntry(i)
+            assert table is not None,"Request for color table, but no table found in file"
+            A = mapping[A]
+        else:
+            nodata = b.GetNoDataValue()
+
+            if nodata is not None:
+                if A.dtype in (np.int16,np.int32):
+                    A[ A==nodata ] = self.int_nan
+                elif A.dtype in (np.uint8,np.uint16,np.uint32):
+                    A[ A==nodata ] = 0 # not great...
+                elif np.issubdtype(A.dtype,np.float32):
+                    # Oddly, it's possible for nodata to be a float64,
+                    # and A a float32.
+                    nodata=np.float32(nodata)
+                    A[ A==nodata ] = np.nan
+                else:
+                    A[ A==nodata ] = np.nan
 
         SimpleGrid.__init__(self,
                             extents = [x0+0.5*dx,

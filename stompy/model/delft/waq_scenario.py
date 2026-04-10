@@ -48,7 +48,7 @@ try:
 except ImportError:
     cascaded_union = None
 
-from collections import defaultdict, OrderedDict
+from collections import defaultdict, OrderedDict, deque
 try:
     from collections.abc import Iterable
 except ImportError:
@@ -12362,35 +12362,91 @@ def make_delwaqg_dataset(scen):
 class InpReader:
     def __init__(self,fn):
         self.fn=fn
-        with open(self.fn,'rt') as fp:
-            self.fp = fp
-            self.tok = self.toker()
+        self.fps=[]
+        try:
+            self.enter_file(self.fn)
             self.read()
-            self.fp = None
+        finally:
+            self.clean_files()
+    @property
+    def fp(self):
+        # file handle for current frame
+        self.fps[-1][0]
+
+    def enter_file(self,fn):
+        # fn: initial frame must be absolute path or relative to cwd.
+        # subsequent frames are absolute or relative to current frame
+        if not os.path.isabs(fn):
+            if len(self.fps)>0:
+                fn=os.path.join(os.path.dirname(self.fps[-1][1]),fn)
+            else:
+                fn=os.path.abspath(fn)
+        self.fps.append( [
+            open(fn,'rt'), # file handle
+            fn, # including filenames for reporting
+            deque(), # pending tokens from this file
+            ])
+        
+    def clean_files(self):
+        for frame in self.fps:
+            frame[0].close()
+        self.fps = []
+
+    def next_str_one_frame(self):
+        """
+        Return next token as string, or None if end of file was reached.
+        """
+        fp,fn,tokens = self.fps[-1]
+        while not tokens:
+            line=fp.readline()
+            if line=="":
+                return None # Exhausted frame
+            tokens.extend(shlex.split(line.split(';')[0].strip()))
+        assert tokens,"Did not detect EOF, but also did not get any tokens"
+        return tokens.popleft()
+        
+    def next_str(self):
+        # Add the layer that handles entering/exiting includes
+        while self.fps:
+            tok = self.next_str_one_frame()
+            if tok is None: # leave frame
+                fp,fn,tokens = self.fps.pop()
+                fp.close()
+                #print(f"Exhausted {fn}")
+                continue # in lower frame
+            elif tok=='INCLUDE': # enter frame
+                include_fn=self.next_str_one_frame()
+                self.enter_file(include_fn)
+                #print(f"Entering {include_fn}")
+                continue # in new higher frame
+            else:
+                return tok # got token
+
+        return None # No tokens, no more frames
+
+    def push_str(self,s):
+        self.fps[-1][2].appendleft(s)
+    def next_line(self):
+        # should only be needed for very first line which sets the comment
+        # character.
+        assert not self.fps[-1][2],"Readline is undefined when a line has already been parsed"
+        return self.fps[-1][0].readline()
+    
+    def next_int(self): return int(self.next_str())
+    def next_float(self): return float(self.next_str())
+        
     def skip_to_section(self,sec):
         """
         Skips to '#{sec}', which is the *end* of given section
         """
+        sec_tok = f'#{sec}'
         while 1:
-            line = self.fp.readline()
-            if line=="": break
-            if line.strip().startswith(f'#{sec}'):
+            tok = self.next_str()
+            if tok == sec_tok:
                 return True
+            if tok is None:
+                break
         return False
-    
-    def toker(self):
-        while 1:
-            line=self.fp.readline()
-            if line=="": break
-            line=line.split(';')[0].strip()
-            # break on white space except when inside single or double quotes
-            for t in shlex.split(line): 
-                #print("Token: ",t)
-                yield t
-
-    def next_int(self): return int(next(self.tok))
-    def next_str(self): return next(self.tok)
-    def next_float(self): return float(next(self.tok))
     
     def read(self):
         self.read_section0()
@@ -12410,7 +12466,7 @@ class InpReader:
         self.read_section6() # discharges, withdrawals, waste loads
         
     def read_section0(self):
-        header=self.fp.readline() # first line sets comment char, can't be read through toker
+        header=self.next_line() # first line sets comment char, can't be read through toker
         tokens = header.split()
         self.max_input_width  = int(tokens[0])
         self.max_output_width = int(tokens[1])
@@ -12499,29 +12555,70 @@ class InpReader:
             return None
         
         # either ITEM or CONCENTRATION
+
+        # Time series example:
+        # ITEM
+        #   'tracer-seg-76503'
+        # CONCENTRATION
+        #    'cTR1'
+        # TIME LINEAR
+        # DATA
+        # 2021/11/01-00:00:00
+        # 0.698629 ; tracer-seg-76503
+        #         
         def read_strings(token0,stop_tokens):
+            # token0 is starting token already read
             elts=[token0] # ITEM or CONCENTRATION
             while 1:
                 tok=self.next_str()
-                if (not tok) or tok in stop_tokens:
+                if (not tok) or (tok in stop_tokens):
                     break
                 elts.append(tok)
             return elts,tok
 
         dims=[]
+        items=None
+        concentrations=None
+        time_series=False # False, True, 'LINEAR'
         for _ in range(2):
-            elts,s = read_strings(s,['ITEM','CONCENTRATION','DATA'])
+            elts,s = read_strings(s,['ITEM','CONCENTRATION','DATA','TIME'])
             if elts[0]=='ITEM':
+                assert items is None
                 items=elts[1:]
             elif elts[0]=='CONCENTRATION':
+                assert concentrations is None
                 concentrations=elts[1:]
             dims.append(elts[0])
+        if s=='TIME':
+            s=self.next_str()
+            if s!='DATA':
+                time_series=s # 'LINEAR', or 'BLOCK'
+                s=self.next_str()
+            else:
+                time_series='BLOCK' # default
             
-        assert s=='DATA',"Trouble while parsing discharge concentrations"
+        assert items is not None
+        assert concentrations is not None
+        assert s=='DATA',f"While parsing discharge concentrations: expected 'DATA' token, found '{s}'"
 
-        data = [self.next_float() for _ in range(len(items) * len(concentrations))]
+        if not time_series:
+            data = [self.next_float() for _ in range(len(items) * len(concentrations))]
+        else:
+            # for time series, read a timestamp and then the same format for data, repeat until
+            # a keyword is found (ITEM, CONCENTRATION or #6)
+            data=[] # (string timestamp, data matrix)
+            while 1:
+                s=self.next_str()
+                if s in ['ITEM','CONCENTRATION','#6']:
+                    self.push_str(s)
+                    break
+                elif s is None:
+                    print(f"Unexpected end of file while reading {self.fps[-1][1]}")
+                    break
+                else:
+                    data.append( (s,[self.next_float() for _ in range(len(items) * len(concentrations))]) )
 
-        return dict(items=items, concentrations=concentrations, dims=dims, data=data)
+        return dict(items=items, concentrations=concentrations, dims=dims, data=data, time_series=time_series)
     
     def get_transect_by_name(self,name):
         for tran in self.monitor_transects:
