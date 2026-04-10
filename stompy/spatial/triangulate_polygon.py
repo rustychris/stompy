@@ -10,12 +10,28 @@ import shapely
 from shapely import geometry
 
 ##
-def constrained_delaunay(poly):
+def constrained_delaunay(poly,fallback=True):
+    """
+    poly: [N,2] sequence of points defining polygon
+    fallback: invalid input, like self-intersecting segments, will fall back
+      to fan triangulation.
+    """
     # iterate over ears (n)
     #   if ear is CW continue
     #   check ear circumcircle against all other nodes (n)
     geom = geometry.Polygon(poly)
-    coll = shapely.constrained_delaunay_triangles(geom)
+    try:
+        coll = shapely.constrained_delaunay_triangles(geom)
+    except shapely.GEOSException:
+        if fallback:
+            print("Bad input to constrained_delaunay. Punt with fan triangulation")
+            coll=None
+            result=np.zeros((poly.shape[0]-2,3),np.int32)
+            for i in range(poly.shape[0]-2):
+                result[i,:] = [0,1,i]
+            return result
+        else:
+            raise
     result = np.zeros((len(coll.geoms),3),np.int32)
 
     for i,coll_poly in enumerate(coll.geoms):

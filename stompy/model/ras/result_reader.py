@@ -112,6 +112,38 @@ class RasProject:
             return None
         return RasReader(plan_file, area_name=area_name)
 
+def read_plan_text_file(fn):
+    settings={}
+    with open(fn,'r') as fp:
+        while 1:
+            line=fp.readline()
+            if line=="":
+                break
+            line=line.strip()
+            if line.startswith('BEGIN '):
+                name=line.replace('BEGIN ','').replace(':','').strip()
+                end_tag=line.replace('BEGIN ','END ')
+                value_lines=[]
+                while 1:
+                    line=fp.readline()
+                    if line=="": raise Exception("EOF while reading multiline data from plan text file")
+                    line=line.strip()
+                    if line==end_tag:
+                        settings[name] = "\n".join(value_lines)
+                        break
+                    else:
+                        value_lines.append(line)
+            else:
+                name_rest=[s.strip() for s in line.split('=',2)]
+                if len(name_rest)!=2:
+                    #raise Exception(f"Failed to parse text line: {line}")
+                    name,rest=name_rest[0],True # some entries are just presence/absence
+                else:
+                    name,rest=name_rest # most are key=value
+                settings[name]=rest
+            
+    return settings
+
 class RasReader:
     # Where to find results within h5 file
     unsteady_base_ras6=('/Results/Unsteady/Output/Output Blocks/'
@@ -124,12 +156,65 @@ class RasReader:
         
         self.load_h5()
         self.load_grid()
+
+    @staticmethod
+    def get_short_id(fn):
+        h5 = h5py.File(fn)
+        short_id=None
+        try:
+            short_id = h5['Results/Unsteady'].attrs['Short ID'].decode('utf-8')
+        finally:
+            h5.close()
+        return short_id
         
     def short_title(self):
         return self.h5['Results/Unsteady'].attrs['Short ID'].decode('utf-8')
-        
+
+    @staticmethod
+    def sync_name_to_hdf(plan_hdf):
+        print(f"Will update '{plan_hdf}'")
+        with h5py.File(plan_hdf,'a') as h5:
+            plan_txt_fn=h5['/Plan Data/Plan Information'].attrs['Plan Filename'].decode()
+            plan_txt_fn=os.path.join(os.path.dirname(plan_hdf),plan_txt_fn)
+            print(f"Will read {plan_txt_fn} for new names")
+            plan_txt=read_plan_text_file(plan_txt_fn)
+            for k in ['Plan Title','Short Identifier']:
+                print(f"{k:25}: '{plan_txt.get(k,'<missing')}'")
+                if k not in plan_txt:
+                    raise Exception(f"Did not find {k} in plan text file")
+                
+            def try_decode(s):
+                try:
+                    return s.decode('ascii')
+                except AttributeError:
+                    return s
+            def try_encode(s):
+                try:
+                    return s.encode('ascii')
+                except AttributeError:
+                    return s
+                
+            plan_title=try_encode(plan_txt['Plan Title'])
+            plan_shortID=try_encode(plan_txt['Short Identifier'])
+                
+            # RAS has these as ASCII-encoded fixed length strings.
+            # encode to bytes is not enough - that will go in as a variable length string,
+            # and come back to python as str.
+            for h5_path,h5_attr,new_value in [
+                    ('/Plan Data/Plan Information','Plan Name',plan_title),
+                    ('/Plan Data/Plan Information','Plan Title',plan_title),
+                    ('/Plan Data/Plan Information','Plan ShortID',plan_shortID),
+                    ('/Results/Unsteady','Plan Title',plan_title),
+                    ('/Results/Unsteady','Short ID',plan_shortID),
+                    ]:
+                    print(f"{h5_path}/{h5_attr}:")
+                    print("  Old: " + try_decode(h5[h5_path].attrs[h5_attr]))
+                    h5[h5_path].attrs[h5_attr] = np.array(new_value,dtype='S') # force fixed length
+                    print("  New: " + try_decode(h5[h5_path].attrs[h5_attr]))
     def load_h5(self):
-        self.h5 = h5py.File(self.results_fn,'r')
+        self.h5 = h5py.File(self.results_fn,'r') # read only, file must exist
+        # Used to load r+, but seems like that should be opt-in
+        
         # Is this RAS6 or RAS2025?
         try:
             self.h5[self.unsteady_base_ras6]

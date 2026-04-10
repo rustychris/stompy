@@ -73,6 +73,12 @@ def load_mesh_state(case_dir,precision=15):
     print(f"Time to convert mesh representation: {time.time()-t:.3f}s")
     return (xyz,face_nodes,face_cells,cell_faces)
 
+def mesh_num_cells(case_dir):
+    meshpath = os.path.join(case_dir,'constant/polyMesh')
+    owner = OpenFoamFile(meshpath, name="owner")
+    neigh = OpenFoamFile(meshpath, name="neighbour")
+    return max(neigh.values.max(),owner.values.max())
+
 def mesh_bbox(case_dir,precision=15):
     # Load proc mesh                    
     verbose=False
@@ -364,9 +370,9 @@ def mesh_slice(slice_normal, slice_offset, cell_mapping, xyz, face_nodes, face_c
 
         # okay if some of these do not end up getting sliced, say if they are tangent or coplanar to
         # slice. just be fast here
-
         # numpy approach (numba approach in alternative implementation)
         cmp_face_0 = cmp_xyz[face_nodes[:,0]]
+        # somehow cmp_xyz.shape is 110034, but face_nodes goes up to 110035 inclusive. xyz is [110034,3]
         cmp_face_same = np.all( (cmp_xyz[face_nodes[:,1:]] == cmp_face_0[:,None]) | (face_nodes[:,1:]<0),
                                 axis=1)
         faces_to_slice = np.nonzero(~cmp_face_same)[0]
@@ -1138,7 +1144,7 @@ def mesh_triangulate(fIdx,
     # Get it working with external Delaunay - could reimplement if needed
     #simplices = Delaunay(face_ij).simplices
     simplices = triangulate_polygon.constrained_delaunay(face_ij)
-
+    
     for i_tri in range(len(nodes)-2):
         tri_nodes = np.full(FACE_MAX_NODES,-1,np.int32)
         tri_nodes[:3] = nodes[simplices[i_tri]]

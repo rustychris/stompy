@@ -33,7 +33,19 @@ from fluidfoam import readvector, readscalar
 
 from shapely import geometry, ops, convex_hull
 
-from . import mesh_ops, mesh_ops_nb
+from . import mesh_ops, mesh_ops_nb, sampling_depth_average
+
+@memoize.memoize(lru=5)
+def PostFoam_factory(pf_kwargs):
+    return PostFoam(**pf_kwargs)
+
+def PostFoam_to_raster(variable,timename,force_precalc,cache,
+                       # Need enough info to allocate a PostFoam:
+                       pf_kwargs):
+    # sim_dir, rot, raster_mode, clean_duplicate_triples
+    # raster_parameters: dx, xxyy
+    pf = PostFoam_factory(pf_kwargs)
+    return pf.to_raster(variable,timename,cache)
 
 class PostFoam:
     """
@@ -108,11 +120,16 @@ class PostFoam:
     max_n_procs=1024 # just to bound the search, no inf loops
     precision=15
     current_timename = None
-    n_tasks=8 # parallelism for cell-clipping step
+    pool = None # parallelism for cell-clipping or sampling steps
     
     # command, with path as needed, to openfoam writeMeshObj
     # writeMeshObj="writeMeshObj"
 
+    raster_precalc=None
+    raster_xxyy=None
+    raster_dx=None
+    raster_dy=None
+    
     # transform OF coordinates to z-up coordinates via
     #  output_z_up=np.tensordot(input_point_xyz,R,[-1,0])
     # Default value is to avoid having to change all of Ben's scripts
@@ -338,30 +355,36 @@ class PostFoam:
         if xxyy is None:
             xxyy = [self.bboxes[:,0].min(),self.bboxes[:,1].max(),
                     self.bboxes[:,2].min(),self.bboxes[:,3].max()]
-            
+
+        if self.raster_xxyy is None or np.any(np.array(xxyy)!=np.array(self.raster_xxyy)):
+            self.raster_precalc=None
         self.raster_xxyy = xxyy
+        
         if dx<0:
             dx=int((xxyy[1] - xxyy[0])/-dx)
+        if self.raster_dx != dx:
+            self.raster_precalc=None
         self.raster_dx = dx
+        
         if dy is None:
             dy=dx
         elif dy<0:
             dy=int((xxyy[3] - xxyy[2])/-dy)
         else:
             dy=dx
+        if self.raster_dy != dy:
+            self.raster_precalc=None
         self.raster_dy = dy
-        
-        self.raster_precalc=None # calculate on-demand
 
         return dict(dx=dx,dy=dy,xxyy=xxyy,nx=int((xxyy[1]-xxyy[0])/dx),ny=int((xxyy[3]-xxyy[2])/dy))
 
     def precalc_raster_info(self,fld,force=False):
         if self.raster_mode=='clipping':
-            self.precalc_raster_info_clipping(fld,force=force)
+            self.precalc_raster_info_clipping(fld, force=force)
         elif self.raster_mode=='bbox':
             self.precalc_raster_info_bbox(fld)
         elif self.raster_mode=='sampling':
-            self.precalc_raster_info_sampling(fld)
+            self.precalc_raster_info_sampling(fld, force=force)
         else:
             raise Exception(f"Bad raster mode {self.raster_mode}")
             
@@ -420,14 +443,6 @@ class PostFoam:
 
         self.raster_precalc = self.merge_proc_raster_weights(results)
         
-    # def get_raster_cache_fn(self,label,fld,proc=None,**kw):
-    #     hash_input=[fld.extents,fld.F.shape,self.rot]
-    #     hash_out = hashlib.md5(pickle.dumps(hash_input)).hexdigest()
-    #     
-    #     cache_dir=os.path.join(self.proc_dir(proc),"cache")
-    #     cache_fn=os.path.join(cache_dir,
-    #                           f"raster_weights-{fld.dx:.3g}x_{fld.dy:.3g}y-{hash_out}")
-        
     def precalc_raster_weights_proc_by_faces(self,proc,fld,force=False):
         hash_input=[fld.extents,fld.F.shape,self.rot]
         hash_out = hashlib.md5(pickle.dumps(hash_input)).hexdigest()
@@ -456,8 +471,20 @@ class PostFoam:
     def precalc_raster_info_sampling(self, fld, force=False):
         # weights is a matrix with columns corresponding to openfoam cells
         # and rows corresponding to output pixels in row-major order
-        results = [self.precalc_raster_weights_proc_by_sampling(proc,fld,force=force)
-                   for proc in range(self.n_procs)]
+        tasks=[ (proc,
+                 self.proc_dir(proc),
+                 fld.extents,
+                 fld.F.shape,
+                 self.rot,
+                 force)
+                for proc in range(self.n_procs)]
+            
+        if self.pool is not None:
+            print("parallel call to sampling_depth_average.precalc_rastre_weights_proc_by_sampling")
+            results = self.pool.starmap(sampling_depth_average.precalc_raster_weights_proc_by_sampling,tasks)
+        else:
+            results = [sampling_depth_average.precalc_raster_weights_proc_by_sampling(*args)
+                       for args in tasks]
 
         self.raster_precalc = self.merge_proc_raster_weights(results)
 
@@ -468,15 +495,16 @@ class PostFoam:
         cache_dir=os.path.join(self.proc_dir(proc),"cache")
         cache_fn=os.path.join(cache_dir,
                               f"raster_weights-sampling-{fld.dx:.3g}x_{fld.dy:.3g}y-{hash_out}")
-        print(f"Weights for {proc}: cache file is {cache_fn}")
     
         if os.path.exists(cache_fn) and not force:
+            print(f"Weights for {proc}: will read from cache file {cache_fn}")
             with open(cache_fn,'rb') as fp:
                 return pickle.load(fp)
-        
+
+        print(f"Computing weights for {proc}: will write to cache file {cache_fn}")
+            
         mesh_state = self.read_mesh_state(proc)
-        bbox = self.get_mesh_bbox(proc)
-        raster_weights = precalc_raster_weights_proc_by_sampling(fld, bbox, *mesh_state)
+        raster_weights = sampling_depth_average.precalc_raster_weights_proc_by_sampling(fld, *mesh_state)
         if cache_fn is not None:
             if not os.path.exists(cache_dir):
                 os.makedirs(cache_dir)
@@ -495,8 +523,29 @@ class PostFoam:
             else:
                 raster_weights = sparse.hstack( (raster_weights,proc_raster_weights) )
         return raster_weights
-    
+
+    def to_rasters(self, variable, timenames, cache=True):
+        # if self.pool is not None:
+        #     if variable=='wse':
+        #         # no real preprocessing
+        #         # force_precal=False
+        #         tasks=[ (variable,timename,False,cache,
+        #                  dict(sim_dir=self.sim_dir,rot=self.rot,raster_mode=self.raster_mode,
+        #                       clean_duplicate_triples=self.clean_duplicate_triples,
+        #                       raster_xxyy=self.raster_xxyy,raster_dx=self.raster_dx,raster_dy=self.raster_dy))
+        #                 for timename in timenames]
+        #         # If it doesn't work to return the field objects, okay to just fall through, under the
+        #         # assumption that rasters have been calculated and can be quickly read from cache
+        #         return self.pool.starmap(PostFoam_to_raster,tasks)
+
+        # Fallback
+        return [self.to_raster(variable,t,cache=cache)
+                for t in utils.progress(timenames, msg=f"{variable} time slices: %s")]        
+        
     def to_raster(self, variable, timename, force_precalc=False, cache=True):
+        # cache: True to use cache read and write
+        #        False no caching
+        #        'update' to recalc and write to cache
         n_components=None
         if variable=='U':
             n_components = 3
@@ -510,7 +559,7 @@ class PostFoam:
             cache_dir=os.path.join(self.sim_dir,"cache")
             cache_fn=os.path.join(cache_dir,
                                   f"{variable}-{timename}-{fld.dx:.3g}x_{fld.dy:.3g}y-{hash_out}.tif")
-            if os.path.exists(cache_fn):
+            if os.path.exists(cache_fn) and cache==True:
                 return field.GdalGrid(cache_fn)
         
         if variable=='wse':
@@ -518,7 +567,7 @@ class PostFoam:
         else:
             self.read_timestep(timename)
 
-            if self.raster_precalc is None:
+            if force_precalc or self.raster_precalc is None:
                 self.precalc_raster_info(fld,force=force_precalc)
 
             raster_weights = self.raster_precalc
@@ -533,11 +582,17 @@ class PostFoam:
                     num = raster_weights.dot(self.alphas*self.vels[:,comp])
                     den = raster_weights.dot(self.alphas)
 
+                    if self.raster_mode=='sampling':
+                        # initial testing had some spillover with the original 1e-10 tolerance.
+                        # 0.00005 was still too small.
+                        alpha_tol=0.0005
+                    else:
+                        alpha_tol=1e-10
                     # seems like division by zero should be handled by 'divide', but
                     # so far it trips 'invalid'
                     with np.errstate(divide='ignore',invalid='ignore'):
                         u = num/den
-                        u[ np.abs(den)<1e-10 ] = np.nan
+                        u[ den<alpha_tol ] = np.nan
 
                     fld.F[:,:,comp] = u.reshape( (fld.F.shape[0],fld.F.shape[1]) )                
                 elif variable=='depth_bad':
@@ -559,7 +614,7 @@ class PostFoam:
             cache_dir = os.path.dirname(cache_fn)
             if not os.path.exists(cache_dir):
                 os.makedirs(cache_dir)
-            fld.write_gdal(cache_fn)
+            fld.write_gdal(cache_fn,overwrite=(cache=='update'))
 
         return fld
 
@@ -925,6 +980,7 @@ def precalc_raster_weights_proc_by_faces(fld, xyz, face_nodes, face_cells, cell_
         cell_mapping, mesh_state = slicer(np.r_[1,0,0], xmin, cell_mapping, *mesh_state)
         #print(f"col={col} face_count={mesh_state[1].shape[0]}")
         assert np.all(mesh_state[1][:,:3]>=0) # col 232 is leaving this corrupt.
+        assert mesh_state[0].shape[0] > mesh_state[1].max(),"Expected face_nodes to only have entries smaller than xyz"
 
     if 0: # debugging checks
         print("Checking cells")
@@ -944,6 +1000,8 @@ def precalc_raster_weights_proc_by_faces(fld, xyz, face_nodes, face_cells, cell_
         ymin=fld_y[row]-fld.dy/2
         ymax=fld_y[row]+fld.dy/2
         cell_mapping, mesh_state = slicer(np.r_[0,1,0], ymin, cell_mapping, *mesh_state)
+        assert mesh_state[0].shape[0] > mesh_state[1].max(),"Expected face_nodes to only have entries smaller than xyz"
+        
         #print(f"row={row} face_count={mesh_state[1].shape[0]}")
 
     if 0: # debugging checks
@@ -986,24 +1044,6 @@ def precalc_raster_weights_proc_by_faces(fld, xyz, face_nodes, face_cells, cell_
                 
     return raster_weights
 
-def precalc_raster_weights_proc_by_sampling(fld, bbox, xyz, face_nodes, face_cells, cell_faces):
-    """
-    Try a sampling based approach
-    """
-    mesh_state = (xyz,face_nodes,face_cells,cell_faces)
-
-    fld_X,fld_Y = fld.XY() # these are pixel centers
-    fld_Z=0*fld_X
-
-    fld_XYZ=np.array([fld_X,fld_Y,fld_Z]).transpose([1,2,0])
-    
-    print("Assemble matrix")
-    raster_weights = sparse.dok_matrix((fld.F.shape[0]*fld.F.shape[1],
-                                        n_cells_orig),
-                                       np.float64)
-    mesh_ops.sample_lines(np.r_[0,0,1],fld_XYZ, raster_weights, bbox, *mesh_state)
-    
-    return raster_weights
 
 
 def cell_as_edges(cIdx, cell_faces, facefile, xyz):

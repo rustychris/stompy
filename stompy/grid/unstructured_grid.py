@@ -3631,15 +3631,16 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         return centers
 
-    def cells_centroid(self,ids=None,method='py'):
+    def cells_centroid(self,ids=None,method='py',subedges=None):
         """
         Calculate cell centroids.  Defaults to faster python method,
         though subsetting with ids is not optimized with the python method.
         """
-        if method=='py':
+        if method=='py' and subedges is None:
+            # py method only works for non-subedges cases
             return self.cells_centroid_py(ids)
         else:
-            return self.cells_centroid_shapely(ids=ids)
+            return self.cells_centroid_shapely(ids=ids,subedges=subedges)
 
     def cells_representative_point(self,ids=None):
         if ids is None:
@@ -3669,9 +3670,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             else:
                 assert False
             coords.append(seg_coords[1:,:])
-        return np.concatenate(coords)
+        if coords:
+            return np.concatenate(coords)
+        else:
+            return np.zeros((0,2))# or empty list?
         
-    def cells_centroid_shapely(self,ids=None):
+    def cells_centroid_shapely(self,ids=None,subedges=None):
         """
         Calculate cell centroids using shapely/libgeos library.
         Possibly more robust than python code, but 2 orders of magnitude 
@@ -3684,7 +3688,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
         for ci,c in enumerate(ids):
             if not self.cells['deleted'][c]:
-                centroids[ci]= np.array(self.cell_polygon(c).centroid.coords)
+                centroids[ci]= np.array(self.cell_polygon(c,subedges=subedges).centroid.coords)
         return centroids
 
     def cells_centroid_py(self,ids=None):
@@ -6184,7 +6188,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             if isinstance(centroid,np.ndarray):
                 xy=centroid
             elif centroid:
-                xy=self.cells_centroid()
+                xy=self.cells_centroid(subedges=subedges)
             else:
                 xy=self.cells_center()
         else:
