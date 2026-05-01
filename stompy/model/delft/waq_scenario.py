@@ -7217,9 +7217,16 @@ class BoundaryCondition(ModelForcing):
         if isinstance(data,pd.DataFrame):
             # Before 2026-01-01 or so, this was silently ignored, but the simulation would 
             # use the first value and ignore the rest.
-            raise Exception("BC data is DataFrame, expected constant, 1d/2d array, or pandas Series.\n"
-                            + f"boundaries={boundaries}\n"
-                            + f"substances={substances}")
+            # PM addition - 3/1/2026 - convert data to 1D array and comment out exception
+            # RH 2026-05-01: accept DataFrame if it has one variable
+            if len(data.columns)==1:
+                data=data.to_numpy().flatten()
+            else:
+                # with multiple columns, unclear what the caller is expecting, and flatten() is probably
+                # not what somebody wants.
+                raise Exception("BC data is DataFrame, expected constant, 1d/2d array, or pandas Series.\n"
+                                + f"boundaries={boundaries}\n"
+                                + f"substances={substances}")
         super(BoundaryCondition,self).__init__(items=boundaries,substances=substances,data=data)
 
     bdefs=None
@@ -8243,6 +8250,8 @@ END_MULTIGRID"""%num_layers
 
         for src_tag in self.src_tags:
             # conc. defaults to 1.0
+            if src_tag['items'] == 'COYOTE_flow':
+                print('check')
             self.add_bc(src_tag['items'],src_tag['tracer'],src_tag.get('value',1.0))
 
     def deep_sediment_boundary_defs(self):
