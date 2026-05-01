@@ -301,6 +301,10 @@ def z_from_sigma(dataset,variable,interfaces=False,dz=False):
     """
     Create a z coordinate for variable as a Dataset from the given dataset
 
+    variable: either a data variable in dataset that has sigma coordinates, or a tuple
+     of dims from a variable that does. Just trying to find a hint of what dimension is associated
+     with sigma coordinates.
+
     interfaces: False => do nothing related to layer boundaries
             variable name => use the given variable to define interfaces between layers.
             True => try to infer the variable, fallback to even spacing otherwise.
@@ -309,8 +313,10 @@ def z_from_sigma(dataset,variable,interfaces=False,dz=False):
 
     dz: implies interfaces, and includes a z_dz variable giving thickness of each layer.
     """
-    da=dataset[variable]
-    da_dims=da.dims
+    if isinstance(variable,tuple):
+        da_dims = variable
+    else:
+        da_dims=dataset[variable].dims
 
     if dz:
         assert interfaces is not False,"Currently must enable interfaces to get thickness dz"
@@ -377,7 +383,12 @@ def bundle_components(ds,new_var,comp_vars,frame,comp_names=None):
     frame: name to give the component dimension, i.e. the name of the
      reference frame
     comp_names: list same length as comp_vars, used to name the components.
+
+    if any of the comp_vars do not exist, do nothing and return False
     """
+    for v in comp_vars:
+        if v not in ds:
+            return False
     vector=xr.concat([ds[v] for v in comp_vars],dim=frame)
     # That puts xy as the first dimension, but I'd rather it last
     dims=vector.dims
@@ -385,7 +396,7 @@ def bundle_components(ds,new_var,comp_vars,frame,comp_names=None):
     ds[new_var]=vector.transpose( *roll_dims )
     if comp_names is not None:
         ds[frame]=(frame,),comp_names
-
+    return True
 
 
 def concat_permissive(srcs,**kw):

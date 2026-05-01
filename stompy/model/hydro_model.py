@@ -1746,7 +1746,7 @@ def extract_transect(ds,line,grid=None,dx=None,cell_dim='nFlowElem',
     if grid is None:
         grid=dfm_grid.DFMGrid(ds)
 
-    from stompy.spatial import linestring_utils
+    from ..spatial import linestring_utils
     line_sampled=linestring_utils.resample_linearring(line,dx,closed_ring=False)
     N_sample=len(line_sampled)
 
@@ -1786,7 +1786,15 @@ def extract_transect(ds,line,grid=None,dx=None,cell_dim='nFlowElem',
     new_ds=new_ds.set_coords(['x_sample','y_sample','d_sample'])
 
     if add_z:
-        new_ds.update( xr_utils.z_from_sigma(new_ds,'ucx',interfaces=True,dz=True) )
+        if include is None:
+            possible_sig_dims = new_ds['ucx'].dims # always present?
+        else:
+            # all dims of the included variables
+            possible_sig_dims = tuple(set([d 
+                                           for v in include
+                                           for d in new_ds[v].dims 
+                                           ]))
+        new_ds.update( xr_utils.z_from_sigma(new_ds, possible_sig_dims, interfaces=True, dz=True) )
 
     # need to drop variables with dimensions like nFlowLink
     to_drop=[]
@@ -1800,24 +1808,26 @@ def extract_transect(ds,line,grid=None,dx=None,cell_dim='nFlowElem',
         xr_utils.bundle_components(new_ds,vec,comps,'xy',['N','E'])
 
     if rename:
-        new_ds=new_ds.rename( {'ucx':'Ve',
-                               'ucy':'Vn',
-                               'ucz':'Vu',
-                               'ucxa':'Ve_avg',
-                               'ucya':'Vn_avg',
-                               's1':'z_surf',
-                               'FlowElem_bl':'z_bed',
-                               'laydim':'layer'} )
+        defaults = {'ucx':'Ve',
+                    'ucy':'Vn',
+                    'ucz':'Vu',
+                    'ucxa':'Ve_avg',
+                    'ucya':'Vn_avg',
+                    's1':'z_surf',
+                    'FlowElem_bl':'z_bed',
+                    'laydim':'layer'}
+        renames = {old:defaults[old] for old in defaults if old in new_ds}
+        new_ds=new_ds.rename(renames)
 
     # Add metadata if missing:
     if (name is None) and ('name' not in new_ds.attrs):
-        new_ds.attrs['name']='DFM Transect'
+        new_ds.attrs['name']='Transect'
     elif name is not None:
         new_ds.attrs['name']=name
-    if 'filename' not in new_ds.attrs:
+    if 'filename' not in new_ds.attrs and 'name' in new_ds.attrs:
         new_ds.attrs['filename']=new_ds.attrs['name']
-    if 'source' not in new_ds.attrs:
-        new_ds.attrs['source']=new_ds.attrs['source']
+    if 'source' not in new_ds.attrs and 'source' in ds.attrs:
+        new_ds.attrs['source']=ds.attrs['source']
 
     return new_ds
 

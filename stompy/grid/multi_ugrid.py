@@ -698,6 +698,10 @@ class MultiUgrid(object):
     def variables(self):
         return self.dss[0].variables
 
+    @property
+    def coords(self):
+        return self.dss[0].coords
+
     def isel(self,**kwargs):
         """
         Partial handling of subselection at the MultiUgrid level. Subsetting non-partitioned
@@ -774,11 +778,14 @@ class MultiUgrid(object):
         subset.dss=[ds.drop(*args,**kwargs) for ds in self.dss]
         return subset
     
-    def compute(self,vars=None):
-        if vars is None:
-            vars = self.data_vars
+    def compute(self,variables=None):
+        if variables is None:
+            variables = self.variables # data variables and coordinate variables
         ds=xr.Dataset()
-        for v in vars:
+        for v in variables:
             ds[v] = self[v].compute()
+
+        ds = ds.set_coords(list(self.coords))
+            
         return ds
     
