@@ -559,7 +559,10 @@ class Hydro(object):
         """ Moved from waq_scenario init_hydro_parameters
         """
         self.log.debug("Adding planform areas parameter")
-        hyd['SURF']=self.planform_areas()
+        try:
+            hyd['SURF']=self.planform_areas()
+        except FileNotFoundError:
+            self.log.warning("Appears that SURF is not available (.are file)")
         
         try:
             self.log.debug("Adding bottom depths parameter")
@@ -2056,7 +2059,10 @@ class HydroFiles(Hydro):
             # assumes dense exchanges
             n_seg=self['number-vertical-exchanges'] + n_elts
 
-            if 1: # allow for sparse exchanges and dense segments
+            #if 1: # allow for sparse exchanges and dense segments
+            if not os.path.exists(self.get_path('areas-file')):
+                self.log.info('Areas file does not exist, cannot double-check segment count')
+            else:
                 # more work, and requires that we have area and volume files
                 nsteps=len(self.t_secs)
 
@@ -12369,7 +12375,16 @@ def make_delwaqg_dataset(scen):
 
 
 class InpReader:
-    def __init__(self,fn):
+    parse0=True
+    parse1=True
+    parse2=True
+    parse3=True
+    parse4=True
+    parse5=True
+    parse6=True
+    parse7=True
+    def __init__(self,fn,**kw):
+        utils.set_keywords(self,kw)
         self.fn=fn
         self.fps=[]
         try:
@@ -12458,8 +12473,12 @@ class InpReader:
         return False
     
     def read(self):
+        # always read section0
+        print("Reading section 0")
         self.read_section0()
+        # always read section1
         assert self.skip_to_section(1)
+        print("Reading section 1")
         self.next_int() ; self.next_str() ; self.next_str() # system clock info
         self.next_float()                    # integration option
         while 1:                             #
@@ -12469,10 +12488,23 @@ class InpReader:
         self.next_str() # stop time
         assert 0==self.next_int() # assume constant timestep option
         self.next_str() # time step value
+        print("Reading monitoring")
         self.read_mon()
+        print("Reading transects")
         self.read_transects()
-        assert self.skip_to_section(5)
-        self.read_section6() # discharges, withdrawals, waste loads
+        if self.parse3:
+            assert self.skip_to_section(2)
+            self.read_section3()
+        if self.parse6:
+            print("Reading section 6")
+            assert self.skip_to_section(5)
+            self.read_section6() # discharges, withdrawals, waste loads
+        else:
+            print("Skipping section 6")
+            self.skip_to_section(6)
+        if self.parse7:
+            print("Reading section 7")
+        self.read_section7()
         
     def read_section0(self):
         header=self.next_line() # first line sets comment char, can't be read through toker
@@ -12531,7 +12563,10 @@ class InpReader:
             exchs=[self.next_int() for _ in range(count)]
             self.monitor_transects.append( (name,exchs))
         #print(f"{len(self.monitor_transects)} transects")
-        
+
+    def read_section3(self):
+        self.n_seg = self.next_int()
+        # Bail - not trying to read anything else.
     def read_section6(self):
         # discharges, withdrawals, waste loads
         n_discharges = self.next_int()
@@ -12635,4 +12670,45 @@ class InpReader:
                 return tran
         return None
     
+    def read_section7(self):
+        # CONSTANTS
+        # SEG_FUNCTIONS 'name' SEG_FUNCTIONS 'LSB' LINEAR ALL BINARY_FILE 'sfbay_dynamo000-lsb.seg'
+        self.params={} #NamedObjects(cast_value=cast_to_parameter)
+        while 1:
+            typ = self.next_str()
+            if typ=='CONSTANTS':
+                name = self.next_str()
+                print(f"Got a constant {name}")
+                assert self.next_str()=='DATA'
+                data = self.next_float()
+                self.params[name] = ParameterConstant(data)
+            elif typ=='SEG_FUNCTIONS':
+                name = self.next_str()
+                interp='BLOCK'
+                attachment='ALL'
+                # LINEAR ALL BINARY_FILE <fn>
+                while 1:
+                    tok = self.next_str().upper()
+                    if tok in ['LINEAR','BLOCK']:
+                        interp=tok
+                    elif tok in ['ALL','DEFAULTS','SEGMENTS','INPUTGRID']:
+                        attachment=tok
+                    elif tok=='BINARY_FILE':
+                        fn=self.next_str()
+                        p=ParameterSpatioTemporal(seg_func_file=os.path.join(os.path.dirname(self.fn),fn),
+                                                  n_seg=self.n_seg)
+                        self.params[name]=p
+                        break
+                    else:
+                        print("Failed to parse part of seg function: ",tok)
+                        break
+                print(f"Got a segment function {name}")
+            elif typ=='PARAMETERS':
+                print("Got spatial parameter")
+            elif typ=='FUNCTIONS':
+                print("Got time series")
+            else:
+                print(f"Got something else: {typ}")
+                break
+                      
         
