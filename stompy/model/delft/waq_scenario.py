@@ -11005,7 +11005,10 @@ END_MULTIGRID"""%num_layers
 
     def map_ds_path(self):
         return os.path.join(self.base_path,"dwaq_map.nc")
-        
+
+    def map_path(self):
+        return os.path.join(self.base_path,f"{self.name}.map")
+    
     def map_ds(self):
         """
         Shifting to a slightly more standarized way of accessing map output

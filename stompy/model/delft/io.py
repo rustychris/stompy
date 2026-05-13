@@ -156,6 +156,8 @@ def parse_mon_textfile(mon_fn):
     from collections import defaultdict
     mon_recs = defaultdict(list)
 
+    tracer_names=None
+    
     t0=None
     with open(mon_fn,'rt') as fp:
         # find T0 line
@@ -200,16 +202,19 @@ def parse_mon_textfile(mon_fn):
             tracer_names = [s for s in l[prefix_len:].strip().split()]
             continue
 
-    mon_ds = xr.Dataset()
-    times =  t0 + np.timedelta64(1,'s') * np.array(mon_recs['time_seconds'])
-    mon_ds['time'] = ('time',),times
-    mon_ds['time_s'] = ('time',), mon_recs['time_seconds']
-    mon_ds['tracer'] = ('tracer',), tracer_names
-    for k in ['mass','process','load','inflow','outflow']:
-        data = np.array(mon_recs[k])
-        print(f"{k} has shape {data.shape}")
-        mon_ds[k] = ('time','tracer'), data
-    return mon_ds
+    if tracer_names is not None:
+        mon_ds = xr.Dataset()
+        times =  t0 + np.timedelta64(1,'s') * np.array(mon_recs['time_seconds'])
+        mon_ds['time'] = ('time',),times
+        mon_ds['time_s'] = ('time',), mon_recs['time_seconds']
+        mon_ds['tracer'] = ('tracer',), tracer_names
+        for k in ['mass','process','load','inflow','outflow']:
+            data = np.array(mon_recs[k])
+            print(f"{k} has shape {data.shape}")
+            mon_ds[k] = ('time','tracer'), data
+        return mon_ds
+    else:
+        return None
 
 
 
