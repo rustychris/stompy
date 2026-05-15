@@ -10650,12 +10650,17 @@ END_MULTIGRID"""%num_layers
         """
         model=cls(base_path=path)
         model.overwrite=False
+        model.load_runid()
         # currently very little here...
 
         if load_hydro:
             # Try to guess what the right hyd file is
             model.load_hydro()
         return model
+
+    def load_runid(self):
+        with open(os.path.join(self.base_path,'runid.waq'),'rt') as fp:
+            self.name = fp.readline().strip()
 
     def load_hydro(self):
         hyds=glob.glob(os.path.join(self.base_path,"*.hyd"))

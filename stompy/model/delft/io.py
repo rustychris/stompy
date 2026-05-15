@@ -793,7 +793,8 @@ def create_restart(res_fn, map_fn, hyd, state_vars = None, map_net_cdf = False, 
     return 
 
 
-def read_map(fn,hyd=None,use_memmap=True,include_grid=True,return_grid=False,n_layers='hydro'):
+def read_map(fn,hyd=None,use_memmap=True,include_grid=True,return_grid=False,n_layers='hydro',
+             mask_nodata=False):
     """
     Read binary D-Water Quality map output, returning an xarray dataset.
 
@@ -812,6 +813,8 @@ def read_map(fn,hyd=None,use_memmap=True,include_grid=True,return_grid=False,n_l
     n_layers: generally can be inferred from the hydro ('hydro'), but for delwaqg output this must
     be specified as an integer, or can be trusted from the map file by passing 'auto'
 
+    mask_nodata: experimental - replace -999 with nan on the fly.
+    
     note that missing values at this time are not handled - they'll remain as
     the delwaq standard -999.0.
     """
@@ -904,10 +907,23 @@ def read_map(fn,hyd=None,use_memmap=True,include_grid=True,return_grid=False,n_l
     ds['time']=( ('time',), times.astype('M8[ns]') )
     ds['t_sec']=( ('time',), mapped['tsecs'] )
 
+    if mask_nodata:
+        import dask.array
+            
     for idx,name in enumerate(ds.sub.values):
-        ds[name]= ( ('time','layer','face'), 
-                    mapped['data'][...,idx] )
-        ds[name].attrs['_FillValue']=-999
+        dims=('time','layer','face')
+        mapped_data = mapped['data'][...,idx]
+        if mask_nodata: # Has not been tested - this is more for notes...
+            # Assume we only want to chunk at the timestep level
+            chunks=(1,) + mapped_data.shape[1:]
+            mapped_data = dask.array.from_array(mapped['data'][...,idx],chunks=chunks)
+            def filter(x):
+                return np.where(x==-999,np.nan,x)
+            # almost certainly wrong.
+            ds[name]=xr.apply_ufunc(filter,xr.DataArray(mapped_data,dims=dims), dask='parallelized')
+        else:
+            ds[name]= dims, mapped['data'][...,idx]
+            ds[name].attrs['_FillValue']=-999
 
     if include_grid:
         # not sure why this doesn't work.

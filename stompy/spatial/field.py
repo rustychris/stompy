@@ -2599,7 +2599,6 @@ class SimpleGrid(QuadrilateralGrid):
             return full_mask
 
         from . import wkb2shp
-        raster_ds=self.write_gdal('Memory')
         poly_ds=wkb2shp.wkb2shp("Memory",[poly])
         target_field=SimpleGrid(F=np.zeros(self.F.shape,np.int32),
                                 extents=self.extents)
@@ -2787,7 +2786,7 @@ class SimpleGrid(QuadrilateralGrid):
 
         if output_file is "Memory", will create an in-memory GDAL dataset and return it.
         """
-        in_memory= (output_file=='Memory')
+        in_memory = (output_file in ['Memory','MEM'])
 
         if not in_memory:
             # Create gtif
@@ -3071,7 +3070,54 @@ class SimpleGrid(QuadrilateralGrid):
 
         new_F = np.rot90(self.F,degrees_cw//90)
         return SimpleGrid(extents=new_extents, F=new_F)
-            
+
+    def label_by_unstructured(self, g):
+        """
+        g: UnstructuredGrid
+        returns a field with matching extents/resolution, labeled
+        by cell indices of g. Pixels that are not in a cell are labeled -1.
+        """
+        g_polygons = [g.cell_polygon(c) for c in range(g.Ncells())] # 3.5s
+        cell_indices=np.arange(g.Ncells())
+        poly_ds = wkb2shp.wkb2shp('Memory', g_polygons, fields = dict(cell=cell_indices))
+
+        target_field=SimpleGrid(F=np.full(self.F.shape, -1, np.int32),
+                                extents=self.extents)
+        target_ds = target_field.write_gdal('Memory')
+        gdal.RasterizeLayer(target_ds, # destination dataset
+                        [1], # into first band
+                        poly_ds.GetLayer(), # source layer
+                        options = ["ATTRIBUTE=cell"]) 
+        new_raster = GdalGrid(target_ds)
+        return new_raster
+    
+    def average_by_label(self,label_fld, n_labels=None):
+        """
+        label_fld: integer-valued Field with same extents/shape as self.
+           can have -1 to indicate no label, but no other negative values
+        returns an array, indexed by labels 0..n_labels-1, with the average
+        of self.F for each label.
+        Labels that did not occur get avg=0.0
+        """
+        Fravel=self.F.ravel().copy()
+        Fravel[np.isnan(Fravel)]=0.0 # count no data as no AV.
+
+        print("copy labels")
+        Fnonnegative = label_fld.F.ravel() + 1
+
+        if n_labels==None:
+            n_labels=Fnonnegative.max()+1
+            print(f"Infer n_labels={n_labels}")
+
+        print("Count")
+        count = np.bincount(Fnonnegative, minlength=1+n_labels)
+        print("Weighted")
+        weighted = np.bincount(Fnonnegative, minlength=1+n_labels, weights=Fravel)
+
+        avg = (weighted/count.clip(1))[1:]
+
+        return avg
+
     @staticmethod
     def read(fname):
         fp = open(fname,'rb')
