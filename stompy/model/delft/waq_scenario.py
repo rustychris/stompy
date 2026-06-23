@@ -2208,7 +2208,9 @@ class HydroFiles(Hydro):
 
 
     def volumes(self,t,**kw):
-        return self.seg_func(t,label='volumes-file',**kw)
+        #def vol_filename(self):
+        return self.seg_func(t, fn=self.vol_filename, **kw)
+        #return self.seg_func(t,label='volumes-file',**kw)
 
     _seg_mmap=None # dict of fn => memmap'd data
     
@@ -10662,10 +10664,12 @@ END_MULTIGRID"""%num_layers
         with open(os.path.join(self.base_path,'runid.waq'),'rt') as fp:
             self.name = fp.readline().strip()
 
-    def load_hydro(self):
+    def load_hydro(self, reference_originals=False):
         hyds=glob.glob(os.path.join(self.base_path,"*.hyd"))
         if len(hyds)==1:
-            self.hydro=HydroFiles(hyd_path=hyds[0])
+            self.hydro=HydroFiles(hyd_path=hyds[0], reference_originals=reference_originals)
+            # Doctor that up in case the hyd file does not match what's in the .inp file
+            
         else:
             self.log.info("Could not detect a load-able hyd file")
         return self.hydro

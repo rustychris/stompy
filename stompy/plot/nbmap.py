@@ -2,6 +2,7 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import ipywidgets as widgets
+
 from IPython.display import display
 from .. import utils
 from ..grid import unstructured_grid
@@ -35,7 +36,7 @@ class GenericMap:
         self.ax.yaxis.set_visible(0)
         self.g.plot_boundary(lw=0.5,color='k',ax=self.ax)
         self.cell_coll = self.g.plot_cells(values=np.zeros(self.g.Ncells()),ax=self.ax,lw=0.5,ec='face')
-        plt.colorbar(self.cell_coll,cax=self.cax) 
+        self.cbar = plt.colorbar(self.cell_coll,cax=self.cax) 
                 
         self.textbox = self.ax.text(0.01,0.98,"Initial",va='top',transform=self.ax.transAxes)
         
@@ -45,7 +46,17 @@ class GenericMap:
         self.widget_var  =widgets.Dropdown(options=self.spatial_vars,value=self.spatial_vars[0],description="Variable:")
         self.widget_layer=widgets.IntSlider(value=0,min=0,max=self.ds.sizes['layer']-1,description='Layer:')
         self.widget_output = widgets.Output(layout={'border': '1px solid black'})
-        self.widget_clim=widgets.FloatRangeSlider(value=[0, 1.0], min=0, max=1.0, step=0.01, description='Color range:')
+        
+        self.widget_clim_min=widgets.FloatText(value=0, description='Color min:')
+        self.widget_clim_min_reset=widgets.Button(description="Reset to view")
+        self.widget_clim_max=widgets.FloatText(value=1, description='Color max:')
+        self.widget_clim_max_reset=widgets.Button(description="Reset to view")
+
+        self.widget_clim = widgets.VBox([
+            widgets.HBox([self.widget_clim_min,self.widget_clim_min_reset]),
+            widgets.HBox([self.widget_clim_max,self.widget_clim_max_reset])
+            ])
+        
         self.widget_cmap=widgets.Dropdown(options=self.cmaps,value=self.cmaps[0],description="Colormap:")
 
         # overrides from caller:
@@ -56,12 +67,8 @@ class GenericMap:
         if self.time0 is not None:
             self.widget_time.value=self.time0
         if self.clim0 is not None:
-            if self.clim0[0]<self.widget_clim.max:            
-                self.widget_clim.min = self.clim0[0]
-            self.widget_clim.max = self.clim0[1] # will get overwritten, but need it at least 
-            self.widget_clim.min = self.clim0[0] # to cover requested lower/upper
-            self.widget_clim.lower=self.widget_clim.min
-            self.widget_clim.upper=self.widget_clim.max
+            self.widget_clim_min.value = self.clim0[0]
+            self.widget_clim_max.value = self.clim0[1]
             
         if self.layer0 is not None:
             self.widget_layer.value=self.layer0
@@ -72,6 +79,7 @@ class GenericMap:
             with self.widget_output: # necessary?
                 #print("Updating...")
                 scal = self.ds[self.widget_var.value]
+                self.cbar.set_label(self.widget_var.value)
                 isel_kw={}
                 if 'time' in scal.dims:
                     isel_kw['time'] = self.widget_time.value
@@ -81,24 +89,30 @@ class GenericMap:
                     isel_kw['layer'] = self.widget_layer.value
                 data = scal.isel(**isel_kw)
                 self.cell_coll.set_array(data)
-                data_min=np.nanmin(data.values)
-                data_max=np.nanmax(data.values)        
-                if data_min<self.widget_clim.max:
-                    self.widget_clim.min=data_min # can't set min>max, even transiently
-                    self.widget_clim.max=data_max
-                else:
-                    self.widget_clim.max=data_max
-                    self.widget_clim.min=data_min
+                sel=self.g.cell_clip_mask(self.ax.axis())
+                data_min=np.nanmin(data.values[sel])
+                data_max=np.nanmax(data.values[sel])
                     
-                clim=[self.widget_clim.lower,self.widget_clim.upper]
+                if self.widget_clim_min.value==-999 or b==self.widget_clim_min_reset:
+                    self.widget_clim_min.value=data_min
+                if self.widget_clim_max.value==-999 or b==self.widget_clim_max_reset:
+                    self.widget_clim_max.value=data_max
+                clim=[self.widget_clim_min.value,self.widget_clim_max.value]
+                
                 self.cell_coll.set_clim(clim)
                 self.cell_coll.set_cmap(self.widget_cmap.value)
-                #self.cax.cla()
+
                 self.fig.canvas.draw()
         
         self.widget_update=widgets.Button(description="Update")
         self.widget_update.on_click(on_button_clicked)
+        self.widget_clim_min_reset.on_click(on_button_clicked)
+        self.widget_clim_max_reset.on_click(on_button_clicked)
 
         on_button_clicked(None)
-        display(self.widget_time,self.widget_var,self.widget_layer,self.widget_clim,self.widget_cmap,
-                self.widget_update,self.widget_output)
+        
+        display(widgets.VBox([
+            widgets.HBox([
+                widgets.VBox([self.widget_time,self.widget_var,self.widget_layer]),
+                widgets.VBox([self.widget_clim, self.widget_cmap])]),
+            self.widget_update,self.widget_output]))
