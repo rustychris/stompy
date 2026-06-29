@@ -1287,7 +1287,23 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                                                     internal_values[start:start+count],
                                                     points[1:,:]],axis=0)
                     grd.edges[subedges][j]=points
-                    
+
+            if twod_info['version'] == 'v2025': # Attempt to load streamwise coordinates
+                try:
+                    # combined array of points, [N,{x,y}]
+                    scs_values = h['Geometry/2D Flow Areas/' + twod_area_name + '/Data/CellFace Streamwise']
+                    scs_count = scs_values.attrs['Count']
+                    scs_start = scs_values.attrs['Start']
+                    scs_cell  = scs_values.attrs['Index']
+                    cell_face_normal = np.full((grd.Ncells(),grd.max_sides,2),np.nan)
+                    for cell,start,count in zip(scs_cell,scs_start,scs_count):
+                        cell_face_normal[cell,:count,:]=scs_values[start:start+count,:]
+                    grd.add_cell_field('cell_face_normal',cell_face_normal)
+                except KeyError:
+                    print("INFO: No face internal points found.")
+                    # File not written with subedge geometry
+                    internal_info = None
+                    scs_values = None
             return grd
         finally:
             if close_h5:
@@ -3615,7 +3631,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
 
     def edge_center(self,j):
         return self.nodes['x'][self.edges['nodes'][j]].mean(axis=0)
-    def edges_center(self,edges=None):
+    def edges_center(self,edges=None, subedges=None):
         """
         edges: sequence of edge indices to compute subset
         """
@@ -3624,6 +3640,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
             valid=~self.edges['deleted']
             centers[valid,:] = self.nodes['x'][self.edges['nodes'][valid,:]].mean(axis=1)
             centers[~valid,:]=np.nan
+            if subedges is not None:
+                for j in np.nonzero(valid)[0]:
+                    seg_coords = self.edges[subedges][j]
+                    if seg_coords is not None and len(seg_coords)>2:
+                        subedge_center = geometry.LineString(seg_coords).interpolate(0.5, normalized=True).coords[0]
+                        centers[j,:] = subedge_center
         else:
             edges=np.asarray(edges)
             centers=np.zeros( (len(edges), 2), np.float64)
@@ -5265,14 +5287,18 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
                         self.nodes['x'][mask][:,1],
                         sizes,
                         **kwargs)
-        bounds=[ self.nodes['x'][mask][:,0].min(),
-                 self.nodes['x'][mask][:,0].max(),
-                 self.nodes['x'][mask][:,1].min(),
-                 self.nodes['x'][mask][:,1].max()]
-        if (bounds[0]<bounds[1]) and (bounds[2]<bounds[3]):
-            request_square(ax,bounds)
+        pnts=self.nodes['x'][mask]
+        if pnts.shape[0]>0:
+            bounds=[ self.nodes['x'][mask][:,0].min(),
+                     self.nodes['x'][mask][:,0].max(),
+                     self.nodes['x'][mask][:,1].min(),
+                     self.nodes['x'][mask][:,1].max()]
+            if (bounds[0]<bounds[1]) and (bounds[2]<bounds[3]):
+                request_square(ax,bounds)
+            else:
+                # in case the bounds are degenerate
+                request_square(ax)
         else:
-            # in case the bounds are degenerate
             request_square(ax)
 
         return coll
@@ -6273,6 +6299,12 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
         if ax is None: ax=plt.gca()
 
         return ax.tripcolor(tri,values[sources],**kw)
+
+    def tripcolor_node_values(self,values,ax=None,refresh=False,**kw):
+        tri = self.mpl_triangulation(return_sources=False, refresh=refresh)
+        if ax is None: ax=plt.gca()
+        # depends on len(values) == self.Nnodes()
+        return ax.tripcolor(tri,values,**(dict(shading='gouraud')|kw))
     
     def edges_length(self,sel=None):
         if sel is None:

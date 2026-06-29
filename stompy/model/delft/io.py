@@ -1436,6 +1436,7 @@ class SectionedConfig(object):
     end_section_patt=None
     
     def parse_row(self,row):
+        row=row.strip()
         m_sec = re.match(self.section_patt, row)
         if m_sec is not None:
             return m_sec.group(1), None, m_sec.group(2)

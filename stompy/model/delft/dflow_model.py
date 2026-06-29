@@ -411,7 +411,8 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                 
                 stanza.append(raw_line.strip())
 
-                line=raw_line.split('#')[0].strip()
+                # seems that either comment character is allowed.
+                line=raw_line.split('#')[0].split('*')[0].strip()
                 if not line: # blank line or comment
                     continue 
                 k,v=key_value(line)
@@ -475,6 +476,9 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
             if ext in ['.pli','.pliz']:
                 pli_fn=os.path.join(os.path.dirname(ext_fn),
                                     rec['FILENAME'])
+                if not os.path.exists(pli_fn):
+                    print(f"Expected  {pli_fn} but it did not exist")
+                    continue
                 pli=dio.read_pli(pli_fn)
                 rec['pli']=pli
 
@@ -1689,9 +1693,11 @@ class DFlowModel(hm.HydroModel,hm.MpiModel):
                                  ('weirgens','weirgen_id'),
                                  ('source_sink','source_sink_name'),
                                  ('stations','station_name'),
+                                 ('station','station_name'),
                                  ('general_structures','general_structure_id'),
                                  ('gategens','gategen_name')]:
                 if names not in his_ds: continue
+                if coord not in his_ds: continue
                 coord_vals=[s.decode().strip() for s in his_ds[names].values]
                 
                 if len(coord_vals)>len(np.unique(coord_vals)):
