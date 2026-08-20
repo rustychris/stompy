@@ -1089,14 +1089,17 @@ class SuntansModel(hm.HydroModel):
 
         depth=-z_min # positive:down
         dzs=np.zeros(Nk, np.float64)
-        if r>1.0:
+        if r==0.0:
+            dzs[:] = np.loadtxt(self.vertspace_fn)
+        elif r==1.0:
+            dzs[:]=depth/float(Nk)
+        else:
             dzs[0]=depth*(r-1)/(r**Nk-1)
             for k in range(1,Nk):
                 dzs[k]=r*dzs[k-1]
-        else:
-            dzs[:]=depth/float(Nk)
-        z_interface=np.concatenate( ( [z_max],
-                                      z_max-np.cumsum(dzs) ) )
+        # 2026-08-13 RH: had been starting at z_max, but should be 0
+        z_interface=np.concatenate( ( [0.0],
+                                      0.0-np.cumsum(dzs) ) )
         
         z_mid=0.5*(z_interface[:-1]+z_interface[1:])
 
@@ -1447,10 +1450,21 @@ class SuntansModel(hm.HydroModel):
         # TODO: use bc.z, which is either an elevation or a 'bed'
         # to choose the layer
         c=self.bc_geom_to_interior_cell(bc.geom)
-        self.log.warning("Assuming source/sink is at bed")
-        k=int(self.config['Nkmax'])-1
+        try:
+            z = bc.geom.z
+            k=self.z_to_layer(z)
+        except:
+            self.log.warning("Assuming source/sink is at bed")
+            k=int(self.config['Nkmax'])-1
+
         return (c,k)
-    
+
+    def z_to_layer(self,z):
+        layers = self.layer_data()
+        k = np.searchsorted(-layers['z_interface'].values[1:],-z) # negate both to make z_interface increasing
+        Nk=int(self.config['Nkmax'])
+        return min(k, Nk-1)
+        
     def bc_geom_to_interior_cell(self,geom):
         """ geom: a Point or LineString geometry. In the case of a LineString,
         only the first point is used.
