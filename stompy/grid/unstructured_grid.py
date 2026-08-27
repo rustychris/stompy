@@ -511,7 +511,7 @@ class UnstructuredGrid(Listenable,undoer.OpHistory):
     def reproject(self,src_srs,dest_srs):
         xform=proj_utils.mapper(src_srs,dest_srs)
         new_g=self.copy()
-        new_g.apply_transform(xfrom)
+        new_g.apply_transform(xform)
         return new_g
 
     def apply_transform(self, xform, subedges=None):

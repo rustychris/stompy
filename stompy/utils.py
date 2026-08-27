@@ -2309,6 +2309,7 @@ def download_url(url,local_file,log=None,on_abort='pass',on_exists='pass',
       useful options here:
         verify=False: if an https server has a bad certificate but you want
            to proceed anyway.
+        headers={'User-Agent':'Joshua Slocum - josh@circumnavigate.org'}
     """
     if os.path.exists(local_file):
         if on_exists=='pass': return
