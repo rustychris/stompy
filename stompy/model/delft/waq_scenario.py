@@ -2778,7 +2778,16 @@ class HydroFiles(Hydro):
             gbl['attrs'][link0]=other
 
         return gbl
-        
+
+class HydroFromInp(HydroFiles):
+    def __init__(self, hyd_toks, **kw):
+        self.hyd_path=None
+        self.hyd_toks = hyd_toks
+
+        super(HydroFiles,self).__init__(**kw)
+        if sys.platform=='win32' and self.enable_write_symlink:
+            self.log.warning("Symlinks disabled on windows")
+            self.enable_write_symlink=False
 
 REINDEX=-9999
 class DwaqAggregator(Hydro):
@@ -12618,6 +12627,12 @@ class InpReader:
         if self.parse3:
             assert self.skip_to_section(2)
             self.read_section3()
+        if self.parse4:
+            assert self.skip_to_section(3)
+            self.read_section4()
+        if self.parse5:
+            assert self.skip_to_section(4)
+            self.read_section5() # open boundary conditions
         if self.parse6:
             print("Reading section 6")
             assert self.skip_to_section(5)
@@ -12690,6 +12705,37 @@ class InpReader:
     def read_section3(self):
         self.n_seg = self.next_int()
         # Bail - not trying to read anything else.
+
+    def read_section4(self):
+        # exchanges, pointers file, dispersions, area, flow, lengths
+        self.n_exch_x = self.next_int()
+        self.n_exch_y = self.next_int() # often 0 for unstructured
+        self.n_exch_z = self.next_int()
+        self.n_exch = self.n_exch_x + self.n_exch_y + self.n_exch_z
+        
+        self.n_dispersions = self.next_int()
+        assert self.n_dispersions==0,"Not ready for dispersion arrays"
+        self.n_velocities = self.next_int()
+        assert self.n_velocities==0,"Not ready for velocity arrays"
+        self.input_form_sec4 = self.next_int() # I think this should be 1
+        assert self.input_form_sec4==1,"Unsure how to interpret input form in section 4"
+        self.pointer_option = self.next_int() # and this 0?
+        assert self.pointer_option==0,"Expected pointer option = 0 (binary)"
+        poi_fn = os.path.join(os.path.dirname(self.fn),self.next_str())
+        with open(poi_fn,'rb') as fp:
+            self.pointers = np.fromfile(fp, np.int32).reshape( (self.n_exch,4) )
+
+        # Really I just want to create a HydroFiles instance here.
+        
+        
+    def read_section5(self):
+        # Need to figure out how many open boundaries there are, then we read 3 strings
+        # for each one of them.
+        n_open = self.n_open_boundaries()
+
+    def n_open_boundaries(self):
+        raise NotImplementedError("WIP")
+    
     def read_section6(self):
         # discharges, withdrawals, waste loads
         n_discharges = self.next_int()
