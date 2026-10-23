@@ -2594,6 +2594,7 @@ class HydroFiles(Hydro):
             try:
                 orig=self.get_path('grid-coordinates-file',check=True)
             except KeyError:
+                print("hyd file did not include grid-coordinates-file")
                 return None
             try:
                 self._grid=unstructured_grid.UnstructuredGrid.from_ugrid(orig)
@@ -8218,7 +8219,7 @@ END_MULTIGRID"""%num_layers
             self.start_time=self.time0+self.scu*self._hydro.t_secs[0]
         if self.stop_time is None:
             self.stop_time =self.time0+self.scu*self._hydro.t_secs[-1]
-
+            
     def init_parameters(self):
         params=NamedObjects(scenario=self,cast_value=cast_to_parameter)
         params['ONLY_ACTIVE']=ParameterConstant(1) # almost always a good idea.
@@ -8337,6 +8338,60 @@ END_MULTIGRID"""%num_layers
                     assert False 
         self.discharges.append(disch)
         return disch
+
+    _relocation_scan_days = 30
+    _relocation_info=None # (seg_adj, seg_min_vol, remapped_segs)
+    def maybe_relocate_discharge(self, seg0, vol_threshold=10):
+        if self._relocation_info is None:
+            print("Building relocation database")
+            # get segment graph info and min volumes over scan_days
+            min_vol = self.hydro.volumes(0) # just look at seg volumes
+
+            # Get the minimum volume over a month of output
+            dt_s = np.median(np.diff(self.hydro.t_secs)) # 1800 s
+            t0 = self.hydro.t_secs[0]
+            # scan volumes over n days of hydro, takes ~1 minute or so
+            for t_sec in np.arange(t0, t0+self._relocation_scan_days*86400, dt_s): 
+                vol = self.hydro.volumes(t_sec)
+                min_vol = np.minimum(min_vol, vol)
+
+            from collections import defaultdict
+
+            poi0 = self.hydro.pointers[:,:2] - 1
+            seg_adj = defaultdict(list)
+            for seg_from,seg_to in poi0:
+                if seg_from<0 or seg_to<0: continue
+                seg_adj[seg_from].append(seg_to)
+                seg_adj[seg_to].append(seg_from)
+
+            # seg-seg adjacency, seg minimum volume, and remapped segment ids, 0-based
+            self._relocation_info = (seg_adj, min_vol, {})
+
+        # Find relocations for discharge segments that are too small.
+        seg_adj,min_vol,remapped_segs=self._relocation_info
+        
+        if min_vol[seg0]<=vol_threshold:
+            print(f"Relocating load into seg0={seg0}, volume {min_vol[seg0]} < {vol_threshold}")
+            queue=[seg0]
+            queued={seg0}
+            n_iter=400
+            for finite in range(n_iter):
+                trav=queue.pop(0)
+                if min_vol[trav]>vol_threshold:
+                    break
+                else:
+                    for nbr in seg_adj[trav]:
+                        if nbr not in queued:
+                            queue.append(nbr)
+                            queued.add(nbr)
+                    trav=-1
+
+            assert trav>=0, f"Failed to find a segment with sufficient volume after {n_iter} iterations"
+            assert min_vol[trav]>vol_threshold
+            remapped_segs[seg0] = trav
+            print(f"  Remapped {seg0} => {trav}")
+            seg0=trav
+        return seg0
 
     def add_load(self,*args,**kws):
         load=Load(*args,**kws)
@@ -10379,6 +10434,62 @@ class WaqModelBase(scriptable.Scriptable):
         self.discharges.append(disch)
         return disch
 
+    _relocation_scan_days = 30
+    _relocation_info=None # (seg_adj, seg_min_vol, remapped_segs)
+    
+    def maybe_relocate_discharge(self, seg0, vol_threshold=10):
+        if self._relocation_info is None:
+            print("Building relocation database")
+            # get segment graph info and min volumes over scan_days
+            min_vol = self.hydro.volumes(0) # just look at seg volumes
+
+            # Get the minimum volume over a month of output
+            dt_s = np.median(np.diff(self.hydro.t_secs)) # 1800 s
+            t0 = self.hydro.t_secs[0]
+            # scan volumes over n days of hydro, takes ~1 minute or so
+            for t_sec in np.arange(t0, t0+self._relocation_scan_days*86400, dt_s): 
+                vol = self.hydro.volumes(t_sec)
+                min_vol = np.minimum(min_vol, vol)
+
+            from collections import defaultdict
+
+            poi0 = self.hydro.pointers[:,:2] - 1
+            seg_adj = defaultdict(list)
+            for seg_from,seg_to in poi0:
+                if seg_from<0 or seg_to<0: continue
+                seg_adj[seg_from].append(seg_to)
+                seg_adj[seg_to].append(seg_from)
+
+            # seg-seg adjacency, seg minimum volume, and remapped segment ids, 0-based
+            self._relocation_info = (seg_adj, min_vol, {})
+
+        # Find relocations for discharge segments that are too small.
+        seg_adj,min_vol,remapped_segs=self._relocation_info
+        
+        if min_vol[seg0]<=vol_threshold:
+            print(f"Relocating load into seg0={seg0}, volume {min_vol[seg0]} < {vol_threshold}")
+            queue=[seg0]
+            queued={seg0}
+            n_iter=400
+            for finite in range(n_iter):
+                trav=queue.pop(0)
+                if min_vol[trav]>vol_threshold:
+                    break
+                else:
+                    for nbr in seg_adj[trav]:
+                        if nbr not in queued:
+                            queue.append(nbr)
+                            queued.add(nbr)
+                    trav=-1
+
+            assert trav>=0, f"Failed to find a segment with sufficient volume after {n_iter} iterations"
+            assert min_vol[trav]>vol_threshold
+            remapped_segs[seg0] = trav
+            print(f"  Remapped {seg0} => {trav}")
+            seg0=trav
+        return seg0
+
+    
     def add_load(self,*args,**kws):
         load=Load(*args,**kws)
         load.scenario=self

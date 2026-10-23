@@ -7,7 +7,7 @@ from . import dflow_model, waq_scenario
 
 
 # When including this as a 'mixin', it needs to go first, before
-# DFlowModel.
+# DFlowModel or waq_scenario.Scenario
 
 # Making this work with WaqModel:
 #   .write_inp() hook, and caller should use self.waq_proc_def.
@@ -178,6 +178,8 @@ class CustomProcesses:
                conc=f"Age{suffix}Conc",
                partial_default=1.0,
                age_conc=f"Age{suffix}AConc",
+               temp=f"Temp{suffix}",
+               oxy=f"Oxy{suffix}", # Can be used to scale rate 0-1
                flux="dAge"+suffix)
         p.update(kw)
 
@@ -205,22 +207,22 @@ NITRIF    ; module name.
 123       ; TRswitch
         18; # input items for segments
 {p['zero_order']:10}      0.00000     x zeroth-order flux          (g/m3/d)
-{p['partial']   :10}      {p['partial_default']: 8g}     x set this to get partial age
+{p['partial']   :10}      {p['partial_default']: 8g}     x partial func, aka NH4
 RcNit20        0.100000     x ignored (b/c SWVnNit=0)
 TcCART          1.00000     x not ignored, but separate name should keep it okay.
-OXY             10.0000     x ignored
-KsAmNit        0.500000     x ignored
-KsOxNit         1.00000     x ignored
-Temp            15.0000     x ignored
-CTNit           3.00000     x ignored
-Rc0NitOx        0.00000     x ignored
-COXNIT          1.00000     x ignored
+{p['oxy']     :10}     10.00000     x 
+KsAmNit        0.500000     x ignored (b/c SWVnNit=0)
+KsOxNit         1.00000     x ignored (b/c SWVnNit=0)
+{p['temp']    :10}     15.00000     x temperature, do not use
+TcritCart       3.00000     x keep fake temp above this
+CartNegO        0.00000     x leave 0.0, aka Rc0NitOx
+OxyLow          0.00000     x sets scale lower end if OXY is specified, aka COXNIT
 Poros           1.00000     x volumetric porosity                            (-)
 SWVnNit         0.00000     x switch for old (0), new (1), TEWOR (2) version (-)
-{p['conc']    :10}     0.100000     x concentration tracer
-OOXNIT          5.00000     x ignored
-CFLNIT          0.00000     x ignored
-CurvNit         0.00000     x ignored
+{p['conc']    :10}     0.100000     x concentration tracer, aka RcNit
+OxyHigh         1.00000     x sets scale upper end if OXY is specified, aka OOXNIT
+CrtOxMin        0.00000     x keep at 0, aka CFLNIT
+CCurvNit        0.00000     x keep at 0 to get linear scaling. aka CurvNit
 DELT           -999.000     x timestep for processes                         (d)
          0; # input items for exchanges
          1; # output items for segments

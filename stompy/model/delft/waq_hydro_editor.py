@@ -87,6 +87,7 @@ def main(args=None):
 
     parser.add_argument("-i", "--hyd", help="Path to hyd file for input", default=None,type=str)
     parser.add_argument("-m", "--mdu", help="Path to mdu file (for splicing)", default=None,type=str)
+    parser.add_argument("--waq-inp", help="Path for WAQ inp file", default=None, type=str)
 
     one_of.add_argument("-a", "--aggregate", help="Path to shapefile definining aggregation polygons",default=None,type=str)
     one_of.add_argument("-c", "--continuity", help="Check continuity by comparing fluxes and volumes", action='store_true')
@@ -96,6 +97,9 @@ def main(args=None):
     
     parser.add_argument("-o", "--output", help="Path and run name for file output", default="output/output")
     parser.add_argument("-p", "--pass-parameters",help="Pass parameters through without low-pass filter",action="store_true")
+
+    parser.add_argument("--clean",help="Remove outputs from the run specified by --waq-inp (no support for cleaning based on mdu yet)",
+                        action='store_true')
     
     parser.add_argument("--keep-cells",
                         help=("When splicing skip regeneration of cells. DFM typically regenerates cells"
@@ -130,19 +134,13 @@ def main(args=None):
 
     args=parser.parse_args(args=args)
 
-    # Most operations starts with reading the existing hydro:
-    if not args.splice:
-        hydro_orig=waq.HydroFiles(args.hyd)
-    else:
-        # splice code defines the input below
-        hydro_orig=None
-        
     # Only some actions produce new output
     hydro_out=None
     
     # both specifies that the operation is aggregation, and what the aggregation geometry
     # is
     if args.aggregate:
+        hydro_orig=waq.HydroFiles(args.hyd)
         # split multipolygons to multiple polygons
         agg_shp=clean_shapefile(args.aggregate)    
         # create object representing aggregated hydrodynamics
@@ -181,16 +179,54 @@ def main(args=None):
             log.info("Time index: %d: max volume error: %.3e  relative error: %.3e"%( time_index,
                                                                                       np.abs(summary['vol_err']).max(),
                                                                                       summary['rel_err'].max()) )
-
+        hydro_orig=waq.HydroFiles(args.hyd)
         hydro_orig.check_volume_conservation_incr(err_callback=err_callback)
 
     if args.lowpass:
         # TO-DO: expose these parameters on the command line
+        hydro_orig=waq.HydroFiles(args.hyd)
         hydro_out=waq.FilterAll(original=hydro_orig,
                                 filter_type='butter',
                                 filter_parameters=(not args.pass_parameters),
                                 lp_secs=86400*36./24)
 
+    if args.clean:
+        import glob
+        if args.waq_inp is not None:
+            print(f"Cleaning DWAQ run {args.waq_inp}")
+            path = os.path.dirname(args.waq_inp)
+
+            runid_fn=os.path.join(path,'runid.waq')
+            if os.path.exists(runid_fn):
+                with open(runid_fn) as fp:
+                    runid = fp.readline().strip()
+                print(f"Found run id {runid}")
+            else:
+                #print(f"Could not find runid file ({runid_fn}) - will not be able to clean out as many files")
+                runid=None
+
+            patts=['delwaq2.out','dwaq_hist.nc','dwaq_map.nc','memory_map.out','*.wrk','*.lsp','*.lst',
+                   'delwaq_user_wasteloads.mon','*.his','*.map','*.mon','*-timers.out','delwaq.rtn']
+            for patt in patts:
+                full_patt=os.path.join(path,patt)
+                hits = glob.glob(full_patt)
+                if len(hits):
+                    print(f"Deleting {len(hits)} files matching '{full_patt}'")
+                    width=100
+                    col=0
+                    for fn in hits:
+                        short = os.path.basename(fn)
+                        s=f" {short}"
+                        if col+len(s)>width:
+                            print()
+                            col=0
+                        col+=len(s)
+                        print(s, end="")
+                        os.unlink(fn)
+                    print()
+        else:
+            assert False,"Clean currently only supports WAQ simulation, identified by --waq-inp"
+        
     # The code to write dwaq hydro is wrapped up in the code to write a dwaq model inp file,
     # so we pretend to set up a dwaq simulation, even though the goal is just to write
     # the hydro.

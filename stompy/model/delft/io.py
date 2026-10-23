@@ -167,7 +167,8 @@ def parse_mon_textfile(mon_fn):
             if 'T0:' in l:
                 t0=np.datetime64(l.strip().split()[1].replace('-','T').replace('/','-'))
                 break
-                
+        #print(f"Found T0={t0}")
+        
         last_time=None
         while 1:
             l = fp.readline()
@@ -183,6 +184,10 @@ def parse_mon_textfile(mon_fn):
                                   + int(s_minutes.strip('M'))*60
                                   + int(s_seconds.strip('S')) )
                 mon_recs['time_seconds'].append(last_time_secs)
+                # initialize empty rows
+                for k in ['mass','process','load','inflow','outflow']:
+                    mon_recs[k].append([])
+                tracer_names=[]
 
             if not l.startswith(total_mass_str): continue
 
@@ -193,13 +198,13 @@ def parse_mon_textfile(mon_fn):
                 count = len(l)//11
                 return [float(l[11*i:11*(i+1)]) for i in range(count)]
 
-            mon_recs['mass'].append( parse_line(l) )
-            mon_recs['process'].append( parse_line(None) )
-            mon_recs['load'].append( parse_line(None) )
-            mon_recs['inflow'].append( parse_line(None) )
-            mon_recs['outflow'].append( parse_line(None) )
+            mon_recs['mass'][-1].extend( parse_line(l) )
+            mon_recs['process'][-1].extend( parse_line(None) )
+            mon_recs['load'][-1].extend( parse_line(None) )
+            mon_recs['inflow'][-1].extend( parse_line(None) )
+            mon_recs['outflow'][-1].extend( parse_line(None) )
             l=fp.readline()
-            tracer_names = [s for s in l[prefix_len:].strip().split()]
+            tracer_names.extend([s for s in l[prefix_len:].strip().split()])
             continue
 
     if tracer_names is not None:
@@ -210,14 +215,11 @@ def parse_mon_textfile(mon_fn):
         mon_ds['tracer'] = ('tracer',), tracer_names
         for k in ['mass','process','load','inflow','outflow']:
             data = np.array(mon_recs[k])
-            print(f"{k} has shape {data.shape}")
+            #print(f"{k} has shape {data.shape}")
             mon_ds[k] = ('time','tracer'), data
         return mon_ds
     else:
         return None
-
-
-
 
 def inp_tok(fp,comment=';'):
     # tokenizer for parsing rules of delwaq inp file.
@@ -852,6 +854,8 @@ def read_map(fn,hyd=None,use_memmap=True,include_grid=True,return_grid=False,n_l
         substance_names=np.fromfile(fp,'S20',n_subs)
 
         g=hyd.grid() # ignore message about ugrid.
+        if g is None:
+            raise Exception("Hydro instances did not return a grid")
 
         # not sure if there is a quicker way to get the number of layers
         if n_layers=='hydro':
